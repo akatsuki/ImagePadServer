@@ -9,7 +9,7 @@ import (
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "--steamvr-launch" {
-		if err := app.OpenOrRun(); err != nil {
+		if err := app.OpenWindowOrRun(); err != nil {
 			log.Println(err)
 			os.Exit(1)
 		}

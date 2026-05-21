@@ -19,6 +19,7 @@ import (
 
 	"github.com/skip2/go-qrcode"
 
+	"imagepadserver/internal/appicon"
 	"imagepadserver/internal/clipboard"
 	"imagepadserver/internal/config"
 	"imagepadserver/internal/imageproc"
@@ -71,6 +72,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/image/current", s.handleCurrentImage)
 	mux.HandleFunc("/image/current.png", s.handleCurrentImage)
 	mux.HandleFunc("/image/current.jpg", s.handleCurrentImage)
+	mux.HandleFunc("/favicon.ico", s.handleFavicon)
 	mux.HandleFunc("/healthz", s.handleHealth)
 }
 
@@ -261,6 +263,12 @@ func (s *Server) handlePhoneQR(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(png)
 }
 
+func (s *Server) handleFavicon(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "image/x-icon")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	_, _ = w.Write(appicon.IconICO)
+}
+
 func (s *Server) handleCurrentImage(w http.ResponseWriter, r *http.Request) {
 	path, img, ok := s.store.CurrentPath()
 	if !ok {
@@ -323,8 +331,10 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 	publicImageURL := ""
 	if current := s.store.Current(); current != nil {
 		imagePath := imageURLPath(current)
-		localImageURL = s.imageURLBase + imagePath + "?v=" + current.ID
-		imageURL = imageURLBase + imagePath + "?v=" + current.ID
+		localImageURL = s.previewURLBase + imagePath + "?v=" + current.ID
+		if tunnelURLBase != "" {
+			imageURL = imageURLBase + imagePath + "?v=" + current.ID
+		}
 		previewImageURL = s.previewURLBase + imagePath + "?v=" + current.ID
 		if tunnelURLBase != "" {
 			publicImageURL = tunnelURLBase + imagePath + "?v=" + current.ID

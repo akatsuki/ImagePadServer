@@ -75,7 +75,7 @@ Relevant fields:
   "phoneURL": "http://192.168.x.x:8080/",
   "imageURL": "https://xxxxx.trycloudflare.com/image/current.jpg?v=...",
   "publicImageURL": "https://xxxxx.trycloudflare.com/image/current.jpg?v=...",
-  "localImageURL": "https://192.168.x.x:8443/image/current.jpg?v=...",
+  "localImageURL": "http://192.168.x.x:8080/image/current.jpg?v=...",
   "previewImageURL": "http://192.168.x.x:8080/image/current.jpg?v=...",
   "current": {
     "id": "...",

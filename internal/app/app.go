@@ -14,9 +14,9 @@ import (
 	"syscall"
 	"time"
 
+	"imagepadserver/internal/appwindow"
 	"imagepadserver/internal/browser"
 	"imagepadserver/internal/config"
-	"imagepadserver/internal/httpscert"
 	"imagepadserver/internal/library"
 	"imagepadserver/internal/network"
 	"imagepadserver/internal/server"
@@ -39,10 +39,28 @@ func OpenOrRun() error {
 	return Run()
 }
 
-func Run() error {
+// OpenWindowOrRun shows the built-in desktop window when an instance is
+// already running; otherwise it starts the server and opens that window.
+func OpenWindowOrRun() error {
 	cfg := config.FromEnv()
 	localURL := cfg.URLForHost("127.0.0.1")
 	if serverIsHealthy(localURL + "healthz") {
+		return appwindow.Show(localURL)
+	}
+	return run(true)
+}
+
+func Run() error {
+	return run(false)
+}
+
+func run(useNativeWindow bool) error {
+	cfg := config.FromEnv()
+	localURL := cfg.URLForHost("127.0.0.1")
+	if serverIsHealthy(localURL + "healthz") {
+		if useNativeWindow {
+			return appwindow.Show(localURL)
+		}
 		browser.Open(localURL)
 		return nil
 	}
@@ -67,45 +85,14 @@ func Run() error {
 	cfg.Port = actualPort
 
 	lanIP := network.BestLANIP()
-	imageURLBase := ""
-	var httpsServer *http.Server
-	var httpsListener net.Listener
-	certFiles, err := httpscert.Ensure([]string{lanIP, "127.0.0.1", "localhost"})
-	if err != nil {
-		log.Printf("HTTPS certificate unavailable: %v", err)
-	} else {
-		httpsServer = &http.Server{
-			Addr:         fmt.Sprintf("%s:%d", cfg.Host, cfg.HTTPSPort),
-			ReadTimeout:  30 * time.Second,
-			WriteTimeout: 30 * time.Second,
-		}
-		httpsListener, err = net.Listen("tcp", httpsServer.Addr)
-		if err != nil {
-			log.Printf("HTTPS listener unavailable: %v", err)
-			httpsServer = nil
-		} else {
-			cfg.HTTPSPort = httpsListener.Addr().(*net.TCPAddr).Port
-			imageURLBase = cfg.HTTPSURLForHost(lanIP)
-			if !certFiles.Trusted {
-				log.Printf("HTTPS certificate trust could not be confirmed")
-			}
-		}
-	}
-
 	mux := http.NewServeMux()
-	srv := server.New(cfg, store, imageURLBase)
+	srv := server.New(cfg, store, "")
 	srv.Register(mux)
 	httpServer.Handler = mux
-	if httpsServer != nil {
-		httpsServer.Handler = mux
-	}
 
 	publicURL := cfg.URLForHost(lanIP)
 
 	log.Printf("ImagePadServer listening on %s", publicURL)
-	if imageURLBase != "" {
-		log.Printf("ImagePad HTTPS image URL base is %s", imageURLBase)
-	}
 
 	ensureSteamVRRegistration()
 
@@ -131,6 +118,10 @@ func Run() error {
 
 	go func() {
 		time.Sleep(300 * time.Millisecond)
+		if useNativeWindow {
+			_ = appwindow.Show(localURL)
+			return
+		}
 		browser.Open(publicURL)
 	}()
 
@@ -154,14 +145,6 @@ func Run() error {
 		}
 	}()
 
-	if httpsServer != nil && httpsListener != nil {
-		go func() {
-			if err := httpsServer.ServeTLS(httpsListener, certFiles.CertPath, certFiles.KeyPath); err != nil && err != http.ErrServerClosed {
-				log.Printf("HTTPS server error: %v", err)
-			}
-		}()
-	}
-
 	go func() {
 		if err := steamvr.Start(steamvr.Config{ServerURL: publicURL}); err != nil {
 			log.Printf("SteamVR integration unavailable: %v", err)
@@ -179,9 +162,6 @@ func Run() error {
 		tunnelHandle.Stop()
 	}
 	tunnelMu.Unlock()
-	if httpsServer != nil {
-		_ = httpsServer.Shutdown(ctx)
-	}
 	return httpServer.Shutdown(ctx)
 }
 
@@ -202,7 +182,7 @@ func ensureSteamVRRegistration() {
 		return
 	}
 	status := steamvr.Registration()
-	if !status.Available || status.Enabled {
+	if !status.Available {
 		return
 	}
 	if _, err := steamvr.SetRegistration(true); err != nil {

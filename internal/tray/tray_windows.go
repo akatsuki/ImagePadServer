@@ -4,14 +4,18 @@
 package tray
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 	"time"
 	"unicode/utf16"
+
+	"imagepadserver/internal/appicon"
 )
 
 const pipeName = "ImagePadServer.Tray"
@@ -23,6 +27,7 @@ type Tray struct {
 
 // Start shows a Windows notification-area icon that opens serverURL when clicked.
 func Start(serverURL string) (*Tray, error) {
+	iconPath, _ := ensureTrayIcon()
 	cmd := exec.Command(
 		"powershell",
 		"-NoProfile",
@@ -31,7 +36,7 @@ func Start(serverURL string) (*Tray, error) {
 		"-ExecutionPolicy",
 		"Bypass",
 		"-EncodedCommand",
-		encodePowerShell(trayScript(serverURL, os.Getpid())),
+		encodePowerShell(trayScript(serverURL, os.Getpid(), iconPath)),
 	)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	if err := cmd.Start(); err != nil {
@@ -69,10 +74,30 @@ func encodePowerShell(script string) string {
 	return base64.StdEncoding.EncodeToString(data)
 }
 
-func trayScript(serverURL string, parentPID int) string {
+func ensureTrayIcon() (string, error) {
+	base, err := os.UserConfigDir()
+	if err != nil || base == "" {
+		base = os.TempDir()
+	}
+	dir := filepath.Join(base, "ImagePadServer")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, "imagepad-tray.ico")
+	if current, err := os.ReadFile(path); err == nil && bytes.Equal(current, appicon.IconICO) {
+		return path, nil
+	}
+	if err := os.WriteFile(path, appicon.IconICO, 0644); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func trayScript(serverURL string, parentPID int, iconPath string) string {
 	return `
 $ErrorActionPreference = 'SilentlyContinue'
 $url = '` + escapeSingleQuoted(serverURL) + `'
+$iconPath = '` + escapeSingleQuoted(iconPath) + `'
 $pipeName = 'ImagePadServer.Tray'
 $parentPID = ` + stringInt(parentPID) + `
 Add-Type -AssemblyName System.Windows.Forms
@@ -91,7 +116,11 @@ try {
 } catch {}
 
 $notify = New-Object System.Windows.Forms.NotifyIcon
-$notify.Icon = [System.Drawing.SystemIcons]::Application
+if ($iconPath -and (Test-Path -LiteralPath $iconPath)) {
+  $appIcon = New-Object System.Drawing.Icon($iconPath)
+}
+if ($null -eq $appIcon) { $appIcon = [System.Drawing.SystemIcons]::Application }
+$notify.Icon = $appIcon
 $notify.Text = 'ImagePadServer'
 $notify.Visible = $true
 
@@ -141,6 +170,7 @@ try {
   if ($script:server) { $script:server.Dispose() }
   $notify.Visible = $false
   $notify.Dispose()
+  if ($appIcon -and $appIcon -ne [System.Drawing.SystemIcons]::Application) { $appIcon.Dispose() }
 }
 `
 }

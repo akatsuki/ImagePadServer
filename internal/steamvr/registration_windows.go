@@ -6,13 +6,16 @@ package steamvr
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"imagepadserver/internal/settings"
 )
 
 const appConfigPath = `C:\Program Files (x86)\Steam\config\appconfig.json`
+const appKey = "steam.overlay.imagepadserver"
 
 // RegistrationStatus describes whether ImagePadServer is registered with SteamVR.
 type RegistrationStatus struct {
@@ -58,7 +61,8 @@ func SetRegistration(enabled bool) (RegistrationStatus, error) {
 	}
 
 	paths := cfg.ManifestPaths()
-	changed := false
+	paths = removeImagePadManifestPaths(paths, manifestPath)
+	changed := len(paths) != len(cfg.ManifestPaths())
 	if enabled {
 		if !containsPath(paths, manifestPath) {
 			paths = append(paths, manifestPath)
@@ -144,27 +148,108 @@ func (cfg steamVRAppConfig) SetManifestPaths(paths []string) {
 }
 
 func manifestPath() (string, error) {
-	candidates := []string{}
-	if exe, err := os.Executable(); err == nil {
-		dir := filepath.Dir(exe)
-		candidates = append(candidates,
-			filepath.Join(dir, "steamvr", "imagepadserver.vrmanifest"),
-			filepath.Join(filepath.Dir(dir), "steamvr", "imagepadserver.vrmanifest"),
-		)
+	exe, err := installExecutableForSteamVR()
+	if err != nil {
+		return "", err
 	}
-	if wd, err := os.Getwd(); err == nil {
-		candidates = append(candidates, filepath.Join(wd, "steamvr", "imagepadserver.vrmanifest"))
+	manifestPath := filepath.Join(settings.Dir(), "steamvr", "imagepadserver.vrmanifest")
+	if err := os.MkdirAll(filepath.Dir(manifestPath), 0755); err != nil {
+		return "", err
 	}
-	for _, candidate := range candidates {
-		abs, err := filepath.Abs(candidate)
-		if err != nil {
-			continue
-		}
-		if _, err := os.Stat(abs); err == nil {
-			return abs, nil
-		}
+	data, err := manifestData(exe)
+	if err != nil {
+		return "", err
 	}
-	return "", errors.New("SteamVR manifest file was not found")
+	if err := os.WriteFile(manifestPath, data, 0644); err != nil {
+		return "", err
+	}
+	return manifestPath, nil
+}
+
+func installExecutableForSteamVR() (string, error) {
+	src, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	dst := filepath.Join(settings.Dir(), "bin", "ImagePadServer.exe")
+	srcAbs, _ := filepath.Abs(src)
+	dstAbs, _ := filepath.Abs(dst)
+	if strings.EqualFold(filepath.Clean(srcAbs), filepath.Clean(dstAbs)) {
+		return dst, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		return "", err
+	}
+	if sameFileVersion(src, dst) {
+		return dst, nil
+	}
+	if err := copyFile(dst, src); err != nil {
+		return "", err
+	}
+	return dst, nil
+}
+
+func sameFileVersion(src, dst string) bool {
+	srcInfo, srcErr := os.Stat(src)
+	dstInfo, dstErr := os.Stat(dst)
+	if srcErr != nil || dstErr != nil {
+		return false
+	}
+	return srcInfo.Size() == dstInfo.Size() && !srcInfo.ModTime().After(dstInfo.ModTime())
+}
+
+func copyFile(dst, src string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	tmp := dst + ".tmp"
+	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0755)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	_ = os.Remove(dst)
+	return os.Rename(tmp, dst)
+}
+
+func manifestData(exePath string) ([]byte, error) {
+	doc := map[string]interface{}{
+		"source": "imagepadserver",
+		"applications": []map[string]interface{}{
+			{
+				"app_key":              appKey,
+				"launch_type":          "binary",
+				"binary_path_windows":  exePath,
+				"arguments":            "--steamvr-launch",
+				"is_dashboard_overlay": true,
+				"strings": map[string]interface{}{
+					"en_us": map[string]string{
+						"name":        "ImagePadServer",
+						"description": "Open the ImagePadServer browser UI for VRChat ImagePad uploads.",
+					},
+					"ja_jp": map[string]string{
+						"name":        "ImagePadServer",
+						"description": "Open the ImagePadServer browser UI.",
+					},
+				},
+			},
+		},
+	}
+	data, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(data, '\n'), nil
 }
 
 func containsPath(paths []string, target string) bool {
@@ -174,6 +259,21 @@ func containsPath(paths []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func removeImagePadManifestPaths(paths []string, keep string) []string {
+	next := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		clean := filepath.ToSlash(strings.ToLower(filepath.Clean(path)))
+		if strings.Contains(clean, "/imagepadserver/") && strings.HasSuffix(clean, "imagepadserver.vrmanifest") && !samePath(path, keep) {
+			continue
+		}
+		next = append(next, path)
+	}
+	return next
 }
 
 func samePath(a, b string) bool {

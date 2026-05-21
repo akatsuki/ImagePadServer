@@ -2,6 +2,7 @@ package imageproc
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"image"
 	"image/color"
@@ -54,12 +55,19 @@ func Process(reader io.Reader, _ string, outDir string, opts Options) (Result, e
 		opts.Format = "jpeg"
 	}
 
-	img, format, err := image.Decode(reader)
+	input, err := io.ReadAll(reader)
+	if err != nil {
+		return Result{}, err
+	}
+	orientation := exifOrientation(input)
+
+	img, format, err := image.Decode(bytes.NewReader(input))
 	if err != nil {
 		return Result{}, fmt.Errorf("unsupported or invalid image: %w", err)
 	}
 	_ = format
 
+	img = applyOrientation(img, orientation)
 	resized := resizeToFit(img, opts.MaxDimension)
 	width := resized.Bounds().Dx()
 	height := resized.Bounds().Dy()
@@ -106,6 +114,166 @@ func Process(reader io.Reader, _ string, outDir string, opts Options) (Result, e
 		Width:       width,
 		Height:      height,
 	}, nil
+}
+
+func exifOrientation(data []byte) int {
+	if len(data) < 4 || data[0] != 0xff || data[1] != 0xd8 {
+		return 1
+	}
+	offset := 2
+	for offset+4 <= len(data) {
+		if data[offset] != 0xff {
+			return 1
+		}
+		marker := data[offset+1]
+		offset += 2
+		for marker == 0xff && offset < len(data) {
+			marker = data[offset]
+			offset++
+		}
+		if marker == 0xda || marker == 0xd9 {
+			return 1
+		}
+		if offset+2 > len(data) {
+			return 1
+		}
+		segmentLen := int(binary.BigEndian.Uint16(data[offset : offset+2]))
+		if segmentLen < 2 || offset+segmentLen > len(data) {
+			return 1
+		}
+		segment := data[offset+2 : offset+segmentLen]
+		if marker == 0xe1 && len(segment) > 6 && bytes.Equal(segment[:6], []byte("Exif\x00\x00")) {
+			return tiffOrientation(segment[6:])
+		}
+		offset += segmentLen
+	}
+	return 1
+}
+
+func tiffOrientation(data []byte) int {
+	if len(data) < 8 {
+		return 1
+	}
+	var order binary.ByteOrder
+	switch string(data[:2]) {
+	case "II":
+		order = binary.LittleEndian
+	case "MM":
+		order = binary.BigEndian
+	default:
+		return 1
+	}
+	if order.Uint16(data[2:4]) != 42 {
+		return 1
+	}
+	ifdOffset := int(order.Uint32(data[4:8]))
+	if ifdOffset < 0 || ifdOffset+2 > len(data) {
+		return 1
+	}
+	count := int(order.Uint16(data[ifdOffset : ifdOffset+2]))
+	entryOffset := ifdOffset + 2
+	for i := 0; i < count; i++ {
+		entry := entryOffset + i*12
+		if entry+12 > len(data) {
+			return 1
+		}
+		tag := order.Uint16(data[entry : entry+2])
+		if tag != 0x0112 {
+			continue
+		}
+		fieldType := order.Uint16(data[entry+2 : entry+4])
+		values := order.Uint32(data[entry+4 : entry+8])
+		if fieldType != 3 || values < 1 {
+			return 1
+		}
+		value := int(order.Uint16(data[entry+8 : entry+10]))
+		if value >= 1 && value <= 8 {
+			return value
+		}
+		return 1
+	}
+	return 1
+}
+
+func applyOrientation(src image.Image, orientation int) image.Image {
+	switch orientation {
+	case 2:
+		return flipHorizontal(src)
+	case 3:
+		return rotate180(src)
+	case 4:
+		return flipVertical(src)
+	case 5:
+		return rotate90CW(flipHorizontal(src))
+	case 6:
+		return rotate90CW(src)
+	case 7:
+		return rotate90CW(flipVertical(src))
+	case 8:
+		return rotate90CCW(src)
+	default:
+		return src
+	}
+}
+
+func flipHorizontal(src image.Image) image.Image {
+	b := src.Bounds()
+	w, h := b.Dx(), b.Dy()
+	dst := image.NewNRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			dst.Set(w-1-x, y, src.At(b.Min.X+x, b.Min.Y+y))
+		}
+	}
+	return dst
+}
+
+func flipVertical(src image.Image) image.Image {
+	b := src.Bounds()
+	w, h := b.Dx(), b.Dy()
+	dst := image.NewNRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			dst.Set(x, h-1-y, src.At(b.Min.X+x, b.Min.Y+y))
+		}
+	}
+	return dst
+}
+
+func rotate180(src image.Image) image.Image {
+	b := src.Bounds()
+	w, h := b.Dx(), b.Dy()
+	dst := image.NewNRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			dst.Set(w-1-x, h-1-y, src.At(b.Min.X+x, b.Min.Y+y))
+		}
+	}
+	return dst
+}
+
+func rotate90CW(src image.Image) image.Image {
+	b := src.Bounds()
+	w, h := b.Dx(), b.Dy()
+	dst := image.NewNRGBA(image.Rect(0, 0, h, w))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			dst.Set(h-1-y, x, src.At(b.Min.X+x, b.Min.Y+y))
+		}
+	}
+	return dst
+}
+
+func rotate90CCW(src image.Image) image.Image {
+	b := src.Bounds()
+	w, h := b.Dx(), b.Dy()
+	dst := image.NewNRGBA(image.Rect(0, 0, h, w))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			dst.Set(y, w-1-x, src.At(b.Min.X+x, b.Min.Y+y))
+		}
+	}
+	return dst
 }
 
 func encodeJPEGWithinLimit(img image.Image, quality int, maxBytes int64) ([]byte, error) {
