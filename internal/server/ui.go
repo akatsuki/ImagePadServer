@@ -103,7 +103,7 @@ const indexHTML = `<!doctype html>
       display: grid;
       gap: 10px;
     }
-    input[type="file"], select, input[type="number"] {
+    input[type="file"], input[type="url"], select, input[type="number"] {
       width: 100%;
       min-height: 34px;
       border: 1px solid var(--line);
@@ -112,6 +112,33 @@ const indexHTML = `<!doctype html>
       padding: 6px 8px;
       font: inherit;
       font-size: 13px;
+    }
+    .mode-tabs {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .mode-tabs .divider {
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .mode-tab {
+      min-height: 36px;
+      background: #e7edf1;
+      color: #304554;
+    }
+    .mode-tab.active {
+      background: var(--accent);
+      color: #fff;
+    }
+    .upload-panel {
+      display: none;
+    }
+    .upload-panel.active {
+      display: grid;
+      gap: 10px;
     }
     .controls {
       display: grid;
@@ -277,7 +304,7 @@ const indexHTML = `<!doctype html>
         padding: 0 14px;
         font-size: 14px;
       }
-      input[type="file"], select, input[type="number"] {
+      input[type="file"], input[type="url"], select, input[type="number"] {
         min-height: 42px;
         padding: 8px 10px;
         font-size: 16px;
@@ -339,7 +366,17 @@ const indexHTML = `<!doctype html>
       <section>
         <h2>画像アップロード</h2>
         <form id="uploadForm">
-          <input id="imageInput" name="image" type="file" accept="image/png,image/jpeg,image/gif" required>
+          <div class="mode-tabs" role="tablist" aria-label="アップロード方法">
+            <button class="mode-tab active" id="fileModeButton" type="button" role="tab" aria-selected="true">画像</button>
+            <span class="divider" aria-hidden="true">|</span>
+            <button class="mode-tab" id="linkModeButton" type="button" role="tab" aria-selected="false">リンク</button>
+          </div>
+          <div class="upload-panel active" id="fileUploadPanel">
+            <input id="imageInput" name="image" type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp,image/tiff,image/svg+xml,.jpg,.jpeg,.png,.gif,.webp,.bmp,.tif,.tiff,.svg" required>
+          </div>
+          <div class="upload-panel" id="linkUploadPanel">
+            <input id="imageURLInput" name="imageURL" type="url" inputmode="url" placeholder="https://example.com/image.webp">
+          </div>
           <div class="controls">
             <label><span>最大辺</span><input name="maxDimension" type="number" min="64" max="2048" value="2048"></label>
             <label><span>形式</span><select name="format"><option value="jpeg">JPEG</option><option value="png">PNG</option></select></label>
@@ -386,9 +423,16 @@ const indexHTML = `<!doctype html>
     const toast = document.getElementById('toast');
     const uploadForm = document.getElementById('uploadForm');
     const uploadButton = document.getElementById('uploadButton');
+    const imageInput = document.getElementById('imageInput');
+    const imageURLInput = document.getElementById('imageURLInput');
+    const fileModeButton = document.getElementById('fileModeButton');
+    const linkModeButton = document.getElementById('linkModeButton');
+    const fileUploadPanel = document.getElementById('fileUploadPanel');
+    const linkUploadPanel = document.getElementById('linkUploadPanel');
     const preview = document.getElementById('preview');
     const steamvrToggle = document.getElementById('steamvrToggle');
     const steamvrText = document.getElementById('steamvrText');
+    let uploadMode = 'file';
 
     async function refreshState() {
       const res = await fetch('/api/state', { cache: 'no-store' });
@@ -464,8 +508,7 @@ const indexHTML = `<!doctype html>
       uploadButton.disabled = true;
       toast.textContent = '変換中...';
       try {
-        const formData = new FormData(uploadForm);
-        const res = await fetch('/api/upload', { method: 'POST', body: formData });
+        const res = uploadMode === 'link' ? await uploadFromLink() : await uploadFromFile();
         if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
         applyState(data);
@@ -476,6 +519,43 @@ const indexHTML = `<!doctype html>
         uploadButton.disabled = false;
       }
     });
+
+    function setUploadMode(mode) {
+      uploadMode = mode;
+      const linkMode = mode === 'link';
+      fileModeButton.classList.toggle('active', !linkMode);
+      linkModeButton.classList.toggle('active', linkMode);
+      fileModeButton.setAttribute('aria-selected', String(!linkMode));
+      linkModeButton.setAttribute('aria-selected', String(linkMode));
+      fileUploadPanel.classList.toggle('active', !linkMode);
+      linkUploadPanel.classList.toggle('active', linkMode);
+      imageInput.required = !linkMode;
+      imageURLInput.required = linkMode;
+      uploadButton.textContent = linkMode ? 'リンクから変換して公開' : '変換して公開';
+      if (linkMode) {
+        imageURLInput.focus();
+      }
+    }
+
+    function uploadFromFile() {
+      const formData = new FormData(uploadForm);
+      return fetch('/api/upload', { method: 'POST', body: formData });
+    }
+
+    function uploadFromLink() {
+      const formData = new FormData(uploadForm);
+      return fetch('/api/upload-url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: imageURLInput.value.trim(),
+          format: formData.get('format'),
+          quality: formData.get('quality'),
+          maxDimension: formData.get('maxDimension'),
+          maxMB: formData.get('maxMB')
+        })
+      });
+    }
 
     document.getElementById('clearButton').addEventListener('click', async () => {
       toast.textContent = '画像をクリア中...';
@@ -573,6 +653,8 @@ const indexHTML = `<!doctype html>
     }
 
     document.getElementById('refreshButton').addEventListener('click', refreshState);
+    fileModeButton.addEventListener('click', () => setUploadMode('file'));
+    linkModeButton.addEventListener('click', () => setUploadMode('link'));
     document.getElementById('localToggle').addEventListener('click', () => {
       const panel = document.getElementById('localPanel');
       panel.classList.toggle('open');

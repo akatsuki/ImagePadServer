@@ -7,6 +7,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -100,6 +101,23 @@ func TestProcessAppliesEXIFOrientation(t *testing.T) {
 	}
 	if result.Width != 48 || result.Height != 24 {
 		t.Fatalf("size = %d x %d, want 48 x 24 after orientation", result.Width, result.Height)
+	}
+}
+
+func TestProcessRasterizesSVG(t *testing.T) {
+	input := strings.NewReader(`<svg xmlns="http://www.w3.org/2000/svg" width="80" height="40" viewBox="0 0 80 40"><rect width="80" height="40" fill="#00aaff"/></svg>`)
+
+	opts := DefaultOptions()
+	opts.Format = "png"
+	result, err := Process(input, "remote.svg", t.TempDir(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Width != 80 || result.Height != 40 {
+		t.Fatalf("size = %d x %d, want 80 x 40", result.Width, result.Height)
+	}
+	if result.ContentType != "image/png" {
+		t.Fatalf("content type = %s, want image/png", result.ContentType)
 	}
 }
 

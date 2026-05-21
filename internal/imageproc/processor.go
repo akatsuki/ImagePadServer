@@ -11,9 +11,16 @@ import (
 	"image/jpeg"
 	"image/png"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/srwiley/oksvg"
+	"github.com/srwiley/rasterx"
+	_ "golang.org/x/image/bmp"
+	_ "golang.org/x/image/tiff"
+	_ "golang.org/x/image/webp"
 )
 
 type Options struct {
@@ -61,7 +68,7 @@ func Process(reader io.Reader, _ string, outDir string, opts Options) (Result, e
 	}
 	orientation := exifOrientation(input)
 
-	img, format, err := image.Decode(bytes.NewReader(input))
+	img, format, err := decodeImage(input)
 	if err != nil {
 		return Result{}, fmt.Errorf("unsupported or invalid image: %w", err)
 	}
@@ -114,6 +121,43 @@ func Process(reader io.Reader, _ string, outDir string, opts Options) (Result, e
 		Width:       width,
 		Height:      height,
 	}, nil
+}
+
+func decodeImage(input []byte) (image.Image, string, error) {
+	if isSVG(input) {
+		img, err := rasterizeSVG(input)
+		return img, "svg", err
+	}
+	return image.Decode(bytes.NewReader(input))
+}
+
+func isSVG(input []byte) bool {
+	head := strings.TrimSpace(string(input[:min(len(input), 512)]))
+	head = strings.ToLower(head)
+	return strings.HasPrefix(head, "<svg") || strings.Contains(head, "<svg ")
+}
+
+func rasterizeSVG(input []byte) (image.Image, error) {
+	icon, err := oksvg.ReadIconStream(bytes.NewReader(input))
+	if err != nil {
+		return nil, err
+	}
+	width := int(math.Ceil(icon.ViewBox.W))
+	height := int(math.Ceil(icon.ViewBox.H))
+	if width <= 0 || height <= 0 {
+		width, height = 1024, 1024
+	}
+	if width > 4096 || height > 4096 {
+		scale := math.Min(4096/float64(width), 4096/float64(height))
+		width = int(math.Max(1, math.Round(float64(width)*scale)))
+		height = int(math.Max(1, math.Round(float64(height)*scale)))
+	}
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	scanner := rasterx.NewScannerGV(width, height, img, img.Bounds())
+	raster := rasterx.NewDasher(width, height, scanner)
+	icon.SetTarget(0, 0, float64(width), float64(height))
+	icon.Draw(raster, 1)
+	return img, nil
 }
 
 func exifOrientation(data []byte) int {

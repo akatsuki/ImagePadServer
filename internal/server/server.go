@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -9,7 +10,10 @@ import (
 	"image/jpeg"
 	"image/png"
 	"io"
+	"mime"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -65,6 +69,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/api/state", s.handleState)
 	mux.HandleFunc("/api/upload", s.handleUpload)
+	mux.HandleFunc("/api/upload-url", s.handleUploadURL)
 	mux.HandleFunc("/api/clear", s.handleClear)
 	mux.HandleFunc("/api/copy-url", s.handleCopyURL)
 	mux.HandleFunc("/api/steamvr", s.handleSteamVR)
@@ -128,45 +133,68 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	opts := imageproc.DefaultOptions()
-	if v := r.FormValue("format"); v != "" {
-		opts.Format = v
-	}
-	if v := r.FormValue("quality"); v != "" {
-		if q, err := strconv.Atoi(v); err == nil {
-			opts.JPEGQuality = q
-		}
-	}
-	if v := r.FormValue("maxDimension"); v != "" {
-		if maxDim, err := strconv.Atoi(v); err == nil {
-			opts.MaxDimension = maxDim
-		}
-	}
-	if v := r.FormValue("maxMB"); v != "" {
-		if maxMB, err := strconv.Atoi(v); err == nil && maxMB > 0 {
-			if maxMB > 30 {
-				maxMB = 30
-			}
-			opts.MaxBytes = int64(maxMB) << 20
-		}
-	}
-
-	result, err := imageproc.Process(file, header.Filename, s.store.Dir(), opts)
+	state, err := s.processAndPublish(r, file, header.Filename, optionsFromValues(r.FormValue))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	writeJSON(w, state)
+}
 
+func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		URL          string `json:"url"`
+		Format       string `json:"format"`
+		Quality      string `json:"quality"`
+		MaxDimension string `json:"maxDimension"`
+		MaxMB        string `json:"maxMB"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid URL upload request", http.StatusBadRequest)
+		return
+	}
+
+	values := map[string]string{
+		"format":       req.Format,
+		"quality":      req.Quality,
+		"maxDimension": req.MaxDimension,
+		"maxMB":        req.MaxMB,
+	}
+	opts := optionsFromValues(func(key string) string { return values[key] })
+	remote, name, err := downloadRemoteImage(req.URL, opts.MaxBytes)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	defer remote.Close()
+
+	state, err := s.processAndPublish(r, remote, name, opts)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, state)
+}
+
+func (s *Server) processAndPublish(r *http.Request, reader io.Reader, name string, opts imageproc.Options) (map[string]interface{}, error) {
+	result, err := imageproc.Process(reader, name, s.store.Dir(), opts)
+	if err != nil {
+		return nil, err
+	}
 	info := library.CurrentImage{
 		PublicName:   result.PublicName,
 		ContentType:  result.ContentType,
 		Width:        result.Width,
 		Height:       result.Height,
-		OriginalName: header.Filename,
+		OriginalName: name,
 	}
 	if err := s.store.SetCurrent(result.Path, info); err != nil {
-		http.Error(w, "failed to save image", http.StatusInternalServerError)
-		return
+		return nil, fmt.Errorf("failed to save image")
 	}
 	_ = os.Remove(result.Path)
 
@@ -180,7 +208,190 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	state["copiedURL"] = copiedURL
 	state["clipboardCopied"] = clipboardCopied
-	writeJSON(w, state)
+	return state, nil
+}
+
+func optionsFromValues(value func(string) string) imageproc.Options {
+	opts := imageproc.DefaultOptions()
+	if v := value("format"); v != "" {
+		opts.Format = v
+	}
+	if v := value("quality"); v != "" {
+		if q, err := strconv.Atoi(v); err == nil {
+			opts.JPEGQuality = q
+		}
+	}
+	if v := value("maxDimension"); v != "" {
+		if maxDim, err := strconv.Atoi(v); err == nil {
+			opts.MaxDimension = maxDim
+		}
+	}
+	if v := value("maxMB"); v != "" {
+		if maxMB, err := strconv.Atoi(v); err == nil && maxMB > 0 {
+			if maxMB > 30 {
+				maxMB = 30
+			}
+			opts.MaxBytes = int64(maxMB) << 20
+		}
+	}
+	return opts
+}
+
+func downloadRemoteImage(rawURL string, maxBytes int64) (io.ReadCloser, string, error) {
+	parsed, err := validatePublicURL(rawURL)
+	if err != nil {
+		return nil, "", err
+	}
+	if maxBytes <= 0 || maxBytes > 30<<20 {
+		maxBytes = 30 << 20
+	}
+
+	client := &http.Client{
+		Timeout: 20 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return fmt.Errorf("too many redirects")
+			}
+			_, err := validatePublicURL(req.URL.String())
+			return err
+		},
+		Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   10 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+		},
+	}
+
+	req, err := http.NewRequest(http.MethodGet, parsed.String(), nil)
+	if err != nil {
+		return nil, "", err
+	}
+	req.Header.Set("User-Agent", "ImagePadServer/1.0")
+	req.Header.Set("Accept", "image/webp,image/svg+xml,image/png,image/jpeg,image/gif,image/bmp,image/tiff,image/*;q=0.8,*/*;q=0.2")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, "", fmt.Errorf("download failed: %s", resp.Status)
+	}
+	if resp.ContentLength > maxBytes {
+		return nil, "", fmt.Errorf("remote image exceeds size limit of %d bytes", maxBytes)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "" && !remoteContentTypeAllowed(ct) {
+		return nil, "", fmt.Errorf("remote content is not an image: %s", ct)
+	}
+
+	limited := io.LimitReader(resp.Body, maxBytes+1)
+	data, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, "", err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, "", fmt.Errorf("remote image exceeds size limit of %d bytes", maxBytes)
+	}
+	name := remoteFileName(resp.Request.URL, resp.Header.Get("Content-Type"))
+	return io.NopCloser(bytes.NewReader(data)), name, nil
+}
+
+func validatePublicURL(rawURL string) (*url.URL, error) {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed == nil || parsed.Host == "" {
+		return nil, fmt.Errorf("invalid image URL")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return nil, fmt.Errorf("only http and https image URLs are allowed")
+	}
+	host := parsed.Hostname()
+	if host == "" {
+		return nil, fmt.Errorf("invalid image URL host")
+	}
+	if isBlockedHost(host) {
+		return nil, fmt.Errorf("local or private network URLs are not allowed")
+	}
+	return parsed, nil
+}
+
+func isBlockedHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return true
+	}
+	for _, ip := range ips {
+		if isBlockedIP(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func isBlockedIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	if ip.IsLoopback() || ip.IsUnspecified() || ip.IsMulticast() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		return true
+	}
+	if v4 := ip.To4(); v4 != nil {
+		switch {
+		case v4[0] == 10:
+			return true
+		case v4[0] == 172 && v4[1] >= 16 && v4[1] <= 31:
+			return true
+		case v4[0] == 192 && v4[1] == 168:
+			return true
+		case v4[0] == 169 && v4[1] == 254:
+			return true
+		}
+		return false
+	}
+	return ip.IsPrivate()
+}
+
+func remoteContentTypeAllowed(contentType string) bool {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return false
+	}
+	mediaType = strings.ToLower(mediaType)
+	return strings.HasPrefix(mediaType, "image/") || mediaType == "application/octet-stream"
+}
+
+func remoteFileName(u *url.URL, contentType string) string {
+	name := filepath.Base(u.Path)
+	if name == "." || name == "/" || name == "" {
+		name = "remote-image"
+	}
+	if filepath.Ext(name) != "" {
+		return name
+	}
+	mediaType, _, _ := mime.ParseMediaType(contentType)
+	switch strings.ToLower(mediaType) {
+	case "image/jpeg":
+		return name + ".jpg"
+	case "image/png":
+		return name + ".png"
+	case "image/gif":
+		return name + ".gif"
+	case "image/webp":
+		return name + ".webp"
+	case "image/bmp":
+		return name + ".bmp"
+	case "image/tiff":
+		return name + ".tiff"
+	case "image/svg+xml":
+		return name + ".svg"
+	default:
+		return name
+	}
 }
 
 func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
