@@ -18,6 +18,7 @@ import (
 	"time"
 	"unsafe"
 
+	"imagepadserver/internal/about"
 	"imagepadserver/internal/clipboard"
 )
 
@@ -208,7 +209,7 @@ func Show(serverURL string) error {
 	hwnd, _, err := procCreateWindowExW.Call(
 		0,
 		uintptr(unsafe.Pointer(className)),
-		uintptr(unsafe.Pointer(utf16Ptr("ImagePadServer"))),
+		uintptr(unsafe.Pointer(utf16Ptr(about.AppName+" "+about.Version))),
 		wsOverlappedWindow|wsVisible,
 		cwUseDefault, cwUseDefault, 1100, 720,
 		0, 0, instance, 0,

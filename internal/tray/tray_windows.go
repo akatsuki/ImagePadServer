@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"unsafe"
 
+	"imagepadserver/internal/about"
 	"imagepadserver/internal/appicon"
 	"imagepadserver/internal/browser"
 )
@@ -242,7 +243,7 @@ func newNotifyIconData(hwnd, icon uintptr) notifyIconData {
 		CallbackMsg: trayCallback,
 		Icon:        icon,
 	}
-	copy(data.Tip[:], syscall.StringToUTF16("ImagePadServer"))
+	copy(data.Tip[:], syscall.StringToUTF16(about.AppName+" "+about.Version))
 	return data
 }
 

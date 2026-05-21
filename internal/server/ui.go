@@ -275,6 +275,24 @@ const indexHTML = `<!doctype html>
     .mobile-only-hidden {
       display: none;
     }
+    .about {
+      display: grid;
+      gap: 6px;
+      margin: 0 clamp(14px, 3vw, 28px) 18px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .about strong {
+      color: var(--ink);
+    }
+    .oss-list {
+      margin: 4px 0 0;
+      padding-left: 18px;
+    }
+    .oss-list li {
+      margin: 2px 0;
+    }
     @media (max-width: 860px) {
       main { grid-template-columns: 1fr; }
       .controls { grid-template-columns: 1fr; }
@@ -410,6 +428,20 @@ const indexHTML = `<!doctype html>
     </div>
   </main>
 
+  <footer class="about">
+    <div><strong>{{.appName}} {{.version}}</strong></div>
+    <div>Author: {{.author}}</div>
+    <div>{{.copyright}}</div>
+    <div>License: {{.license}}</div>
+    <details>
+      <summary>Open source notices</summary>
+      <ul class="oss-list">
+        {{range .openSource}}
+        <li>{{.Name}}{{if .Version}} {{.Version}}{{end}} - {{.License}}</li>
+        {{end}}
+      </ul>
+    </details>
+  </footer>
   <script>
     const state = {
       imageURL: {{printf "%q" .imageURL}},

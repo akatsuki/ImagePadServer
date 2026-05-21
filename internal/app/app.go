@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"imagepadserver/internal/about"
 	"imagepadserver/internal/appwindow"
 	"imagepadserver/internal/browser"
 	"imagepadserver/internal/config"
@@ -92,7 +93,7 @@ func run(useNativeWindow bool) error {
 
 	publicURL := cfg.URLForHost(lanIP)
 
-	log.Printf("ImagePadServer listening on %s", publicURL)
+	log.Printf("%s %s listening on %s", about.AppName, about.Version, publicURL)
 
 	ensureSteamVRRegistration()
 

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"imagepadserver/internal/about"
 	"imagepadserver/internal/settings"
 )
 
@@ -234,12 +235,12 @@ func manifestData(exePath string) ([]byte, error) {
 				"is_dashboard_overlay": true,
 				"strings": map[string]interface{}{
 					"en_us": map[string]string{
-						"name":        "ImagePadServer",
+						"name":        about.AppName,
 						"description": "Open the ImagePadServer browser UI for VRChat ImagePad uploads.",
 					},
 					"ja_jp": map[string]string{
-						"name":        "ImagePadServer",
-						"description": "Open the ImagePadServer browser UI.",
+						"name":        about.AppName,
+						"description": "VRChat ImagePad 用の ImagePadServer UI を開きます。",
 					},
 				},
 			},

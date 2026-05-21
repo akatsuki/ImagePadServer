@@ -135,3 +135,12 @@ Windows/SteamVR 実機で作業する場合は [docs/WINDOWS_STEAMVR_HANDOFF.md]
 ## ライセンス
 
 MIT License
+
+## Version / Copyright / Open Source Notices
+
+- Version: `v1.0.0-rc.1`
+- Author: Akat / 赤月さん
+- Copyright: Copyright (c) 2026 Akat / 赤月さん
+- License: MIT License
+
+Open source notices are listed in `NOTICE.md` and are also shown in the browser UI under "Open source notices".

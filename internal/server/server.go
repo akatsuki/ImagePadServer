@@ -23,6 +23,7 @@ import (
 
 	"github.com/skip2/go-qrcode"
 
+	"imagepadserver/internal/about"
 	"imagepadserver/internal/appicon"
 	"imagepadserver/internal/clipboard"
 	"imagepadserver/internal/config"
@@ -72,6 +73,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/upload-url", s.handleUploadURL)
 	mux.HandleFunc("/api/clear", s.handleClear)
 	mux.HandleFunc("/api/copy-url", s.handleCopyURL)
+	mux.HandleFunc("/api/about", s.handleAbout)
 	mux.HandleFunc("/api/steamvr", s.handleSteamVR)
 	mux.HandleFunc("/qr/phone.png", s.handlePhoneQR)
 	mux.HandleFunc("/image/current", s.handleCurrentImage)
@@ -525,6 +527,18 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.WriteString(w, "ok")
 }
 
+func (s *Server) handleAbout(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, map[string]interface{}{
+		"appName":     about.AppName,
+		"version":     about.Version,
+		"author":      about.Author,
+		"license":     about.License,
+		"copyright":   about.Copyright,
+		"description": about.Description,
+		"openSource":  about.OpenSourceNotices,
+	})
+}
+
 func (s *Server) state(r *http.Request) map[string]interface{} {
 	s.mu.RLock()
 	upnpResult := s.upnp
@@ -556,7 +570,12 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"appName":         "ImagePadServer",
+		"appName":         about.AppName,
+		"version":         about.Version,
+		"author":          about.Author,
+		"license":         about.License,
+		"copyright":       about.Copyright,
+		"openSource":      about.OpenSourceNotices,
 		"phoneURL":        s.lanURL,
 		"imageURL":        imageURL,
 		"publicImageURL":  publicImageURL,
