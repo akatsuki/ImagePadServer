@@ -308,7 +308,8 @@ const indexHTML = `<!doctype html>
     const state = {
       imageURL: {{printf "%q" .imageURL}},
       phoneURL: {{printf "%q" .phoneURL}},
-      localImageURL: {{printf "%q" .localImageURL}}
+      localImageURL: {{printf "%q" .localImageURL}},
+      currentID: ""
     };
 
     const toast = document.getElementById('toast');
@@ -319,6 +320,10 @@ const indexHTML = `<!doctype html>
     async function refreshState() {
       const res = await fetch('/api/state', { cache: 'no-store' });
       const data = await res.json();
+      applyState(data);
+    }
+
+    function applyState(data) {
       state.imageURL = data.imageURL;
       state.phoneURL = data.phoneURL;
       state.localImageURL = data.localImageURL;
@@ -328,13 +333,17 @@ const indexHTML = `<!doctype html>
       document.getElementById('localImageURL').textContent = data.localImageURL;
       document.getElementById('upnpText').textContent = upnpText(data.upnp);
       document.getElementById('hasImage').textContent = data.current ? (data.current.width + ' x ' + data.current.height) : '未選択';
-      if (data.current) {
+      const nextCurrentID = data.current ? data.current.id : "";
+      if (data.current && nextCurrentID !== state.currentID) {
         preview.innerHTML = '';
         const img = document.createElement('img');
-        img.src = data.localImageURL + '&preview=' + Date.now();
+        img.src = data.localImageURL;
         img.alt = '現在公開中の画像';
         preview.appendChild(img);
+      } else if (!data.current && state.currentID !== "") {
+        preview.innerHTML = '<div class="empty">まだ画像が選択されていません</div>';
       }
+      state.currentID = nextCurrentID;
     }
 
     function upnpText(upnp) {
@@ -356,8 +365,9 @@ const indexHTML = `<!doctype html>
         const formData = new FormData(uploadForm);
         const res = await fetch('/api/upload', { method: 'POST', body: formData });
         if (!res.ok) throw new Error(await res.text());
-        await refreshState();
-        toast.textContent = '公開画像を更新しました';
+        const data = await res.json();
+        applyState(data);
+        toast.textContent = data.clipboardCopied ? '公開画像を更新し、URLをPCにコピーしました' : '公開画像を更新しました';
       } catch (error) {
         toast.textContent = error.message || 'アップロードに失敗しました';
       } finally {
@@ -369,14 +379,79 @@ const indexHTML = `<!doctype html>
       const target = event.target.closest('[data-copy]');
       if (!target) return;
       const id = target.getAttribute('data-copy');
-      const text = document.getElementById(id).textContent;
+      const source = document.getElementById(id);
+      const text = source.textContent;
+      let copied = false;
+      let pcCopied = false;
       try {
-        await navigator.clipboard.writeText(text);
-        toast.textContent = 'コピーしました';
+        copied = await copyText(text, source);
       } catch (error) {
-        toast.textContent = 'コピーできませんでした。URLを手動で選択してください';
+        selectElementText(source);
+      }
+      try {
+        const pcResult = await copyURLOnPC(id);
+        pcCopied = pcResult.pcClipboardCopied;
+      } catch (error) {
+        pcCopied = false;
+      }
+
+      if (copied && pcCopied) {
+        toast.textContent = 'コピーしました。PCにもコピー済みです';
+      } else if (copied) {
+        toast.textContent = 'この端末にコピーしました';
+      } else if (pcCopied) {
+        selectElementText(source);
+        toast.textContent = 'PCにコピーしました。この端末ではURLを選択しました';
+      } else {
+        selectElementText(source);
+        toast.textContent = 'URLを選択しました。Ctrl+Cでコピーできます';
       }
     });
+
+    async function copyURLOnPC(target) {
+      const res = await fetch('/api/copy-url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target })
+      });
+      if (!res.ok) {
+        throw new Error(await res.text());
+      }
+      return res.json();
+    }
+
+    async function copyText(text, source) {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'fixed';
+      textarea.style.left = '-9999px';
+      textarea.style.top = '0';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      try {
+        if (!document.execCommand('copy')) {
+          selectElementText(source);
+          return false;
+        }
+        return true;
+      } finally {
+        textarea.remove();
+      }
+    }
+
+    function selectElementText(element) {
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
 
     document.getElementById('refreshButton').addEventListener('click', refreshState);
     document.getElementById('localToggle').addEventListener('click', () => {
@@ -385,7 +460,6 @@ const indexHTML = `<!doctype html>
       document.getElementById('localToggle').textContent = panel.classList.contains('open') ? 'ローカルURLを隠す' : 'ローカルURLを表示';
     });
     refreshState();
-    setInterval(refreshState, 5000);
   </script>
 </body>
 </html>`

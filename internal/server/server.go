@@ -13,6 +13,7 @@ import (
 
 	"github.com/skip2/go-qrcode"
 
+	"imagepadserver/internal/clipboard"
 	"imagepadserver/internal/config"
 	"imagepadserver/internal/imageproc"
 	"imagepadserver/internal/library"
@@ -45,6 +46,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/api/state", s.handleState)
 	mux.HandleFunc("/api/upload", s.handleUpload)
+	mux.HandleFunc("/api/copy-url", s.handleCopyURL)
 	mux.HandleFunc("/qr/phone.png", s.handlePhoneQR)
 	mux.HandleFunc("/image/current", s.handleCurrentImage)
 	mux.HandleFunc("/image/current.png", s.handleCurrentImage)
@@ -130,7 +132,46 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = os.Remove(result.Path)
-	writeJSON(w, s.state(r))
+
+	state := s.state(r)
+	copiedURL := urlForClipboard(state)
+	clipboardCopied := false
+	if copiedURL != "" {
+		if err := clipboard.CopyText(copiedURL); err == nil {
+			clipboardCopied = true
+		}
+	}
+	state["copiedURL"] = copiedURL
+	state["clipboardCopied"] = clipboardCopied
+	writeJSON(w, state)
+}
+
+func (s *Server) handleCopyURL(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Target string `json:"target"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid copy request", http.StatusBadRequest)
+		return
+	}
+
+	state := s.state(r)
+	copiedURL := urlForCopyTarget(state, req.Target)
+	if copiedURL == "" {
+		http.Error(w, "no URL available to copy", http.StatusBadRequest)
+		return
+	}
+
+	clipboardCopied := clipboard.CopyText(copiedURL) == nil
+	writeJSON(w, map[string]interface{}{
+		"copiedURL":         copiedURL,
+		"pcClipboardCopied": clipboardCopied,
+	})
 }
 
 func (s *Server) handlePhoneQR(w http.ResponseWriter, r *http.Request) {
@@ -201,6 +242,31 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 func writeJSON(w http.ResponseWriter, value interface{}) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(w).Encode(value)
+}
+
+func urlForClipboard(state map[string]interface{}) string {
+	return urlForCopyTarget(state, "imageURL")
+}
+
+func urlForCopyTarget(state map[string]interface{}, target string) string {
+	switch target {
+	case "phoneURL", "phoneURLMobile":
+		if phoneURL, ok := state["phoneURL"].(string); ok {
+			return phoneURL
+		}
+	case "localImageURL":
+		if localURL, ok := state["localImageURL"].(string); ok {
+			return localURL
+		}
+	default:
+		if publicURL, ok := state["publicImageURL"].(string); ok && publicURL != "" {
+			return publicURL
+		}
+		if localURL, ok := state["localImageURL"].(string); ok {
+			return localURL
+		}
+	}
+	return ""
 }
 
 func safeFileName(name string) string {

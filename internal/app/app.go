@@ -18,6 +18,7 @@ import (
 	"imagepadserver/internal/network"
 	"imagepadserver/internal/server"
 	"imagepadserver/internal/steamvr"
+	"imagepadserver/internal/tray"
 	"imagepadserver/internal/upnp"
 )
 
@@ -52,6 +53,13 @@ func Run() error {
 	publicURL := cfg.URLForHost(lanIP)
 
 	log.Printf("ImagePadServer listening on %s", publicURL)
+
+	trayIcon, err := tray.Start(publicURL)
+	if err != nil {
+		log.Printf("tray icon unavailable: %v", err)
+	} else {
+		defer trayIcon.Stop()
+	}
 
 	go func() {
 		result := upnp.TryMapTCP(actualPort, "ImagePadServer")

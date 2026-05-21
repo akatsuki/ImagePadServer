@@ -21,7 +21,11 @@ build_one() {
   fi
   out="$DIST_DIR/${APP_NAME}-${goos}-${goarch}${ext}"
   echo "building $out"
-  CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath -o "$out" "$ROOT_DIR/cmd/imagepadserver"
+  ldflags=""
+  if [ "$goos" = "windows" ]; then
+    ldflags="-H=windowsgui"
+  fi
+  CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath -ldflags "$ldflags" -o "$out" "$ROOT_DIR/cmd/imagepadserver"
 }
 
 build_one windows amd64 .exe
