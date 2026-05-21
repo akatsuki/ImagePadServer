@@ -143,6 +143,87 @@ const indexHTML = `<!doctype html>
       text-align: right;
       overflow-wrap: anywhere;
     }
+    .hit-list {
+      display: grid;
+      gap: 6px;
+      margin-top: 8px;
+    }
+    .hit-row {
+      display: grid;
+      gap: 3px;
+      padding: 8px 9px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #f8fafb;
+      font-size: 12px;
+    }
+    .hit-row strong,
+    .hit-row code {
+      overflow-wrap: anywhere;
+    }
+    .hit-row span {
+      color: var(--muted);
+      overflow-wrap: anywhere;
+    }
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 8px 9px;
+      border-radius: 8px;
+      background: #f8fafb;
+      border: 1px solid var(--line);
+      font-size: 12px;
+    }
+    .toggle-row strong {
+      display: block;
+      margin-bottom: 2px;
+    }
+    .toggle-row span {
+      color: var(--muted);
+    }
+    .switch {
+      position: relative;
+      width: 46px;
+      height: 26px;
+      flex: 0 0 auto;
+    }
+    .switch input {
+      position: absolute;
+      opacity: 0;
+      inset: 0;
+    }
+    .switch-slider {
+      position: absolute;
+      inset: 0;
+      border-radius: 999px;
+      background: #b5c1c9;
+      cursor: pointer;
+      transition: background .16s ease;
+    }
+    .switch-slider::before {
+      content: "";
+      position: absolute;
+      width: 20px;
+      height: 20px;
+      left: 3px;
+      top: 3px;
+      border-radius: 50%;
+      background: #fff;
+      transition: transform .16s ease;
+      box-shadow: 0 1px 3px rgba(0,0,0,.25);
+    }
+    .switch input:checked + .switch-slider {
+      background: var(--accent);
+    }
+    .switch input:checked + .switch-slider::before {
+      transform: translateX(20px);
+    }
+    .switch input:disabled + .switch-slider {
+      cursor: wait;
+      opacity: .6;
+    }
     .preview {
       width: 100%;
       height: min(46vh, 420px);
@@ -263,7 +344,21 @@ const indexHTML = `<!doctype html>
         <div class="status">
           <div class="pill"><strong>外部公開</strong><span id="upnpText">確認中</span></div>
           <div class="pill"><strong>ImagePad URL</strong><span id="hasImage">未選択</span></div>
+          <div class="toggle-row">
+            <div><strong>SteamVR連携</strong><span id="steamvrText">確認中</span></div>
+            <label class="switch" title="SteamVRへの登録を切り替え">
+              <input id="steamvrToggle" type="checkbox">
+              <span class="switch-slider"></span>
+            </label>
+          </div>
         </div>
+      </section>
+      <section style="margin-top:12px">
+        <h2>診断</h2>
+        <div class="status">
+          <div class="pill"><strong>画像アクセス</strong><span id="imageHitText">未確認</span></div>
+        </div>
+        <div class="hit-list" id="imageHitList"></div>
       </section>
     </div>
 
@@ -292,12 +387,12 @@ const indexHTML = `<!doctype html>
             <button type="button" data-copy="imageURL">コピー</button>
           </div>
           <button type="button" class="secondary" id="refreshButton">更新</button>
-          <button type="button" class="secondary" id="localToggle">ローカルURLを表示</button>
+          <button type="button" class="secondary" id="localToggle">外部URLを表示</button>
         </div>
         <div class="local-panel" id="localPanel">
           <div class="urlbox">
-            <code id="localImageURL">{{.localImageURL}}</code>
-            <button type="button" data-copy="localImageURL">コピー</button>
+            <code id="publicImageURL">{{.publicImageURL}}</code>
+            <button type="button" data-copy="publicImageURL">コピー</button>
           </div>
         </div>
       </section>
@@ -309,6 +404,8 @@ const indexHTML = `<!doctype html>
       imageURL: {{printf "%q" .imageURL}},
       phoneURL: {{printf "%q" .phoneURL}},
       localImageURL: {{printf "%q" .localImageURL}},
+      previewImageURL: {{printf "%q" .previewImageURL}},
+      publicImageURL: {{printf "%q" .publicImageURL}},
       currentID: ""
     };
 
@@ -316,6 +413,8 @@ const indexHTML = `<!doctype html>
     const uploadForm = document.getElementById('uploadForm');
     const uploadButton = document.getElementById('uploadButton');
     const preview = document.getElementById('preview');
+    const steamvrToggle = document.getElementById('steamvrToggle');
+    const steamvrText = document.getElementById('steamvrText');
 
     async function refreshState() {
       const res = await fetch('/api/state', { cache: 'no-store' });
@@ -327,23 +426,33 @@ const indexHTML = `<!doctype html>
       state.imageURL = data.imageURL;
       state.phoneURL = data.phoneURL;
       state.localImageURL = data.localImageURL;
+      state.previewImageURL = data.previewImageURL;
+      state.publicImageURL = data.publicImageURL;
       document.getElementById('phoneURL').textContent = data.phoneURL;
       document.getElementById('phoneURLMobile').textContent = data.phoneURL;
       document.getElementById('imageURL').textContent = data.imageURL;
-      document.getElementById('localImageURL').textContent = data.localImageURL;
-      document.getElementById('upnpText').textContent = upnpText(data.upnp);
+      document.getElementById('publicImageURL').textContent = data.publicImageURL || '外部URLは未取得です';
+      document.getElementById('upnpText').textContent = publicText(data.tunnel, data.upnp);
       document.getElementById('hasImage').textContent = data.current ? (data.current.width + ' x ' + data.current.height) : '未選択';
+      document.getElementById('imageHitText').textContent = imageHitText(data.lastImageHit);
+      renderImageHits(data.imageHits || []);
       const nextCurrentID = data.current ? data.current.id : "";
       if (data.current && nextCurrentID !== state.currentID) {
         preview.innerHTML = '';
         const img = document.createElement('img');
-        img.src = data.localImageURL;
+        img.src = data.previewImageURL + '&preview=1';
         img.alt = '現在公開中の画像';
         preview.appendChild(img);
       } else if (!data.current && state.currentID !== "") {
         preview.innerHTML = '<div class="empty">まだ画像が選択されていません</div>';
       }
       state.currentID = nextCurrentID;
+    }
+
+    function publicText(tunnel, upnp) {
+      if (tunnel && tunnel.ok && tunnel.url) return '公開HTTPS ' + tunnel.url;
+      if (tunnel && tunnel.message) return tunnel.message;
+      return upnpText(upnp);
     }
 
     function upnpText(upnp) {
@@ -355,6 +464,63 @@ const indexHTML = `<!doctype html>
         return '成功';
       }
       return upnp.message || '未確認';
+    }
+
+    function imageHitText(hit) {
+      if (!hit) return '未確認';
+      const at = new Date(hit.at);
+      if (Number.isNaN(at.getTime())) return hit.remoteAddr || 'あり';
+      const agent = hit.userAgent ? ' / ' + hit.userAgent : '';
+      return at.toLocaleTimeString() + ' ' + (hit.remoteAddr || '') + agent;
+    }
+
+    function renderImageHits(hits) {
+      const list = document.getElementById('imageHitList');
+      if (!hits.length) {
+        list.innerHTML = '';
+        return;
+      }
+      list.innerHTML = '';
+      hits.forEach((hit) => {
+        const at = new Date(hit.at);
+        const row = document.createElement('div');
+        row.className = 'hit-row';
+
+        const top = document.createElement('strong');
+        top.textContent = (Number.isNaN(at.getTime()) ? '時刻不明' : at.toLocaleTimeString()) + ' ' + (hit.remoteAddr || '');
+        row.appendChild(top);
+
+        const path = document.createElement('code');
+        path.textContent = hit.path || '';
+        row.appendChild(path);
+
+        const agent = document.createElement('span');
+        agent.textContent = hit.userAgent || 'User-Agentなし';
+        row.appendChild(agent);
+
+        list.appendChild(row);
+      });
+    }
+
+    async function refreshSteamVR() {
+      try {
+        const res = await fetch('/api/steamvr', { cache: 'no-store' });
+        const data = await res.json();
+        applySteamVR(data);
+      } catch (error) {
+        steamvrToggle.disabled = true;
+        steamvrText.textContent = '確認できません';
+      }
+    }
+
+    function applySteamVR(data) {
+      steamvrToggle.checked = !!data.enabled;
+      steamvrToggle.disabled = !data.available;
+      if (!data.available) {
+        steamvrText.textContent = data.message || '利用不可';
+      } else {
+        steamvrText.textContent = data.enabled ? '有効' : '無効';
+      }
     }
 
     uploadForm.addEventListener('submit', async (event) => {
@@ -457,9 +623,28 @@ const indexHTML = `<!doctype html>
     document.getElementById('localToggle').addEventListener('click', () => {
       const panel = document.getElementById('localPanel');
       panel.classList.toggle('open');
-      document.getElementById('localToggle').textContent = panel.classList.contains('open') ? 'ローカルURLを隠す' : 'ローカルURLを表示';
+      document.getElementById('localToggle').textContent = panel.classList.contains('open') ? '外部URLを隠す' : '外部URLを表示';
+    });
+    steamvrToggle.addEventListener('change', async () => {
+      const enabled = steamvrToggle.checked;
+      steamvrToggle.disabled = true;
+      steamvrText.textContent = enabled ? '有効化中...' : '無効化中...';
+      try {
+        const res = await fetch('/api/steamvr', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled })
+        });
+        const data = await res.json();
+        applySteamVR(data);
+        toast.textContent = data.enabled ? 'SteamVR連携を有効にしました' : 'SteamVR連携を無効にしました';
+      } catch (error) {
+        await refreshSteamVR();
+        toast.textContent = 'SteamVR連携の切り替えに失敗しました';
+      }
     });
     refreshState();
+    refreshSteamVR();
   </script>
 </body>
 </html>`

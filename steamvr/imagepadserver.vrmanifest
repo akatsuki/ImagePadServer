@@ -1,0 +1,22 @@
+{
+  "source": "imagepadserver",
+  "applications": [
+    {
+      "app_key": "imagepadserver.dashboard",
+      "launch_type": "binary",
+      "binary_path_windows": "..\\dist\\imagepadserver-windows-amd64.exe",
+      "arguments": "--steamvr-launch",
+      "is_dashboard_overlay": true,
+      "strings": {
+        "en_us": {
+          "name": "ImagePadServer",
+          "description": "Open the ImagePadServer browser UI for VRChat ImagePad uploads."
+        },
+        "ja_jp": {
+          "name": "ImagePadServer",
+          "description": "VRChat ImagePad 用の ImagePadServer ブラウザ UI を開きます。"
+        }
+      }
+    }
+  ]
+}

@@ -19,7 +19,7 @@ ImagePadServer currently provides:
 - Resize/convert for VRChat ImagePad usage
 - `/image/current` image serving
 - UPnP port mapping
-- Public ImagePad URL when UPnP succeeds
+- Public ImagePad URL when Cloudflare Tunnel succeeds
 - Local ImagePad URL behind a reveal button
 - `internal/steamvr` optional startup hook with Windows/non-Windows build tags
 
@@ -73,9 +73,10 @@ Relevant fields:
 ```json
 {
   "phoneURL": "http://192.168.x.x:8080/",
-  "imageURL": "http://global-ip:8080/image/current?v=...",
-  "publicImageURL": "http://global-ip:8080/image/current?v=...",
-  "localImageURL": "http://192.168.x.x:8080/image/current?v=...",
+  "imageURL": "https://xxxxx.trycloudflare.com/image/current.jpg?v=...",
+  "publicImageURL": "https://xxxxx.trycloudflare.com/image/current.jpg?v=...",
+  "localImageURL": "https://192.168.x.x:8443/image/current.jpg?v=...",
+  "previewImageURL": "http://192.168.x.x:8080/image/current.jpg?v=...",
   "current": {
     "id": "...",
     "contentType": "image/jpeg",
@@ -105,9 +106,11 @@ Multipart form:
 
 The size limit applies to the encoded output. JPEG tries lower quality settings down to 50 before failing. PNG cannot reduce quality, so it fails if the encoded PNG is still larger than the limit.
 
-### `GET /image/current`
+### `GET /image/current`, `/image/current.jpg`, `/image/current.png`
 
 Returns the currently selected image.
+
+Use the extension-bearing URL for ImagePad/VRChat copy targets. Some ImagePad implementations ignore extensionless image URLs without a visible error.
 
 ## Desired SteamVR UX
 
@@ -118,8 +121,8 @@ Windows-only optional feature:
 - Upload the selected image to the running local server, or pass it to the same image processing path.
 - Show the currently published image preview if feasible.
 - Show/copy the ImagePad URL.
-- Prefer `publicImageURL` when it is non-empty.
-- Offer `localImageURL` only as a secondary/fallback option.
+- Prefer `localImageURL` for the browser UI and automatic copy, because VRChat running on the same PC/LAN can hang on a router's public IP when NAT loopback is unavailable.
+- Offer `publicImageURL` as a secondary option for cases where another user or device must fetch the image from outside the LAN.
 - Provide a button to open the browser UI on desktop.
 
 Keep the browser UI as the source of truth. SteamVR should be a convenience surface, not a second application model.
@@ -213,8 +216,8 @@ Reference links:
 6. Add image selection:
    - Native file picker or overlay-triggered browser upload
 7. Add URL copy:
-   - Copy `publicImageURL` from `/api/state` when non-empty
-   - Otherwise show `localImageURL` as the fallback option, clearly labeled as local/LAN only
+   - Copy `localImageURL` from `/api/state` by default
+   - Show `publicImageURL` as the secondary option, clearly labeled as external/WAN
 8. Add tests/build checks that non-Windows builds remain unaffected.
 
 ## Manual Test Checklist

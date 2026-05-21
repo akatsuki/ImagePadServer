@@ -7,9 +7,11 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/skip2/go-qrcode"
 
@@ -18,6 +20,8 @@ import (
 	"imagepadserver/internal/imageproc"
 	"imagepadserver/internal/library"
 	"imagepadserver/internal/network"
+	"imagepadserver/internal/settings"
+	"imagepadserver/internal/steamvr"
 	"imagepadserver/internal/upnp"
 )
 
@@ -25,20 +29,39 @@ type Server struct {
 	cfg   config.Config
 	store *library.Store
 
-	mu     sync.RWMutex
-	upnp   upnp.Result
-	tmpl   *template.Template
-	lanURL string
+	mu             sync.RWMutex
+	upnp           upnp.Result
+	tmpl           *template.Template
+	lanURL         string
+	imageURLBase   string
+	previewURLBase string
+	tunnelStatus   map[string]interface{}
+	tunnelURLBase  string
+
+	imageHits []imageHit
 }
 
-func New(cfg config.Config, store *library.Store) *Server {
+type imageHit struct {
+	At         time.Time `json:"at"`
+	RemoteAddr string    `json:"remoteAddr"`
+	UserAgent  string    `json:"userAgent"`
+	Path       string    `json:"path"`
+}
+
+func New(cfg config.Config, store *library.Store, imageURLBase string) *Server {
 	lanURL := cfg.URLForHost(network.BestLANIP())
+	if imageURLBase == "" {
+		imageURLBase = lanURL
+	}
 	return &Server{
-		cfg:    cfg,
-		store:  store,
-		upnp:   upnp.Result{Message: "Checking router UPnP support..."},
-		tmpl:   template.Must(template.New("index").Parse(indexHTML)),
-		lanURL: lanURL,
+		cfg:            cfg,
+		store:          store,
+		upnp:           upnp.Result{Message: "Checking router UPnP support..."},
+		tmpl:           template.Must(template.New("index").Parse(indexHTML)),
+		lanURL:         lanURL,
+		imageURLBase:   imageURLBase,
+		previewURLBase: lanURL,
+		tunnelStatus:   map[string]interface{}{"ok": false, "message": "Cloudflare Tunnel starting..."},
 	}
 }
 
@@ -47,6 +70,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/state", s.handleState)
 	mux.HandleFunc("/api/upload", s.handleUpload)
 	mux.HandleFunc("/api/copy-url", s.handleCopyURL)
+	mux.HandleFunc("/api/steamvr", s.handleSteamVR)
 	mux.HandleFunc("/qr/phone.png", s.handlePhoneQR)
 	mux.HandleFunc("/image/current", s.handleCurrentImage)
 	mux.HandleFunc("/image/current.png", s.handleCurrentImage)
@@ -58,6 +82,21 @@ func (s *Server) SetUPnPResult(result upnp.Result) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.upnp = result
+}
+
+func (s *Server) SetTunnelStatus(ok bool, baseURL, message string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ok {
+		s.tunnelURLBase = strings.TrimRight(baseURL, "/") + "/"
+	} else {
+		s.tunnelURLBase = ""
+	}
+	s.tunnelStatus = map[string]interface{}{
+		"ok":      ok,
+		"url":     s.tunnelURLBase,
+		"message": message,
+	}
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -174,6 +213,35 @@ func (s *Server) handleCopyURL(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleSteamVR(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, steamvr.Registration())
+	case http.MethodPost:
+		var req struct {
+			Enabled bool `json:"enabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid SteamVR request", http.StatusBadRequest)
+			return
+		}
+		status, err := steamvr.SetRegistration(req.Enabled)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			writeJSON(w, status)
+			return
+		}
+		appSettings, loadErr := settings.Load()
+		if loadErr == nil {
+			appSettings.SteamVRExplicitlyDisabled = !req.Enabled
+			_ = settings.Save(appSettings)
+		}
+		writeJSON(w, status)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
 func (s *Server) handlePhoneQR(w http.ResponseWriter, r *http.Request) {
 	png, err := qrcode.Encode(s.lanURL, qrcode.Medium, 512)
 	if err != nil {
@@ -201,6 +269,9 @@ func (s *Server) handleCurrentImage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", img.ContentType)
 	w.Header().Set("Cache-Control", "no-store, max-age=0")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, safeFileName(img.PublicName)))
+	if r.URL.Query().Get("preview") != "1" {
+		s.recordImageRequest(r)
+	}
 	http.ServeContent(w, r, img.PublicName, img.UpdatedAt, file)
 }
 
@@ -211,32 +282,79 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) state(r *http.Request) map[string]interface{} {
 	s.mu.RLock()
 	upnpResult := s.upnp
+	tunnelURLBase := s.tunnelURLBase
+	tunnelStatus := s.tunnelStatus
 	s.mu.RUnlock()
 
-	localImageURL := s.lanURL + "image/current"
+	localImageURL := s.imageURLBase + "image/current"
+	imageURLBase := s.imageURLBase
+	if tunnelURLBase != "" {
+		imageURLBase = tunnelURLBase
+	}
+	imageURL := imageURLBase + "image/current"
+	previewImageURL := s.previewURLBase + "image/current"
 	publicImageURL := ""
 	if current := s.store.Current(); current != nil {
-		localImageURL = s.lanURL + "image/current?v=" + current.ID
-		if upnpResult.OK && upnpResult.ExternalIP != "" {
-			publicImageURL = s.cfg.URLForHost(upnpResult.ExternalIP) + "image/current?v=" + current.ID
+		imagePath := imageURLPath(current)
+		localImageURL = s.imageURLBase + imagePath + "?v=" + current.ID
+		imageURL = imageURLBase + imagePath + "?v=" + current.ID
+		previewImageURL = s.previewURLBase + imagePath + "?v=" + current.ID
+		if tunnelURLBase != "" {
+			publicImageURL = tunnelURLBase + imagePath + "?v=" + current.ID
 		}
 	}
-	imageURL := publicImageURL
 	if imageURL == "" {
-		imageURL = "外部URLは未取得です"
+		imageURL = "画像URLは未取得です"
 	}
 
 	return map[string]interface{}{
-		"appName":        "ImagePadServer",
-		"phoneURL":       s.lanURL,
-		"imageURL":       imageURL,
-		"publicImageURL": publicImageURL,
-		"localImageURL":  localImageURL,
-		"qrURL":          "/qr/phone.png",
-		"upnp":           upnpResult,
-		"current":        s.store.Current(),
-		"remoteAddr":     r.RemoteAddr,
+		"appName":         "ImagePadServer",
+		"phoneURL":        s.lanURL,
+		"imageURL":        imageURL,
+		"publicImageURL":  publicImageURL,
+		"localImageURL":   localImageURL,
+		"previewImageURL": previewImageURL,
+		"qrURL":           "/qr/phone.png",
+		"upnp":            upnpResult,
+		"tunnel":          tunnelStatus,
+		"current":         s.store.Current(),
+		"remoteAddr":      r.RemoteAddr,
+		"lastImageHit":    s.lastImageHit(),
+		"imageHits":       s.imageHitsSnapshot(),
 	}
+}
+
+func (s *Server) recordImageRequest(r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	hit := imageHit{
+		At:         time.Now(),
+		RemoteAddr: r.RemoteAddr,
+		UserAgent:  r.UserAgent(),
+		Path:       r.URL.RequestURI(),
+	}
+	s.imageHits = append([]imageHit{hit}, s.imageHits...)
+	if len(s.imageHits) > 12 {
+		s.imageHits = s.imageHits[:12]
+	}
+}
+
+func (s *Server) lastImageHit() *imageHit {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.imageHits) == 0 {
+		return nil
+	}
+	hit := s.imageHits[0]
+	return &hit
+}
+
+func (s *Server) imageHitsSnapshot() []imageHit {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	hits := make([]imageHit, len(s.imageHits))
+	copy(hits, s.imageHits)
+	return hits
 }
 
 func writeJSON(w http.ResponseWriter, value interface{}) {
@@ -258,7 +376,14 @@ func urlForCopyTarget(state map[string]interface{}, target string) string {
 		if localURL, ok := state["localImageURL"].(string); ok {
 			return localURL
 		}
+	case "publicImageURL":
+		if publicURL, ok := state["publicImageURL"].(string); ok {
+			return publicURL
+		}
 	default:
+		if imageURL, ok := state["imageURL"].(string); ok {
+			return imageURL
+		}
 		if publicURL, ok := state["publicImageURL"].(string); ok && publicURL != "" {
 			return publicURL
 		}
@@ -276,4 +401,25 @@ func safeFileName(name string) string {
 		return "current"
 	}
 	return name
+}
+
+func imageURLPath(img *library.CurrentImage) string {
+	if img == nil {
+		return "image/current"
+	}
+	switch img.ContentType {
+	case "image/png":
+		return "image/current.png"
+	case "image/jpeg":
+		return "image/current.jpg"
+	default:
+		ext := strings.ToLower(filepath.Ext(img.PublicName))
+		if ext == ".png" {
+			return "image/current.png"
+		}
+		if ext == ".jpg" || ext == ".jpeg" {
+			return "image/current.jpg"
+		}
+		return "image/current"
+	}
 }

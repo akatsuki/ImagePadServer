@@ -16,7 +16,7 @@ PCやスマホのブラウザから画像をアップロードすると、サー
 - JPEGは指定サイズ以内に収まるよう品質を調整
 - 現在選択中の画像を `/image/current` で配信
 - UPnPでTCPポート開放を試行
-- UPnP成功時はグローバルIPのImagePad用URLを主表示
+- Cloudflare Tunnel接続時は公開HTTPSのImagePad用URLを主表示
 - ローカルURLは必要な時だけ表示
 
 ## 動作環境
@@ -67,16 +67,18 @@ IMAGEPAD_HOST=0.0.0.0 IMAGEPAD_PORT=8095 go run ./cmd/imagepadserver
 
 - `IMAGEPAD_HOST=0.0.0.0`
 - `IMAGEPAD_PORT=8080`
+- `IMAGEPAD_HTTPS_PORT=8443`
 
 ## URLの考え方
 
 ImagePadServer は用途別にURLを分けます。
 
 - スマホ操作用URL: `http://192.168.x.x:8080/`
-- ImagePad用外部URL: `http://<global-ip>:8080/image/current?v=...`
-- ImagePad用ローカルURL: `http://192.168.x.x:8080/image/current?v=...`
+- ImagePad用公開URL: `https://xxxxx.trycloudflare.com/image/current.jpg?v=...`
+- ImagePad用ローカルURL（トンネル未接続時）: `https://192.168.x.x:8443/image/current.jpg?v=...`
+- 画面プレビュー用URL: `http://192.168.x.x:8080/image/current.jpg?v=...`
 
-UPnPに成功し、ルーターからグローバルIPを取得できた場合は、外部URLを主表示します。
+Cloudflare Tunnel に接続できた場合は、外部の人にも見える公開HTTPS URLを主表示します。初回起動時に `cloudflared` が見つからない場合、Windowsでは `%APPDATA%\ImagePadServer\bin\cloudflared.exe` に自動取得します。
 
 UPnPに失敗した場合、外部URLは表示されません。その場合でも同一LAN内のスマホ操作やローカル画像配信は利用できます。
 
@@ -88,7 +90,7 @@ VRChat の `VRCImageDownloader` には制限があります。
 - 画像読み込みはワールド全体で一定間隔に制限される
 - 許可されていないURL/ドメインは、ユーザー側で `Allow Untrusted URLs` が必要になる場合がある
 
-ImagePadServer はローカルPC上で動くため、VRChat側では未信頼URLとして扱われる可能性があります。
+VRChat のログに `Insecure connection not allowed` が出る場合、`http://` URL が拒否されています。外部共有には Cloudflare Tunnel の公開HTTPS URLを使ってください。トンネル未接続時のローカルHTTPS URLは自分のPC向けのフォールバックです。
 
 ## セキュリティ注意
 
