@@ -105,6 +105,9 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	if v := r.FormValue("maxMB"); v != "" {
 		if maxMB, err := strconv.Atoi(v); err == nil && maxMB > 0 {
+			if maxMB > 30 {
+				maxMB = 30
+			}
 			opts.MaxBytes = int64(maxMB) << 20
 		}
 	}

@@ -17,6 +17,7 @@ import (
 	"imagepadserver/internal/library"
 	"imagepadserver/internal/network"
 	"imagepadserver/internal/server"
+	"imagepadserver/internal/steamvr"
 	"imagepadserver/internal/upnp"
 )
 
@@ -70,6 +71,12 @@ func Run() error {
 	go func() {
 		if err := httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
 			log.Printf("server error: %v", err)
+		}
+	}()
+
+	go func() {
+		if err := steamvr.Start(steamvr.Config{ServerURL: publicURL}); err != nil {
+			log.Printf("SteamVR integration unavailable: %v", err)
 		}
 	}()
 

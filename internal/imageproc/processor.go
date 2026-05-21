@@ -46,6 +46,9 @@ func Process(reader io.Reader, _ string, outDir string, opts Options) (Result, e
 	if opts.JPEGQuality <= 0 || opts.JPEGQuality > 100 {
 		opts.JPEGQuality = 88
 	}
+	if opts.MaxBytes <= 0 || opts.MaxBytes > 30<<20 {
+		opts.MaxBytes = 30 << 20
+	}
 	opts.Format = strings.ToLower(opts.Format)
 	if opts.Format != "png" {
 		opts.Format = "jpeg"
@@ -83,6 +86,9 @@ func Process(reader io.Reader, _ string, outDir string, opts Options) (Result, e
 		}
 		data = encoded
 	}
+	if int64(len(data)) > opts.MaxBytes {
+		return Result{}, fmt.Errorf("encoded image exceeds size limit of %d bytes", opts.MaxBytes)
+	}
 
 	file, err := os.Create(path)
 	if err != nil {
@@ -106,16 +112,27 @@ func encodeJPEGWithinLimit(img image.Image, quality int, maxBytes int64) ([]byte
 	if maxBytes <= 0 {
 		maxBytes = 30 << 20
 	}
+	triedMinimum := false
 	for q := quality; q >= 50; q -= 8 {
 		var buf bytes.Buffer
 		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: q}); err != nil {
 			return nil, err
 		}
-		if int64(buf.Len()) <= maxBytes || q == 50 {
+		if int64(buf.Len()) <= maxBytes {
+			return buf.Bytes(), nil
+		}
+		triedMinimum = q == 50
+	}
+	if !triedMinimum {
+		var buf bytes.Buffer
+		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 50}); err != nil {
+			return nil, err
+		}
+		if int64(buf.Len()) <= maxBytes {
 			return buf.Bytes(), nil
 		}
 	}
-	return nil, fmt.Errorf("failed to encode jpeg")
+	return nil, fmt.Errorf("failed to encode jpeg within size limit of %d bytes", maxBytes)
 }
 
 func resizeToFit(src image.Image, maxDim int) image.Image {

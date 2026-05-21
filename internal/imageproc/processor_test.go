@@ -40,3 +40,39 @@ func TestProcessResizesToVRChatLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestProcessRejectsPNGOverMaxBytes(t *testing.T) {
+	src := image.NewRGBA(image.Rect(0, 0, 32, 32))
+
+	var input bytes.Buffer
+	if err := png.Encode(&input, src); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := DefaultOptions()
+	opts.Format = "png"
+	opts.MaxBytes = 1
+
+	_, err := Process(&input, "tiny.png", t.TempDir(), opts)
+	if err == nil {
+		t.Fatal("expected size limit error")
+	}
+}
+
+func TestProcessRejectsJPEGOverMaxBytes(t *testing.T) {
+	src := image.NewRGBA(image.Rect(0, 0, 32, 32))
+
+	var input bytes.Buffer
+	if err := png.Encode(&input, src); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := DefaultOptions()
+	opts.Format = "jpeg"
+	opts.MaxBytes = 1
+
+	_, err := Process(&input, "tiny.png", t.TempDir(), opts)
+	if err == nil {
+		t.Fatal("expected size limit error")
+	}
+}
