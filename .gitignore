@@ -1,0 +1,10 @@
+/imagepadserver
+/dist/
+/.DS_Store
+/.idea/
+/.vscode/
+*.log
+*.tmp
+*.exe
+*.app/
+coverage.out
