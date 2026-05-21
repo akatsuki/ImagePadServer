@@ -4,6 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"image"
+	"image/color"
+	"image/jpeg"
+	"image/png"
 	"io"
 	"net/http"
 	"os"
@@ -37,15 +41,6 @@ type Server struct {
 	previewURLBase string
 	tunnelStatus   map[string]interface{}
 	tunnelURLBase  string
-
-	imageHits []imageHit
-}
-
-type imageHit struct {
-	At         time.Time `json:"at"`
-	RemoteAddr string    `json:"remoteAddr"`
-	UserAgent  string    `json:"userAgent"`
-	Path       string    `json:"path"`
 }
 
 func New(cfg config.Config, store *library.Store, imageURLBase string) *Server {
@@ -69,6 +64,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/api/state", s.handleState)
 	mux.HandleFunc("/api/upload", s.handleUpload)
+	mux.HandleFunc("/api/clear", s.handleClear)
 	mux.HandleFunc("/api/copy-url", s.handleCopyURL)
 	mux.HandleFunc("/api/steamvr", s.handleSteamVR)
 	mux.HandleFunc("/qr/phone.png", s.handlePhoneQR)
@@ -185,6 +181,18 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, state)
 }
 
+func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := s.store.Clear(); err != nil {
+		http.Error(w, "failed to clear image", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, s.state(r))
+}
+
 func (s *Server) handleCopyURL(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -256,12 +264,16 @@ func (s *Server) handlePhoneQR(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCurrentImage(w http.ResponseWriter, r *http.Request) {
 	path, img, ok := s.store.CurrentPath()
 	if !ok {
-		http.Error(w, "no image selected", http.StatusNotFound)
+		s.serveDeletedImage(w, r)
+		return
+	}
+	if requestedID := r.URL.Query().Get("v"); requestedID != "" && requestedID != img.ID {
+		s.serveDeletedImage(w, r)
 		return
 	}
 	file, err := os.Open(path)
 	if err != nil {
-		http.Error(w, "current image is unavailable", http.StatusNotFound)
+		s.serveDeletedImage(w, r)
 		return
 	}
 	defer file.Close()
@@ -275,6 +287,21 @@ func (s *Server) handleCurrentImage(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, img.PublicName, img.UpdatedAt, file)
 }
 
+func (s *Server) serveDeletedImage(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("preview") != "1" {
+		s.recordImageRequest(r)
+	}
+	contentType := deletedContentType(r.URL.Path)
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "no-store, max-age=0")
+	w.Header().Set("Content-Disposition", `inline; filename="deleted.jpg"`)
+	if contentType == "image/png" {
+		_ = png.Encode(w, deletedImage())
+		return
+	}
+	_ = jpeg.Encode(w, deletedImage(), &jpeg.Options{Quality: 90})
+}
+
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.WriteString(w, "ok")
 }
@@ -286,13 +313,13 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 	tunnelStatus := s.tunnelStatus
 	s.mu.RUnlock()
 
-	localImageURL := s.imageURLBase + "image/current"
+	localImageURL := ""
 	imageURLBase := s.imageURLBase
 	if tunnelURLBase != "" {
 		imageURLBase = tunnelURLBase
 	}
-	imageURL := imageURLBase + "image/current"
-	previewImageURL := s.previewURLBase + "image/current"
+	imageURL := ""
+	previewImageURL := ""
 	publicImageURL := ""
 	if current := s.store.Current(); current != nil {
 		imagePath := imageURLPath(current)
@@ -304,7 +331,7 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 		}
 	}
 	if imageURL == "" {
-		imageURL = "画像URLは未取得です"
+		imageURL = ""
 	}
 
 	return map[string]interface{}{
@@ -319,42 +346,30 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 		"tunnel":          tunnelStatus,
 		"current":         s.store.Current(),
 		"remoteAddr":      r.RemoteAddr,
-		"lastImageHit":    s.lastImageHit(),
-		"imageHits":       s.imageHitsSnapshot(),
 	}
 }
 
 func (s *Server) recordImageRequest(r *http.Request) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	hit := imageHit{
-		At:         time.Now(),
-		RemoteAddr: r.RemoteAddr,
-		UserAgent:  r.UserAgent(),
-		Path:       r.URL.RequestURI(),
-	}
-	s.imageHits = append([]imageHit{hit}, s.imageHits...)
-	if len(s.imageHits) > 12 {
-		s.imageHits = s.imageHits[:12]
-	}
+	line := fmt.Sprintf("%s\t%s\t%s\t%s\n",
+		time.Now().Format(time.RFC3339),
+		r.RemoteAddr,
+		r.URL.RequestURI(),
+		strings.ReplaceAll(r.UserAgent(), "\t", " "),
+	)
+	go appendAccessLog(line)
 }
 
-func (s *Server) lastImageHit() *imageHit {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if len(s.imageHits) == 0 {
-		return nil
+func appendAccessLog(line string) {
+	logPath := filepath.Join(settings.Dir(), "image-access.log")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0755); err != nil {
+		return
 	}
-	hit := s.imageHits[0]
-	return &hit
-}
-
-func (s *Server) imageHitsSnapshot() []imageHit {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	hits := make([]imageHit, len(s.imageHits))
-	copy(hits, s.imageHits)
-	return hits
+	file, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+	_, _ = file.WriteString(line)
 }
 
 func writeJSON(w http.ResponseWriter, value interface{}) {
@@ -381,7 +396,7 @@ func urlForCopyTarget(state map[string]interface{}, target string) string {
 			return publicURL
 		}
 	default:
-		if imageURL, ok := state["imageURL"].(string); ok {
+		if imageURL, ok := state["imageURL"].(string); ok && strings.HasPrefix(imageURL, "http") {
 			return imageURL
 		}
 		if publicURL, ok := state["publicImageURL"].(string); ok && publicURL != "" {
@@ -422,4 +437,68 @@ func imageURLPath(img *library.CurrentImage) string {
 		}
 		return "image/current"
 	}
+}
+
+func deletedContentType(path string) string {
+	if strings.HasSuffix(strings.ToLower(path), ".png") {
+		return "image/png"
+	}
+	return "image/jpeg"
+}
+
+func deletedImage() image.Image {
+	const width = 1024
+	const height = 1024
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	fillRect(img, 0, 0, width, height, color.RGBA{R: 18, G: 23, B: 28, A: 255})
+	fillRect(img, 0, 444, width, 580, color.RGBA{R: 180, G: 48, B: 48, A: 255})
+	drawBlockText(img, "IMAGE", 282, 294, 16, color.RGBA{R: 176, G: 188, B: 198, A: 255})
+	drawBlockText(img, "DELETED", 166, 462, 20, color.RGBA{R: 255, G: 255, B: 255, A: 255})
+	drawBlockText(img, "CLEARED", 214, 640, 14, color.RGBA{R: 176, G: 188, B: 198, A: 255})
+	return img
+}
+
+func fillRect(img *image.RGBA, x0, y0, x1, y1 int, c color.RGBA) {
+	for y := y0; y < y1; y++ {
+		for x := x0; x < x1; x++ {
+			img.SetRGBA(x, y, c)
+		}
+	}
+}
+
+func drawBlockText(img *image.RGBA, text string, x, y, scale int, c color.RGBA) {
+	cursor := x
+	for _, r := range text {
+		if r == ' ' {
+			cursor += 4 * scale
+			continue
+		}
+		glyph, ok := blockGlyphs[r]
+		if !ok {
+			cursor += 4 * scale
+			continue
+		}
+		for row, bits := range glyph {
+			for col := 0; col < 5; col++ {
+				if bits&(1<<(4-col)) == 0 {
+					continue
+				}
+				fillRect(img, cursor+col*scale, y+row*scale, cursor+(col+1)*scale, y+(row+1)*scale, c)
+			}
+		}
+		cursor += 6 * scale
+	}
+}
+
+var blockGlyphs = map[rune][7]byte{
+	'A': {0x0e, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11},
+	'C': {0x0f, 0x10, 0x10, 0x10, 0x10, 0x10, 0x0f},
+	'D': {0x1e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1e},
+	'E': {0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x1f},
+	'G': {0x0f, 0x10, 0x10, 0x13, 0x11, 0x11, 0x0f},
+	'I': {0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x1f},
+	'L': {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1f},
+	'M': {0x11, 0x1b, 0x15, 0x15, 0x11, 0x11, 0x11},
+	'R': {0x1e, 0x11, 0x11, 0x1e, 0x14, 0x12, 0x11},
+	'T': {0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04},
 }

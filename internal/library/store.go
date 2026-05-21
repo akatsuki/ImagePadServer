@@ -31,11 +31,13 @@ type Store struct {
 }
 
 func NewStore(dir string) (*Store, error) {
+	if err := os.RemoveAll(dir); err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, err
 	}
 	s := &Store{dir: dir}
-	_ = s.load()
 	return s, nil
 }
 
@@ -82,6 +84,27 @@ func (s *Store) SetCurrent(srcPath string, info CurrentImage) error {
 	s.current = &info
 	s.mu.Unlock()
 	return s.save()
+}
+
+func (s *Store) Clear() error {
+	s.mu.Lock()
+	s.current = nil
+	s.mu.Unlock()
+
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return os.MkdirAll(s.dir, 0755)
+		}
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		_ = os.Remove(filepath.Join(s.dir, entry.Name()))
+	}
+	return nil
 }
 
 func (s *Store) save() error {

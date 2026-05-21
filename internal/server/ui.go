@@ -143,28 +143,6 @@ const indexHTML = `<!doctype html>
       text-align: right;
       overflow-wrap: anywhere;
     }
-    .hit-list {
-      display: grid;
-      gap: 6px;
-      margin-top: 8px;
-    }
-    .hit-row {
-      display: grid;
-      gap: 3px;
-      padding: 8px 9px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: #f8fafb;
-      font-size: 12px;
-    }
-    .hit-row strong,
-    .hit-row code {
-      overflow-wrap: anywhere;
-    }
-    .hit-row span {
-      color: var(--muted);
-      overflow-wrap: anywhere;
-    }
     .toggle-row {
       display: flex;
       align-items: center;
@@ -353,13 +331,6 @@ const indexHTML = `<!doctype html>
           </div>
         </div>
       </section>
-      <section style="margin-top:12px">
-        <h2>診断</h2>
-        <div class="status">
-          <div class="pill"><strong>画像アクセス</strong><span id="imageHitText">未確認</span></div>
-        </div>
-        <div class="hit-list" id="imageHitList"></div>
-      </section>
     </div>
 
     <div>
@@ -387,6 +358,7 @@ const indexHTML = `<!doctype html>
             <button type="button" data-copy="imageURL">コピー</button>
           </div>
           <button type="button" class="secondary" id="refreshButton">更新</button>
+          <button type="button" class="warn" id="clearButton">画像クリア</button>
           <button type="button" class="secondary" id="localToggle">外部URLを表示</button>
         </div>
         <div class="local-panel" id="localPanel">
@@ -430,17 +402,15 @@ const indexHTML = `<!doctype html>
       state.publicImageURL = data.publicImageURL;
       document.getElementById('phoneURL').textContent = data.phoneURL;
       document.getElementById('phoneURLMobile').textContent = data.phoneURL;
-      document.getElementById('imageURL').textContent = data.imageURL;
+      document.getElementById('imageURL').textContent = data.imageURL || '画像URLは未取得です';
       document.getElementById('publicImageURL').textContent = data.publicImageURL || '外部URLは未取得です';
       document.getElementById('upnpText').textContent = publicText(data.tunnel, data.upnp);
       document.getElementById('hasImage').textContent = data.current ? (data.current.width + ' x ' + data.current.height) : '未選択';
-      document.getElementById('imageHitText').textContent = imageHitText(data.lastImageHit);
-      renderImageHits(data.imageHits || []);
       const nextCurrentID = data.current ? data.current.id : "";
       if (data.current && nextCurrentID !== state.currentID) {
         preview.innerHTML = '';
         const img = document.createElement('img');
-        img.src = data.previewImageURL + '&preview=1';
+        img.src = data.previewImageURL + (data.previewImageURL.includes('?') ? '&' : '?') + 'preview=1';
         img.alt = '現在公開中の画像';
         preview.appendChild(img);
       } else if (!data.current && state.currentID !== "") {
@@ -464,42 +434,6 @@ const indexHTML = `<!doctype html>
         return '成功';
       }
       return upnp.message || '未確認';
-    }
-
-    function imageHitText(hit) {
-      if (!hit) return '未確認';
-      const at = new Date(hit.at);
-      if (Number.isNaN(at.getTime())) return hit.remoteAddr || 'あり';
-      const agent = hit.userAgent ? ' / ' + hit.userAgent : '';
-      return at.toLocaleTimeString() + ' ' + (hit.remoteAddr || '') + agent;
-    }
-
-    function renderImageHits(hits) {
-      const list = document.getElementById('imageHitList');
-      if (!hits.length) {
-        list.innerHTML = '';
-        return;
-      }
-      list.innerHTML = '';
-      hits.forEach((hit) => {
-        const at = new Date(hit.at);
-        const row = document.createElement('div');
-        row.className = 'hit-row';
-
-        const top = document.createElement('strong');
-        top.textContent = (Number.isNaN(at.getTime()) ? '時刻不明' : at.toLocaleTimeString()) + ' ' + (hit.remoteAddr || '');
-        row.appendChild(top);
-
-        const path = document.createElement('code');
-        path.textContent = hit.path || '';
-        row.appendChild(path);
-
-        const agent = document.createElement('span');
-        agent.textContent = hit.userAgent || 'User-Agentなし';
-        row.appendChild(agent);
-
-        list.appendChild(row);
-      });
     }
 
     async function refreshSteamVR() {
@@ -541,12 +475,29 @@ const indexHTML = `<!doctype html>
       }
     });
 
+    document.getElementById('clearButton').addEventListener('click', async () => {
+      toast.textContent = '画像をクリア中...';
+      try {
+        const res = await fetch('/api/clear', { method: 'POST' });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        applyState(data);
+        toast.textContent = '画像をクリアしました';
+      } catch (error) {
+        toast.textContent = error.message || '画像クリアに失敗しました';
+      }
+    });
+
     document.addEventListener('click', async (event) => {
       const target = event.target.closest('[data-copy]');
       if (!target) return;
       const id = target.getAttribute('data-copy');
       const source = document.getElementById(id);
       const text = source.textContent;
+      if (!text || !text.startsWith('http')) {
+        toast.textContent = 'コピーできるURLがありません';
+        return;
+      }
       let copied = false;
       let pcCopied = false;
       try {
@@ -645,6 +596,7 @@ const indexHTML = `<!doctype html>
     });
     refreshState();
     refreshSteamVR();
+    setInterval(refreshState, 2000);
   </script>
 </body>
 </html>`
