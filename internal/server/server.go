@@ -353,7 +353,7 @@ func (s *Server) processAndPublish(r *http.Request, reader io.Reader, name, cont
 	_ = os.Remove(result.Path)
 	if s.videoPlayerEnabled() {
 		if imagePath, current, ok := s.store.CurrentPath(); ok {
-			_ = video.PublishStillImageForID(imagePath, s.store.Dir(), current.ID, s.videoQualityPreset())
+			video.PublishStillImageAsyncForID(imagePath, s.store.Dir(), current.ID, s.videoQualityPreset())
 		}
 	} else {
 		video.RemoveGenerated(s.store.Dir())
@@ -707,7 +707,7 @@ func (s *Server) handleVideoPlayer(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.Enabled {
 			if imagePath, current, ok := s.store.CurrentPath(); ok {
-				_ = video.PublishStillImageForID(imagePath, s.store.Dir(), current.ID, s.videoQualityPreset())
+				video.PublishStillImageAsyncForID(imagePath, s.store.Dir(), current.ID, s.videoQualityPreset())
 			}
 		} else {
 			video.RemoveGenerated(s.store.Dir())
@@ -1019,11 +1019,11 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 			}
 		}
 		videoStatus := videoPlayer["status"].(video.Result)
-		if videoPlayer["enabled"].(bool) && tunnelURLBase != "" && (videoStatus.MP4 || current.Kind == "video") {
+		if videoPlayer["enabled"].(bool) && tunnelURLBase != "" && current.Kind == "video" && videoStatus.MP4 {
 			videoURL = imageURLBase + "video/current.mp4?v=" + current.ID
 			publicVideoURL = tunnelURLBase + "video/current.mp4?v=" + current.ID
 		}
-		if videoPlayer["enabled"].(bool) && tunnelURLBase != "" && (videoStatus.HLS || current.Kind == "video") {
+		if videoPlayer["enabled"].(bool) && tunnelURLBase != "" && (videoStatus.HLS || videoStatus.Active || current.Kind != "video") {
 			streamPath := hlsURLPath(current.ID)
 			hlsURL = imageURLBase + streamPath
 			publicHLSURL = tunnelURLBase + streamPath

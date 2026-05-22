@@ -211,6 +211,63 @@ func PublishStillImageForID(imagePath, outDir, id string, preset QualityPreset) 
 	return result
 }
 
+func PublishStillImageAsyncForID(imagePath, outDir, id string, preset QualityPreset) {
+	stopActive(outDir)
+	removeGenerated(outDir)
+	ctx, cancel := context.WithCancel(context.Background())
+	job := &activeJob{Preset: preset, Cancel: cancel, Done: make(chan struct{})}
+	activeHLS.Store(outDir, job)
+	go func() {
+		defer func() {
+			cancel()
+			close(job.Done)
+			if current, ok := activeHLS.Load(outDir); ok && current == job {
+				activeHLS.Delete(outDir)
+			}
+		}()
+
+		ffmpeg, err := EnsureFFmpeg()
+		if err != nil {
+			return
+		}
+		if preset.Height <= 0 {
+			preset = ResolveQuality("auto", 0)
+			job.Preset = preset
+		}
+		err = runInDirContext(ctx, outDir, ffmpeg,
+			"-y",
+			"-loop", "1",
+			"-t", ClipDuration,
+			"-i", imagePath,
+			"-f", "lavfi",
+			"-t", ClipDuration,
+			"-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+			"-c:v", "libx264",
+			"-preset", "veryfast",
+			"-crf", strconv.Itoa(preset.CRF),
+			"-pix_fmt", "yuv420p",
+			"-vf", "fps="+FrameRate+",scale=w='min(1920,iw)':h='min("+strconv.Itoa(preset.Height)+",ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,pad=ceil(iw/2)*2:ceil(ih/2)*2",
+			"-r", FrameRate,
+			"-g", "20",
+			"-keyint_min", "20",
+			"-sc_threshold", "0",
+			"-c:a", "aac",
+			"-b:a", "64k",
+			"-shortest",
+			"-f", "hls",
+			"-hls_time", "2",
+			"-hls_list_size", "0",
+			"-hls_playlist_type", "event",
+			"-hls_flags", "independent_segments",
+			"-hls_segment_filename", segmentPattern(id),
+			playlistName(id),
+		)
+		if err == nil && ctx.Err() == nil {
+			_ = finalizeHLSPlaylist(outDir, id)
+		}
+	}()
+}
+
 func CurrentStatus(outDir string) Result {
 	mp4 := fileExists(filepath.Join(outDir, MP4File))
 	hls := hlsPlaylistExists(outDir) && hlsSegmentExists(outDir)
