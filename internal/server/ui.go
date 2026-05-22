@@ -328,6 +328,19 @@ const indexHTML = `<!doctype html>
       font-weight: 700;
       font-size: 13px;
     }
+    .mobile-progress {
+      display: none;
+      gap: 7px;
+      padding: 8px;
+      border-radius: 8px;
+      background: var(--soft);
+      color: #21443d;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .mobile-progress.open {
+      display: none;
+    }
     .mobile-only-hidden {
       display: none;
     }
@@ -418,6 +431,11 @@ const indexHTML = `<!doctype html>
         overflow: auto;
       }
     }
+    @media (max-width: 860px) {
+      .mobile-progress.open {
+        display: grid;
+      }
+    }
     @media (max-width: 720px) and (pointer: coarse) {
       .phone-connect {
         display: none;
@@ -455,6 +473,7 @@ const indexHTML = `<!doctype html>
         <div class="status">
           <div class="pill"><strong>外部公開</strong><span id="upnpText">確認中</span></div>
           <div class="pill"><strong>ImagePad URL</strong><span id="hasImage">未選択</span></div>
+          <div class="pill"><strong>更新</strong><span id="updateText">確認中</span></div>
           <!-- SteamVR integration is frozen indefinitely. UI kept out of sight. -->
           <div class="toggle-row">
             <div><strong>ビデオプレーヤー対応</strong><span id="videoPlayerText">確認中</span></div>
@@ -504,6 +523,12 @@ const indexHTML = `<!doctype html>
           </div>
           <button id="uploadButton" type="submit">変換して公開</button>
           <div class="toast" id="toast"></div>
+          <div class="mobile-progress" id="mobileProgress">
+            <div id="mobileProgressText">変換中</div>
+            <div class="progress-track" aria-label="変換進捗">
+              <div class="progress-fill" id="mobileProgressFill" style="width:6%"></div>
+            </div>
+          </div>
         </form>
       </section>
 
@@ -558,20 +583,50 @@ const indexHTML = `<!doctype html>
     const fileUploadPanel = document.getElementById('fileUploadPanel');
     const linkUploadPanel = document.getElementById('linkUploadPanel');
     const preview = document.getElementById('preview');
+    const mobileProgress = document.getElementById('mobileProgress');
+    const mobileProgressText = document.getElementById('mobileProgressText');
+    const mobileProgressFill = document.getElementById('mobileProgressFill');
     const videoPlayerToggle = document.getElementById('videoPlayerToggle');
     const videoPlayerText = document.getElementById('videoPlayerText');
+    const updateText = document.getElementById('updateText');
     const qualityMode = document.getElementById('qualityMode');
     const qualityStatus = document.getElementById('qualityStatus');
     const networkCheckButton = document.getElementById('networkCheckButton');
     let uploadMode = 'file';
     let videoPlayerPending = false;
+    let refreshTimer = 0;
+    let refreshInFlight = false;
+    let refreshAgain = false;
+    let lastAppliedStateSeq = 0;
+    let localChangeChannel = null;
     const imageAccept = 'image/png,image/jpeg,image/gif,image/webp,image/bmp,image/tiff,image/svg+xml,.jpg,.jpeg,.png,.gif,.webp,.bmp,.tif,.tiff,.svg';
     const mediaAccept = imageAccept + ',video/*,video/mp4,video/quicktime,video/webm,video/x-matroska,.mp4,.mov,.m4v,.webm,.mkv,.avi';
 
     async function refreshState() {
-      const res = await fetch('/api/state', { cache: 'no-store' });
-      const data = await res.json();
-      applyState(data);
+      if (refreshInFlight) {
+        refreshAgain = true;
+        return;
+      }
+      refreshInFlight = true;
+      const seq = ++lastAppliedStateSeq;
+      try {
+        const res = await fetch('/api/state', { cache: 'no-store' });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        if (seq === lastAppliedStateSeq) {
+          applyState(data);
+        }
+      } catch (error) {
+        if (toast && !document.hidden) {
+          toast.textContent = '状態の同期に失敗しました';
+        }
+      } finally {
+        refreshInFlight = false;
+        if (refreshAgain) {
+          refreshAgain = false;
+          scheduleRefresh(100);
+        }
+      }
     }
 
     function applyState(data) {
@@ -590,6 +645,7 @@ const indexHTML = `<!doctype html>
       document.getElementById('shareURL').textContent = data.shareURL || '公開URLは未取得です';
       document.getElementById('shareURLLabel').textContent = data.shareURLLabel || 'URL';
       document.getElementById('videoStatus').textContent = videoText(data.video);
+      updateMobileProgress(data.video);
       applyQuality(data.videoQuality);
       applyVideoPlayer(data.videoPlayer);
       document.getElementById('upnpText').textContent = publicText(data.tunnel, data.upnp);
@@ -597,6 +653,7 @@ const indexHTML = `<!doctype html>
       const nextCurrentID = data.current ? data.current.id : "";
       renderPreview(data, nextCurrentID);
       state.currentID = nextCurrentID;
+      scheduleRefresh(data.video && data.video.active ? 750 : 2000);
     }
 
     function renderPreview(data, nextCurrentID) {
@@ -646,6 +703,25 @@ const indexHTML = `<!doctype html>
         '"': '&quot;',
         "'": '&#39;'
       }[char]));
+    }
+
+    function updateMobileProgress(video) {
+      if (!video || !video.active) {
+        mobileProgress.classList.remove('open');
+        return;
+      }
+      const percent = Math.max(0, Math.min(99, Number(video.progressPercent || 0)));
+      mobileProgress.classList.add('open');
+      mobileProgressText.textContent = video.progressText || video.message || '変換中';
+      mobileProgressFill.style.width = Math.max(6, percent) + '%';
+    }
+
+    function scrollProgressIntoView() {
+      if (!window.matchMedia('(max-width: 860px)').matches) return;
+      window.setTimeout(() => {
+        const target = mobileProgress.classList.contains('open') ? mobileProgress : preview;
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 120);
     }
 
     function currentText(current) {
@@ -717,6 +793,8 @@ const indexHTML = `<!doctype html>
         if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
         applyState(data);
+        announceLocalChange();
+        scrollProgressIntoView();
         const isVideo = data.current && data.current.kind === 'video';
         if (isVideo) {
           toast.textContent = data.clipboardCopied ? '動画HLS変換を開始し、URLをPCにコピーしました' : '動画HLS変換を開始しました';
@@ -774,6 +852,7 @@ const indexHTML = `<!doctype html>
         if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
         applyState(data);
+        announceLocalChange();
         toast.textContent = '画像をクリアしました';
       } catch (error) {
         toast.textContent = error.message || '画像クリアに失敗しました';
@@ -875,6 +954,7 @@ const indexHTML = `<!doctype html>
         if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
         applyQuality(data);
+        announceLocalChange();
         toast.textContent = '動画画質を更新しました';
       } catch (error) {
         toast.textContent = error.message || '動画画質の更新に失敗しました';
@@ -888,6 +968,7 @@ const indexHTML = `<!doctype html>
         if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
         applyQuality(data);
+        announceLocalChange();
         toast.textContent = '速度チェックを更新しました';
       } catch (error) {
         toast.textContent = error.message || '速度チェックに失敗しました';
@@ -910,6 +991,7 @@ const indexHTML = `<!doctype html>
         const data = await res.json();
         applyVideoPlayer(data);
         await refreshState();
+        announceLocalChange();
         toast.textContent = enabled ? 'ビデオプレーヤー対応を有効にしました' : 'ビデオプレーヤー対応を無効にしました';
       } catch (error) {
         await refreshState();
@@ -919,8 +1001,65 @@ const indexHTML = `<!doctype html>
         videoPlayerToggle.disabled = false;
       }
     });
+    function scheduleRefresh(delay) {
+      clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(refreshState, delay);
+    }
+
+    function announceLocalChange() {
+      try {
+        if (localChangeChannel) {
+          localChangeChannel.postMessage({ type: 'changed', at: Date.now() });
+        }
+        localStorage.setItem('imagepad:lastChange', String(Date.now()));
+      } catch (error) {
+      }
+      scheduleRefresh(100);
+    }
+
+    function setupLiveSync() {
+      try {
+        if ('BroadcastChannel' in window) {
+          localChangeChannel = new BroadcastChannel('imagepad-state');
+          localChangeChannel.onmessage = () => scheduleRefresh(100);
+        }
+      } catch (error) {
+      }
+      window.addEventListener('storage', (event) => {
+        if (event.key === 'imagepad:lastChange') {
+          scheduleRefresh(100);
+        }
+      });
+      window.addEventListener('focus', () => scheduleRefresh(50));
+      window.addEventListener('pageshow', () => scheduleRefresh(50));
+      window.addEventListener('online', () => scheduleRefresh(50));
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) {
+          scheduleRefresh(50);
+        }
+      });
+    }
+
+    async function checkForUpdates() {
+      try {
+        const res = await fetch('/api/update-check', { cache: 'no-store' });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        if (data.ok && data.newer) {
+          updateText.innerHTML = '<a href="' + data.url + '" target="_blank" rel="noreferrer">' + escapeHTML(data.latest) + ' があります</a>';
+        } else if (data.ok) {
+          updateText.textContent = '最新版 ' + (data.current || '');
+        } else {
+          updateText.textContent = data.message || '確認失敗';
+        }
+      } catch (error) {
+        updateText.textContent = '確認失敗';
+      }
+    }
+
+    setupLiveSync();
     refreshState();
-    setInterval(refreshState, 2000);
+    checkForUpdates();
   </script>
 </body>
 </html>`

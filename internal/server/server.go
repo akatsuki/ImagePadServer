@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -82,6 +83,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/clear", s.admin(s.handleClear))
 	mux.HandleFunc("/api/copy-url", s.admin(s.handleCopyURL))
 	mux.HandleFunc("/api/about", s.admin(s.handleAbout))
+	mux.HandleFunc("/api/update-check", s.admin(s.handleUpdateCheck))
 	// SteamVR integration is frozen indefinitely. Keep internal/steamvr as an
 	// archived asset, but do not expose its management API.
 	mux.HandleFunc("/api/video-player", s.admin(s.handleVideoPlayer))
@@ -986,6 +988,67 @@ func (s *Server) handleAbout(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/repos/akatsuki/ImagePadServer/releases/latest", nil)
+	if err != nil {
+		http.Error(w, "failed to create update request", http.StatusInternalServerError)
+		return
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", about.AppName+"/"+about.Version)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		writeJSON(w, map[string]interface{}{
+			"ok":      false,
+			"current": about.Version,
+			"message": "更新確認に失敗しました",
+		})
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		writeJSON(w, map[string]interface{}{
+			"ok":      false,
+			"current": about.Version,
+			"message": fmt.Sprintf("更新確認に失敗しました: HTTP %d", resp.StatusCode),
+		})
+		return
+	}
+	var latest struct {
+		TagName string `json:"tag_name"`
+		HTMLURL string `json:"html_url"`
+		Name    string `json:"name"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&latest); err != nil {
+		writeJSON(w, map[string]interface{}{
+			"ok":      false,
+			"current": about.Version,
+			"message": "更新情報を読めませんでした",
+		})
+		return
+	}
+	newer := versionGreater(latest.TagName, about.Version)
+	message := "最新版です"
+	if newer {
+		message = "新しいバージョンがあります"
+	}
+	writeJSON(w, map[string]interface{}{
+		"ok":      true,
+		"current": about.Version,
+		"latest":  latest.TagName,
+		"name":    latest.Name,
+		"url":     latest.HTMLURL,
+		"newer":   newer,
+		"message": message,
+	})
+}
+
 func (s *Server) state(r *http.Request) map[string]interface{} {
 	s.mu.RLock()
 	upnpResult := s.upnp
@@ -1148,6 +1211,32 @@ func appendAccessLog(line string) {
 func writeJSON(w http.ResponseWriter, value interface{}) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(w).Encode(value)
+}
+
+func versionGreater(candidate, current string) bool {
+	candidateParts := versionParts(candidate)
+	currentParts := versionParts(current)
+	for i := 0; i < len(candidateParts) && i < len(currentParts); i++ {
+		if candidateParts[i] > currentParts[i] {
+			return true
+		}
+		if candidateParts[i] < currentParts[i] {
+			return false
+		}
+	}
+	return false
+}
+
+func versionParts(version string) [3]int {
+	version = strings.TrimPrefix(strings.TrimSpace(strings.ToLower(version)), "v")
+	version = strings.Split(version, "-")[0]
+	parts := strings.Split(version, ".")
+	var result [3]int
+	for i := 0; i < len(parts) && i < len(result); i++ {
+		n, _ := strconv.Atoi(parts[i])
+		result[i] = n
+	}
+	return result
 }
 
 func urlForClipboard(state map[string]interface{}) string {
