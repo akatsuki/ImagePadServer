@@ -21,11 +21,13 @@ import (
 )
 
 type Result struct {
-	OK      bool   `json:"ok"`
-	Message string `json:"message"`
-	MP4     bool   `json:"mp4"`
-	HLS     bool   `json:"hls"`
-	Active  bool   `json:"active"`
+	OK              bool   `json:"ok"`
+	Message         string `json:"message"`
+	MP4             bool   `json:"mp4"`
+	HLS             bool   `json:"hls"`
+	Active          bool   `json:"active"`
+	ProgressPercent int    `json:"progressPercent"`
+	ProgressText    string `json:"progressText"`
 }
 
 const (
@@ -42,9 +44,10 @@ const (
 var activeHLS sync.Map
 
 type activeJob struct {
-	Preset QualityPreset
-	Cancel context.CancelFunc
-	Done   chan struct{}
+	Preset       QualityPreset
+	Cancel       context.CancelFunc
+	Done         chan struct{}
+	TotalSeconds int
 }
 
 type QualityPreset struct {
@@ -215,7 +218,7 @@ func PublishStillImageAsyncForID(imagePath, outDir, id string, preset QualityPre
 	stopActive(outDir)
 	removeGenerated(outDir)
 	ctx, cancel := context.WithCancel(context.Background())
-	job := &activeJob{Preset: preset, Cancel: cancel, Done: make(chan struct{})}
+	job := &activeJob{Preset: preset, Cancel: cancel, Done: make(chan struct{}), TotalSeconds: clipDurationSeconds()}
 	activeHLS.Store(outDir, job)
 	go func() {
 		defer func() {
@@ -279,10 +282,12 @@ func CurrentStatus(outDir string) Result {
 		Active: active,
 	}
 	if active && hls {
+		applyProgress(outDir, &result)
 		result.Message = "HLS conversion is streaming."
 		return result
 	}
 	if active {
+		applyProgress(outDir, &result)
 		result.Message = "HLS conversion is starting."
 		return result
 	}
@@ -296,6 +301,35 @@ func CurrentStatus(outDir string) Result {
 	}
 	result.Message = "VRChat video outputs have not been generated yet."
 	return result
+}
+
+func applyProgress(outDir string, result *Result) {
+	result.ProgressText = "変換中"
+	active, ok := activeHLS.Load(outDir)
+	if !ok {
+		return
+	}
+	job, ok := active.(*activeJob)
+	if !ok || job.TotalSeconds <= 0 {
+		count := hlsSegmentCount(outDir)
+		if count > 0 {
+			result.ProgressText = strconv.Itoa(count) + " segments generated"
+		}
+		return
+	}
+	seconds := hlsSegmentCount(outDir) * 2
+	percent := int(math.Round(float64(seconds) / float64(job.TotalSeconds) * 100))
+	if percent < 0 {
+		percent = 0
+	}
+	if percent > 99 {
+		percent = 99
+	}
+	if seconds > job.TotalSeconds {
+		seconds = job.TotalSeconds
+	}
+	result.ProgressPercent = percent
+	result.ProgressText = fmt.Sprintf("%d%% (%d / %d sec)", percent, seconds, job.TotalSeconds)
 }
 
 func PublishUploadedVideoAsync(sourcePath, outDir string, preset QualityPreset) {
@@ -787,6 +821,11 @@ func hlsSegmentExists(outDir string) bool {
 	return len(matches) > 0
 }
 
+func hlsSegmentCount(outDir string) int {
+	matches, _ := filepath.Glob(filepath.Join(outDir, "current*.ts"))
+	return len(matches)
+}
+
 func hlsPlaylistExists(outDir string) bool {
 	matches, _ := filepath.Glob(filepath.Join(outDir, "current*.m3u8"))
 	return len(matches) > 0
@@ -805,6 +844,14 @@ func segmentPattern(id string) string {
 		prefix = "current-" + safeID(id)
 	}
 	return prefix + "-" + strconv.FormatInt(time.Now().UnixNano(), 10) + "-%d.ts"
+}
+
+func clipDurationSeconds() int {
+	seconds, err := strconv.Atoi(ClipDuration)
+	if err != nil || seconds <= 0 {
+		return 0
+	}
+	return seconds
 }
 
 func safeID(id string) string {

@@ -269,6 +269,33 @@ const indexHTML = `<!doctype html>
       padding: 18px;
       overflow-wrap: anywhere;
     }
+    .progress-preview {
+      width: min(92%, 520px);
+      display: grid;
+      gap: 10px;
+      color: #21443d;
+      text-align: center;
+      font-weight: 700;
+    }
+    .progress-track {
+      width: 100%;
+      height: 12px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: #d6e1e6;
+    }
+    .progress-fill {
+      height: 100%;
+      min-width: 8px;
+      border-radius: inherit;
+      background: var(--accent);
+      transition: width .25s ease;
+    }
+    .progress-detail {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
     .actions {
       display: flex;
       flex-wrap: wrap;
@@ -517,7 +544,8 @@ const indexHTML = `<!doctype html>
       previewImageURL: {{printf "%q" .previewImageURL}},
       publicImageURL: {{printf "%q" .publicImageURL}},
       videoQuality: null,
-      currentID: ""
+      currentID: "",
+      previewMode: "empty"
     };
 
     const toast = document.getElementById('toast');
@@ -567,18 +595,57 @@ const indexHTML = `<!doctype html>
       document.getElementById('upnpText').textContent = publicText(data.tunnel, data.upnp);
       document.getElementById('hasImage').textContent = currentText(data.current);
       const nextCurrentID = data.current ? data.current.id : "";
-      if (data.current && data.current.kind === 'video' && nextCurrentID !== state.currentID) {
-        preview.innerHTML = '<div class="empty">動画をHLSへ変換中です</div>';
-      } else if (data.current && nextCurrentID !== state.currentID) {
+      renderPreview(data, nextCurrentID);
+      state.currentID = nextCurrentID;
+    }
+
+    function renderPreview(data, nextCurrentID) {
+      if (!data.current) {
+        if (state.previewMode !== 'empty') {
+          preview.innerHTML = '<div class="empty">まだ画像が選択されていません</div>';
+          state.previewMode = 'empty';
+        }
+        return;
+      }
+      if (data.video && data.video.active) {
+        const percent = Math.max(0, Math.min(99, Number(data.video.progressPercent || 0)));
+        const detail = data.video.progressText || data.video.message || '変換中';
+        preview.innerHTML =
+          '<div class="progress-preview">' +
+            '<div>動画プレーヤー向けに変換中です</div>' +
+            '<div class="progress-track" aria-label="変換進捗">' +
+              '<div class="progress-fill" style="width:' + Math.max(6, percent) + '%"></div>' +
+            '</div>' +
+            '<div class="progress-detail">' + escapeHTML(detail) + '</div>' +
+          '</div>';
+        state.previewMode = 'progress';
+        return;
+      }
+      if (data.current.kind === 'video') {
+        if (state.previewMode !== 'video' || nextCurrentID !== state.currentID) {
+          preview.innerHTML = '<div class="empty">動画をHLSとして配信できます</div>';
+          state.previewMode = 'video';
+        }
+        return;
+      }
+      if (state.previewMode !== 'image' || nextCurrentID !== state.currentID) {
         preview.innerHTML = '';
         const img = document.createElement('img');
         img.src = data.previewImageURL + (data.previewImageURL.includes('?') ? '&' : '?') + 'preview=1';
         img.alt = '現在公開中の画像';
         preview.appendChild(img);
-      } else if (!data.current && state.currentID !== "") {
-        preview.innerHTML = '<div class="empty">まだ画像が選択されていません</div>';
+        state.previewMode = 'image';
       }
-      state.currentID = nextCurrentID;
+    }
+
+    function escapeHTML(value) {
+      return String(value).replace(/[&<>"']/g, (char) => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+      }[char]));
     }
 
     function currentText(current) {
