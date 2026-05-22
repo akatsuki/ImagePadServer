@@ -352,8 +352,8 @@ func (s *Server) processAndPublish(r *http.Request, reader io.Reader, name, cont
 	}
 	_ = os.Remove(result.Path)
 	if s.videoPlayerEnabled() {
-		if imagePath, _, ok := s.store.CurrentPath(); ok {
-			_ = video.PublishStillImage(imagePath, s.store.Dir(), s.videoQualityPreset())
+		if imagePath, current, ok := s.store.CurrentPath(); ok {
+			_ = video.PublishStillImageForID(imagePath, s.store.Dir(), current.ID, s.videoQualityPreset())
 		}
 	} else {
 		video.RemoveGenerated(s.store.Dir())
@@ -706,8 +706,8 @@ func (s *Server) handleVideoPlayer(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if req.Enabled {
-			if imagePath, _, ok := s.store.CurrentPath(); ok {
-				_ = video.PublishStillImage(imagePath, s.store.Dir(), s.videoQualityPreset())
+			if imagePath, current, ok := s.store.CurrentPath(); ok {
+				_ = video.PublishStillImageForID(imagePath, s.store.Dir(), current.ID, s.videoQualityPreset())
 			}
 		} else {
 			video.RemoveGenerated(s.store.Dir())

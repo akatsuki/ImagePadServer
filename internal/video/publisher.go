@@ -130,6 +130,10 @@ func BitrateOnlyPreset(requested, active QualityPreset) QualityPreset {
 }
 
 func PublishStillImage(imagePath, outDir string, preset QualityPreset) Result {
+	return PublishStillImageForID(imagePath, outDir, "", preset)
+}
+
+func PublishStillImageForID(imagePath, outDir, id string, preset QualityPreset) Result {
 	stopActive(outDir)
 	ffmpeg, err := EnsureFFmpeg()
 	if err != nil {
@@ -187,13 +191,13 @@ func PublishStillImage(imagePath, outDir string, preset QualityPreset) Result {
 		"-hls_time", "2",
 		"-hls_list_size", "0",
 		"-hls_playlist_type", "vod",
-		"-hls_segment_filename", segmentPattern("still"),
-		HLSPlaylist,
+		"-hls_segment_filename", segmentPattern(id),
+		playlistName(id),
 	)
 
 	result := Result{
 		MP4: fileExists(filepath.Join(outDir, MP4File)),
-		HLS: fileExists(filepath.Join(outDir, HLSPlaylist)) && hlsSegmentExists(outDir),
+		HLS: fileExists(filepath.Join(outDir, playlistName(id))) && hlsSegmentExists(outDir),
 	}
 	result.OK = result.MP4 || result.HLS
 	switch {
@@ -209,7 +213,7 @@ func PublishStillImage(imagePath, outDir string, preset QualityPreset) Result {
 
 func CurrentStatus(outDir string) Result {
 	mp4 := fileExists(filepath.Join(outDir, MP4File))
-	hls := fileExists(filepath.Join(outDir, HLSPlaylist)) && hlsSegmentExists(outDir)
+	hls := hlsPlaylistExists(outDir) && hlsSegmentExists(outDir)
 	active := isActive(outDir)
 	result := Result{
 		OK:     mp4 || hls,
@@ -723,6 +727,11 @@ func finalizeHLSPlaylist(outDir, id string) error {
 
 func hlsSegmentExists(outDir string) bool {
 	matches, _ := filepath.Glob(filepath.Join(outDir, "current*.ts"))
+	return len(matches) > 0
+}
+
+func hlsPlaylistExists(outDir string) bool {
+	matches, _ := filepath.Glob(filepath.Join(outDir, "current*.m3u8"))
 	return len(matches) > 0
 }
 
