@@ -33,7 +33,7 @@ const (
 	HLSPlaylist  = "current.m3u8"
 	HLSSegment   = "current0.ts"
 	FrameRate    = "10"
-	ClipDuration = "8"
+	ClipDuration = "600"
 
 	ffmpegDownloadURL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
 	ytdlpDownloadURL  = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
