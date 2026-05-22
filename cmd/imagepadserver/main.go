@@ -8,13 +8,8 @@ import (
 )
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "--steamvr-launch" {
-		if err := app.OpenWindowOrRun(); err != nil {
-			log.Println(err)
-			os.Exit(1)
-		}
-		return
-	}
+	// SteamVR launch handling is frozen indefinitely. The old overlay assets and
+	// code remain in the repository, but the app no longer exposes that entry.
 
 	if err := app.Run(); err != nil {
 		log.Println(err)

@@ -22,10 +22,9 @@ import (
 	"imagepadserver/internal/network"
 	"imagepadserver/internal/server"
 	"imagepadserver/internal/settings"
-	"imagepadserver/internal/steamvr"
 	"imagepadserver/internal/tray"
 	"imagepadserver/internal/tunnel"
-	"imagepadserver/internal/upnp"
+	"imagepadserver/internal/video"
 )
 
 // OpenOrRun opens the existing local server when it is already running;
@@ -66,7 +65,7 @@ func run(useNativeWindow bool) error {
 		return nil
 	}
 
-	storeDir := filepath.Join(os.TempDir(), "imagepadserver")
+	storeDir := filepath.Join(settings.Dir(), "media")
 	store, err := library.NewStore(storeDir)
 	if err != nil {
 		return err
@@ -90,12 +89,14 @@ func run(useNativeWindow bool) error {
 	srv := server.New(cfg, store, "")
 	srv.Register(mux)
 	httpServer.Handler = mux
+	go measureNetworkOnce()
 
 	publicURL := cfg.URLForHost(advertisedHost)
 
 	log.Printf("%s %s listening on %s", about.AppName, about.Version, publicURL)
 
-	ensureSteamVRRegistration()
+	// SteamVR integration is intentionally frozen. Keep the implementation
+	// under internal/steamvr as an archived asset, but do not register or start it.
 
 	var tunnelMu sync.Mutex
 	var tunnelHandle *tunnel.Tunnel
@@ -105,7 +106,7 @@ func run(useNativeWindow bool) error {
 
 	trayExit := make(chan struct{})
 	var trayExitOnce sync.Once
-	trayIcon, err := tray.Start(publicURL, func() {
+	trayIcon, err := tray.Start(localURL, func() {
 		trayExitOnce.Do(func() {
 			close(trayExit)
 		})
@@ -116,15 +117,7 @@ func run(useNativeWindow bool) error {
 		defer trayIcon.Stop()
 	}
 
-	go func() {
-		result := upnp.TryMapTCP(actualPort, "ImagePadServer")
-		srv.SetUPnPResult(result)
-		if result.OK {
-			log.Printf("UPnP mapped TCP port %d", actualPort)
-		} else {
-			log.Printf("UPnP unavailable: %s", result.Message)
-		}
-	}()
+	srv.SetPublicNetworkMessage("UPnP auto port mapping is disabled for safety.")
 
 	go func() {
 		time.Sleep(300 * time.Millisecond)
@@ -132,7 +125,7 @@ func run(useNativeWindow bool) error {
 			_ = appwindow.Show(localURL)
 			return
 		}
-		browser.Open(publicURL)
+		browser.Open(localURL)
 	}()
 
 	go func() {
@@ -155,12 +148,6 @@ func run(useNativeWindow bool) error {
 		}
 	}()
 
-	go func() {
-		if err := steamvr.Start(steamvr.Config{ServerURL: publicURL}); err != nil {
-			log.Printf("SteamVR integration unavailable: %v", err)
-		}
-	}()
-
 	select {
 	case <-stop:
 	case <-trayExit:
@@ -180,6 +167,19 @@ func run(useNativeWindow bool) error {
 	return httpServer.Shutdown(ctx)
 }
 
+func measureNetworkOnce() {
+	appSettings, err := settings.Load()
+	if err != nil || appSettings.NetworkUploadMbps > 0 {
+		return
+	}
+	measurement := video.MeasureNetwork()
+	if measurement.UploadMbps <= 0 {
+		return
+	}
+	appSettings.NetworkUploadMbps = measurement.UploadMbps
+	_ = settings.Save(appSettings)
+}
+
 func serverIsHealthy(url string) bool {
 	client := http.Client{Timeout: 700 * time.Millisecond}
 	resp, err := client.Get(url)
@@ -189,18 +189,4 @@ func serverIsHealthy(url string) bool {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 16))
 	return resp.StatusCode == http.StatusOK && string(body) == "ok"
-}
-
-func ensureSteamVRRegistration() {
-	appSettings, err := settings.Load()
-	if err == nil && appSettings.SteamVRExplicitlyDisabled {
-		return
-	}
-	status := steamvr.Registration()
-	if !status.Available {
-		return
-	}
-	if _, err := steamvr.SetRegistration(true); err != nil {
-		log.Printf("SteamVR registration unavailable: %v", err)
-	}
 }

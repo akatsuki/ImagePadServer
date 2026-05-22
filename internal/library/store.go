@@ -35,7 +35,7 @@ func NewStore(dir string) (*Store, error) {
 	if err := os.RemoveAll(dir); err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err
 	}
 	s := &Store{dir: dir}
@@ -134,7 +134,7 @@ func (s *Store) save() error {
 	if err != nil {
 		return err
 	}
-	return ioutil.WriteFile(filepath.Join(s.dir, "state.json"), data, 0644)
+	return ioutil.WriteFile(filepath.Join(s.dir, "state.json"), data, 0600)
 }
 
 func (s *Store) load() error {
@@ -160,7 +160,7 @@ func copyFile(dst, src string) error {
 	}
 	defer in.Close()
 
-	out, err := os.Create(dst)
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return err
 	}

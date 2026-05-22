@@ -1,6 +1,6 @@
 # ImagePadServer Notice
 
-ImagePadServer v1.0.0-rc.2
+ImagePadServer v1.0.0
 
 Copyright (c) 2026 Akat / 赤月さん
 

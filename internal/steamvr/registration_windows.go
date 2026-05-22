@@ -5,6 +5,7 @@ package steamvr
 
 import (
 	"bytes"
+	_ "embed"
 	"encoding/json"
 	"io"
 	"os"
@@ -17,6 +18,9 @@ import (
 
 const appConfigPath = `C:\Program Files (x86)\Steam\config\appconfig.json`
 const appKey = "steam.overlay.imagepadserver"
+
+//go:embed imagepad-icon-256.png
+var steamVRIconPNG []byte
 
 // RegistrationStatus describes whether ImagePadServer is registered with SteamVR.
 type RegistrationStatus struct {
@@ -157,6 +161,9 @@ func manifestPath() (string, error) {
 	if err := os.MkdirAll(filepath.Dir(manifestPath), 0755); err != nil {
 		return "", err
 	}
+	if err := writeSteamVRIcon(filepath.Dir(manifestPath)); err != nil {
+		return "", err
+	}
 	data, err := manifestData(exe)
 	if err != nil {
 		return "", err
@@ -165,6 +172,10 @@ func manifestPath() (string, error) {
 		return "", err
 	}
 	return manifestPath, nil
+}
+
+func writeSteamVRIcon(dir string) error {
+	return os.WriteFile(filepath.Join(dir, "imagepad-icon-256.png"), steamVRIconPNG, 0644)
 }
 
 func installExecutableForSteamVR() (string, error) {
@@ -233,6 +244,7 @@ func manifestData(exePath string) ([]byte, error) {
 				"binary_path_windows":  exePath,
 				"arguments":            "--steamvr-launch",
 				"is_dashboard_overlay": true,
+				"image_path":           "imagepad-icon-256.png",
 				"strings": map[string]interface{}{
 					"en_us": map[string]string{
 						"name":        about.AppName,
@@ -240,7 +252,7 @@ func manifestData(exePath string) ([]byte, error) {
 					},
 					"ja_jp": map[string]string{
 						"name":        about.AppName,
-						"description": "VRChat ImagePad 用の ImagePadServer UI を開きます。",
+						"description": "Open ImagePadServer for VRChat ImagePad uploads.",
 					},
 				},
 			},

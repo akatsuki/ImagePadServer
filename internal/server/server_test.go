@@ -1,6 +1,11 @@
 package server
 
-import "testing"
+import (
+	"net/http"
+	"testing"
+
+	"imagepadserver/internal/video"
+)
 
 func TestValidatePublicURLRejectsLocalhost(t *testing.T) {
 	if _, err := validatePublicURL("http://localhost/image.png"); err == nil {
@@ -8,6 +13,15 @@ func TestValidatePublicURLRejectsLocalhost(t *testing.T) {
 	}
 	if _, err := validatePublicURL("http://127.0.0.1/image.png"); err == nil {
 		t.Fatal("expected loopback URL to be rejected")
+	}
+}
+
+func TestValidateHTTPURL(t *testing.T) {
+	if err := validateHTTPURL("https://example.com/watch?v=1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateHTTPURL("file:///tmp/video.mp4"); err == nil {
+		t.Fatal("expected non-http URL to be rejected")
 	}
 }
 
@@ -24,7 +38,7 @@ func TestRemoteContentTypeAllowed(t *testing.T) {
 }
 
 func TestIsHLSSegmentName(t *testing.T) {
-	valid := []string{"current0.ts", "current12.ts"}
+	valid := []string{"current0.ts", "current12.ts", "current1779424624066091600-24.ts", "current-242352fb7167ea14-1779429230673092900-60.ts"}
 	for _, name := range valid {
 		if !isHLSSegmentName(name) {
 			t.Fatalf("expected %s to be accepted", name)
@@ -39,6 +53,17 @@ func TestIsHLSSegmentName(t *testing.T) {
 	}
 }
 
+func TestStreamRequestID(t *testing.T) {
+	req := adminRequest("https://example.com/stream/abc123/current-abc123.m3u8", "127.0.0.1:50000")
+	if got := streamRequestID(req); got != "abc123" {
+		t.Fatalf("streamRequestID = %q, want abc123", got)
+	}
+	req = adminRequest("https://example.com/stream/current.m3u8?v=legacy", "127.0.0.1:50000")
+	if got := streamRequestID(req); got != "legacy" {
+		t.Fatalf("streamRequestID = %q, want legacy", got)
+	}
+}
+
 func TestIsVideoUpload(t *testing.T) {
 	if !isVideoUpload("clip.mp4", "") {
 		t.Fatal("expected mp4 extension to be treated as video")
@@ -49,4 +74,101 @@ func TestIsVideoUpload(t *testing.T) {
 	if isVideoUpload("photo.jpg", "image/jpeg") {
 		t.Fatal("expected image upload not to be treated as video")
 	}
+}
+
+func TestAdminAccessRules(t *testing.T) {
+	srv := &Server{adminToken: "secret"}
+
+	if !srv.adminAllowed(adminRequest("http://127.0.0.1:8080/", "127.0.0.1:50000")) {
+		t.Fatal("expected localhost admin access to be allowed")
+	}
+	if srv.adminAllowed(adminRequest("https://example.trycloudflare.com/?token=secret", "127.0.0.1:50000")) {
+		t.Fatal("expected tunnel-host admin access to be rejected")
+	}
+	if !srv.adminAllowed(adminRequest("http://192.168.1.20:8080/?token=secret", "192.168.1.35:50000")) {
+		t.Fatal("expected LAN admin access with token to be allowed")
+	}
+	if srv.adminAllowed(adminRequest("http://203.0.113.10:8080/?token=secret", "198.51.100.25:50000")) {
+		t.Fatal("expected public remote admin access to be rejected")
+	}
+}
+
+func TestPublicReadRules(t *testing.T) {
+	if !publicReadAllowed(adminRequest("http://192.168.1.20:8080/image/current", "192.168.1.35:50000")) {
+		t.Fatal("expected LAN media read to be allowed")
+	}
+	if publicReadAllowed(adminRequest("http://203.0.113.10:8080/image/current", "198.51.100.25:50000")) {
+		t.Fatal("expected direct public media read to be rejected")
+	}
+	if !publicReadAllowed(adminRequest("https://example.trycloudflare.com/image/current", "127.0.0.1:50000")) {
+		t.Fatal("expected tunnel media read via local origin to be allowed")
+	}
+}
+
+func TestPrimaryShareURL(t *testing.T) {
+	url, label := primaryShareURL(map[string]interface{}{
+		"imageURL": "https://example.com/image/current.png",
+		"videoURL": "https://example.com/video/current.mp4",
+		"hlsURL":   "https://example.com/stream/abc123/current-abc123.m3u8",
+		"videoPlayer": map[string]interface{}{
+			"enabled": true,
+		},
+	})
+	if url != "https://example.com/stream/abc123/current-abc123.m3u8" || label != "HLS URL" {
+		t.Fatalf("share URL = %q (%s), want HLS", url, label)
+	}
+
+	url, label = primaryShareURL(map[string]interface{}{
+		"imageURL": "https://example.com/image/current.png",
+		"videoPlayer": map[string]interface{}{
+			"enabled": false,
+		},
+	})
+	if url != "https://example.com/image/current.png" || label != "ImagePad URL" {
+		t.Fatalf("share URL = %q (%s), want image", url, label)
+	}
+}
+
+func TestNormalizeQualityMode(t *testing.T) {
+	if normalizeQualityMode("1080") != "1080" {
+		t.Fatal("expected 1080 to be accepted")
+	}
+	if normalizeQualityMode("bad") != "auto" {
+		t.Fatal("expected invalid mode to fall back to auto")
+	}
+}
+
+func TestBitrateOnlyPresetKeepsActiveResolution(t *testing.T) {
+	active := video.ResolveQuality("1080", 0)
+	requested := video.ResolveQuality("360", 0)
+	result := video.BitrateOnlyPreset(requested, active)
+	if result.Height != active.Height {
+		t.Fatalf("height = %d, want active height %d", result.Height, active.Height)
+	}
+	if result.VideoBitrate != requested.VideoBitrate {
+		t.Fatalf("video bitrate = %s, want requested %s", result.VideoBitrate, requested.VideoBitrate)
+	}
+	if !result.BitrateOnly {
+		t.Fatal("expected bitrate-only flag")
+	}
+}
+
+func TestAutoQualityPrefersUploadBandwidth(t *testing.T) {
+	preset := video.ResolveQualityForUpload("auto", 100, 3)
+	if preset.Effective != "360" {
+		t.Fatalf("effective = %s, want 360 from upload bandwidth", preset.Effective)
+	}
+	preset = video.ResolveQualityForUpload("auto", 20, 0)
+	if preset.Effective != "1080" {
+		t.Fatalf("effective = %s, want download fallback", preset.Effective)
+	}
+}
+
+func adminRequest(rawURL, remoteAddr string) *http.Request {
+	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+	if err != nil {
+		panic(err)
+	}
+	req.RemoteAddr = remoteAddr
+	return req
 }

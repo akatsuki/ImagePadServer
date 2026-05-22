@@ -80,6 +80,12 @@ const indexHTML = `<!doctype html>
       font-size: 12px;
       color: #263746;
     }
+    .urlbox strong {
+      display: block;
+      margin-bottom: 2px;
+      font-size: 11px;
+      color: var(--muted);
+    }
     button, .file-button {
       min-height: 32px;
       border: 0;
@@ -275,6 +281,13 @@ const indexHTML = `<!doctype html>
       gap: 8px;
       margin-top: 8px;
     }
+    .quality-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 120px auto;
+      gap: 8px;
+      align-items: end;
+      margin-top: 8px;
+    }
     .local-panel {
       display: none;
       margin-top: 8px;
@@ -415,13 +428,7 @@ const indexHTML = `<!doctype html>
         <div class="status">
           <div class="pill"><strong>外部公開</strong><span id="upnpText">確認中</span></div>
           <div class="pill"><strong>ImagePad URL</strong><span id="hasImage">未選択</span></div>
-          <div class="toggle-row">
-            <div><strong>SteamVR連携</strong><span id="steamvrText">確認中</span></div>
-            <label class="switch" title="SteamVRへの登録を切り替え">
-              <input id="steamvrToggle" type="checkbox">
-              <span class="switch-slider"></span>
-            </label>
-          </div>
+          <!-- SteamVR integration is frozen indefinitely. UI kept out of sight. -->
           <div class="toggle-row">
             <div><strong>ビデオプレーヤー対応</strong><span id="videoPlayerText">確認中</span></div>
             <label class="switch" title="VRChatビデオプレーヤー向けMP4/HLS生成を切り替え">
@@ -477,29 +484,22 @@ const indexHTML = `<!doctype html>
         <h2>現在公開中の画像</h2>
         <div class="preview" id="preview"><div class="empty">まだ画像が選択されていません</div></div>
         <div class="actions">
-          <div class="urlbox" style="flex:1 1 320px">
-            <code id="imageURL">{{.imageURL}}</code>
-            <button type="button" data-copy="imageURL">コピー</button>
+          <div class="urlbox" style="flex:1 1 360px">
+            <div>
+              <strong id="shareURLLabel">{{.shareURLLabel}}</strong>
+              <code id="shareURL">{{.shareURL}}</code>
+            </div>
+            <button type="button" data-copy="shareURL">コピー</button>
           </div>
           <button type="button" class="secondary" id="refreshButton">更新</button>
           <button type="button" class="warn" id="clearButton">画像クリア</button>
-          <button type="button" class="secondary" id="localToggle">外部URLを表示</button>
-        </div>
-        <div class="local-panel" id="localPanel">
-          <div class="urlbox">
-            <code id="publicImageURL">{{.publicImageURL}}</code>
-            <button type="button" data-copy="publicImageURL">コピー</button>
-          </div>
         </div>
         <div class="video-links">
           <div class="pill"><strong>VRChat Video</strong><span id="videoStatus">確認中</span></div>
-          <div class="urlbox">
-            <code id="videoURL">{{.videoURL}}</code>
-            <button type="button" data-copy="videoURL">MP4</button>
-          </div>
-          <div class="urlbox">
-            <code id="hlsURL">{{.hlsURL}}</code>
-            <button type="button" data-copy="hlsURL">HLS</button>
+          <div class="quality-row">
+            <label><span>動画画質</span><select id="qualityMode"><option value="auto">Auto</option><option value="1080">1080p</option><option value="720">720p</option><option value="360">360p</option></select></label>
+            <div class="pill"><strong>実効</strong><span id="qualityStatus">確認中</span></div>
+            <button type="button" class="secondary" id="networkCheckButton">速度チェック</button>
           </div>
         </div>
       </section>
@@ -510,10 +510,13 @@ const indexHTML = `<!doctype html>
       imageURL: {{printf "%q" .imageURL}},
       videoURL: {{printf "%q" .videoURL}},
       hlsURL: {{printf "%q" .hlsURL}},
+      shareURL: {{printf "%q" .shareURL}},
+      shareURLLabel: {{printf "%q" .shareURLLabel}},
       phoneURL: {{printf "%q" .phoneURL}},
       localImageURL: {{printf "%q" .localImageURL}},
       previewImageURL: {{printf "%q" .previewImageURL}},
       publicImageURL: {{printf "%q" .publicImageURL}},
+      videoQuality: null,
       currentID: ""
     };
 
@@ -527,10 +530,11 @@ const indexHTML = `<!doctype html>
     const fileUploadPanel = document.getElementById('fileUploadPanel');
     const linkUploadPanel = document.getElementById('linkUploadPanel');
     const preview = document.getElementById('preview');
-    const steamvrToggle = document.getElementById('steamvrToggle');
-    const steamvrText = document.getElementById('steamvrText');
     const videoPlayerToggle = document.getElementById('videoPlayerToggle');
     const videoPlayerText = document.getElementById('videoPlayerText');
+    const qualityMode = document.getElementById('qualityMode');
+    const qualityStatus = document.getElementById('qualityStatus');
+    const networkCheckButton = document.getElementById('networkCheckButton');
     let uploadMode = 'file';
     let videoPlayerPending = false;
     const imageAccept = 'image/png,image/jpeg,image/gif,image/webp,image/bmp,image/tiff,image/svg+xml,.jpg,.jpeg,.png,.gif,.webp,.bmp,.tif,.tiff,.svg';
@@ -546,18 +550,20 @@ const indexHTML = `<!doctype html>
       state.imageURL = data.imageURL;
       state.videoURL = data.videoURL;
       state.hlsURL = data.hlsURL;
+      state.shareURL = data.shareURL;
+      state.shareURLLabel = data.shareURLLabel;
       state.phoneURL = data.phoneURL;
       state.localImageURL = data.localImageURL;
       state.previewImageURL = data.previewImageURL;
       state.publicImageURL = data.publicImageURL;
+      state.videoQuality = data.videoQuality;
       document.getElementById('phoneURL').textContent = data.phoneURL;
       document.getElementById('phoneURLMobile').textContent = data.phoneURL;
-      document.getElementById('imageURL').textContent = data.imageURL || '画像URLは未取得です';
-      document.getElementById('videoURL').textContent = data.videoURL || 'MP4 video URL is not available';
-      document.getElementById('hlsURL').textContent = data.hlsURL || 'HLS URL is not available';
+      document.getElementById('shareURL').textContent = data.shareURL || '公開URLは未取得です';
+      document.getElementById('shareURLLabel').textContent = data.shareURLLabel || 'URL';
       document.getElementById('videoStatus').textContent = videoText(data.video);
+      applyQuality(data.videoQuality);
       applyVideoPlayer(data.videoPlayer);
-      document.getElementById('publicImageURL').textContent = data.publicImageURL || '外部URLは未取得です';
       document.getElementById('upnpText').textContent = publicText(data.tunnel, data.upnp);
       document.getElementById('hasImage').textContent = currentText(data.current);
       const nextCurrentID = data.current ? data.current.id : "";
@@ -611,25 +617,15 @@ const indexHTML = `<!doctype html>
       return video.message || 'not generated';
     }
 
-    async function refreshSteamVR() {
-      try {
-        const res = await fetch('/api/steamvr', { cache: 'no-store' });
-        const data = await res.json();
-        applySteamVR(data);
-      } catch (error) {
-        steamvrToggle.disabled = true;
-        steamvrText.textContent = '確認できません';
+    function applyQuality(data) {
+      if (!data) {
+        qualityStatus.textContent = '未測定';
+        return;
       }
-    }
-
-    function applySteamVR(data) {
-      steamvrToggle.checked = !!data.enabled;
-      steamvrToggle.disabled = !data.available;
-      if (!data.available) {
-        steamvrText.textContent = data.message || '利用不可';
-      } else {
-        steamvrText.textContent = data.enabled ? '有効' : '無効';
-      }
+      qualityMode.value = data.mode || 'auto';
+      const network = data.uploadMbps ? ' / ' + data.uploadMbps + ' Mbps' : '';
+      const bitrateOnly = data.preset && data.preset.bitrateOnly ? ' / bitrate only' : '';
+      qualityStatus.textContent = (data.effective || 'auto') + 'p' + network + bitrateOnly;
     }
 
     function applyVideoPlayer(data) {
@@ -802,27 +798,34 @@ const indexHTML = `<!doctype html>
     document.getElementById('refreshButton').addEventListener('click', refreshState);
     fileModeButton.addEventListener('click', () => setUploadMode('file'));
     linkModeButton.addEventListener('click', () => setUploadMode('link'));
-    document.getElementById('localToggle').addEventListener('click', () => {
-      const panel = document.getElementById('localPanel');
-      panel.classList.toggle('open');
-      document.getElementById('localToggle').textContent = panel.classList.contains('open') ? '外部URLを隠す' : '外部URLを表示';
-    });
-    steamvrToggle.addEventListener('change', async () => {
-      const enabled = steamvrToggle.checked;
-      steamvrToggle.disabled = true;
-      steamvrText.textContent = enabled ? '有効化中...' : '無効化中...';
+    qualityMode.addEventListener('change', async () => {
       try {
-        const res = await fetch('/api/steamvr', {
+        const res = await fetch('/api/video-quality', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ enabled })
+          body: JSON.stringify({ mode: qualityMode.value })
         });
+        if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
-        applySteamVR(data);
-        toast.textContent = data.enabled ? 'SteamVR連携を有効にしました' : 'SteamVR連携を無効にしました';
+        applyQuality(data);
+        toast.textContent = '動画画質を更新しました';
       } catch (error) {
-        await refreshSteamVR();
-        toast.textContent = 'SteamVR連携の切り替えに失敗しました';
+        toast.textContent = error.message || '動画画質の更新に失敗しました';
+      }
+    });
+    networkCheckButton.addEventListener('click', async () => {
+      networkCheckButton.disabled = true;
+      toast.textContent = 'ネットワーク速度を確認中...';
+      try {
+        const res = await fetch('/api/network-check', { method: 'POST' });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        applyQuality(data);
+        toast.textContent = '速度チェックを更新しました';
+      } catch (error) {
+        toast.textContent = error.message || '速度チェックに失敗しました';
+      } finally {
+        networkCheckButton.disabled = false;
       }
     });
     videoPlayerToggle.addEventListener('change', async () => {
@@ -850,7 +853,6 @@ const indexHTML = `<!doctype html>
       }
     });
     refreshState();
-    refreshSteamVR();
     setInterval(refreshState, 2000);
   </script>
 </body>
