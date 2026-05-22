@@ -2,13 +2,16 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 )
 
 type Config struct {
-	Host string
-	Port int
+	Host            string
+	Port            int
+	AdvertiseHost   string
+	PreferTailscale bool
 }
 
 func FromEnv() Config {
@@ -24,6 +27,12 @@ func FromEnv() Config {
 			cfg.Port = port
 		}
 	}
+	if v := os.Getenv("IMAGEPAD_ADVERTISE_HOST"); v != "" {
+		cfg.AdvertiseHost = v
+	}
+	if v := os.Getenv("IMAGEPAD_PREFER_TAILSCALE"); truthy(v) {
+		cfg.PreferTailscale = true
+	}
 	return cfg
 }
 
@@ -31,5 +40,21 @@ func (c Config) URLForHost(host string) string {
 	if host == "" {
 		host = "127.0.0.1"
 	}
-	return fmt.Sprintf("http://%s:%d/", host, c.Port)
+	return fmt.Sprintf("http://%s/", net.JoinHostPort(host, strconv.Itoa(c.Port)))
+}
+
+func (c Config) AdvertisedHost(defaultHost string) string {
+	if c.AdvertiseHost != "" {
+		return c.AdvertiseHost
+	}
+	return defaultHost
+}
+
+func truthy(value string) bool {
+	switch value {
+	case "1", "true", "TRUE", "True", "yes", "YES", "on", "ON":
+		return true
+	default:
+		return false
+	}
 }

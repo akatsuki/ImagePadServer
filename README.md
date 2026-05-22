@@ -96,6 +96,25 @@ VRChat の `VRCImageDownloader` には制限があります。
 
 VRChat のログに `Insecure connection not allowed` が出る場合、`http://` URL が拒否されています。外部共有には Cloudflare Tunnel の公開HTTPS URLを使ってください。トンネル未接続時のローカルHTTPS URLは自分のPC向けのフォールバックです。
 
+## VRChat Video Player向けURL
+
+`ffmpeg` が利用できる環境では、画像アップロード時に無音・0.5fpsの動画出力も生成します。
+
+- MP4: `/video/current.mp4`
+- HLS: `/stream/current.m3u8`
+
+ブラウザUIの `VRChat Video` 欄に、Cloudflare Tunnel 経由のHTTPS URLが表示されます。MP4直リンクはUnity Video Player/AVProの安定確認用、HLSはAVPro向けです。Quest/Androidや外部共有ではHTTPSが必要です。
+
+状態欄の `ビデオプレーヤー対応` スイッチをOFFにすると、MP4/HLS生成と動画URL配信を停止できます。
+
+`ビデオプレーヤー対応` がONのときは、PC/スマホから動画ファイルもアップロードできます。動画は変換完了を待たずに、FFmpegで変換しながらHLSプレイリストへ追記して配信します。入力動画が `1920 x 1080` 以下なら解像度を保持し、それを超える場合はアスペクト比を保ったまま `1920 x 1080` 内へ縮小します。画質はおおよそ70%相当の軽量設定で、音声はAACへ変換して保持します。
+
+`ffmpeg` がPATHにない場合、ビデオプレーヤー対応をONにしたタイミングで Windows 向けの FFmpeg essentials build をアプリのローカルフォルダへ自動ダウンロードします。任意の場所にあるFFmpegを使う場合は、起動前に `IMAGEPAD_FFMPEG` に `ffmpeg.exe` のフルパスを指定してください。
+
+```powershell
+$env:IMAGEPAD_FFMPEG="C:\tools\ffmpeg\bin\ffmpeg.exe"; go run ./cmd/imagepadserver
+```
+
 ## セキュリティ注意
 
 UPnPが成功すると、指定ポートがインターネット側から到達可能になる場合があります。
@@ -138,7 +157,7 @@ MIT License
 
 ## Version / Copyright / Open Source Notices
 
-- Version: `v1.0.0-rc.1`
+- Version: `v1.0.0-rc.2`
 - Author: Akat / 赤月さん
 - Copyright: Copyright (c) 2026 Akat / 赤月さん
 - License: MIT License

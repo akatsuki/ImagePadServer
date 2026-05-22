@@ -28,7 +28,7 @@ const indexHTML = `<!doctype html>
       color: var(--ink);
     }
     header {
-      padding: 12px clamp(14px, 3vw, 28px);
+      padding: 8px clamp(12px, 2.4vw, 22px);
       border-bottom: 1px solid var(--line);
       background: var(--panel);
     }
@@ -40,14 +40,17 @@ const indexHTML = `<!doctype html>
     main {
       display: grid;
       grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
-      gap: 12px;
-      padding: 12px clamp(14px, 3vw, 28px) 18px;
+      grid-template-areas: "sidebar content";
+      gap: 10px;
+      padding: 10px clamp(12px, 2.4vw, 22px) 12px;
     }
+    .sidebar { grid-area: sidebar; }
+    .content { grid-area: content; }
     section {
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 8px;
-      padding: 12px;
+      padding: 10px;
     }
     h2 {
       margin: 0 0 10px;
@@ -55,12 +58,12 @@ const indexHTML = `<!doctype html>
       letter-spacing: 0;
     }
     .qr {
-      width: min(100%, 190px);
+      width: min(100%, 142px);
       aspect-ratio: 1 / 1;
       display: block;
       border: 1px solid var(--line);
       border-radius: 8px;
-      margin: 0 auto 10px;
+      margin: 0 auto 8px;
     }
     .urlbox {
       display: grid;
@@ -101,7 +104,7 @@ const indexHTML = `<!doctype html>
     }
     form {
       display: grid;
-      gap: 10px;
+      gap: 8px;
     }
     input[type="file"], input[type="url"], select, input[type="number"] {
       width: 100%;
@@ -117,8 +120,8 @@ const indexHTML = `<!doctype html>
       display: grid;
       grid-template-columns: 1fr auto 1fr;
       align-items: center;
-      gap: 8px;
-      margin-bottom: 10px;
+      gap: 6px;
+      margin-bottom: 8px;
     }
     .mode-tabs .divider {
       color: var(--muted);
@@ -138,7 +141,7 @@ const indexHTML = `<!doctype html>
     }
     .upload-panel.active {
       display: grid;
-      gap: 10px;
+      gap: 8px;
     }
     .controls {
       display: grid;
@@ -154,14 +157,14 @@ const indexHTML = `<!doctype html>
     }
     .status {
       display: grid;
-      gap: 8px;
-      margin-top: 10px;
+      gap: 6px;
+      margin-top: 8px;
     }
     .pill {
       display: flex;
       justify-content: space-between;
       gap: 12px;
-      padding: 8px 9px;
+      padding: 7px 8px;
       border-radius: 8px;
       background: var(--soft);
       color: #21443d;
@@ -173,9 +176,9 @@ const indexHTML = `<!doctype html>
       overflow-wrap: anywhere;
     }
     .toggle-row {
-      display: flex;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 46px;
       align-items: center;
-      justify-content: space-between;
       gap: 12px;
       padding: 8px 9px;
       border-radius: 8px;
@@ -215,9 +218,10 @@ const indexHTML = `<!doctype html>
       width: 20px;
       height: 20px;
       left: 3px;
-      top: 3px;
+      top: 50%;
       border-radius: 50%;
       background: #fff;
+      transform: translateY(-50%);
       transition: transform .16s ease;
       box-shadow: 0 1px 3px rgba(0,0,0,.25);
     }
@@ -225,7 +229,7 @@ const indexHTML = `<!doctype html>
       background: var(--accent);
     }
     .switch input:checked + .switch-slider::before {
-      transform: translateX(20px);
+      transform: translate(20px, -50%);
     }
     .switch input:disabled + .switch-slider {
       cursor: wait;
@@ -233,8 +237,8 @@ const indexHTML = `<!doctype html>
     }
     .preview {
       width: 100%;
-      height: min(46vh, 420px);
-      min-height: 220px;
+      height: min(34vh, 250px);
+      min-height: 160px;
       display: grid;
       place-items: center;
       background: #edf1f3;
@@ -243,21 +247,33 @@ const indexHTML = `<!doctype html>
       overflow: hidden;
     }
     .preview img {
+      width: 100%;
+      height: 100%;
       max-width: 100%;
       max-height: 100%;
       object-fit: contain;
       display: block;
+      min-width: 0;
+      min-height: 0;
     }
     .empty {
       color: var(--muted);
       text-align: center;
-      padding: 32px;
+      max-width: 100%;
+      padding: 18px;
+      overflow-wrap: anywhere;
     }
     .actions {
       display: flex;
       flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 8px;
+    }
+    .video-links {
+      display: grid;
+      grid-template-columns: 1fr;
       gap: 8px;
-      margin-top: 10px;
+      margin-top: 8px;
     }
     .local-panel {
       display: none;
@@ -278,7 +294,7 @@ const indexHTML = `<!doctype html>
     .about {
       display: grid;
       gap: 6px;
-      margin: 0 clamp(14px, 3vw, 28px) 18px;
+      margin: 10px 0 0;
       color: var(--muted);
       font-size: 12px;
       line-height: 1.45;
@@ -294,7 +310,12 @@ const indexHTML = `<!doctype html>
       margin: 2px 0;
     }
     @media (max-width: 860px) {
-      main { grid-template-columns: 1fr; }
+      main {
+        grid-template-columns: 1fr;
+        grid-template-areas:
+          "content"
+          "sidebar";
+      }
       .controls { grid-template-columns: 1fr; }
       header {
         padding: 18px clamp(16px, 4vw, 42px);
@@ -332,6 +353,31 @@ const indexHTML = `<!doctype html>
         min-height: 320px;
       }
     }
+    @media (min-width: 861px) and (max-height: 760px) {
+      h1 { font-size: 20px; }
+      h2 { margin-bottom: 8px; }
+      button, .file-button { min-height: 30px; }
+      input[type="file"], input[type="url"], select, input[type="number"] {
+        min-height: 30px;
+        padding: 5px 7px;
+      }
+      .preview {
+        height: 210px;
+        min-height: 150px;
+      }
+      .about {
+        gap: 2px;
+        font-size: 11px;
+        line-height: 1.3;
+      }
+      .oss-list {
+        margin-top: 2px;
+      }
+      details[open] {
+        max-height: 88px;
+        overflow: auto;
+      }
+    }
     @media (max-width: 720px) and (pointer: coarse) {
       .phone-connect {
         display: none;
@@ -347,7 +393,7 @@ const indexHTML = `<!doctype html>
     <h1>ImagePadServer</h1>
   </header>
   <main>
-    <div>
+    <div class="sidebar">
       <section class="phone-connect">
         <h2>スマホ接続</h2>
         <img class="qr" src="{{.qrURL}}" alt="スマホ接続用QRコード">
@@ -364,7 +410,7 @@ const indexHTML = `<!doctype html>
         </div>
       </section>
 
-      <section style="margin-top:12px">
+      <section style="margin-top:10px">
         <h2>状態</h2>
         <div class="status">
           <div class="pill"><strong>外部公開</strong><span id="upnpText">確認中</span></div>
@@ -376,11 +422,32 @@ const indexHTML = `<!doctype html>
               <span class="switch-slider"></span>
             </label>
           </div>
+          <div class="toggle-row">
+            <div><strong>ビデオプレーヤー対応</strong><span id="videoPlayerText">確認中</span></div>
+            <label class="switch" title="VRChatビデオプレーヤー向けMP4/HLS生成を切り替え">
+              <input id="videoPlayerToggle" type="checkbox">
+              <span class="switch-slider"></span>
+            </label>
+          </div>
         </div>
       </section>
+      <div class="about">
+        <div><strong>{{.appName}} {{.version}}</strong></div>
+        <div>Author: {{.author}}</div>
+        <div>{{.copyright}}</div>
+        <div>License: {{.license}}</div>
+        <details>
+          <summary>Open source notices</summary>
+          <ul class="oss-list">
+            {{range .openSource}}
+            <li>{{.Name}}{{if .Version}} {{.Version}}{{end}} - {{.License}}</li>
+            {{end}}
+          </ul>
+        </details>
+      </div>
     </div>
 
-    <div>
+    <div class="content">
       <section>
         <h2>画像アップロード</h2>
         <form id="uploadForm">
@@ -406,7 +473,7 @@ const indexHTML = `<!doctype html>
         </form>
       </section>
 
-      <section style="margin-top:12px">
+      <section style="margin-top:10px">
         <h2>現在公開中の画像</h2>
         <div class="preview" id="preview"><div class="empty">まだ画像が選択されていません</div></div>
         <div class="actions">
@@ -424,27 +491,25 @@ const indexHTML = `<!doctype html>
             <button type="button" data-copy="publicImageURL">コピー</button>
           </div>
         </div>
+        <div class="video-links">
+          <div class="pill"><strong>VRChat Video</strong><span id="videoStatus">確認中</span></div>
+          <div class="urlbox">
+            <code id="videoURL">{{.videoURL}}</code>
+            <button type="button" data-copy="videoURL">MP4</button>
+          </div>
+          <div class="urlbox">
+            <code id="hlsURL">{{.hlsURL}}</code>
+            <button type="button" data-copy="hlsURL">HLS</button>
+          </div>
+        </div>
       </section>
     </div>
   </main>
-
-  <footer class="about">
-    <div><strong>{{.appName}} {{.version}}</strong></div>
-    <div>Author: {{.author}}</div>
-    <div>{{.copyright}}</div>
-    <div>License: {{.license}}</div>
-    <details>
-      <summary>Open source notices</summary>
-      <ul class="oss-list">
-        {{range .openSource}}
-        <li>{{.Name}}{{if .Version}} {{.Version}}{{end}} - {{.License}}</li>
-        {{end}}
-      </ul>
-    </details>
-  </footer>
   <script>
     const state = {
       imageURL: {{printf "%q" .imageURL}},
+      videoURL: {{printf "%q" .videoURL}},
+      hlsURL: {{printf "%q" .hlsURL}},
       phoneURL: {{printf "%q" .phoneURL}},
       localImageURL: {{printf "%q" .localImageURL}},
       previewImageURL: {{printf "%q" .previewImageURL}},
@@ -464,7 +529,12 @@ const indexHTML = `<!doctype html>
     const preview = document.getElementById('preview');
     const steamvrToggle = document.getElementById('steamvrToggle');
     const steamvrText = document.getElementById('steamvrText');
+    const videoPlayerToggle = document.getElementById('videoPlayerToggle');
+    const videoPlayerText = document.getElementById('videoPlayerText');
     let uploadMode = 'file';
+    let videoPlayerPending = false;
+    const imageAccept = 'image/png,image/jpeg,image/gif,image/webp,image/bmp,image/tiff,image/svg+xml,.jpg,.jpeg,.png,.gif,.webp,.bmp,.tif,.tiff,.svg';
+    const mediaAccept = imageAccept + ',video/*,video/mp4,video/quicktime,video/webm,video/x-matroska,.mp4,.mov,.m4v,.webm,.mkv,.avi';
 
     async function refreshState() {
       const res = await fetch('/api/state', { cache: 'no-store' });
@@ -474,6 +544,8 @@ const indexHTML = `<!doctype html>
 
     function applyState(data) {
       state.imageURL = data.imageURL;
+      state.videoURL = data.videoURL;
+      state.hlsURL = data.hlsURL;
       state.phoneURL = data.phoneURL;
       state.localImageURL = data.localImageURL;
       state.previewImageURL = data.previewImageURL;
@@ -481,11 +553,17 @@ const indexHTML = `<!doctype html>
       document.getElementById('phoneURL').textContent = data.phoneURL;
       document.getElementById('phoneURLMobile').textContent = data.phoneURL;
       document.getElementById('imageURL').textContent = data.imageURL || '画像URLは未取得です';
+      document.getElementById('videoURL').textContent = data.videoURL || 'MP4 video URL is not available';
+      document.getElementById('hlsURL').textContent = data.hlsURL || 'HLS URL is not available';
+      document.getElementById('videoStatus').textContent = videoText(data.video);
+      applyVideoPlayer(data.videoPlayer);
       document.getElementById('publicImageURL').textContent = data.publicImageURL || '外部URLは未取得です';
       document.getElementById('upnpText').textContent = publicText(data.tunnel, data.upnp);
-      document.getElementById('hasImage').textContent = data.current ? (data.current.width + ' x ' + data.current.height) : '未選択';
+      document.getElementById('hasImage').textContent = currentText(data.current);
       const nextCurrentID = data.current ? data.current.id : "";
-      if (data.current && nextCurrentID !== state.currentID) {
+      if (data.current && data.current.kind === 'video' && nextCurrentID !== state.currentID) {
+        preview.innerHTML = '<div class="empty">動画をHLSへ変換中です</div>';
+      } else if (data.current && nextCurrentID !== state.currentID) {
         preview.innerHTML = '';
         const img = document.createElement('img');
         img.src = data.previewImageURL + (data.previewImageURL.includes('?') ? '&' : '?') + 'preview=1';
@@ -495,6 +573,15 @@ const indexHTML = `<!doctype html>
         preview.innerHTML = '<div class="empty">まだ画像が選択されていません</div>';
       }
       state.currentID = nextCurrentID;
+    }
+
+    function currentText(current) {
+      if (!current) return '未選択';
+      if (current.kind === 'video') {
+        if (current.sizeBytes) return '動画 ' + Math.round(current.sizeBytes / 1024 / 1024) + ' MB';
+        return '動画';
+      }
+      return current.width + ' x ' + current.height;
     }
 
     function publicText(tunnel, upnp) {
@@ -512,6 +599,16 @@ const indexHTML = `<!doctype html>
         return '成功';
       }
       return upnp.message || '未確認';
+    }
+
+    function videoText(video) {
+      if (!video) return 'not checked';
+      const formats = [];
+      if (video.mp4) formats.push('MP4');
+      if (video.hls) formats.push('HLS');
+      if (formats.length && video.active) return formats.join(' / ') + ' streaming';
+      if (formats.length) return formats.join(' / ') + ' ready';
+      return video.message || 'not generated';
     }
 
     async function refreshSteamVR() {
@@ -535,16 +632,34 @@ const indexHTML = `<!doctype html>
       }
     }
 
+    function applyVideoPlayer(data) {
+      if (!data) {
+        videoPlayerToggle.checked = false;
+        videoPlayerText.textContent = '確認できません';
+        return;
+      }
+      videoPlayerToggle.checked = !!data.enabled;
+      videoPlayerToggle.disabled = videoPlayerPending;
+      videoPlayerText.textContent = data.enabled ? '有効 / 自動コピーはHLS優先' : '無効 / 自動コピーは画像URL';
+      imageInput.accept = data.enabled ? mediaAccept : imageAccept;
+      fileModeButton.textContent = data.enabled ? '画像/動画' : '画像';
+    }
+
     uploadForm.addEventListener('submit', async (event) => {
       event.preventDefault();
       uploadButton.disabled = true;
-      toast.textContent = '変換中...';
+      toast.textContent = 'アップロード中...';
       try {
         const res = uploadMode === 'link' ? await uploadFromLink() : await uploadFromFile();
         if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
         applyState(data);
-        toast.textContent = data.clipboardCopied ? '公開画像を更新し、URLをPCにコピーしました' : '公開画像を更新しました';
+        const isVideo = data.current && data.current.kind === 'video';
+        if (isVideo) {
+          toast.textContent = data.clipboardCopied ? '動画HLS変換を開始し、URLをPCにコピーしました' : '動画HLS変換を開始しました';
+        } else {
+          toast.textContent = data.clipboardCopied ? '公開画像を更新し、URLをPCにコピーしました' : '公開画像を更新しました';
+        }
       } catch (error) {
         toast.textContent = error.message || 'アップロードに失敗しました';
       } finally {
@@ -708,6 +823,30 @@ const indexHTML = `<!doctype html>
       } catch (error) {
         await refreshSteamVR();
         toast.textContent = 'SteamVR連携の切り替えに失敗しました';
+      }
+    });
+    videoPlayerToggle.addEventListener('change', async () => {
+      const enabled = videoPlayerToggle.checked;
+      videoPlayerPending = true;
+      videoPlayerToggle.disabled = true;
+      videoPlayerText.textContent = enabled ? 'FFmpeg確認中...' : '無効化中...';
+      try {
+        const res = await fetch('/api/video-player', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled })
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        applyVideoPlayer(data);
+        await refreshState();
+        toast.textContent = enabled ? 'ビデオプレーヤー対応を有効にしました' : 'ビデオプレーヤー対応を無効にしました';
+      } catch (error) {
+        await refreshState();
+        toast.textContent = error.message || 'ビデオプレーヤー対応の切り替えに失敗しました';
+      } finally {
+        videoPlayerPending = false;
+        videoPlayerToggle.disabled = false;
       }
     });
     refreshState();

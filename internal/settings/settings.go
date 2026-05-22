@@ -8,6 +8,7 @@ import (
 
 type Settings struct {
 	SteamVRExplicitlyDisabled bool `json:"steamvrExplicitlyDisabled"`
+	VideoPlayerEnabled        bool `json:"videoPlayerEnabled"`
 }
 
 func Load() (Settings, error) {

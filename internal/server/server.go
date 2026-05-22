@@ -33,6 +33,7 @@ import (
 	"imagepadserver/internal/settings"
 	"imagepadserver/internal/steamvr"
 	"imagepadserver/internal/upnp"
+	"imagepadserver/internal/video"
 )
 
 type Server struct {
@@ -50,7 +51,8 @@ type Server struct {
 }
 
 func New(cfg config.Config, store *library.Store, imageURLBase string) *Server {
-	lanURL := cfg.URLForHost(network.BestLANIP())
+	advertisedHost := cfg.AdvertisedHost(network.BestReachableIP(cfg.PreferTailscale))
+	lanURL := cfg.URLForHost(advertisedHost)
 	if imageURLBase == "" {
 		imageURLBase = lanURL
 	}
@@ -75,10 +77,14 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/copy-url", s.handleCopyURL)
 	mux.HandleFunc("/api/about", s.handleAbout)
 	mux.HandleFunc("/api/steamvr", s.handleSteamVR)
+	mux.HandleFunc("/api/video-player", s.handleVideoPlayer)
 	mux.HandleFunc("/qr/phone.png", s.handlePhoneQR)
 	mux.HandleFunc("/image/current", s.handleCurrentImage)
 	mux.HandleFunc("/image/current.png", s.handleCurrentImage)
 	mux.HandleFunc("/image/current.jpg", s.handleCurrentImage)
+	mux.HandleFunc("/video/current.mp4", s.handleCurrentVideo)
+	mux.HandleFunc("/stream/current.m3u8", s.handleCurrentHLS)
+	mux.HandleFunc("/stream/", s.handleCurrentHLSSegment)
 	mux.HandleFunc("/favicon.ico", s.handleFavicon)
 	mux.HandleFunc("/healthz", s.handleHealth)
 }
@@ -123,7 +129,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if err := r.ParseMultipartForm(64 << 20); err != nil {
+	if err := r.ParseMultipartForm(uploadMemoryLimit(s.videoPlayerEnabled())); err != nil {
 		http.Error(w, "failed to parse upload", http.StatusBadRequest)
 		return
 	}
@@ -135,7 +141,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	state, err := s.processAndPublish(r, file, header.Filename, optionsFromValues(r.FormValue))
+	state, err := s.processAndPublish(r, file, header.Filename, header.Header.Get("Content-Type"), optionsFromValues(r.FormValue))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -175,7 +181,7 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 	}
 	defer remote.Close()
 
-	state, err := s.processAndPublish(r, remote, name, opts)
+	state, err := s.processAndPublish(r, remote, name, "", opts)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -183,7 +189,11 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, state)
 }
 
-func (s *Server) processAndPublish(r *http.Request, reader io.Reader, name string, opts imageproc.Options) (map[string]interface{}, error) {
+func (s *Server) processAndPublish(r *http.Request, reader io.Reader, name, contentType string, opts imageproc.Options) (map[string]interface{}, error) {
+	if s.videoPlayerEnabled() && isVideoUpload(name, contentType) {
+		return s.processVideoAndPublish(r, reader, name)
+	}
+
 	result, err := imageproc.Process(reader, name, s.store.Dir(), opts)
 	if err != nil {
 		return nil, err
@@ -199,6 +209,59 @@ func (s *Server) processAndPublish(r *http.Request, reader io.Reader, name strin
 		return nil, fmt.Errorf("failed to save image")
 	}
 	_ = os.Remove(result.Path)
+	if s.videoPlayerEnabled() {
+		if imagePath, _, ok := s.store.CurrentPath(); ok {
+			_ = video.PublishStillImage(imagePath, s.store.Dir())
+		}
+	} else {
+		video.RemoveGenerated(s.store.Dir())
+	}
+
+	state := s.state(r)
+	copiedURL := urlForClipboard(state)
+	clipboardCopied := false
+	if copiedURL != "" {
+		if err := clipboard.CopyText(copiedURL); err == nil {
+			clipboardCopied = true
+		}
+	}
+	state["copiedURL"] = copiedURL
+	state["clipboardCopied"] = clipboardCopied
+	return state, nil
+}
+
+func (s *Server) processVideoAndPublish(r *http.Request, reader io.Reader, name string) (map[string]interface{}, error) {
+	if _, err := video.EnsureFFmpeg(); err != nil {
+		return nil, err
+	}
+	video.RemoveGenerated(s.store.Dir())
+
+	sourcePath := filepath.Join(s.store.Dir(), "source"+safeVideoExt(name))
+	source, err := os.Create(sourcePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to save video upload")
+	}
+	if _, err := io.Copy(source, reader); err != nil {
+		_ = source.Close()
+		return nil, fmt.Errorf("failed to save video upload")
+	}
+	if err := source.Close(); err != nil {
+		return nil, fmt.Errorf("failed to save video upload")
+	}
+	info := library.CurrentImage{
+		Kind:         "video",
+		FileName:     filepath.Base(sourcePath),
+		PublicName:   "current-video" + filepath.Ext(sourcePath),
+		ContentType:  "video/mp4",
+		OriginalName: name,
+	}
+	if stat, err := os.Stat(sourcePath); err == nil {
+		info.SizeBytes = stat.Size()
+	}
+	if err := s.store.SetCurrentInfo(info); err != nil {
+		return nil, fmt.Errorf("failed to save video")
+	}
+	video.PublishUploadedVideoAsync(sourcePath, s.store.Dir())
 
 	state := s.state(r)
 	copiedURL := urlForClipboard(state)
@@ -237,6 +300,13 @@ func optionsFromValues(value func(string) string) imageproc.Options {
 		}
 	}
 	return opts
+}
+
+func uploadMemoryLimit(videoEnabled bool) int64 {
+	if videoEnabled {
+		return 512 << 20
+	}
+	return 64 << 20
 }
 
 func downloadRemoteImage(rawURL string, maxBytes int64) (io.ReadCloser, string, error) {
@@ -405,6 +475,7 @@ func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to clear image", http.StatusInternalServerError)
 		return
 	}
+	video.RemoveGenerated(s.store.Dir())
 	writeJSON(w, s.state(r))
 }
 
@@ -465,6 +536,47 @@ func (s *Server) handleSteamVR(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handleVideoPlayer(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, s.videoPlayerState())
+	case http.MethodPost:
+		var req struct {
+			Enabled bool `json:"enabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid video player request", http.StatusBadRequest)
+			return
+		}
+		appSettings, err := settings.Load()
+		if err != nil {
+			http.Error(w, "failed to load settings", http.StatusInternalServerError)
+			return
+		}
+		if req.Enabled {
+			if _, err := video.EnsureFFmpeg(); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		appSettings.VideoPlayerEnabled = req.Enabled
+		if err := settings.Save(appSettings); err != nil {
+			http.Error(w, "failed to save settings", http.StatusInternalServerError)
+			return
+		}
+		if req.Enabled {
+			if imagePath, _, ok := s.store.CurrentPath(); ok {
+				_ = video.PublishStillImage(imagePath, s.store.Dir())
+			}
+		} else {
+			video.RemoveGenerated(s.store.Dir())
+		}
+		writeJSON(w, s.videoPlayerState())
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
 func (s *Server) handlePhoneQR(w http.ResponseWriter, r *http.Request) {
 	png, err := qrcode.Encode(s.lanURL, qrcode.Medium, 512)
 	if err != nil {
@@ -485,6 +597,10 @@ func (s *Server) handleFavicon(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCurrentImage(w http.ResponseWriter, r *http.Request) {
 	path, img, ok := s.store.CurrentPath()
 	if !ok {
+		s.serveDeletedImage(w, r)
+		return
+	}
+	if img.Kind == "video" {
 		s.serveDeletedImage(w, r)
 		return
 	}
@@ -523,6 +639,74 @@ func (s *Server) serveDeletedImage(w http.ResponseWriter, r *http.Request) {
 	_ = jpeg.Encode(w, deletedImage(), &jpeg.Options{Quality: 90})
 }
 
+func (s *Server) handleCurrentVideo(w http.ResponseWriter, r *http.Request) {
+	if !s.videoPlayerEnabled() {
+		http.NotFound(w, r)
+		return
+	}
+	img := s.store.Current()
+	if img == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if requestedID := r.URL.Query().Get("v"); requestedID != "" && requestedID != img.ID {
+		http.NotFound(w, r)
+		return
+	}
+	s.serveGeneratedFile(w, r, video.MP4File, "video/mp4", "current.mp4", img.UpdatedAt)
+}
+
+func (s *Server) handleCurrentHLS(w http.ResponseWriter, r *http.Request) {
+	if !s.videoPlayerEnabled() {
+		http.NotFound(w, r)
+		return
+	}
+	img := s.store.Current()
+	if img == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if requestedID := r.URL.Query().Get("v"); requestedID != "" && requestedID != img.ID {
+		http.NotFound(w, r)
+		return
+	}
+	s.serveGeneratedFile(w, r, video.HLSPlaylist, "application/vnd.apple.mpegurl", "current.m3u8", img.UpdatedAt)
+}
+
+func (s *Server) handleCurrentHLSSegment(w http.ResponseWriter, r *http.Request) {
+	if !s.videoPlayerEnabled() {
+		http.NotFound(w, r)
+		return
+	}
+	img := s.store.Current()
+	if img == nil {
+		http.NotFound(w, r)
+		return
+	}
+	fileName := filepath.Base(r.URL.Path)
+	if !isHLSSegmentName(fileName) {
+		http.NotFound(w, r)
+		return
+	}
+	s.serveGeneratedFile(w, r, fileName, "video/mp2t", fileName, img.UpdatedAt)
+}
+
+func (s *Server) serveGeneratedFile(w http.ResponseWriter, r *http.Request, fileName, contentType, publicName string, modTime time.Time) {
+	path := filepath.Join(s.store.Dir(), fileName)
+	file, err := os.Open(path)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer file.Close()
+
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "no-store, max-age=0")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, safeFileName(publicName)))
+	s.recordImageRequest(r)
+	http.ServeContent(w, r, publicName, modTime, file)
+}
+
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.WriteString(w, "ok")
 }
@@ -552,17 +736,33 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 		imageURLBase = tunnelURLBase
 	}
 	imageURL := ""
+	videoURL := ""
+	hlsURL := ""
 	previewImageURL := ""
 	publicImageURL := ""
+	publicVideoURL := ""
+	publicHLSURL := ""
+	videoPlayer := s.videoPlayerState()
 	if current := s.store.Current(); current != nil {
-		imagePath := imageURLPath(current)
-		localImageURL = s.previewURLBase + imagePath + "?v=" + current.ID
-		if tunnelURLBase != "" {
-			imageURL = imageURLBase + imagePath + "?v=" + current.ID
+		if current.Kind != "video" {
+			imagePath := imageURLPath(current)
+			localImageURL = s.previewURLBase + imagePath + "?v=" + current.ID
+			if tunnelURLBase != "" {
+				imageURL = imageURLBase + imagePath + "?v=" + current.ID
+			}
+			previewImageURL = s.previewURLBase + imagePath + "?v=" + current.ID
+			if tunnelURLBase != "" {
+				publicImageURL = tunnelURLBase + imagePath + "?v=" + current.ID
+			}
 		}
-		previewImageURL = s.previewURLBase + imagePath + "?v=" + current.ID
-		if tunnelURLBase != "" {
-			publicImageURL = tunnelURLBase + imagePath + "?v=" + current.ID
+		videoStatus := videoPlayer["status"].(video.Result)
+		if videoPlayer["enabled"].(bool) && videoStatus.MP4 && tunnelURLBase != "" {
+			videoURL = imageURLBase + "video/current.mp4?v=" + current.ID
+			publicVideoURL = tunnelURLBase + "video/current.mp4?v=" + current.ID
+		}
+		if videoPlayer["enabled"].(bool) && tunnelURLBase != "" && (videoStatus.HLS || current.Kind == "video") {
+			hlsURL = imageURLBase + "stream/current.m3u8?v=" + current.ID
+			publicHLSURL = tunnelURLBase + "stream/current.m3u8?v=" + current.ID
 		}
 	}
 	if imageURL == "" {
@@ -578,14 +778,40 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 		"openSource":      about.OpenSourceNotices,
 		"phoneURL":        s.lanURL,
 		"imageURL":        imageURL,
+		"videoURL":        videoURL,
+		"hlsURL":          hlsURL,
 		"publicImageURL":  publicImageURL,
+		"publicVideoURL":  publicVideoURL,
+		"publicHLSURL":    publicHLSURL,
 		"localImageURL":   localImageURL,
 		"previewImageURL": previewImageURL,
 		"qrURL":           "/qr/phone.png",
 		"upnp":            upnpResult,
 		"tunnel":          tunnelStatus,
+		"video":           videoPlayer["status"],
+		"videoPlayer":     videoPlayer,
 		"current":         s.store.Current(),
 		"remoteAddr":      r.RemoteAddr,
+	}
+}
+
+func (s *Server) videoPlayerEnabled() bool {
+	appSettings, err := settings.Load()
+	if err != nil {
+		return false
+	}
+	return appSettings.VideoPlayerEnabled
+}
+
+func (s *Server) videoPlayerState() map[string]interface{} {
+	enabled := s.videoPlayerEnabled()
+	status := video.CurrentStatus(s.store.Dir())
+	if !enabled {
+		status = video.Result{Message: "VRChat video player support is disabled."}
+	}
+	return map[string]interface{}{
+		"enabled": enabled,
+		"status":  status,
 	}
 }
 
@@ -618,6 +844,16 @@ func writeJSON(w http.ResponseWriter, value interface{}) {
 }
 
 func urlForClipboard(state map[string]interface{}) string {
+	if videoPlayer, ok := state["videoPlayer"].(map[string]interface{}); ok {
+		if enabled, _ := videoPlayer["enabled"].(bool); enabled {
+			if hlsURL, ok := state["hlsURL"].(string); ok && strings.HasPrefix(hlsURL, "http") {
+				return hlsURL
+			}
+			if videoURL, ok := state["videoURL"].(string); ok && strings.HasPrefix(videoURL, "http") {
+				return videoURL
+			}
+		}
+	}
 	return urlForCopyTarget(state, "imageURL")
 }
 
@@ -633,6 +869,22 @@ func urlForCopyTarget(state map[string]interface{}, target string) string {
 		}
 	case "publicImageURL":
 		if publicURL, ok := state["publicImageURL"].(string); ok {
+			return publicURL
+		}
+	case "videoURL":
+		if videoURL, ok := state["videoURL"].(string); ok {
+			return videoURL
+		}
+	case "hlsURL":
+		if hlsURL, ok := state["hlsURL"].(string); ok {
+			return hlsURL
+		}
+	case "publicVideoURL":
+		if publicURL, ok := state["publicVideoURL"].(string); ok {
+			return publicURL
+		}
+	case "publicHLSURL":
+		if publicURL, ok := state["publicHLSURL"].(string); ok {
 			return publicURL
 		}
 	default:
@@ -656,6 +908,44 @@ func safeFileName(name string) string {
 		return "current"
 	}
 	return name
+}
+
+func isVideoUpload(name, contentType string) bool {
+	mediaType, _, _ := mime.ParseMediaType(contentType)
+	if strings.HasPrefix(strings.ToLower(mediaType), "video/") {
+		return true
+	}
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi":
+		return true
+	default:
+		return false
+	}
+}
+
+func safeVideoExt(name string) string {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi":
+		return strings.ToLower(filepath.Ext(name))
+	default:
+		return ".mp4"
+	}
+}
+
+func isHLSSegmentName(name string) bool {
+	if !strings.HasPrefix(name, "current") || !strings.HasSuffix(name, ".ts") {
+		return false
+	}
+	middle := strings.TrimSuffix(strings.TrimPrefix(name, "current"), ".ts")
+	if middle == "" {
+		return false
+	}
+	for _, r := range middle {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func imageURLPath(img *library.CurrentImage) string {

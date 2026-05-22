@@ -9,14 +9,14 @@ ImagePadServer is split into small packages so platform-specific integrations ca
 - `internal/server`: HTTP routes, JSON API, embedded browser UI
 - `internal/imageproc`: image decoding, resizing, format conversion, size tuning
 - `internal/library`: current image state and temporary file storage
-- `internal/network`: LAN address detection
+- `internal/network`: LAN and Tailscale address detection
 - `internal/upnp`: SSDP discovery, WAN service selection, SOAP port mapping
 - `internal/browser`: OS-specific browser opening
 
 ## Runtime Flow
 
 1. Start the local HTTP server.
-2. Detect the LAN address.
+2. Detect the advertised LAN or Tailscale address.
 3. Open the browser UI.
 4. Start UPnP discovery and port mapping in the background.
 5. Accept image uploads from the browser UI.

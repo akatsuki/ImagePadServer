@@ -20,9 +20,12 @@ import (
 const (
 	trayUID      = 1
 	trayCallback = 0x0400 + 77
+	menuOpenID   = 1001
+	menuExitID   = 1002
 
 	wmDestroy      = 0x0002
 	wmClose        = 0x0010
+	wmCommand      = 0x0111
 	wmLButtonUp    = 0x0202
 	wmRButtonUp    = 0x0205
 	nimAdd         = 0x00000000
@@ -30,16 +33,19 @@ const (
 	nifMessage     = 0x00000001
 	nifIcon        = 0x00000002
 	nifTip         = 0x00000004
+	mfString       = 0x00000000
 	imageIcon      = 1
 	lrLoadFromFile = 0x00000010
 	lrDefaultSize  = 0x00000040
+	tpmRightButton = 0x0002
 )
 
 // Tray represents the Windows notification-area icon.
 type Tray struct {
-	hwnd uintptr
-	done chan struct{}
-	once sync.Once
+	hwnd   uintptr
+	done   chan struct{}
+	once   sync.Once
+	onExit func()
 }
 
 var (
@@ -47,10 +53,14 @@ var (
 	kernel32             = syscall.NewLazyDLL("kernel32.dll")
 	shell32              = syscall.NewLazyDLL("shell32.dll")
 	procCreateWindowExW  = user32.NewProc("CreateWindowExW")
+	procAppendMenuW      = user32.NewProc("AppendMenuW")
+	procCreatePopupMenu  = user32.NewProc("CreatePopupMenu")
 	procDefWindowProcW   = user32.NewProc("DefWindowProcW")
 	procDestroyIcon      = user32.NewProc("DestroyIcon")
+	procDestroyMenu      = user32.NewProc("DestroyMenu")
 	procDestroyWindow    = user32.NewProc("DestroyWindow")
 	procDispatchMessageW = user32.NewProc("DispatchMessageW")
+	procGetCursorPos     = user32.NewProc("GetCursorPos")
 	procGetMessageW      = user32.NewProc("GetMessageW")
 	procGetModuleHandleW = kernel32.NewProc("GetModuleHandleW")
 	procLoadIconW        = user32.NewProc("LoadIconW")
@@ -58,7 +68,9 @@ var (
 	procPostMessageW     = user32.NewProc("PostMessageW")
 	procPostQuitMessage  = user32.NewProc("PostQuitMessage")
 	procRegisterClassExW = user32.NewProc("RegisterClassExW")
+	procSetForegroundW   = user32.NewProc("SetForegroundWindow")
 	procShellNotifyIconW = shell32.NewProc("Shell_NotifyIconW")
+	procTrackPopupMenu   = user32.NewProc("TrackPopupMenu")
 	procTranslateMessage = user32.NewProc("TranslateMessage")
 	currentTray          *Tray
 	currentTrayURL       string
@@ -114,9 +126,9 @@ type notifyIconData struct {
 }
 
 // Start shows a Windows notification-area icon that opens serverURL when clicked.
-func Start(serverURL string) (*Tray, error) {
+func Start(serverURL string, onExit func()) (*Tray, error) {
 	ready := make(chan error, 1)
-	tray := &Tray{done: make(chan struct{})}
+	tray := &Tray{done: make(chan struct{}), onExit: onExit}
 
 	go func() {
 		runtime.LockOSThread()
@@ -198,8 +210,22 @@ func trayWindowProc(hwnd uintptr, message uint32, wparam, lparam uintptr) uintpt
 	switch message {
 	case trayCallback:
 		switch uint32(lparam) {
-		case wmLButtonUp, wmRButtonUp:
+		case wmLButtonUp:
 			browser.Open(currentTrayURL)
+			return 0
+		case wmRButtonUp:
+			showTrayMenu(hwnd)
+			return 0
+		}
+	case wmCommand:
+		switch uint32(wparam) & 0xffff {
+		case menuOpenID:
+			browser.Open(currentTrayURL)
+			return 0
+		case menuExitID:
+			if currentTray != nil && currentTray.onExit != nil {
+				go currentTray.onExit()
+			}
 			return 0
 		}
 	case wmClose:
@@ -217,6 +243,22 @@ func trayWindowProc(hwnd uintptr, message uint32, wparam, lparam uintptr) uintpt
 	}
 	ret, _, _ := procDefWindowProcW.Call(hwnd, uintptr(message), wparam, lparam)
 	return ret
+}
+
+func showTrayMenu(hwnd uintptr) {
+	menu, _, _ := procCreatePopupMenu.Call()
+	if menu == 0 {
+		return
+	}
+	defer procDestroyMenu.Call(menu)
+
+	procAppendMenuW.Call(menu, mfString, menuOpenID, uintptr(unsafe.Pointer(utf16Ptr("開く"))))
+	procAppendMenuW.Call(menu, mfString, menuExitID, uintptr(unsafe.Pointer(utf16Ptr("終了"))))
+
+	var pt point
+	procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
+	procSetForegroundW.Call(hwnd)
+	procTrackPopupMenu.Call(menu, tpmRightButton, uintptr(pt.X), uintptr(pt.Y), 0, hwnd, 0)
 }
 
 func addNotifyIcon(hwnd, icon uintptr) bool {

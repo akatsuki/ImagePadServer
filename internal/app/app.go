@@ -85,13 +85,13 @@ func run(useNativeWindow bool) error {
 	actualPort := listener.Addr().(*net.TCPAddr).Port
 	cfg.Port = actualPort
 
-	lanIP := network.BestLANIP()
+	advertisedHost := cfg.AdvertisedHost(network.BestReachableIP(cfg.PreferTailscale))
 	mux := http.NewServeMux()
 	srv := server.New(cfg, store, "")
 	srv.Register(mux)
 	httpServer.Handler = mux
 
-	publicURL := cfg.URLForHost(lanIP)
+	publicURL := cfg.URLForHost(advertisedHost)
 
 	log.Printf("%s %s listening on %s", about.AppName, about.Version, publicURL)
 
@@ -100,7 +100,16 @@ func run(useNativeWindow bool) error {
 	var tunnelMu sync.Mutex
 	var tunnelHandle *tunnel.Tunnel
 
-	trayIcon, err := tray.Start(publicURL)
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+
+	trayExit := make(chan struct{})
+	var trayExitOnce sync.Once
+	trayIcon, err := tray.Start(publicURL, func() {
+		trayExitOnce.Do(func() {
+			close(trayExit)
+		})
+	})
 	if err != nil {
 		log.Printf("tray icon unavailable: %v", err)
 	} else {
@@ -152,9 +161,14 @@ func run(useNativeWindow bool) error {
 		}
 	}()
 
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-	<-stop
+	select {
+	case <-stop:
+	case <-trayExit:
+		go func() {
+			time.Sleep(1500 * time.Millisecond)
+			os.Exit(0)
+		}()
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

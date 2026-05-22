@@ -7,8 +7,9 @@ package tray
 type Tray struct{}
 
 // Start is a no-op on platforms without the Windows notification area.
-func Start(serverURL string) (*Tray, error) {
+func Start(serverURL string, onExit func()) (*Tray, error) {
 	_ = serverURL
+	_ = onExit
 	return &Tray{}, nil
 }
 

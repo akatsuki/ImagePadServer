@@ -1,12 +1,20 @@
 package network
 
-import "net"
+import (
+	"net"
+	"strings"
+)
 
 func BestLANIP() string {
+	return BestReachableIP(false)
+}
+
+func BestReachableIP(preferTailscale bool) string {
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return "127.0.0.1"
 	}
+	first := ""
 	for _, iface := range ifaces {
 		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
 			continue
@@ -30,8 +38,29 @@ func BestLANIP() string {
 			if ip == nil {
 				continue
 			}
-			return ip.String()
+			if first == "" {
+				first = ip.String()
+			}
+			if preferTailscale && isTailscaleCandidate(iface.Name, ip) {
+				return ip.String()
+			}
 		}
 	}
+	if first != "" {
+		return first
+	}
 	return "127.0.0.1"
+}
+
+func isTailscaleCandidate(interfaceName string, ip net.IP) bool {
+	name := strings.ToLower(interfaceName)
+	return strings.Contains(name, "tailscale") || isTailscaleIP(ip)
+}
+
+func isTailscaleIP(ip net.IP) bool {
+	v4 := ip.To4()
+	if v4 == nil {
+		return false
+	}
+	return v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127
 }

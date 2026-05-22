@@ -14,6 +14,7 @@ import (
 
 type CurrentImage struct {
 	ID           string    `json:"id"`
+	Kind         string    `json:"kind"`
 	FileName     string    `json:"fileName"`
 	PublicName   string    `json:"publicName"`
 	ContentType  string    `json:"contentType"`
@@ -66,6 +67,9 @@ func (s *Store) CurrentPath() (string, *CurrentImage, bool) {
 func (s *Store) SetCurrent(srcPath string, info CurrentImage) error {
 	info.ID = randomID()
 	info.UpdatedAt = time.Now()
+	if info.Kind == "" {
+		info.Kind = "image"
+	}
 	info.FileName = "current" + filepath.Ext(info.PublicName)
 	if info.PublicName == "" {
 		info.PublicName = info.FileName
@@ -78,6 +82,22 @@ func (s *Store) SetCurrent(srcPath string, info CurrentImage) error {
 
 	if stat, err := os.Stat(dstPath); err == nil {
 		info.SizeBytes = stat.Size()
+	}
+
+	s.mu.Lock()
+	s.current = &info
+	s.mu.Unlock()
+	return s.save()
+}
+
+func (s *Store) SetCurrentInfo(info CurrentImage) error {
+	info.ID = randomID()
+	info.UpdatedAt = time.Now()
+	if info.Kind == "" {
+		info.Kind = "image"
+	}
+	if info.PublicName == "" {
+		info.PublicName = info.FileName
 	}
 
 	s.mu.Lock()
