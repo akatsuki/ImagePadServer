@@ -2,8 +2,8 @@ package about
 
 const (
 	AppName        = "ImagePadServer"
-	Version        = "v1.0.5"
-	FileVersion    = "1.0.5.0"
+	Version        = "v1.0.6"
+	FileVersion    = "1.0.6.0"
 	Author         = "Akat / 赤月さん"
 	License        = "MIT License"
 	Copyright      = "Copyright (c) 2026 Akat / 赤月さん"

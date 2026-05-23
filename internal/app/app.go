@@ -70,6 +70,7 @@ func run(useNativeWindow bool) error {
 	if err != nil {
 		return err
 	}
+	defer resetMediaWorkspace(store)
 
 	httpServer := &http.Server{
 		Addr:         fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
@@ -83,6 +84,7 @@ func run(useNativeWindow bool) error {
 	}
 	actualPort := listener.Addr().(*net.TCPAddr).Port
 	cfg.Port = actualPort
+	localURL = cfg.URLForHost("127.0.0.1")
 
 	advertisedHost := cfg.AdvertisedHost(network.BestReachableIP(cfg.PreferTailscale))
 	mux := http.NewServeMux()
@@ -151,10 +153,6 @@ func run(useNativeWindow bool) error {
 	select {
 	case <-stop:
 	case <-trayExit:
-		go func() {
-			time.Sleep(1500 * time.Millisecond)
-			os.Exit(0)
-		}()
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -167,6 +165,16 @@ func run(useNativeWindow bool) error {
 	return httpServer.Shutdown(ctx)
 }
 
+func resetMediaWorkspace(store *library.Store) {
+	if store == nil {
+		return
+	}
+	video.RemoveGenerated(store.Dir())
+	if err := store.Reset(); err != nil {
+		log.Printf("failed to reset media workspace: %v", err)
+	}
+}
+
 func measureNetworkOnce() {
 	appSettings, err := settings.Load()
 	if err != nil || appSettings.NetworkUploadMbps > 0 {
@@ -176,8 +184,10 @@ func measureNetworkOnce() {
 	if measurement.UploadMbps <= 0 {
 		return
 	}
-	appSettings.NetworkUploadMbps = measurement.UploadMbps
-	_ = settings.Save(appSettings)
+	_ = settings.Update(func(appSettings *settings.Settings) error {
+		appSettings.NetworkUploadMbps = measurement.UploadMbps
+		return nil
+	})
 }
 
 func serverIsHealthy(url string) bool {

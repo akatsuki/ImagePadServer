@@ -12,6 +12,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"io"
+	"log"
 	"mime"
 	"net"
 	"net/http"
@@ -35,6 +36,12 @@ import (
 	"imagepadserver/internal/settings"
 	"imagepadserver/internal/upnp"
 	"imagepadserver/internal/video"
+)
+
+const (
+	// maxMultipartMemory is kept low so large uploads spill to temp files instead of RAM.
+	maxMultipartMemory  = 32 << 20
+	maxVideoUploadBytes = 2 << 30 // matches yt-dlp --max-filesize 2G
 )
 
 type Server struct {
@@ -162,7 +169,7 @@ func isLocalAdminHost(hostport string) bool {
 		host = hostport
 	}
 	host = strings.Trim(strings.ToLower(host), "[]")
-	if host == "localhost" {
+	if host == "localhost" || host == "0.0.0.0" {
 		return true
 	}
 	ip := net.ParseIP(host)
@@ -249,6 +256,12 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.Printf("handleState panic: %v", recovered)
+			http.Error(w, "failed to read application state", http.StatusInternalServerError)
+		}
+	}()
 	writeJSON(w, s.state(r))
 }
 
@@ -308,15 +321,18 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.clearPublication()
-		if sourcePath, name, err := video.DownloadURL(req.URL, s.store.Dir()); err == nil {
-			state, err := s.processVideoFileAndPublish(r, sourcePath, name)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			writeJSON(w, state)
+		sourcePath, name, err := video.DownloadURL(req.URL, s.store.Dir())
+		if err != nil {
+			http.Error(w, videoURLDownloadError(err), http.StatusBadRequest)
 			return
 		}
+		state, err := s.processVideoFileAndPublish(r, sourcePath, name)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, state)
+		return
 	}
 	remote, name, err := downloadRemoteImage(req.URL, opts.MaxBytes)
 	if err != nil {
@@ -385,12 +401,19 @@ func (s *Server) processVideoAndPublish(r *http.Request, reader io.Reader, name 
 	if err != nil {
 		return nil, fmt.Errorf("failed to save video upload")
 	}
-	if _, err := io.Copy(source, reader); err != nil {
+	written, err := io.Copy(source, io.LimitReader(reader, maxVideoUploadBytes+1))
+	if err != nil {
 		_ = source.Close()
+		_ = os.Remove(sourcePath)
 		return nil, fmt.Errorf("failed to save video upload")
 	}
 	if err := source.Close(); err != nil {
+		_ = os.Remove(sourcePath)
 		return nil, fmt.Errorf("failed to save video upload")
+	}
+	if written > maxVideoUploadBytes {
+		_ = os.Remove(sourcePath)
+		return nil, fmt.Errorf("video exceeds size limit of %d bytes", maxVideoUploadBytes)
 	}
 	return s.processVideoFileAndPublish(r, sourcePath, name)
 }
@@ -463,11 +486,18 @@ func optionsFromValues(value func(string) string) imageproc.Options {
 	return opts
 }
 
-func uploadMemoryLimit(videoEnabled bool) int64 {
-	if videoEnabled {
-		return 512 << 20
+func uploadMemoryLimit(_ bool) int64 {
+	return maxMultipartMemory
+}
+
+func videoURLDownloadError(err error) string {
+	if err == nil {
+		return "動画URLの取得に失敗しました"
 	}
-	return 64 << 20
+	return fmt.Sprintf(
+		"動画URLの取得に失敗しました: %v。yt-dlp で取得できないURLの場合は動画ファイルを直接アップロードするか、ビデオプレーヤーモードをオフにして画像URLとして指定してください。",
+		err,
+	)
 }
 
 func downloadRemoteImage(rawURL string, maxBytes int64) (io.ReadCloser, string, error) {
@@ -533,32 +563,34 @@ func downloadRemoteImage(rawURL string, maxBytes int64) (io.ReadCloser, string, 
 }
 
 func validatePublicURL(rawURL string) (*url.URL, error) {
-	parsed, err := url.Parse(strings.TrimSpace(rawURL))
-	if err != nil || parsed == nil || parsed.Host == "" {
-		return nil, fmt.Errorf("invalid image URL")
-	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return nil, fmt.Errorf("only http and https image URLs are allowed")
-	}
-	host := parsed.Hostname()
-	if host == "" {
-		return nil, fmt.Errorf("invalid image URL host")
-	}
-	if isBlockedHost(host) {
-		return nil, fmt.Errorf("local or private network URLs are not allowed")
+	parsed, err := validateRemoteHTTPURL(rawURL)
+	if err != nil {
+		return nil, err
 	}
 	return parsed, nil
 }
 
 func validateHTTPURL(rawURL string) error {
+	_, err := validateRemoteHTTPURL(rawURL)
+	return err
+}
+
+func validateRemoteHTTPURL(rawURL string) (*url.URL, error) {
 	parsed, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil || parsed == nil || parsed.Host == "" {
-		return fmt.Errorf("invalid URL")
+		return nil, fmt.Errorf("invalid URL")
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return fmt.Errorf("only http and https URLs are allowed")
+		return nil, fmt.Errorf("only http and https URLs are allowed")
 	}
-	return nil
+	host := parsed.Hostname()
+	if host == "" {
+		return nil, fmt.Errorf("invalid URL host")
+	}
+	if isBlockedHost(host) {
+		return nil, fmt.Errorf("local or private network URLs are not allowed")
+	}
+	return parsed, nil
 }
 
 func isBlockedHost(host string) bool {
@@ -593,6 +625,8 @@ func isBlockedIP(ip net.IP) bool {
 		case v4[0] == 192 && v4[1] == 168:
 			return true
 		case v4[0] == 169 && v4[1] == 254:
+			return true
+		case v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127:
 			return true
 		}
 		return false
@@ -691,19 +725,16 @@ func (s *Server) handleVideoPlayer(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid video player request", http.StatusBadRequest)
 			return
 		}
-		appSettings, err := settings.Load()
-		if err != nil {
-			http.Error(w, "failed to load settings", http.StatusInternalServerError)
-			return
-		}
 		if req.Enabled {
 			if _, err := video.EnsureFFmpeg(); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
 		}
-		appSettings.VideoPlayerEnabled = req.Enabled
-		if err := settings.Save(appSettings); err != nil {
+		if err := settings.Update(func(appSettings *settings.Settings) error {
+			appSettings.VideoPlayerEnabled = req.Enabled
+			return nil
+		}); err != nil {
 			http.Error(w, "failed to save settings", http.StatusInternalServerError)
 			return
 		}
@@ -733,13 +764,10 @@ func (s *Server) handleVideoQuality(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		mode := normalizeQualityMode(req.Mode)
-		appSettings, err := settings.Load()
-		if err != nil {
-			http.Error(w, "failed to load settings", http.StatusInternalServerError)
-			return
-		}
-		appSettings.VideoQualityMode = mode
-		if err := settings.Save(appSettings); err != nil {
+		if err := settings.Update(func(appSettings *settings.Settings) error {
+			appSettings.VideoQualityMode = mode
+			return nil
+		}); err != nil {
 			http.Error(w, "failed to save settings", http.StatusInternalServerError)
 			return
 		}
@@ -755,11 +783,10 @@ func (s *Server) handleNetworkCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	measurement := video.MeasureNetwork()
-	appSettings, err := settings.Load()
-	if err == nil {
+	_ = settings.Update(func(appSettings *settings.Settings) error {
 		appSettings.NetworkUploadMbps = measurement.UploadMbps
-		_ = settings.Save(appSettings)
-	}
+		return nil
+	})
 	writeJSON(w, s.videoQualityState())
 }
 
@@ -1081,12 +1108,13 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 				publicImageURL = tunnelURLBase + imagePath + "?v=" + current.ID
 			}
 		}
-		videoStatus := videoPlayer["status"].(video.Result)
-		if videoPlayer["enabled"].(bool) && tunnelURLBase != "" && current.Kind == "video" && videoStatus.MP4 {
+		videoEnabled, _ := videoPlayer["enabled"].(bool)
+		videoStatus, _ := videoPlayer["status"].(video.Result)
+		if videoEnabled && tunnelURLBase != "" && current.Kind == "video" && videoStatus.MP4 {
 			videoURL = imageURLBase + "video/current.mp4?v=" + current.ID
 			publicVideoURL = tunnelURLBase + "video/current.mp4?v=" + current.ID
 		}
-		if videoPlayer["enabled"].(bool) && tunnelURLBase != "" && (videoStatus.HLS || videoStatus.Active || current.Kind != "video") {
+		if videoEnabled && tunnelURLBase != "" && (videoStatus.HLS || videoStatus.Active || current.Kind != "video") {
 			streamPath := hlsURLPath(current.ID)
 			hlsURL = imageURLBase + streamPath
 			publicHLSURL = tunnelURLBase + streamPath

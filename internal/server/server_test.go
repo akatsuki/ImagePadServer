@@ -1,7 +1,9 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"imagepadserver/internal/video"
@@ -22,6 +24,15 @@ func TestValidateHTTPURL(t *testing.T) {
 	}
 	if err := validateHTTPURL("file:///tmp/video.mp4"); err == nil {
 		t.Fatal("expected non-http URL to be rejected")
+	}
+	if err := validateHTTPURL("http://127.0.0.1/video"); err == nil {
+		t.Fatal("expected loopback URL to be rejected")
+	}
+	if err := validateHTTPURL("http://192.168.0.1/stream"); err == nil {
+		t.Fatal("expected private network URL to be rejected")
+	}
+	if err := validateHTTPURL("http://100.64.0.1/internal"); err == nil {
+		t.Fatal("expected CGNAT URL to be rejected")
 	}
 }
 
@@ -150,6 +161,13 @@ func TestBitrateOnlyPresetKeepsActiveResolution(t *testing.T) {
 	}
 	if !result.BitrateOnly {
 		t.Fatal("expected bitrate-only flag")
+	}
+}
+
+func TestVideoURLDownloadError(t *testing.T) {
+	msg := videoURLDownloadError(fmt.Errorf("not found"))
+	if !strings.Contains(msg, "yt-dlp") {
+		t.Fatalf("message = %q, want yt-dlp guidance", msg)
 	}
 }
 

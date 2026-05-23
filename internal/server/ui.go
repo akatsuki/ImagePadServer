@@ -602,6 +602,20 @@ const indexHTML = `<!doctype html>
     const imageAccept = 'image/png,image/jpeg,image/gif,image/webp,image/bmp,image/tiff,image/svg+xml,.jpg,.jpeg,.png,.gif,.webp,.bmp,.tif,.tiff,.svg';
     const mediaAccept = imageAccept + ',video/*,video/mp4,video/quicktime,video/webm,video/x-matroska,.mp4,.mov,.m4v,.webm,.mkv,.avi';
 
+    function syncFailureMessage(error) {
+      const text = String((error && error.message) || error || '').trim();
+      if (text.includes('admin access requires')) {
+        return '状態の同期に失敗しました。管理画面は http://127.0.0.1:8080/ から開いてください（Tunnel の公開 URL では使えません）';
+      }
+      if (text.includes('Failed to fetch') || text.includes('NetworkError') || text.includes('Load failed')) {
+        return '状態の同期に失敗しました。ImagePadServer が起動しているか、このタブのアドレスが正しいか確認してください';
+      }
+      if (text) {
+        return '状態の同期に失敗しました: ' + text.slice(0, 140);
+      }
+      return '状態の同期に失敗しました';
+    }
+
     async function refreshState() {
       if (refreshInFlight) {
         refreshAgain = true;
@@ -611,14 +625,20 @@ const indexHTML = `<!doctype html>
       const seq = ++lastAppliedStateSeq;
       try {
         const res = await fetch('/api/state', { cache: 'no-store' });
-        if (!res.ok) throw new Error(await res.text());
-        const data = await res.json();
+        const body = await res.text();
+        if (!res.ok) throw new Error(body || ('HTTP ' + res.status));
+        const data = JSON.parse(body);
         if (seq === lastAppliedStateSeq) {
           applyState(data);
+          if (toast && toast.dataset.error === '1') {
+            toast.textContent = '';
+            delete toast.dataset.error;
+          }
         }
       } catch (error) {
         if (toast && !document.hidden) {
-          toast.textContent = '状態の同期に失敗しました';
+          toast.textContent = syncFailureMessage(error);
+          toast.dataset.error = '1';
         }
       } finally {
         refreshInFlight = false;

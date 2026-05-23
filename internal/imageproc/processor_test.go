@@ -43,6 +43,17 @@ func TestProcessResizesToVRChatLimit(t *testing.T) {
 	}
 }
 
+func TestProcessRejectsInputOverMaxBytes(t *testing.T) {
+	payload := bytes.Repeat([]byte{0xff}, 2048)
+	opts := DefaultOptions()
+	opts.MaxBytes = 1024
+
+	_, err := Process(bytes.NewReader(payload), "big.bin", t.TempDir(), opts)
+	if err == nil {
+		t.Fatal("expected size limit error for raw input")
+	}
+}
+
 func TestProcessRejectsPNGOverMaxBytes(t *testing.T) {
 	src := image.NewRGBA(image.Rect(0, 0, 32, 32))
 

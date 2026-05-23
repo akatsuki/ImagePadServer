@@ -62,9 +62,13 @@ func Process(reader io.Reader, _ string, outDir string, opts Options) (Result, e
 		opts.Format = "jpeg"
 	}
 
-	input, err := io.ReadAll(reader)
+	limited := io.LimitReader(reader, opts.MaxBytes+1)
+	input, err := io.ReadAll(limited)
 	if err != nil {
 		return Result{}, err
+	}
+	if int64(len(input)) > opts.MaxBytes {
+		return Result{}, fmt.Errorf("image exceeds size limit of %d bytes", opts.MaxBytes)
 	}
 	orientation := exifOrientation(input)
 

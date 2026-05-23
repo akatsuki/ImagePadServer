@@ -31,15 +31,28 @@ type Store struct {
 	current *CurrentImage
 }
 
-func NewStore(dir string) (*Store, error) {
+// ResetDir removes and recreates the media workspace directory.
+// ImagePadServer intentionally starts with an empty workspace on each launch.
+func ResetDir(dir string) error {
 	if err := os.RemoveAll(dir); err != nil {
+		return err
+	}
+	return os.MkdirAll(dir, 0700)
+}
+
+func NewStore(dir string) (*Store, error) {
+	if err := ResetDir(dir); err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return nil, err
-	}
-	s := &Store{dir: dir}
-	return s, nil
+	return &Store{dir: dir}, nil
+}
+
+// Reset clears in-memory state and reinitializes the media workspace directory.
+func (s *Store) Reset() error {
+	s.mu.Lock()
+	s.current = nil
+	s.mu.Unlock()
+	return ResetDir(s.dir)
 }
 
 func (s *Store) Dir() string {
@@ -114,7 +127,7 @@ func (s *Store) Clear() error {
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return os.MkdirAll(s.dir, 0755)
+			return os.MkdirAll(s.dir, 0700)
 		}
 		return err
 	}
