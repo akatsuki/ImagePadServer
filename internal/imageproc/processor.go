@@ -23,6 +23,11 @@ import (
 	_ "golang.org/x/image/webp"
 )
 
+const (
+	maxImageDimension = 8192
+	maxImageBytes     = 120 << 20
+)
+
 type Options struct {
 	MaxDimension int
 	Format       string
@@ -48,14 +53,14 @@ func DefaultOptions() Options {
 }
 
 func Process(reader io.Reader, _ string, outDir string, opts Options) (Result, error) {
-	if opts.MaxDimension <= 0 || opts.MaxDimension > 2048 {
+	if opts.MaxDimension <= 0 || opts.MaxDimension > maxImageDimension {
 		opts.MaxDimension = 2048
 	}
 	if opts.JPEGQuality <= 0 || opts.JPEGQuality > 100 {
 		opts.JPEGQuality = 88
 	}
-	if opts.MaxBytes <= 0 || opts.MaxBytes > 30<<20 {
-		opts.MaxBytes = 30 << 20
+	if opts.MaxBytes <= 0 || opts.MaxBytes > maxImageBytes {
+		opts.MaxBytes = maxImageBytes
 	}
 	opts.Format = strings.ToLower(opts.Format)
 	if opts.Format != "png" {
@@ -326,7 +331,7 @@ func rotate90CCW(src image.Image) image.Image {
 
 func encodeJPEGWithinLimit(img image.Image, quality int, maxBytes int64) ([]byte, error) {
 	if maxBytes <= 0 {
-		maxBytes = 30 << 20
+		maxBytes = maxImageBytes
 	}
 	triedMinimum := false
 	for q := quality; q >= 50; q -= 8 {

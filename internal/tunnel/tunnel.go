@@ -3,6 +3,8 @@ package tunnel
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -29,6 +31,11 @@ type Tunnel struct {
 	cmd    *exec.Cmd
 	cancel context.CancelFunc
 }
+
+const (
+	cloudflaredDownloadURL    = "https://github.com/cloudflare/cloudflared/releases/download/2026.5.0/cloudflared-windows-amd64.exe"
+	cloudflaredDownloadSHA256 = "f141cded099c239171ad2cea6fb5da0fdaa2bd36104c3074d883f9546519eba7"
+)
 
 var tryCloudflareURL = regexp.MustCompile(`https://[-a-zA-Z0-9]+\.trycloudflare\.com`)
 
@@ -138,9 +145,12 @@ func ensureCloudflared() (string, error) {
 }
 
 func downloadCloudflared(path string) error {
-	const downloadURL = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
+	checksum := strings.TrimSpace(os.Getenv("IMAGEPAD_CLOUDFLARED_SHA256"))
+	if checksum == "" {
+		checksum = cloudflaredDownloadSHA256
+	}
 	client := http.Client{Timeout: 2 * time.Minute}
-	resp, err := client.Get(downloadURL)
+	resp, err := client.Get(cloudflaredDownloadURL)
 	if err != nil {
 		return err
 	}
@@ -154,16 +164,43 @@ func downloadCloudflared(path string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(file, resp.Body); err != nil {
+	written, err := io.Copy(file, io.LimitReader(resp.Body, 100<<20))
+	if err != nil {
 		_ = file.Close()
 		_ = os.Remove(tmp)
 		return err
+	}
+	if written == 0 {
+		_ = file.Close()
+		_ = os.Remove(tmp)
+		return errors.New("cloudflared download returned empty file")
 	}
 	if err := file.Close(); err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}
+	if err := verifySHA256(tmp, checksum); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
 	return os.Rename(tmp, path)
+}
+
+func verifySHA256(path, expected string) error {
+	expected = strings.ToLower(strings.TrimSpace(expected))
+	if expected == "" {
+		return errors.New("expected SHA256 checksum is empty")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	hash := sha256.Sum256(data)
+	actual := hex.EncodeToString(hash[:])
+	if actual != expected {
+		return fmt.Errorf("download checksum mismatch: want %s, got %s", expected, actual)
+	}
+	return nil
 }
 
 func ImageURL(base, path, id string) string {

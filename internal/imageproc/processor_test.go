@@ -43,6 +43,34 @@ func TestProcessResizesToVRChatLimit(t *testing.T) {
 	}
 }
 
+func TestProcessSupportsLargeMaxDimension(t *testing.T) {
+	src := image.NewRGBA(image.Rect(0, 0, 5000, 1200))
+	for y := 0; y < 1200; y++ {
+		for x := 0; x < 5000; x++ {
+			src.Set(x, y, color.RGBA{R: uint8(x), G: uint8(y), B: 120, A: 255})
+		}
+	}
+
+	var input bytes.Buffer
+	if err := png.Encode(&input, src); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := DefaultOptions()
+	opts.MaxDimension = 5000
+	opts.MaxBytes = 60 << 20
+	result, err := Process(&input, "wide.png", t.TempDir(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Width != 5000 {
+		t.Fatalf("width = %d, want 5000", result.Width)
+	}
+	if result.Height != 1200 {
+		t.Fatalf("height = %d, want 1200", result.Height)
+	}
+}
+
 func TestProcessRejectsInputOverMaxBytes(t *testing.T) {
 	payload := bytes.Repeat([]byte{0xff}, 2048)
 	opts := DefaultOptions()

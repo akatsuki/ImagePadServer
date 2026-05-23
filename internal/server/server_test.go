@@ -3,9 +3,14 @@ package server
 import (
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"imagepadserver/internal/config"
+	"imagepadserver/internal/library"
+	"imagepadserver/internal/settings"
 	"imagepadserver/internal/video"
 )
 
@@ -137,6 +142,51 @@ func TestPrimaryShareURL(t *testing.T) {
 	})
 	if url != "https://example.com/image/current.png" || label != "ImagePad URL" {
 		t.Fatalf("share URL = %q (%s), want image", url, label)
+	}
+}
+
+func TestStateExposesHLSURLOnlyAfterFirstSegment(t *testing.T) {
+	t.Setenv("APPDATA", t.TempDir())
+	if err := settings.Update(func(s *settings.Settings) error {
+		s.VideoPlayerEnabled = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	imagePath := filepath.Join(t.TempDir(), "input.png")
+	if err := os.WriteFile(imagePath, []byte("image"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetCurrent(imagePath, library.CurrentImage{
+		PublicName:  "current.png",
+		ContentType: "image/png",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	current := store.Current()
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+	srv.SetTunnelStatus(true, "https://example.trycloudflare.com", "connected")
+
+	playlist := filepath.Join(store.Dir(), video.PlaylistName(current.ID))
+	if err := os.WriteFile(playlist, []byte("#EXTM3U\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	state := srv.state(adminRequest("http://127.0.0.1:8080/", "127.0.0.1:50000"))
+	if got, _ := state["hlsURL"].(string); got != "" {
+		t.Fatalf("hlsURL = %q, want empty before first segment", got)
+	}
+
+	if err := os.WriteFile(filepath.Join(store.Dir(), "current-"+current.ID+"-0.ts"), []byte("segment"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	state = srv.state(adminRequest("http://127.0.0.1:8080/", "127.0.0.1:50000"))
+	if got, _ := state["hlsURL"].(string); !strings.Contains(got, "/stream/"+current.ID+"/") {
+		t.Fatalf("hlsURL = %q, want id-scoped HLS URL after first segment", got)
 	}
 }
 

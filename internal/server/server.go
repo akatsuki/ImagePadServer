@@ -477,8 +477,8 @@ func optionsFromValues(value func(string) string) imageproc.Options {
 	}
 	if v := value("maxMB"); v != "" {
 		if maxMB, err := strconv.Atoi(v); err == nil && maxMB > 0 {
-			if maxMB > 30 {
-				maxMB = 30
+			if maxMB > 120 {
+				maxMB = 120
 			}
 			opts.MaxBytes = int64(maxMB) << 20
 		}
@@ -505,8 +505,8 @@ func downloadRemoteImage(rawURL string, maxBytes int64) (io.ReadCloser, string, 
 	if err != nil {
 		return nil, "", err
 	}
-	if maxBytes <= 0 || maxBytes > 30<<20 {
-		maxBytes = 30 << 20
+	if maxBytes <= 0 || maxBytes > 120<<20 {
+		maxBytes = 120 << 20
 	}
 
 	client := &http.Client{
@@ -1114,7 +1114,7 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 			videoURL = imageURLBase + "video/current.mp4?v=" + current.ID
 			publicVideoURL = tunnelURLBase + "video/current.mp4?v=" + current.ID
 		}
-		if videoEnabled && tunnelURLBase != "" && (videoStatus.HLS || videoStatus.Active || current.Kind != "video") {
+		if videoEnabled && tunnelURLBase != "" && videoStatus.HLS {
 			streamPath := hlsURLPath(current.ID)
 			hlsURL = imageURLBase + streamPath
 			publicHLSURL = tunnelURLBase + streamPath

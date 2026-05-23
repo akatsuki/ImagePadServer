@@ -101,8 +101,8 @@ Multipart form:
 - `image`: file
 - `format`: `jpeg` or `png`
 - `quality`: JPEG quality, default `88`
-- `maxDimension`: default/max `2048`; larger values are clamped by the server
-- `maxMB`: default/max `30`; larger values are clamped by the server
+- `maxDimension`: default `2048`, max `8192`; larger values are clamped by the server
+- `maxMB`: default `30`, max `120`; larger values are clamped by the server
 
 The size limit applies to the encoded output. JPEG tries lower quality settings down to 50 before failing. PNG cannot reduce quality, so it fails if the encoded PNG is still larger than the limit.
 
