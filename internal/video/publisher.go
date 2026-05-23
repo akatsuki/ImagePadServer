@@ -3,6 +3,8 @@ package video
 import (
 	"archive/zip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -35,10 +37,12 @@ const (
 	HLSPlaylist  = "current.m3u8"
 	HLSSegment   = "current0.ts"
 	FrameRate    = "10"
-	ClipDuration = "600"
+	ClipDuration = "10"
 
-	ffmpegDownloadURL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
-	ytdlpDownloadURL  = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+	ffmpegDownloadURL    = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+	ytdlpDownloadURL     = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+	ffmpegDownloadSHA256 = ""
+	ytdlpDownloadSHA256  = ""
 )
 
 var activeHLS sync.Map
@@ -611,8 +615,16 @@ func downloadFFmpeg() (string, error) {
 		return "", fmt.Errorf("failed to prepare FFmpeg folder: %w", err)
 	}
 
+	checksum := strings.TrimSpace(os.Getenv("IMAGEPAD_FFMPEG_SHA256"))
+	if checksum == "" {
+		checksum = ffmpegDownloadSHA256
+	}
+	if checksum == "" {
+		return "", errors.New("automatic FFmpeg download is disabled until a trusted SHA256 checksum is configured")
+	}
+
 	zipPath := filepath.Join(settings.Dir(), "bin", "ffmpeg-release-essentials.zip")
-	if err := downloadFile(zipPath, ffmpegDownloadURL, 160<<20); err != nil {
+	if err := downloadFile(zipPath, ffmpegDownloadURL, 160<<20, checksum); err != nil {
 		return "", fmt.Errorf("failed to download FFmpeg: %w", err)
 	}
 	defer os.Remove(zipPath)
@@ -631,13 +643,25 @@ func downloadYTDLP() (string, error) {
 	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 		return "", fmt.Errorf("failed to prepare yt-dlp folder: %w", err)
 	}
-	if err := downloadFile(target, ytdlpDownloadURL, 50<<20); err != nil {
+
+	checksum := strings.TrimSpace(os.Getenv("IMAGEPAD_YTDLP_SHA256"))
+	if checksum == "" {
+		checksum = ytdlpDownloadSHA256
+	}
+	if checksum == "" {
+		return "", errors.New("automatic yt-dlp download is disabled until a trusted SHA256 checksum is configured")
+	}
+
+	if err := downloadFile(target, ytdlpDownloadURL, 50<<20, checksum); err != nil {
 		return "", fmt.Errorf("failed to download yt-dlp: %w", err)
 	}
 	return target, nil
 }
 
-func downloadFile(path, rawURL string, maxBytes int64) error {
+func downloadFile(path, rawURL string, maxBytes int64, expectedSHA256 string) error {
+	if strings.TrimSpace(expectedSHA256) == "" {
+		return errors.New("missing SHA256 checksum for trusted download")
+	}
 	client := &http.Client{Timeout: 5 * time.Minute}
 	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
 	if err != nil {
@@ -677,8 +701,30 @@ func downloadFile(path, rawURL string, maxBytes int64) error {
 		_ = os.Remove(tempPath)
 		return fmt.Errorf("download exceeds size limit")
 	}
+
+	if err := verifySHA256(tempPath, expectedSHA256); err != nil {
+		_ = os.Remove(tempPath)
+		return err
+	}
 	_ = os.Remove(path)
 	return os.Rename(tempPath, path)
+}
+
+func verifySHA256(path, expected string) error {
+	expected = strings.ToLower(strings.TrimSpace(expected))
+	if expected == "" {
+		return errors.New("expected SHA256 checksum is empty")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	hash := sha256.Sum256(data)
+	actual := hex.EncodeToString(hash[:])
+	if actual != expected {
+		return fmt.Errorf("download checksum mismatch: want %s, got %s", expected, actual)
+	}
+	return nil
 }
 
 func extractFFmpegExe(zipPath, target string) error {

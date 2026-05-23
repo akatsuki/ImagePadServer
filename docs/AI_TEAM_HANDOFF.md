@@ -11,6 +11,7 @@ This document gives the local AI agent team enough project context to continue I
 ### Latest Session Snapshot (2026-05-23)
 
 - **Done**: Shutdown media workspace reset; `validateRemoteHTTPURL` (SSRF); settings file lock + atomic save; upload memory limits (32MB multipart spill, image read cap, 2GB video upload); yt-dlp failure no longer falls back to image download.
+- **Recent changes**: Updated still-image HLS generation to use a 10-second clip in `internal/video/publisher.go`; added a UI notice in `internal/server/ui.go` recommending VRChat loop playback mode for HLS output.
 - **Spec confirmed**: Media dir wiped on every app start and shutdown.
 - **Not done**: See backlog in `AI_SESSION_LOG.md` (FFmpeg race R6, token logging, doc drift, etc.).
 - **Tests**: Run `go test ./...` locally.

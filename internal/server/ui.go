@@ -86,6 +86,16 @@ const indexHTML = `<!doctype html>
       font-size: 11px;
       color: var(--muted);
     }
+    .note {
+      margin-top: 8px;
+      padding: 10px;
+      border-radius: 8px;
+      background: #fff3e0;
+      border: 1px solid #f2c078;
+      color: #5c3f00;
+      font-size: 13px;
+      line-height: 1.4;
+    }
     button, .file-button {
       min-height: 32px;
       border: 0;
@@ -482,6 +492,7 @@ const indexHTML = `<!doctype html>
               <span class="switch-slider"></span>
             </label>
           </div>
+          <div class="note">HLS動画を使う場合は、VRChat 側でループ再生モードを有効にして再生することをおすすめします。回線負担を減らすには解像度を下げることも検討してください。</div>
         </div>
       </section>
       <div class="about">
@@ -516,10 +527,10 @@ const indexHTML = `<!doctype html>
             <input id="imageURLInput" name="imageURL" type="url" inputmode="url" placeholder="https://example.com/image.webp">
           </div>
           <div class="controls">
-            <label><span>最大辺</span><input name="maxDimension" type="number" min="64" max="2048" value="2048"></label>
+            <label><span>最大辺</span><input name="maxDimension" type="number" min="64" max="8192" value="2048"></label>
             <label><span>形式</span><select name="format"><option value="jpeg">JPEG</option><option value="png">PNG</option></select></label>
             <label><span>JPEG品質</span><input name="quality" type="number" min="40" max="95" value="88"></label>
-            <label><span>最大MB</span><input name="maxMB" type="number" min="1" max="30" value="30"></label>
+            <label><span>最大MB</span><input name="maxMB" type="number" min="1" max="120" value="30"></label>
           </div>
           <button id="uploadButton" type="submit">変換して公開</button>
           <div class="toast" id="toast"></div>
