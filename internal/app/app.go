@@ -108,10 +108,15 @@ func run(useNativeWindow bool) error {
 
 	trayExit := make(chan struct{})
 	var trayExitOnce sync.Once
+	reconnect := make(chan struct{}, 1)
 	trayIcon, err := tray.Start(localURL, func() {
 		trayExitOnce.Do(func() {
 			close(trayExit)
 		})
+	}, func() {
+		requestReconnect(reconnect)
+	}, func() {
+		requestReconnect(reconnect)
 	})
 	if err != nil {
 		log.Printf("tray icon unavailable: %v", err)
@@ -120,6 +125,7 @@ func run(useNativeWindow bool) error {
 	}
 
 	srv.SetPublicNetworkMessage("UPnP auto port mapping is disabled for safety.")
+	srv.SetTunnelReconnect(reconnect)
 
 	go func() {
 		time.Sleep(300 * time.Millisecond)
@@ -138,16 +144,7 @@ func run(useNativeWindow bool) error {
 
 	go func() {
 		originURL := cfg.URLForHost("127.0.0.1")
-		handle, status := tunnel.Start(originURL)
-		srv.SetTunnelStatus(status.OK, status.URL, status.Message)
-		if status.OK {
-			log.Printf("Cloudflare Tunnel available at %s", status.URL)
-			tunnelMu.Lock()
-			tunnelHandle = handle
-			tunnelMu.Unlock()
-		} else {
-			log.Printf("Cloudflare Tunnel unavailable: %s", status.Message)
-		}
+		manageCloudflareTunnel(originURL, srv, &tunnelMu, &tunnelHandle, reconnect, stop)
 	}()
 
 	select {
@@ -188,6 +185,64 @@ func measureNetworkOnce() {
 		appSettings.NetworkUploadMbps = measurement.UploadMbps
 		return nil
 	})
+}
+
+func manageCloudflareTunnel(originURL string, srv *server.Server, tunnelMu *sync.Mutex, tunnelHandle **tunnel.Tunnel, reconnect <-chan struct{}, stop <-chan os.Signal) {
+	const retryDelay = 5 * time.Second
+
+	for {
+		handle, status := tunnel.Start(originURL)
+		srv.SetTunnelStatus(status.OK, status.URL, status.Message)
+		if status.OK {
+			log.Printf("Cloudflare Tunnel available at %s", status.URL)
+			tunnelMu.Lock()
+			*tunnelHandle = handle
+			tunnelMu.Unlock()
+
+		waitLoop:
+			for {
+				select {
+				case <-stop:
+					handle.Stop()
+					return
+				case <-reconnect:
+					if !handle.IsRunning() {
+						log.Printf("Cloudflare Tunnel reconnect requested and process is not running; restarting")
+						handle.Stop()
+						break waitLoop
+					}
+					log.Printf("Cloudflare Tunnel reconnect requested; restarting")
+					handle.Stop()
+					break waitLoop
+				case err := <-handle.Done():
+					log.Printf("Cloudflare Tunnel stopped unexpectedly: %v", err)
+					srv.SetTunnelStatus(false, "", "Cloudflare Tunnel disconnected; retrying...")
+					break waitLoop
+				}
+			}
+
+			tunnelMu.Lock()
+			*tunnelHandle = nil
+			tunnelMu.Unlock()
+		} else {
+			log.Printf("Cloudflare Tunnel unavailable: %s", status.Message)
+		}
+
+		select {
+		case <-stop:
+			return
+		case <-reconnect:
+			log.Printf("Cloudflare Tunnel reconnect requested; retrying immediately")
+		case <-time.After(retryDelay):
+		}
+	}
+}
+
+func requestReconnect(reconnect chan<- struct{}) {
+	select {
+	case reconnect <- struct{}{}:
+	default:
+	}
 }
 
 func serverIsHealthy(url string) bool {

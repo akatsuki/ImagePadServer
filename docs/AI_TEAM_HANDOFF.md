@@ -8,13 +8,17 @@ This document gives the local AI agent team enough project context to continue I
 2. Read this file for stable project context and guardrails.
 3. Use **[AI_DEVELOPMENT_WORKFLOW.md](AI_DEVELOPMENT_WORKFLOW.md)** for team workflow when using Flowise or multi-agent handoff.
 
-### Latest Session Snapshot (2026-05-23)
+### Latest Session Snapshot (2026-05-24)
 
+- **Done**: Refactored `internal/server/server.go` by extracting admin access checks to `auth.go`, remote URL/image download handling to `remote_upload.go`, media path/type helpers to `media_paths.go`, and deleted-image rendering to `deleted_image.go`.
+- **Done**: Removed duplicate post-publish clipboard response handling with `withClipboardResult`; simplified reconnect channel sends in `internal/app/app.go`; removed unused `tunnel.ImageURL`; simplified `uploadMemoryLimit`.
 - **Done**: Shutdown media workspace reset; `validateRemoteHTTPURL` (SSRF); settings file lock + atomic save; upload memory limits (32MB multipart spill, image read cap, 2GB video upload); yt-dlp failure no longer falls back to image download.
-- **Recent changes**: Updated still-image HLS generation to use a 10-second clip in `internal/video/publisher.go`; added a UI notice in `internal/server/ui.go` recommending VRChat loop playback mode for HLS output.
+- **Recent changes**: Updated still-image HLS generation to use a 10-second clip in `internal/video/publisher.go`; added a UI notice in `internal/server/ui.go` recommending VRChat loop playback mode for HLS output; added remote admin page auto-close behavior on host disconnect in `internal/server/ui.go`.
+- **Recent changes**: Expanded image upload support to allow `maxDimension` up to `8192` and `maxMB` up to `120`, with server-side clamping in `internal/imageproc/processor.go` and `internal/server/server.go`.
+- **Recent changes**: Added Cloudflare Tunnel manual reconnect support, including tray menu `再接続`, admin UI reconnect button, `/api/tunnel/reconnect`, and reconnect channel wiring between `internal/app/app.go` and `internal/server/server.go`.
 - **Spec confirmed**: Media dir wiped on every app start and shutdown.
 - **Not done**: See backlog in `AI_SESSION_LOG.md` (FFmpeg race R6, token logging, doc drift, etc.).
-- **Tests**: Run `go test ./...` locally.
+- **Tests**: `go test ./...` passed locally after the refactor.
 
 ## Project
 
@@ -30,7 +34,7 @@ Users can upload images or videos from a PC or phone, then copy a URL that VRCha
 - Current tests: `go test ./...`
 - Go is installed at `C:\Program Files\Go\bin\go.exe`.
 - README is valid UTF-8. If PowerShell shows mojibake, read it with `Get-Content README.md -Encoding UTF8`.
-- Current branch status when this handoff was created: `main...origin/main [ahead 1]`.
+- Current branch status when this handoff was updated: preparing `v1.0.8` release on `main`.
 
 ## Main Packages
 

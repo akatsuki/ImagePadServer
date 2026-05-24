@@ -18,34 +18,41 @@ import (
 )
 
 const (
-	trayUID      = 1
-	trayCallback = 0x0400 + 77
-	menuOpenID   = 1001
-	menuExitID   = 1002
+	trayUID         = 1
+	trayCallback    = 0x0400 + 77
+	menuOpenID      = 1001
+	menuExitID      = 1002
+	menuReconnectID = 1003
 
-	wmDestroy      = 0x0002
-	wmClose        = 0x0010
-	wmCommand      = 0x0111
-	wmLButtonUp    = 0x0202
-	wmRButtonUp    = 0x0205
-	nimAdd         = 0x00000000
-	nimDelete      = 0x00000002
-	nifMessage     = 0x00000001
-	nifIcon        = 0x00000002
-	nifTip         = 0x00000004
-	mfString       = 0x00000000
-	imageIcon      = 1
-	lrLoadFromFile = 0x00000010
-	lrDefaultSize  = 0x00000040
-	tpmRightButton = 0x0002
+	wmDestroy          = 0x0002
+	wmClose            = 0x0010
+	wmCommand          = 0x0111
+	wmLButtonUp        = 0x0202
+	wmRButtonUp        = 0x0205
+	wmPowerBroadcast   = 0x0218
+	pbtResumeSuspend   = 0x0007
+	pbtResumeAutomatic = 0x0012
+	pbtResumeCritical  = 0x0006
+	nimAdd             = 0x00000000
+	nimDelete          = 0x00000002
+	nifMessage         = 0x00000001
+	nifIcon            = 0x00000002
+	nifTip             = 0x00000004
+	mfString           = 0x00000000
+	imageIcon          = 1
+	lrLoadFromFile     = 0x00000010
+	lrDefaultSize      = 0x00000040
+	tpmRightButton     = 0x0002
 )
 
 // Tray represents the Windows notification-area icon.
 type Tray struct {
-	hwnd   uintptr
-	done   chan struct{}
-	once   sync.Once
-	onExit func()
+	hwnd        uintptr
+	done        chan struct{}
+	once        sync.Once
+	onExit      func()
+	onResume    func()
+	onReconnect func()
 }
 
 var (
@@ -126,9 +133,9 @@ type notifyIconData struct {
 }
 
 // Start shows a Windows notification-area icon that opens serverURL when clicked.
-func Start(serverURL string, onExit func()) (*Tray, error) {
+func Start(serverURL string, onExit func(), onResume func(), onReconnect func()) (*Tray, error) {
 	ready := make(chan error, 1)
-	tray := &Tray{done: make(chan struct{}), onExit: onExit}
+	tray := &Tray{done: make(chan struct{}), onExit: onExit, onResume: onResume, onReconnect: onReconnect}
 
 	go func() {
 		runtime.LockOSThread()
@@ -222,6 +229,11 @@ func trayWindowProc(hwnd uintptr, message uint32, wparam, lparam uintptr) uintpt
 		case menuOpenID:
 			browser.Open(currentTrayURL)
 			return 0
+		case menuReconnectID:
+			if currentTray != nil && currentTray.onReconnect != nil {
+				go currentTray.onReconnect()
+			}
+			return 0
 		case menuExitID:
 			if currentTray != nil && currentTray.onExit != nil {
 				go currentTray.onExit()
@@ -240,6 +252,14 @@ func trayWindowProc(hwnd uintptr, message uint32, wparam, lparam uintptr) uintpt
 		}
 		procPostQuitMessage.Call(0)
 		return 0
+	case wmPowerBroadcast:
+		switch uint32(wparam) {
+		case pbtResumeSuspend, pbtResumeAutomatic, pbtResumeCritical:
+			if currentTray != nil && currentTray.onResume != nil {
+				go currentTray.onResume()
+			}
+		}
+		return 1
 	}
 	ret, _, _ := procDefWindowProcW.Call(hwnd, uintptr(message), wparam, lparam)
 	return ret
@@ -253,6 +273,7 @@ func showTrayMenu(hwnd uintptr) {
 	defer procDestroyMenu.Call(menu)
 
 	procAppendMenuW.Call(menu, mfString, menuOpenID, uintptr(unsafe.Pointer(utf16Ptr("開く"))))
+	procAppendMenuW.Call(menu, mfString, menuReconnectID, uintptr(unsafe.Pointer(utf16Ptr("再接続"))))
 	procAppendMenuW.Call(menu, mfString, menuExitID, uintptr(unsafe.Pointer(utf16Ptr("終了"))))
 
 	var pt point

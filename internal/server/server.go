@@ -1,20 +1,14 @@
 package server
 
 import (
-	"bytes"
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"html/template"
-	"image"
-	"image/color"
 	"image/jpeg"
 	"image/png"
 	"io"
 	"log"
-	"mime"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -48,15 +42,16 @@ type Server struct {
 	cfg   config.Config
 	store *library.Store
 
-	mu             sync.RWMutex
-	upnp           upnp.Result
-	tmpl           *template.Template
-	lanURL         string
-	imageURLBase   string
-	previewURLBase string
-	tunnelStatus   map[string]interface{}
-	tunnelURLBase  string
-	adminToken     string
+	mu              sync.RWMutex
+	upnp            upnp.Result
+	tmpl            *template.Template
+	lanURL          string
+	imageURLBase    string
+	previewURLBase  string
+	tunnelStatus    map[string]interface{}
+	tunnelURLBase   string
+	tunnelReconnect chan<- struct{}
+	adminToken      string
 }
 
 func New(cfg config.Config, store *library.Store, imageURLBase string) *Server {
@@ -85,6 +80,7 @@ func New(cfg config.Config, store *library.Store, imageURLBase string) *Server {
 func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/", s.admin(s.handleIndex))
 	mux.HandleFunc("/api/state", s.admin(s.handleState))
+	mux.HandleFunc("/api/tunnel/reconnect", s.admin(s.handleTunnelReconnect))
 	mux.HandleFunc("/api/upload", s.admin(s.handleUpload))
 	mux.HandleFunc("/api/upload-url", s.admin(s.handleUploadURL))
 	mux.HandleFunc("/api/clear", s.admin(s.handleClear))
@@ -118,106 +114,6 @@ func (s *Server) admin(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func (s *Server) adminAllowed(r *http.Request) bool {
-	if isLoopbackRequest(r) && isLocalAdminHost(r.Host) {
-		return true
-	}
-	if !isPrivateRemoteRequest(r) || !isAllowedAdminHost(r.Host) {
-		return false
-	}
-	return s.validAdminToken(r)
-}
-
-func (s *Server) validAdminToken(r *http.Request) bool {
-	if s.adminToken == "" {
-		return false
-	}
-	token := r.URL.Query().Get("token")
-	if token == "" {
-		token = r.Header.Get("X-ImagePad-Token")
-	}
-	if token == "" {
-		if cookie, err := r.Cookie("imagepad_admin"); err == nil {
-			token = cookie.Value
-		}
-	}
-	return subtle.ConstantTimeCompare([]byte(token), []byte(s.adminToken)) == 1
-}
-
-func (s *Server) rememberAdminToken(w http.ResponseWriter, r *http.Request) {
-	if s.adminToken == "" || r.URL.Query().Get("token") == "" {
-		return
-	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     "imagepad_admin",
-		Value:    s.adminToken,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   60 * 60 * 24 * 365,
-	})
-}
-
-func isLoopbackRequest(r *http.Request) bool {
-	ip := remoteIP(r)
-	return ip != nil && ip.IsLoopback()
-}
-
-func isLocalAdminHost(hostport string) bool {
-	host, _, err := net.SplitHostPort(hostport)
-	if err != nil {
-		host = hostport
-	}
-	host = strings.Trim(strings.ToLower(host), "[]")
-	if host == "localhost" || host == "0.0.0.0" {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
-}
-
-func isAllowedAdminHost(hostport string) bool {
-	host, _, err := net.SplitHostPort(hostport)
-	if err != nil {
-		host = hostport
-	}
-	host = strings.Trim(strings.ToLower(host), "[]")
-	if host == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return !strings.Contains(host, ".")
-	}
-	return isAllowedAdminIP(ip)
-}
-
-func isPrivateRemoteRequest(r *http.Request) bool {
-	ip := remoteIP(r)
-	return isAllowedAdminIP(ip)
-}
-
-func remoteIP(r *http.Request) net.IP {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	return net.ParseIP(host)
-}
-
-func isAllowedAdminIP(ip net.IP) bool {
-	if ip == nil || ip.IsUnspecified() || ip.IsMulticast() {
-		return false
-	}
-	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() {
-		return true
-	}
-	if v4 := ip.To4(); v4 != nil && v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
-		return true
-	}
-	return false
-}
-
 func (s *Server) SetUPnPResult(result upnp.Result) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -228,6 +124,12 @@ func (s *Server) SetPublicNetworkMessage(message string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.upnp = upnp.Result{Message: message}
+}
+
+func (s *Server) SetTunnelReconnect(ch chan<- struct{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tunnelReconnect = ch
 }
 
 func (s *Server) SetTunnelStatus(ok bool, baseURL, message string) {
@@ -265,12 +167,34 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.state(r))
 }
 
+func (s *Server) handleTunnelReconnect(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	s.mu.RLock()
+	reconnect := s.tunnelReconnect
+	s.mu.RUnlock()
+	if reconnect == nil {
+		http.Error(w, "tunnel reconnect unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	select {
+	case reconnect <- struct{}{}:
+		writeJSON(w, map[string]interface{}{"ok": true, "message": "再接続を要求しました"})
+	default:
+		writeJSON(w, map[string]interface{}{"ok": true, "message": "再接続要求は保留中です"})
+	}
+}
+
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if err := r.ParseMultipartForm(uploadMemoryLimit(s.videoPlayerEnabled())); err != nil {
+	if err := r.ParseMultipartForm(uploadMemoryLimit()); err != nil {
 		http.Error(w, "failed to parse upload", http.StatusBadRequest)
 		return
 	}
@@ -378,16 +302,7 @@ func (s *Server) processAndPublish(r *http.Request, reader io.Reader, name, cont
 	}
 
 	state := s.state(r)
-	copiedURL := urlForClipboard(state)
-	clipboardCopied := false
-	if copiedURL != "" {
-		if err := clipboard.CopyText(copiedURL); err == nil {
-			clipboardCopied = true
-		}
-	}
-	state["copiedURL"] = copiedURL
-	state["clipboardCopied"] = clipboardCopied
-	return state, nil
+	return s.withClipboardResult(state), nil
 }
 
 func (s *Server) processVideoAndPublish(r *http.Request, reader io.Reader, name string) (map[string]interface{}, error) {
@@ -443,6 +358,10 @@ func (s *Server) processVideoFileAndPublish(r *http.Request, sourcePath, name st
 	video.PublishUploadedVideoAsyncForID(sourcePath, s.store.Dir(), currentID, s.videoQualityPreset())
 
 	state := s.state(r)
+	return s.withClipboardResult(state), nil
+}
+
+func (s *Server) withClipboardResult(state map[string]interface{}) map[string]interface{} {
 	copiedURL := urlForClipboard(state)
 	clipboardCopied := false
 	if copiedURL != "" {
@@ -452,7 +371,7 @@ func (s *Server) processVideoFileAndPublish(r *http.Request, sourcePath, name st
 	}
 	state["copiedURL"] = copiedURL
 	state["clipboardCopied"] = clipboardCopied
-	return state, nil
+	return state
 }
 
 func (s *Server) clearPublication() {
@@ -486,7 +405,7 @@ func optionsFromValues(value func(string) string) imageproc.Options {
 	return opts
 }
 
-func uploadMemoryLimit(_ bool) int64 {
+func uploadMemoryLimit() int64 {
 	return maxMultipartMemory
 }
 
@@ -498,178 +417,6 @@ func videoURLDownloadError(err error) string {
 		"動画URLの取得に失敗しました: %v。yt-dlp で取得できないURLの場合は動画ファイルを直接アップロードするか、ビデオプレーヤーモードをオフにして画像URLとして指定してください。",
 		err,
 	)
-}
-
-func downloadRemoteImage(rawURL string, maxBytes int64) (io.ReadCloser, string, error) {
-	parsed, err := validatePublicURL(rawURL)
-	if err != nil {
-		return nil, "", err
-	}
-	if maxBytes <= 0 || maxBytes > 120<<20 {
-		maxBytes = 120 << 20
-	}
-
-	client := &http.Client{
-		Timeout: 20 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 5 {
-				return fmt.Errorf("too many redirects")
-			}
-			_, err := validatePublicURL(req.URL.String())
-			return err
-		},
-		Transport: &http.Transport{
-			Proxy: http.ProxyFromEnvironment,
-			DialContext: (&net.Dialer{
-				Timeout:   10 * time.Second,
-				KeepAlive: 30 * time.Second,
-			}).DialContext,
-		},
-	}
-
-	req, err := http.NewRequest(http.MethodGet, parsed.String(), nil)
-	if err != nil {
-		return nil, "", err
-	}
-	req.Header.Set("User-Agent", "ImagePadServer/1.0")
-	req.Header.Set("Accept", "image/webp,image/svg+xml,image/png,image/jpeg,image/gif,image/bmp,image/tiff,image/*;q=0.8,*/*;q=0.2")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, "", fmt.Errorf("download failed: %s", resp.Status)
-	}
-	if resp.ContentLength > maxBytes {
-		return nil, "", fmt.Errorf("remote image exceeds size limit of %d bytes", maxBytes)
-	}
-	if ct := resp.Header.Get("Content-Type"); ct != "" && !remoteContentTypeAllowed(ct) {
-		return nil, "", fmt.Errorf("remote content is not an image: %s", ct)
-	}
-
-	limited := io.LimitReader(resp.Body, maxBytes+1)
-	data, err := io.ReadAll(limited)
-	if err != nil {
-		return nil, "", err
-	}
-	if int64(len(data)) > maxBytes {
-		return nil, "", fmt.Errorf("remote image exceeds size limit of %d bytes", maxBytes)
-	}
-	name := remoteFileName(resp.Request.URL, resp.Header.Get("Content-Type"))
-	return io.NopCloser(bytes.NewReader(data)), name, nil
-}
-
-func validatePublicURL(rawURL string) (*url.URL, error) {
-	parsed, err := validateRemoteHTTPURL(rawURL)
-	if err != nil {
-		return nil, err
-	}
-	return parsed, nil
-}
-
-func validateHTTPURL(rawURL string) error {
-	_, err := validateRemoteHTTPURL(rawURL)
-	return err
-}
-
-func validateRemoteHTTPURL(rawURL string) (*url.URL, error) {
-	parsed, err := url.Parse(strings.TrimSpace(rawURL))
-	if err != nil || parsed == nil || parsed.Host == "" {
-		return nil, fmt.Errorf("invalid URL")
-	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return nil, fmt.Errorf("only http and https URLs are allowed")
-	}
-	host := parsed.Hostname()
-	if host == "" {
-		return nil, fmt.Errorf("invalid URL host")
-	}
-	if isBlockedHost(host) {
-		return nil, fmt.Errorf("local or private network URLs are not allowed")
-	}
-	return parsed, nil
-}
-
-func isBlockedHost(host string) bool {
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ips, err := net.LookupIP(host)
-	if err != nil {
-		return true
-	}
-	for _, ip := range ips {
-		if isBlockedIP(ip) {
-			return true
-		}
-	}
-	return false
-}
-
-func isBlockedIP(ip net.IP) bool {
-	if ip == nil {
-		return true
-	}
-	if ip.IsLoopback() || ip.IsUnspecified() || ip.IsMulticast() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
-		return true
-	}
-	if v4 := ip.To4(); v4 != nil {
-		switch {
-		case v4[0] == 10:
-			return true
-		case v4[0] == 172 && v4[1] >= 16 && v4[1] <= 31:
-			return true
-		case v4[0] == 192 && v4[1] == 168:
-			return true
-		case v4[0] == 169 && v4[1] == 254:
-			return true
-		case v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127:
-			return true
-		}
-		return false
-	}
-	return ip.IsPrivate()
-}
-
-func remoteContentTypeAllowed(contentType string) bool {
-	mediaType, _, err := mime.ParseMediaType(contentType)
-	if err != nil {
-		return false
-	}
-	mediaType = strings.ToLower(mediaType)
-	return strings.HasPrefix(mediaType, "image/") || mediaType == "application/octet-stream"
-}
-
-func remoteFileName(u *url.URL, contentType string) string {
-	name := filepath.Base(u.Path)
-	if name == "." || name == "/" || name == "" {
-		name = "remote-image"
-	}
-	if filepath.Ext(name) != "" {
-		return name
-	}
-	mediaType, _, _ := mime.ParseMediaType(contentType)
-	switch strings.ToLower(mediaType) {
-	case "image/jpeg":
-		return name + ".jpg"
-	case "image/png":
-		return name + ".png"
-	case "image/gif":
-		return name + ".gif"
-	case "image/webp":
-		return name + ".webp"
-	case "image/bmp":
-		return name + ".bmp"
-	case "image/tiff":
-		return name + ".tiff"
-	case "image/svg+xml":
-		return name + ".svg"
-	default:
-		return name
-	}
 }
 
 func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
@@ -979,10 +726,6 @@ func (s *Server) handleCurrentHLSSegment(w http.ResponseWriter, r *http.Request)
 	s.serveGeneratedFile(w, r, fileName, "video/mp2t", fileName, img.UpdatedAt)
 }
 
-func publicReadAllowed(r *http.Request) bool {
-	return isAllowedAdminIP(remoteIP(r))
-}
-
 func (s *Server) serveGeneratedFile(w http.ResponseWriter, r *http.Request, fileName, contentType, publicName string, modTime time.Time) {
 	path := filepath.Join(s.store.Dir(), fileName)
 	file, err := os.Open(path)
@@ -1114,7 +857,7 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 			videoURL = imageURLBase + "video/current.mp4?v=" + current.ID
 			publicVideoURL = tunnelURLBase + "video/current.mp4?v=" + current.ID
 		}
-		if videoEnabled && tunnelURLBase != "" && videoStatus.HLS {
+		if videoEnabled && tunnelURLBase != "" && ((current.Kind == "video" && (videoStatus.HLS || videoStatus.Active)) || (current.Kind != "video" && videoStatus.HLS)) {
 			streamPath := hlsURLPath(current.ID)
 			hlsURL = imageURLBase + streamPath
 			publicHLSURL = tunnelURLBase + streamPath
@@ -1358,176 +1101,4 @@ func safeFileName(name string) string {
 		return "current"
 	}
 	return name
-}
-
-func isVideoUpload(name, contentType string) bool {
-	mediaType, _, _ := mime.ParseMediaType(contentType)
-	if strings.HasPrefix(strings.ToLower(mediaType), "video/") {
-		return true
-	}
-	switch strings.ToLower(filepath.Ext(name)) {
-	case ".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi":
-		return true
-	default:
-		return false
-	}
-}
-
-func safeVideoExt(name string) string {
-	switch strings.ToLower(filepath.Ext(name)) {
-	case ".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi":
-		return strings.ToLower(filepath.Ext(name))
-	default:
-		return ".mp4"
-	}
-}
-
-func videoContentType(name string) string {
-	switch strings.ToLower(filepath.Ext(name)) {
-	case ".webm":
-		return "video/webm"
-	case ".mov":
-		return "video/quicktime"
-	case ".mkv":
-		return "video/x-matroska"
-	case ".avi":
-		return "video/x-msvideo"
-	default:
-		return "video/mp4"
-	}
-}
-
-func isHLSSegmentName(name string) bool {
-	if !strings.HasPrefix(name, "current") || !strings.HasSuffix(name, ".ts") {
-		return false
-	}
-	middle := strings.TrimSuffix(strings.TrimPrefix(name, "current"), ".ts")
-	if middle == "" {
-		return false
-	}
-	if !strings.HasPrefix(middle, "-") {
-		first := rune(middle[0])
-		if first < '0' || first > '9' {
-			return false
-		}
-		for _, r := range middle {
-			if (r < '0' || r > '9') && r != '-' {
-				return false
-			}
-		}
-		return true
-	}
-	for _, r := range middle {
-		if (r < '0' || r > '9') && (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && r != '-' && r != '_' {
-			return false
-		}
-	}
-	return true
-}
-
-func hlsURLPath(id string) string {
-	if id == "" {
-		return "stream/current.m3u8"
-	}
-	return "stream/" + url.PathEscape(id) + "/" + video.PlaylistName(id)
-}
-
-func streamRequestID(r *http.Request) string {
-	if requestedID := r.URL.Query().Get("v"); requestedID != "" {
-		return requestedID
-	}
-	path := strings.TrimPrefix(r.URL.Path, "/stream/")
-	parts := strings.Split(path, "/")
-	if len(parts) >= 2 && parts[0] != "" {
-		if id, err := url.PathUnescape(parts[0]); err == nil {
-			return id
-		}
-		return parts[0]
-	}
-	return ""
-}
-
-func imageURLPath(img *library.CurrentImage) string {
-	if img == nil {
-		return "image/current"
-	}
-	switch img.ContentType {
-	case "image/png":
-		return "image/current.png"
-	case "image/jpeg":
-		return "image/current.jpg"
-	default:
-		ext := strings.ToLower(filepath.Ext(img.PublicName))
-		if ext == ".png" {
-			return "image/current.png"
-		}
-		if ext == ".jpg" || ext == ".jpeg" {
-			return "image/current.jpg"
-		}
-		return "image/current"
-	}
-}
-
-func deletedContentType(path string) string {
-	if strings.HasSuffix(strings.ToLower(path), ".png") {
-		return "image/png"
-	}
-	return "image/jpeg"
-}
-
-func deletedImage() image.Image {
-	const width = 1024
-	const height = 1024
-	img := image.NewRGBA(image.Rect(0, 0, width, height))
-	fillRect(img, 0, 0, width, height, color.RGBA{R: 18, G: 23, B: 28, A: 255})
-	fillRect(img, 0, 444, width, 580, color.RGBA{R: 180, G: 48, B: 48, A: 255})
-	drawBlockText(img, "IMAGE", 282, 294, 16, color.RGBA{R: 176, G: 188, B: 198, A: 255})
-	drawBlockText(img, "DELETED", 166, 462, 20, color.RGBA{R: 255, G: 255, B: 255, A: 255})
-	drawBlockText(img, "CLEARED", 214, 640, 14, color.RGBA{R: 176, G: 188, B: 198, A: 255})
-	return img
-}
-
-func fillRect(img *image.RGBA, x0, y0, x1, y1 int, c color.RGBA) {
-	for y := y0; y < y1; y++ {
-		for x := x0; x < x1; x++ {
-			img.SetRGBA(x, y, c)
-		}
-	}
-}
-
-func drawBlockText(img *image.RGBA, text string, x, y, scale int, c color.RGBA) {
-	cursor := x
-	for _, r := range text {
-		if r == ' ' {
-			cursor += 4 * scale
-			continue
-		}
-		glyph, ok := blockGlyphs[r]
-		if !ok {
-			cursor += 4 * scale
-			continue
-		}
-		for row, bits := range glyph {
-			for col := 0; col < 5; col++ {
-				if bits&(1<<(4-col)) == 0 {
-					continue
-				}
-				fillRect(img, cursor+col*scale, y+row*scale, cursor+(col+1)*scale, y+(row+1)*scale, c)
-			}
-		}
-		cursor += 6 * scale
-	}
-}
-
-var blockGlyphs = map[rune][7]byte{
-	'A': {0x0e, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11},
-	'C': {0x0f, 0x10, 0x10, 0x10, 0x10, 0x10, 0x0f},
-	'D': {0x1e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1e},
-	'E': {0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x1f},
-	'G': {0x0f, 0x10, 0x10, 0x13, 0x11, 0x11, 0x0f},
-	'I': {0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x1f},
-	'L': {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1f},
-	'M': {0x11, 0x1b, 0x15, 0x15, 0x11, 0x11, 0x11},
-	'R': {0x1e, 0x11, 0x11, 0x1e, 0x14, 0x12, 0x11},
-	'T': {0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04},
 }

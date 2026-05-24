@@ -30,6 +30,7 @@ type Status struct {
 type Tunnel struct {
 	cmd    *exec.Cmd
 	cancel context.CancelFunc
+	done   chan error
 }
 
 const (
@@ -85,10 +86,12 @@ func Start(originURL string) (*Tunnel, Status) {
 			}
 			if match := tryCloudflareURL.FindString(line); match != "" {
 				go drainLines(lines)
+				done := make(chan error, 1)
 				go func() {
-					_ = cmd.Wait()
+					done <- cmd.Wait()
+					close(done)
 				}()
-				return &Tunnel{cmd: cmd, cancel: cancel}, Status{OK: true, URL: match + "/", Message: "Cloudflare Tunnel connected"}
+				return &Tunnel{cmd: cmd, cancel: cancel, done: done}, Status{OK: true, URL: match + "/", Message: "Cloudflare Tunnel connected"}
 			}
 		case <-deadline:
 			cancel()
@@ -105,8 +108,33 @@ func (t *Tunnel) Stop() {
 	t.cancel()
 	if t.cmd != nil && t.cmd.Process != nil {
 		_ = t.cmd.Process.Kill()
-		_ = t.cmd.Wait()
 	}
+	if t.done != nil {
+		<-t.done
+	}
+}
+
+func (t *Tunnel) Wait() error {
+	if t == nil || t.done == nil {
+		return nil
+	}
+	return <-t.done
+}
+
+func (t *Tunnel) Done() <-chan error {
+	if t == nil || t.done == nil {
+		ch := make(chan error)
+		close(ch)
+		return ch
+	}
+	return t.done
+}
+
+func (t *Tunnel) IsRunning() bool {
+	if t == nil || t.cmd == nil || t.cmd.Process == nil {
+		return false
+	}
+	return t.cmd.ProcessState == nil
 }
 
 func scanPipe(r io.Reader, lines chan<- string, wg *sync.WaitGroup) {
@@ -201,12 +229,4 @@ func verifySHA256(path, expected string) error {
 		return fmt.Errorf("download checksum mismatch: want %s, got %s", expected, actual)
 	}
 	return nil
-}
-
-func ImageURL(base, path, id string) string {
-	base = strings.TrimRight(base, "/") + "/"
-	if id == "" {
-		return base + path
-	}
-	return base + path + "?v=" + id
 }

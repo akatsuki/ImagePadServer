@@ -86,16 +86,6 @@ const indexHTML = `<!doctype html>
       font-size: 11px;
       color: var(--muted);
     }
-    .note {
-      margin-top: 8px;
-      padding: 10px;
-      border-radius: 8px;
-      background: #fff3e0;
-      border: 1px solid #f2c078;
-      color: #5c3f00;
-      font-size: 13px;
-      line-height: 1.4;
-    }
     button, .file-button {
       min-height: 32px;
       border: 0;
@@ -481,7 +471,7 @@ const indexHTML = `<!doctype html>
       <section style="margin-top:10px">
         <h2>状態</h2>
         <div class="status">
-          <div class="pill"><strong>外部公開</strong><span id="upnpText">確認中</span></div>
+          <div class="pill"><strong>外部公開</strong><span id="upnpText">確認中</span><button type="button" class="small secondary" id="tunnelReconnectButton">再接続</button></div>
           <div class="pill"><strong>ImagePad URL</strong><span id="hasImage">未選択</span></div>
           <div class="pill"><strong>更新</strong><span id="updateText">確認中</span></div>
           <!-- SteamVR integration is frozen indefinitely. UI kept out of sight. -->
@@ -492,7 +482,6 @@ const indexHTML = `<!doctype html>
               <span class="switch-slider"></span>
             </label>
           </div>
-          <div class="note">HLS動画を使う場合は、VRChat 側でループ再生モードを有効にして再生することをおすすめします。回線負担を減らすには解像度を下げることも検討してください。</div>
         </div>
       </section>
       <div class="about">
@@ -973,6 +962,21 @@ const indexHTML = `<!doctype html>
     }
 
     document.getElementById('refreshButton').addEventListener('click', refreshState);
+    document.getElementById('tunnelReconnectButton').addEventListener('click', async () => {
+      const button = document.getElementById('tunnelReconnectButton');
+      button.disabled = true;
+      toast.textContent = '再接続を要求しています...';
+      try {
+        const res = await fetch('/api/tunnel/reconnect', { method: 'POST' });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        toast.textContent = data.message || '再接続を要求しました';
+      } catch (error) {
+        toast.textContent = error.message || '再接続の要求に失敗しました';
+      } finally {
+        button.disabled = false;
+      }
+    });
     fileModeButton.addEventListener('click', () => setUploadMode('file'));
     linkModeButton.addEventListener('click', () => setUploadMode('link'));
     qualityMode.addEventListener('change', async () => {
