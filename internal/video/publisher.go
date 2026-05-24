@@ -32,6 +32,21 @@ type Result struct {
 	ProgressText    string `json:"progressText"`
 }
 
+type QueueItem struct {
+	ID              string    `json:"id"`
+	MediaID         string    `json:"mediaID"`
+	Title           string    `json:"title"`
+	Kind            string    `json:"kind"`
+	Status          string    `json:"status"`
+	Message         string    `json:"message"`
+	ProgressPercent int       `json:"progressPercent"`
+	ProgressText    string    `json:"progressText"`
+	Quality         string    `json:"quality"`
+	CreatedAt       time.Time `json:"createdAt"`
+	StartedAt       time.Time `json:"startedAt,omitempty"`
+	FinishedAt      time.Time `json:"finishedAt,omitempty"`
+}
+
 const (
 	MP4File      = "current.mp4"
 	HLSPlaylist  = "current.m3u8"
@@ -46,12 +61,32 @@ const (
 )
 
 var activeHLS sync.Map
+var queues sync.Map
 
 type activeJob struct {
 	Preset       QualityPreset
 	Cancel       context.CancelFunc
 	Done         chan struct{}
 	TotalSeconds int
+	QueueJob     *queueJob
+}
+
+type queueState struct {
+	mu      sync.Mutex
+	items   []*queueJob
+	running bool
+}
+
+type queueJob struct {
+	QueueItem
+	OutDir       string
+	SourcePath   string
+	Mode         string
+	Preset       QualityPreset
+	Cancel       context.CancelFunc
+	Done         chan struct{}
+	TotalSeconds int
+	Preempted    bool
 }
 
 type QualityPreset struct {
@@ -219,65 +254,16 @@ func PublishStillImageForID(imagePath, outDir, id string, preset QualityPreset) 
 }
 
 func PublishStillImageAsyncForID(imagePath, outDir, id string, preset QualityPreset) {
-	stopActive(outDir)
-	removeGenerated(outDir)
-	ctx, cancel := context.WithCancel(context.Background())
-	job := &activeJob{Preset: preset, Cancel: cancel, Done: make(chan struct{}), TotalSeconds: clipDurationSeconds()}
-	activeHLS.Store(outDir, job)
-	go func() {
-		defer func() {
-			cancel()
-			close(job.Done)
-			if current, ok := activeHLS.Load(outDir); ok && current == job {
-				activeHLS.Delete(outDir)
-			}
-		}()
-
-		ffmpeg, err := EnsureFFmpeg()
-		if err != nil {
-			return
-		}
-		if preset.Height <= 0 {
-			preset = ResolveQuality("auto", 0)
-			job.Preset = preset
-		}
-		err = runInDirContext(ctx, outDir, ffmpeg,
-			"-y",
-			"-loop", "1",
-			"-t", ClipDuration,
-			"-i", imagePath,
-			"-f", "lavfi",
-			"-t", ClipDuration,
-			"-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
-			"-c:v", "libx264",
-			"-preset", "veryfast",
-			"-crf", strconv.Itoa(preset.CRF),
-			"-pix_fmt", "yuv420p",
-			"-vf", "fps="+FrameRate+",scale=w='min(1920,iw)':h='min("+strconv.Itoa(preset.Height)+",ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,pad=ceil(iw/2)*2:ceil(ih/2)*2",
-			"-r", FrameRate,
-			"-g", "20",
-			"-keyint_min", "20",
-			"-sc_threshold", "0",
-			"-c:a", "aac",
-			"-b:a", "64k",
-			"-shortest",
-			"-f", "hls",
-			"-hls_time", "2",
-			"-hls_list_size", "0",
-			"-hls_playlist_type", "event",
-			"-hls_flags", "independent_segments",
-			"-hls_segment_filename", segmentPattern(id),
-			playlistName(id),
-		)
-		if err == nil && ctx.Err() == nil {
-			_ = finalizeHLSPlaylist(outDir, id)
-		}
-	}()
+	EnqueueStillImageForID(imagePath, outDir, id, filepath.Base(imagePath), preset)
 }
 
 func CurrentStatus(outDir string) Result {
+	return CurrentStatusForID(outDir, "")
+}
+
+func CurrentStatusForID(outDir, id string) Result {
 	mp4 := fileExists(filepath.Join(outDir, MP4File))
-	hls := hlsPlaylistExists(outDir) && hlsSegmentExists(outDir)
+	hls := hlsPlaylistExistsForID(outDir, id) && hlsSegmentExistsForID(outDir, id)
 	active := isActive(outDir)
 	result := Result{
 		OK:     mp4 || hls,
@@ -316,12 +302,19 @@ func applyProgress(outDir string, result *Result) {
 	job, ok := active.(*activeJob)
 	if !ok || job.TotalSeconds <= 0 {
 		count := hlsSegmentCount(outDir)
+		if job != nil && job.QueueJob != nil {
+			count = hlsSegmentCountForID(outDir, job.QueueJob.MediaID)
+		}
 		if count > 0 {
 			result.ProgressText = strconv.Itoa(count) + " segments generated"
 		}
 		return
 	}
-	seconds := hlsSegmentCount(outDir) * 2
+	count := hlsSegmentCount(outDir)
+	if job.QueueJob != nil {
+		count = hlsSegmentCountForID(outDir, job.QueueJob.MediaID)
+	}
+	seconds := count * 2
 	percent := int(math.Round(float64(seconds) / float64(job.TotalSeconds) * 100))
 	if percent < 0 {
 		percent = 0
@@ -341,61 +334,355 @@ func PublishUploadedVideoAsync(sourcePath, outDir string, preset QualityPreset) 
 }
 
 func PublishUploadedVideoAsyncForID(sourcePath, outDir, id string, preset QualityPreset) {
-	stopActive(outDir)
-	removeGenerated(outDir)
-	ctx, cancel := context.WithCancel(context.Background())
-	job := &activeJob{Preset: preset, Cancel: cancel, Done: make(chan struct{})}
-	activeHLS.Store(outDir, job)
-	go func() {
-		defer func() {
-			cancel()
-			close(job.Done)
-			if current, ok := activeHLS.Load(outDir); ok && current == job {
-				activeHLS.Delete(outDir)
-			}
-		}()
+	EnqueueUploadedVideoForID(sourcePath, outDir, id, filepath.Base(sourcePath), preset)
+}
 
-		ffmpeg, err := EnsureFFmpeg()
-		if err != nil {
+func EnqueueStillImageForID(imagePath, outDir, id, title string, preset QualityPreset) string {
+	return enqueueConversion(&queueJob{
+		QueueItem: QueueItem{
+			ID:        queueID(),
+			MediaID:   id,
+			Title:     fallbackTitle(title, "画像"),
+			Kind:      "image",
+			Status:    "pending",
+			Message:   "変換待ち",
+			Quality:   preset.Effective,
+			CreatedAt: time.Now(),
+		},
+		OutDir:       outDir,
+		SourcePath:   imagePath,
+		Mode:         "still",
+		Preset:       preset,
+		TotalSeconds: clipDurationSeconds(),
+	})
+}
+
+func EnqueueUploadedVideoForID(sourcePath, outDir, id, title string, preset QualityPreset) string {
+	return enqueueConversion(&queueJob{
+		QueueItem: QueueItem{
+			ID:        queueID(),
+			MediaID:   id,
+			Title:     fallbackTitle(title, "動画"),
+			Kind:      "video",
+			Status:    "pending",
+			Message:   "変換待ち",
+			Quality:   preset.Effective,
+			CreatedAt: time.Now(),
+		},
+		OutDir:     outDir,
+		SourcePath: sourcePath,
+		Mode:       "uploaded",
+		Preset:     preset,
+	})
+}
+
+func QueueStatus(outDir string) []QueueItem {
+	state := queueFor(outDir)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	items := make([]QueueItem, 0, len(state.items))
+	for i := len(state.items) - 1; i >= 0; i-- {
+		job := state.items[i]
+		if job == nil {
+			continue
+		}
+		item := job.QueueItem
+		if job.Status == "running" {
+			applyQueueProgressLocked(job, &item)
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
+func GeneratedFiles(outDir, id string) []string {
+	var files []string
+	playlist := filepath.Join(outDir, playlistName(id))
+	if fileExists(playlist) {
+		files = append(files, playlist)
+	}
+	pattern := filepath.Join(outDir, "current*.ts")
+	if id != "" {
+		pattern = filepath.Join(outDir, "current-"+safeID(id)+"-*.ts")
+	}
+	matches, _ := filepath.Glob(pattern)
+	files = append(files, matches...)
+	mp4 := filepath.Join(outDir, MP4File)
+	if fileExists(mp4) {
+		files = append(files, mp4)
+	}
+	return files
+}
+
+func enqueueConversion(job *queueJob) string {
+	if job.Preset.Height <= 0 {
+		job.Preset = ResolveQuality("auto", 0)
+		job.Quality = job.Preset.Effective
+	}
+	state := queueFor(job.OutDir)
+	state.mu.Lock()
+	state.items = append([]*queueJob{job}, state.items...)
+	state.preemptRunningLocked(job)
+	state.pruneLocked(30)
+	if !state.running {
+		state.running = true
+		go state.run(job.OutDir)
+	}
+	state.mu.Unlock()
+	return job.ID
+}
+
+func queueFor(outDir string) *queueState {
+	value, _ := queues.LoadOrStore(outDir, &queueState{})
+	return value.(*queueState)
+}
+
+func (s *queueState) run(outDir string) {
+	for {
+		job := s.nextPending()
+		if job == nil {
+			s.mu.Lock()
+			s.running = false
+			s.mu.Unlock()
 			return
 		}
-		if preset.Height <= 0 {
-			preset = ResolveQuality("auto", 0)
-			job.Preset = preset
+		runQueueJob(job)
+	}
+}
+
+func (s *queueState) nextPending() *queueJob {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := 0; i < len(s.items); i++ {
+		if s.items[i].Status == "pending" {
+			return s.items[i]
 		}
-		err = runInDirContext(ctx, outDir, ffmpeg,
-			"-y",
-			"-re",
-			"-i", sourcePath,
-			"-map", "0:v:0",
-			"-map", "0:a:0?",
-			"-c:v", "libx264",
-			"-preset", "veryfast",
-			"-crf", strconv.Itoa(preset.CRF),
-			"-b:v", preset.VideoBitrate,
-			"-maxrate", preset.MaxRate,
-			"-bufsize", preset.BufferSize,
-			"-pix_fmt", "yuv420p",
-			"-vf", "scale=w='min(1920,iw)':h='min("+strconv.Itoa(preset.Height)+",ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
-			"-g", "60",
-			"-keyint_min", "60",
-			"-sc_threshold", "0",
-			"-c:a", "aac",
-			"-b:a", preset.AudioBitrate,
-			"-ac", "2",
-			"-ar", "48000",
-			"-f", "hls",
-			"-hls_time", "2",
-			"-hls_list_size", "0",
-			"-hls_playlist_type", "event",
-			"-hls_flags", "independent_segments",
-			"-hls_segment_filename", segmentPattern(id),
-			playlistName(id),
-		)
-		if err == nil && ctx.Err() == nil {
-			_ = finalizeHLSPlaylist(outDir, id)
+	}
+	return nil
+}
+
+func (s *queueState) preemptRunningLocked(priority *queueJob) {
+	for _, job := range s.items {
+		if job == nil || job == priority || job.Status != "running" {
+			continue
+		}
+		job.Preempted = true
+		job.Status = "pending"
+		job.Message = "新しいジョブを優先するため待機中"
+		job.ProgressText = ""
+		job.ProgressPercent = 0
+		job.StartedAt = time.Time{}
+		job.FinishedAt = time.Time{}
+		if job.Cancel != nil {
+			job.Cancel()
+		}
+		return
+	}
+}
+
+func (s *queueState) pruneLocked(limit int) {
+	if limit <= 0 || len(s.items) <= limit {
+		return
+	}
+	kept := s.items[:0]
+	finished := 0
+	for _, job := range s.items {
+		if job.Status == "pending" || job.Status == "running" {
+			kept = append(kept, job)
+			continue
+		}
+		finished++
+		if finished <= limit {
+			kept = append(kept, job)
+		}
+	}
+	s.items = kept
+}
+
+func runQueueJob(job *queueJob) {
+	ctx, cancel := context.WithCancel(context.Background())
+	job.Cancel = cancel
+	job.Done = make(chan struct{})
+	job.Preempted = false
+	job.Status = "running"
+	job.Message = "変換中"
+	job.StartedAt = time.Now()
+	job.ProgressText = "変換中"
+	active := &activeJob{
+		Preset:       job.Preset,
+		Cancel:       cancel,
+		Done:         job.Done,
+		TotalSeconds: job.TotalSeconds,
+		QueueJob:     job,
+	}
+	activeHLS.Store(job.OutDir, active)
+	defer func() {
+		cancel()
+		close(job.Done)
+		if current, ok := activeHLS.Load(job.OutDir); ok && current == active {
+			activeHLS.Delete(job.OutDir)
 		}
 	}()
+
+	ffmpeg, err := EnsureFFmpeg()
+	if err != nil {
+		finishQueueJob(job, "error", err.Error())
+		return
+	}
+	if job.Preset.Height <= 0 {
+		job.Preset = ResolveQuality("auto", 0)
+		active.Preset = job.Preset
+	}
+	switch job.Mode {
+	case "still":
+		err = runStillHLS(ctx, job.OutDir, ffmpeg, job.SourcePath, job.MediaID, job.Preset)
+	default:
+		err = runUploadedHLS(ctx, job.OutDir, ffmpeg, job.SourcePath, job.MediaID, job.Preset)
+	}
+	if err != nil {
+		if ctx.Err() != nil {
+			if job.Preempted {
+				job.Preempted = false
+				job.Status = "pending"
+				job.Message = "待機中"
+				job.ProgressPercent = 0
+				job.ProgressText = ""
+				job.StartedAt = time.Time{}
+				return
+			}
+			finishQueueJob(job, "canceled", "キャンセルしました")
+			return
+		}
+		finishQueueJob(job, "error", err.Error())
+		return
+	}
+	if err := finalizeHLSPlaylist(job.OutDir, job.MediaID); err != nil {
+		finishQueueJob(job, "error", err.Error())
+		return
+	}
+	job.ProgressPercent = 100
+	job.ProgressText = "100%"
+	finishQueueJob(job, "done", "変換完了")
+}
+
+func finishQueueJob(job *queueJob, status, message string) {
+	job.Status = status
+	job.Message = message
+	job.FinishedAt = time.Now()
+}
+
+func runStillHLS(ctx context.Context, outDir, ffmpeg, imagePath, id string, preset QualityPreset) error {
+	return runInDirContext(ctx, outDir, ffmpeg,
+		"-y",
+		"-loop", "1",
+		"-t", ClipDuration,
+		"-i", imagePath,
+		"-f", "lavfi",
+		"-t", ClipDuration,
+		"-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+		"-c:v", "libx264",
+		"-preset", "veryfast",
+		"-crf", strconv.Itoa(preset.CRF),
+		"-pix_fmt", "yuv420p",
+		"-vf", "fps="+FrameRate+",scale=w='min(1920,iw)':h='min("+strconv.Itoa(preset.Height)+",ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,pad=ceil(iw/2)*2:ceil(ih/2)*2",
+		"-r", FrameRate,
+		"-g", "20",
+		"-keyint_min", "20",
+		"-sc_threshold", "0",
+		"-c:a", "aac",
+		"-b:a", "64k",
+		"-shortest",
+		"-f", "hls",
+		"-hls_time", "2",
+		"-hls_list_size", "0",
+		"-hls_playlist_type", "event",
+		"-hls_flags", "independent_segments",
+		"-hls_segment_filename", segmentPattern(id),
+		playlistName(id),
+	)
+}
+
+func runUploadedHLS(ctx context.Context, outDir, ffmpeg, sourcePath, id string, preset QualityPreset) error {
+	return runInDirContext(ctx, outDir, ffmpeg,
+		"-y",
+		"-re",
+		"-i", sourcePath,
+		"-map", "0:v:0",
+		"-map", "0:a:0?",
+		"-c:v", "libx264",
+		"-preset", "veryfast",
+		"-crf", strconv.Itoa(preset.CRF),
+		"-b:v", preset.VideoBitrate,
+		"-maxrate", preset.MaxRate,
+		"-bufsize", preset.BufferSize,
+		"-pix_fmt", "yuv420p",
+		"-vf", "scale=w='min(1920,iw)':h='min("+strconv.Itoa(preset.Height)+",ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
+		"-g", "60",
+		"-keyint_min", "60",
+		"-sc_threshold", "0",
+		"-c:a", "aac",
+		"-b:a", preset.AudioBitrate,
+		"-ac", "2",
+		"-ar", "48000",
+		"-f", "hls",
+		"-hls_time", "2",
+		"-hls_list_size", "0",
+		"-hls_playlist_type", "event",
+		"-hls_flags", "independent_segments",
+		"-hls_segment_filename", segmentPattern(id),
+		playlistName(id),
+	)
+}
+
+func applyQueueProgressLocked(job *queueJob, item *QueueItem) {
+	if job.TotalSeconds <= 0 {
+		count := hlsSegmentCountForID(job.OutDir, job.MediaID)
+		if count > 0 {
+			item.ProgressText = strconv.Itoa(count) + " segments generated"
+		}
+		return
+	}
+	seconds := hlsSegmentCountForID(job.OutDir, job.MediaID) * 2
+	percent := int(math.Round(float64(seconds) / float64(job.TotalSeconds) * 100))
+	if percent < 0 {
+		percent = 0
+	}
+	if percent > 99 {
+		percent = 99
+	}
+	if seconds > job.TotalSeconds {
+		seconds = job.TotalSeconds
+	}
+	item.ProgressPercent = percent
+	item.ProgressText = fmt.Sprintf("%d%% (%d / %d sec)", percent, seconds, job.TotalSeconds)
+}
+
+func cancelQueue(outDir string) {
+	value, ok := queues.Load(outDir)
+	if !ok {
+		return
+	}
+	state, ok := value.(*queueState)
+	if !ok {
+		return
+	}
+	state.mu.Lock()
+	for _, job := range state.items {
+		if job == nil {
+			continue
+		}
+		switch job.Status {
+		case "pending":
+			job.Status = "canceled"
+			job.Message = "キャンセルしました"
+			job.FinishedAt = time.Now()
+		case "running":
+			if job.Cancel != nil {
+				job.Cancel()
+			}
+		}
+	}
+	state.mu.Unlock()
 }
 
 func EnsureFFmpeg() (string, error) {
@@ -447,6 +734,25 @@ func DownloadURL(rawURL, outDir string) (string, string, error) {
 		}
 	}
 	return "", "", errors.New("yt-dlp did not produce a video file")
+}
+
+func GenerateThumbnail(sourcePath, outPath string) error {
+	ffmpeg, err := EnsureFFmpeg()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(outPath), 0700); err != nil {
+		return err
+	}
+	return run(ffmpeg,
+		"-y",
+		"-ss", "00:00:01",
+		"-i", sourcePath,
+		"-frames:v", "1",
+		"-vf", "scale='min(480,iw)':-2",
+		"-q:v", "4",
+		outPath,
+	)
 }
 
 type NetworkMeasurement struct {
@@ -531,6 +837,11 @@ func mbpsFromBytes(written int64, start time.Time, err error) int {
 func RemoveGenerated(outDir string) {
 	stopActive(outDir)
 	removeGenerated(outDir)
+}
+
+func CancelQueue(outDir string) {
+	cancelQueue(outDir)
+	stopActive(outDir)
 }
 
 func PlaylistName(id string) string {
@@ -867,14 +1178,36 @@ func hlsSegmentExists(outDir string) bool {
 	return len(matches) > 0
 }
 
+func hlsSegmentExistsForID(outDir, id string) bool {
+	if id == "" {
+		return hlsSegmentExists(outDir)
+	}
+	return hlsSegmentCountForID(outDir, id) > 0
+}
+
 func hlsSegmentCount(outDir string) int {
 	matches, _ := filepath.Glob(filepath.Join(outDir, "current*.ts"))
+	return len(matches)
+}
+
+func hlsSegmentCountForID(outDir, id string) int {
+	if id == "" {
+		return hlsSegmentCount(outDir)
+	}
+	matches, _ := filepath.Glob(filepath.Join(outDir, "current-"+safeID(id)+"-*.ts"))
 	return len(matches)
 }
 
 func hlsPlaylistExists(outDir string) bool {
 	matches, _ := filepath.Glob(filepath.Join(outDir, "current*.m3u8"))
 	return len(matches) > 0
+}
+
+func hlsPlaylistExistsForID(outDir, id string) bool {
+	if id == "" {
+		return hlsPlaylistExists(outDir)
+	}
+	return fileExists(filepath.Join(outDir, playlistName(id)))
 }
 
 func playlistName(id string) string {
@@ -934,4 +1267,16 @@ func errorText(err error) string {
 		return "ok"
 	}
 	return err.Error()
+}
+
+func queueID() string {
+	return strconv.FormatInt(time.Now().UnixNano(), 36)
+}
+
+func fallbackTitle(title, fallback string) string {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return fallback
+	}
+	return title
 }

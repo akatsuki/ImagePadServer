@@ -39,13 +39,14 @@ const indexHTML = `<!doctype html>
     }
     main {
       display: grid;
-      grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
-      grid-template-areas: "sidebar content";
+      grid-template-columns: minmax(240px, 300px) minmax(0, 1fr) minmax(260px, 320px);
+      grid-template-areas: "sidebar content history";
       gap: 10px;
       padding: 10px clamp(12px, 2.4vw, 22px) 12px;
     }
     .sidebar { grid-area: sidebar; }
     .content { grid-area: content; }
+    .history { grid-area: history; }
     section {
       background: var(--panel);
       border: 1px solid var(--line);
@@ -302,11 +303,180 @@ const indexHTML = `<!doctype html>
       gap: 6px;
       margin-top: 8px;
     }
+    .upload-actions {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+    }
     .video-links {
       display: grid;
       grid-template-columns: 1fr;
       gap: 8px;
       margin-top: 8px;
+    }
+    .wing-tabs {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+      margin-bottom: 8px;
+    }
+    .wing-tab {
+      min-height: 32px;
+      padding: 0 6px;
+      background: #e7edf1;
+      color: #304554;
+      font-size: 12px;
+    }
+    .wing-tab.active {
+      background: var(--accent);
+      color: #fff;
+    }
+    .wing-list {
+      display: grid;
+      gap: 7px;
+      max-height: calc(100vh - 92px);
+      overflow: auto;
+      padding-right: 2px;
+    }
+    .history-item {
+      display: grid;
+      grid-template-columns: 48px minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      width: 100%;
+      min-height: 58px;
+      padding: 6px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #f8fafb;
+      color: var(--ink);
+      text-align: left;
+    }
+    .history-item.current {
+      border-color: var(--accent);
+      background: var(--soft);
+    }
+    .history-thumb {
+      width: 48px;
+      height: 48px;
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+      border-radius: 7px;
+      background: #e7edf1;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .history-thumb img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .history-meta {
+      min-width: 0;
+      display: grid;
+      gap: 3px;
+    }
+    .history-title {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .history-detail {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .history-actions {
+      display: grid;
+      grid-template-columns: repeat(2, auto) 34px;
+      align-items: center;
+      gap: 4px;
+    }
+    .history-action-button {
+      min-height: 30px;
+      padding: 0 7px;
+      border-radius: 8px;
+      font-size: 12px;
+    }
+    .queue-item {
+      display: grid;
+      gap: 6px;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #f8fafb;
+      background-position: center;
+      background-size: cover;
+    }
+    .queue-item.has-thumb {
+      background-color: #f8fafb;
+    }
+    .queue-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .queue-title {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .queue-status {
+      flex: 0 0 auto;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .queue-item.running {
+      border-color: var(--accent);
+      background: var(--soft);
+    }
+    .queue-item.featured {
+      gap: 8px;
+      padding: 10px;
+      min-height: 86px;
+    }
+    .queue-item.featured .queue-title {
+      font-size: 13px;
+    }
+    .queue-item.featured .history-detail {
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    .queue-item.error {
+      border-color: var(--accent-2);
+      background: #fff0ed;
+    }
+    .queue-divider {
+      height: 1px;
+      margin: 2px 0;
+      background: var(--line);
+      opacity: .65;
+    }
+    .heart-button {
+      min-width: 34px;
+      width: 34px;
+      height: 34px;
+      min-height: 34px;
+      padding: 0;
+      border-radius: 50%;
+      background: transparent;
+      color: #85939d;
+      font-size: 22px;
+      line-height: 1;
+    }
+    .heart-button.active {
+      color: #d83b4c;
+      background: #fde8ec;
     }
     .quality-row {
       display: grid;
@@ -367,6 +537,7 @@ const indexHTML = `<!doctype html>
         grid-template-columns: 1fr;
         grid-template-areas:
           "content"
+          "history"
           "sidebar";
       }
       .controls { grid-template-columns: 1fr; }
@@ -404,6 +575,9 @@ const indexHTML = `<!doctype html>
       .preview {
         height: auto;
         min-height: 320px;
+      }
+      .wing-list {
+        max-height: none;
       }
     }
     @media (min-width: 861px) and (max-height: 760px) {
@@ -521,7 +695,10 @@ const indexHTML = `<!doctype html>
             <label><span>JPEG品質</span><input name="quality" type="number" min="40" max="95" value="88"></label>
             <label><span>最大MB</span><input name="maxMB" type="number" min="1" max="120" value="30"></label>
           </div>
-          <button id="uploadButton" type="submit">変換して公開</button>
+          <div class="upload-actions">
+            <button id="uploadButton" type="submit" name="uploadAction" value="publish">変換して公開</button>
+            <button id="queueUploadButton" type="submit" class="secondary" name="uploadAction" value="queue">動画変換へ</button>
+          </div>
           <div class="toast" id="toast"></div>
           <div class="mobile-progress" id="mobileProgress">
             <div id="mobileProgressText">変換中</div>
@@ -556,6 +733,19 @@ const indexHTML = `<!doctype html>
         </div>
       </section>
     </div>
+
+    <div class="history">
+      <section>
+        <div class="wing-tabs" role="tablist" aria-label="右ウイング">
+          <button class="wing-tab active" id="historyTabButton" type="button" role="tab" aria-selected="true" data-wing-tab="history">履歴</button>
+          <button class="wing-tab" id="favoritesTabButton" type="button" role="tab" aria-selected="false" data-wing-tab="favorites">お気に入り</button>
+          <button class="wing-tab" id="queueTabButton" type="button" role="tab" aria-selected="false" data-wing-tab="queue">動画変換</button>
+        </div>
+        <div class="wing-list" id="historyList">
+          <div class="empty">まだ履歴がありません</div>
+        </div>
+      </section>
+    </div>
   </main>
   <script>
     const state = {
@@ -568,6 +758,9 @@ const indexHTML = `<!doctype html>
       localImageURL: {{printf "%q" .localImageURL}},
       previewImageURL: {{printf "%q" .previewImageURL}},
       publicImageURL: {{printf "%q" .publicImageURL}},
+      history: [],
+      videoQueue: [],
+      videoPlayerEnabled: false,
       videoQuality: null,
       currentID: "",
       previewMode: "empty"
@@ -576,6 +769,7 @@ const indexHTML = `<!doctype html>
     const toast = document.getElementById('toast');
     const uploadForm = document.getElementById('uploadForm');
     const uploadButton = document.getElementById('uploadButton');
+    const queueUploadButton = document.getElementById('queueUploadButton');
     const imageInput = document.getElementById('imageInput');
     const imageURLInput = document.getElementById('imageURLInput');
     const fileModeButton = document.getElementById('fileModeButton');
@@ -583,6 +777,8 @@ const indexHTML = `<!doctype html>
     const fileUploadPanel = document.getElementById('fileUploadPanel');
     const linkUploadPanel = document.getElementById('linkUploadPanel');
     const preview = document.getElementById('preview');
+    const historyList = document.getElementById('historyList');
+    const wingTabButtons = Array.from(document.querySelectorAll('[data-wing-tab]'));
     const mobileProgress = document.getElementById('mobileProgress');
     const mobileProgressText = document.getElementById('mobileProgressText');
     const mobileProgressFill = document.getElementById('mobileProgressFill');
@@ -599,6 +795,7 @@ const indexHTML = `<!doctype html>
     let refreshAgain = false;
     let lastAppliedStateSeq = 0;
     let localChangeChannel = null;
+    let wingMode = 'history';
     const imageAccept = 'image/png,image/jpeg,image/gif,image/webp,image/bmp,image/tiff,image/svg+xml,.jpg,.jpeg,.png,.gif,.webp,.bmp,.tif,.tiff,.svg';
     const mediaAccept = imageAccept + ',video/*,video/mp4,video/quicktime,video/webm,video/x-matroska,.mp4,.mov,.m4v,.webm,.mkv,.avi';
 
@@ -659,7 +856,10 @@ const indexHTML = `<!doctype html>
       state.localImageURL = data.localImageURL;
       state.previewImageURL = data.previewImageURL;
       state.publicImageURL = data.publicImageURL;
+      state.history = data.history || [];
+      state.videoQueue = data.videoQueue || [];
       state.videoQuality = data.videoQuality;
+      state.videoPlayerEnabled = !!(data.videoPlayer && data.videoPlayer.enabled);
       document.getElementById('phoneURL').textContent = data.phoneURL;
       document.getElementById('phoneURLMobile').textContent = data.phoneURL;
       document.getElementById('shareURL').textContent = data.shareURL || '公開URLは未取得です';
@@ -672,6 +872,7 @@ const indexHTML = `<!doctype html>
       document.getElementById('hasImage').textContent = currentText(data.current);
       const nextCurrentID = data.current ? data.current.id : "";
       renderPreview(data, nextCurrentID);
+      renderHistory(state.history, nextCurrentID);
       state.currentID = nextCurrentID;
       scheduleRefresh(data.video && data.video.active ? 750 : 2000);
     }
@@ -723,6 +924,196 @@ const indexHTML = `<!doctype html>
         '"': '&quot;',
         "'": '&#39;'
       }[char]));
+    }
+
+    function setWingMode(mode) {
+      wingMode = mode;
+      for (const button of wingTabButtons) {
+        const active = button.dataset.wingTab === mode;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-selected', String(active));
+      }
+      renderHistory(state.history, state.currentID);
+    }
+
+    function renderHistory(items, currentID) {
+      if (!historyList) return;
+      if (wingMode === 'queue') {
+        renderVideoQueue(state.videoQueue);
+        return;
+      }
+      const visibleItems = wingMode === 'favorites'
+        ? (items || []).filter((item) => item.favorite).slice().reverse()
+        : (items || []);
+      if (!visibleItems.length) {
+        historyList.innerHTML = '<div class="empty">' + (wingMode === 'favorites' ? 'まだお気に入りがありません' : 'まだ履歴がありません') + '</div>';
+        return;
+      }
+      historyList.innerHTML = '';
+      for (const item of visibleItems) {
+        const row = document.createElement('div');
+        row.className = 'history-item' + (item.id === currentID ? ' current' : '');
+        row.title = item.title || '';
+
+        const thumb = document.createElement('div');
+        thumb.className = 'history-thumb';
+        if (item.kind === 'video' && !item.hasThumbnail) {
+          thumb.textContent = 'VIDEO';
+        } else {
+          const img = document.createElement('img');
+          img.src = item.thumbnailURL;
+          img.alt = '';
+          thumb.appendChild(img);
+        }
+
+        const meta = document.createElement('div');
+        meta.className = 'history-meta';
+        const title = document.createElement('div');
+        title.className = 'history-title';
+        title.textContent = item.title || 'untitled';
+        const detail = document.createElement('div');
+        detail.className = 'history-detail';
+        detail.textContent = historyDetail(item);
+        meta.appendChild(title);
+        meta.appendChild(detail);
+
+        const actions = document.createElement('div');
+        actions.className = 'history-actions';
+
+        const publish = document.createElement('button');
+        publish.type = 'button';
+        publish.className = 'history-action-button secondary';
+        publish.dataset.historyPublish = item.id;
+        publish.textContent = item.id === currentID ? '公開中' : '公開';
+        publish.title = item.id === currentID ? '現在公開中です' : 'この項目を公開';
+        publish.setAttribute('aria-label', publish.title);
+        publish.disabled = item.id === currentID;
+
+        const queue = document.createElement('button');
+        queue.type = 'button';
+        queue.className = 'history-action-button secondary';
+        queue.dataset.historyQueue = item.id;
+        queue.textContent = '変換';
+        queue.title = '動画変換に追加';
+        queue.setAttribute('aria-label', queue.title);
+        queue.hidden = !state.videoPlayerEnabled;
+
+        const heart = document.createElement('button');
+        heart.type = 'button';
+        heart.className = 'heart-button' + (item.favorite ? ' active' : '');
+        heart.dataset.historyFavorite = item.id;
+        heart.dataset.favorite = item.favorite ? '1' : '0';
+        heart.innerHTML = item.favorite ? '&#9829;' : '&#9825;';
+        heart.title = item.favorite ? 'お気に入りから削除' : 'お気に入り';
+        heart.setAttribute('aria-label', heart.title);
+
+        actions.appendChild(publish);
+        actions.appendChild(queue);
+        actions.appendChild(heart);
+
+        row.appendChild(thumb);
+        row.appendChild(meta);
+        row.appendChild(actions);
+        historyList.appendChild(row);
+      }
+    }
+
+    function renderVideoQueue(items) {
+      if (!historyList) return;
+      if (!items || !items.length) {
+        historyList.innerHTML = '<div class="empty">動画変換は空です</div>';
+        return;
+      }
+      historyList.innerHTML = '';
+      const runningItems = items.filter((item) => item.status === 'running');
+      const otherItems = items.filter((item) => item.status !== 'running');
+      for (const item of runningItems) {
+        historyList.appendChild(queueRow(item, true));
+      }
+      if (runningItems.length && otherItems.length) {
+        const divider = document.createElement('div');
+        divider.className = 'queue-divider';
+        historyList.appendChild(divider);
+      }
+      for (const item of otherItems) {
+        historyList.appendChild(queueRow(item, false));
+      }
+    }
+
+    function queueRow(item, featured) {
+      const row = document.createElement('div');
+      row.className = 'queue-item ' + (item.status || '') + (featured ? ' featured' : '');
+      if (item.thumbnailURL) {
+        row.classList.add('has-thumb');
+        row.style.backgroundImage = "linear-gradient(rgba(248,250,251,.90), rgba(248,250,251,.90)), url('" + item.thumbnailURL + "')";
+      }
+
+      const top = document.createElement('div');
+      top.className = 'queue-top';
+      const title = document.createElement('div');
+      title.className = 'queue-title';
+      title.textContent = item.title || '変換ジョブ';
+      const status = document.createElement('div');
+      status.className = 'queue-status';
+      status.textContent = queueStatusText(item.status);
+      top.appendChild(title);
+      top.appendChild(status);
+
+      const detail = document.createElement('div');
+      detail.className = 'history-detail';
+      detail.textContent = queueDetail(item);
+
+      row.appendChild(top);
+      if (item.status === 'running') {
+        const track = document.createElement('div');
+        track.className = 'progress-track';
+        const fill = document.createElement('div');
+        fill.className = 'progress-fill';
+        fill.style.width = Math.max(6, Math.min(100, Number(item.progressPercent || 0))) + '%';
+        track.appendChild(fill);
+        row.appendChild(track);
+      }
+      row.appendChild(detail);
+      return row;
+    }
+
+    function queueStatusText(status) {
+      switch (status) {
+        case 'pending': return '待機中';
+        case 'running': return '変換中';
+        case 'done': return '完了';
+        case 'error': return '失敗';
+        case 'canceled': return '中止';
+        default: return status || '不明';
+      }
+    }
+
+    function queueDetail(item) {
+      const parts = [];
+      parts.push(item.kind === 'video' ? '動画' : '画像');
+      if (item.quality) parts.push(item.quality + 'p');
+      if (item.progressText) parts.push(item.progressText);
+      if (item.message && item.message !== item.progressText) parts.push(item.message);
+      return parts.join(' / ');
+    }
+
+    function historyDetail(item) {
+      const parts = [];
+      if (item.kind === 'video') {
+        parts.push('動画');
+      } else if (item.width && item.height) {
+        parts.push(item.width + ' x ' + item.height);
+      } else {
+        parts.push('画像');
+      }
+      if (item.sizeBytes) {
+        const mb = item.sizeBytes / 1024 / 1024;
+        parts.push((mb >= 10 ? Math.round(mb) : mb.toFixed(1)) + ' MB');
+      }
+      if (item.persistent) {
+        parts.push('保存済み');
+      }
+      return parts.join(' / ');
     }
 
     function updateMobileProgress(video) {
@@ -802,19 +1193,27 @@ const indexHTML = `<!doctype html>
       videoPlayerText.textContent = data.enabled ? '有効 / 自動コピーはHLS優先' : '無効 / 自動コピーは画像URL';
       imageInput.accept = data.enabled ? mediaAccept : imageAccept;
       fileModeButton.textContent = data.enabled ? '画像/動画' : '画像';
+      queueUploadButton.hidden = !data.enabled;
     }
 
     uploadForm.addEventListener('submit', async (event) => {
       event.preventDefault();
+      const action = event.submitter && event.submitter.value === 'queue' ? 'queue' : 'publish';
       uploadButton.disabled = true;
-      toast.textContent = 'アップロード中...';
+      queueUploadButton.disabled = true;
+      toast.textContent = action === 'queue' ? '動画変換に追加中...' : 'アップロード中...';
       try {
-        const res = uploadMode === 'link' ? await uploadFromLink() : await uploadFromFile();
+        const res = uploadMode === 'link' ? await uploadFromLink(action) : await uploadFromFile(action);
         if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
         applyState(data);
         announceLocalChange();
         scrollProgressIntoView();
+        if (action === 'queue') {
+          setWingMode('queue');
+          toast.textContent = '動画変換に追加しました';
+          return;
+        }
         const isVideo = data.current && data.current.kind === 'video';
         if (isVideo) {
           toast.textContent = data.clipboardCopied ? '動画HLS変換を開始し、URLをPCにコピーしました' : '動画HLS変換を開始しました';
@@ -825,6 +1224,7 @@ const indexHTML = `<!doctype html>
         toast.textContent = error.message || 'アップロードに失敗しました';
       } finally {
         uploadButton.disabled = false;
+        queueUploadButton.disabled = false;
       }
     });
 
@@ -845,14 +1245,14 @@ const indexHTML = `<!doctype html>
       }
     }
 
-    function uploadFromFile() {
+    function uploadFromFile(action) {
       const formData = new FormData(uploadForm);
-      return fetch('/api/upload', { method: 'POST', body: formData });
+      return fetch(action === 'queue' ? '/api/upload-queue' : '/api/upload', { method: 'POST', body: formData });
     }
 
-    function uploadFromLink() {
+    function uploadFromLink(action) {
       const formData = new FormData(uploadForm);
-      return fetch('/api/upload-url', {
+      return fetch(action === 'queue' ? '/api/upload-url-queue' : '/api/upload-url', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -878,6 +1278,88 @@ const indexHTML = `<!doctype html>
         toast.textContent = error.message || '画像クリアに失敗しました';
       }
     });
+
+    if (historyList) {
+      historyList.addEventListener('click', async (event) => {
+        const publish = event.target.closest('[data-history-publish]');
+        if (publish) {
+          await selectHistory(publish.dataset.historyPublish);
+          return;
+        }
+        const queue = event.target.closest('[data-history-queue]');
+        if (queue) {
+          await queueHistory(queue.dataset.historyQueue);
+          return;
+        }
+        const heart = event.target.closest('[data-history-favorite]');
+        if (heart) {
+          event.preventDefault();
+          event.stopPropagation();
+          const favorite = heart.dataset.favorite !== '1';
+          await setHistoryFavorite(heart.dataset.historyFavorite, favorite);
+          return;
+        }
+      });
+    }
+    for (const button of wingTabButtons) {
+      button.addEventListener('click', () => setWingMode(button.dataset.wingTab));
+    }
+
+    async function setHistoryFavorite(id, favorite) {
+      if (!favorite && !window.confirm('お気に入りから削除すると、保存済みファイルも削除されます。よろしいですか？')) {
+        return;
+      }
+      try {
+        const res = await fetch('/api/history/favorite', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id, favorite })
+        });
+        if (!res.ok) throw new Error(await res.text());
+        state.history = await res.json();
+        renderHistory(state.history, state.currentID);
+        toast.textContent = favorite ? 'お気に入りに保存しました' : 'お気に入りから削除しました';
+      } catch (error) {
+        toast.textContent = error.message || 'お気に入りの更新に失敗しました';
+      }
+    }
+
+    async function queueHistory(id) {
+      toast.textContent = '動画変換に追加中...';
+      try {
+        const res = await fetch('/api/history/queue', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id })
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        applyState(data);
+        setWingMode('queue');
+        announceLocalChange();
+        toast.textContent = '動画変換に追加しました';
+      } catch (error) {
+        toast.textContent = error.message || '動画変換への追加に失敗しました';
+      }
+    }
+
+    async function selectHistory(id) {
+      toast.textContent = '履歴から復元中...';
+      try {
+        const res = await fetch('/api/history/select', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id })
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        applyState(data);
+        announceLocalChange();
+        toast.textContent = '履歴から復元しました';
+      } catch (error) {
+        toast.textContent = error.message || '履歴の復元に失敗しました';
+      }
+    }
 
     document.addEventListener('click', async (event) => {
       const target = event.target.closest('[data-copy]');
