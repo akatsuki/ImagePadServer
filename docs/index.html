@@ -51,7 +51,7 @@
             </div>
             <div>
               <dt>Platform</dt>
-              <dd>Windows</dd>
+              <dd>Windows / macOS</dd>
             </div>
             <div>
               <dt>License</dt>
@@ -128,12 +128,12 @@
           <p class="eyebrow">Download</p>
           <h2 id="download-title">最新版を直接ダウンロード</h2>
           <p>
-            Windowsではビルド済みexeをダウンロードして起動できます。依存ツールが見つからない場合、FFmpeg / yt-dlp / cloudflaredはアプリのローカルフォルダへ自動配置されます。
+            Windowsではビルド済みexeを、macOSではApple Silicon / Intel向けのtar.gzをダウンロードして起動できます。依存ツールが見つからない場合、FFmpeg / yt-dlp / cloudflaredはアプリのローカルフォルダへ自動配置されます。
           </p>
         </div>
         <div class="download-actions">
           <a class="button primary" id="download-primary-link" href="https://github.com/akatsuki/ImagePadServer/releases/latest/download/imagepadserver-v1.2.0.exe">Windows EXEをダウンロード</a>
-          <a class="text-link" id="download-secondary-link" href="https://github.com/akatsuki/ImagePadServer/releases/latest">その他の配布物を見る</a>
+          <a class="text-link" id="download-secondary-link" href="https://github.com/akatsuki/ImagePadServer/releases/latest">macOS版を選ぶ</a>
           <a class="text-link" href="https://github.com/akatsuki/ImagePadServer/releases/latest">リリースノートを見る</a>
         </div>
       </section>
@@ -197,7 +197,7 @@
       (() => {
         const downloads = {
           macos: {
-            label: "その他の配布物を見る",
+            label: "macOS版を選ぶ",
             href: "https://github.com/akatsuki/ImagePadServer/releases/latest",
           },
           windows: {
