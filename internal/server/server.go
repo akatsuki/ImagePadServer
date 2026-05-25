@@ -1228,7 +1228,7 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 			videoURL = imageURLBase + "video/current.mp4?v=" + current.ID
 			publicVideoURL = tunnelURLBase + "video/current.mp4?v=" + current.ID
 		}
-		if videoEnabled && tunnelURLBase != "" && ((current.Kind == "video" && (videoStatus.HLS || videoStatus.Active)) || (current.Kind != "video" && videoStatus.HLS)) {
+		if videoEnabled && tunnelURLBase != "" && (videoStatus.HLS || videoStatus.Active) {
 			streamPath := hlsURLPath(current.ID)
 			hlsURL = imageURLBase + streamPath
 			publicHLSURL = tunnelURLBase + streamPath

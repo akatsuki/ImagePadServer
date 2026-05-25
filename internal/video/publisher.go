@@ -267,12 +267,13 @@ func CurrentStatus(outDir string) Result {
 func CurrentStatusForID(outDir, id string) Result {
 	mp4 := fileExists(filepath.Join(outDir, MP4File))
 	hls := hlsPlaylistExistsForID(outDir, id) && hlsSegmentExistsForID(outDir, id)
-	active := isActive(outDir)
+	active := isActiveForID(outDir, id)
+	pending := isPendingForID(outDir, id)
 	result := Result{
 		OK:     mp4 || hls,
 		MP4:    mp4,
 		HLS:    hls,
-		Active: active,
+		Active: active || pending,
 	}
 	if active && hls {
 		applyProgress(outDir, &result)
@@ -282,6 +283,10 @@ func CurrentStatusForID(outDir, id string) Result {
 	if active {
 		applyProgress(outDir, &result)
 		result.Message = "HLS conversion is starting."
+		return result
+	}
+	if pending {
+		result.Message = "HLS conversion is waiting."
 		return result
 	}
 	if result.OK {
@@ -852,15 +857,47 @@ func PlaylistName(id string) string {
 }
 
 func isActive(outDir string) bool {
+	return isActiveForID(outDir, "")
+}
+
+func isActiveForID(outDir, id string) bool {
 	active, ok := activeHLS.Load(outDir)
 	if !ok {
 		return false
 	}
 	if value, ok := active.(bool); ok {
-		return value
+		return value && id == ""
 	}
-	_, ok = active.(*activeJob)
-	return ok
+	job, ok := active.(*activeJob)
+	if !ok || job == nil {
+		return false
+	}
+	return id == "" || (job.QueueJob != nil && job.QueueJob.MediaID == id)
+}
+
+func isPendingForID(outDir, id string) bool {
+	if id == "" {
+		return false
+	}
+	value, ok := queues.Load(outDir)
+	if !ok {
+		return false
+	}
+	state, ok := value.(*queueState)
+	if !ok {
+		return false
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	for _, job := range state.items {
+		if job == nil || job.MediaID != id {
+			continue
+		}
+		if job.Status == "pending" || job.Status == "running" {
+			return true
+		}
+	}
+	return false
 }
 
 func ActiveQuality(outDir string) (QualityPreset, bool) {

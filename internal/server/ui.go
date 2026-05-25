@@ -792,6 +792,7 @@ const indexHTML = `<!doctype html>
     let videoPlayerPending = false;
     let refreshTimer = 0;
     let refreshInFlight = false;
+    let refreshPromise = null;
     let refreshAgain = false;
     let lastAppliedStateSeq = 0;
     let localChangeChannel = null;
@@ -820,9 +821,18 @@ const indexHTML = `<!doctype html>
     async function refreshState() {
       if (refreshInFlight) {
         refreshAgain = true;
-        return;
+        return refreshPromise;
       }
       refreshInFlight = true;
+      refreshPromise = runRefreshState();
+      try {
+        return await refreshPromise;
+      } finally {
+        refreshPromise = null;
+      }
+    }
+
+    async function runRefreshState() {
       const seq = ++lastAppliedStateSeq;
       try {
         const res = await fetch('/api/state', { cache: 'no-store' });

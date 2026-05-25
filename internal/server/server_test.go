@@ -228,6 +228,90 @@ func TestStateExposesHLSURLOnlyAfterFirstSegment(t *testing.T) {
 	}
 }
 
+func TestStateExposesHLSURLForPendingStillConversion(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	t.Setenv("IMAGEPAD_FFMPEG", slowFFmpegPath(t))
+	if err := settings.Update(func(s *settings.Settings) error {
+		s.VideoPlayerEnabled = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	imagePath := filepath.Join(t.TempDir(), "input.png")
+	if err := os.WriteFile(imagePath, []byte("image"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetCurrent(imagePath, library.CurrentImage{
+		PublicName:  "current.png",
+		ContentType: "image/png",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	current := store.Current()
+	video.EnqueueStillImageForID(imagePath, store.Dir(), current.ID, "input.png", video.ResolveQuality("720", 0))
+	defer video.CancelQueue(store.Dir())
+
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+	srv.SetTunnelStatus(true, "https://example.trycloudflare.com", "connected")
+	state := srv.state(adminRequest("http://127.0.0.1:8080/", "127.0.0.1:50000"))
+
+	if got, _ := state["shareURL"].(string); !strings.Contains(got, "/stream/"+current.ID+"/") {
+		t.Fatalf("shareURL = %q, want pending still conversion HLS URL", got)
+	}
+	if got, _ := state["shareURLLabel"].(string); got != "HLS URL" {
+		t.Fatalf("shareURLLabel = %q, want HLS URL", got)
+	}
+}
+
+func TestStateIgnoresHLSConversionForDifferentCurrentMedia(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	t.Setenv("IMAGEPAD_FFMPEG", slowFFmpegPath(t))
+	if err := settings.Update(func(s *settings.Settings) error {
+		s.VideoPlayerEnabled = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherPath := filepath.Join(t.TempDir(), "other.png")
+	if err := os.WriteFile(otherPath, []byte("other"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	video.EnqueueStillImageForID(otherPath, store.Dir(), "other-media", "other.png", video.ResolveQuality("720", 0))
+	defer video.CancelQueue(store.Dir())
+
+	imagePath := filepath.Join(t.TempDir(), "current.png")
+	if err := os.WriteFile(imagePath, []byte("image"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetCurrent(imagePath, library.CurrentImage{
+		PublicName:  "current.png",
+		ContentType: "image/png",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	current := store.Current()
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+	srv.SetTunnelStatus(true, "https://example.trycloudflare.com", "connected")
+	state := srv.state(adminRequest("http://127.0.0.1:8080/", "127.0.0.1:50000"))
+
+	if got, _ := state["hlsURL"].(string); got != "" {
+		t.Fatalf("hlsURL = %q, want empty for different active media", got)
+	}
+	if got, _ := state["shareURL"].(string); !strings.Contains(got, "/image/current") || !strings.Contains(got, current.ID) {
+		t.Fatalf("shareURL = %q, want current image URL", got)
+	}
+}
+
 func TestNormalizeQualityMode(t *testing.T) {
 	if normalizeQualityMode("1080") != "1080" {
 		t.Fatal("expected 1080 to be accepted")
@@ -285,4 +369,21 @@ func mustURL(rawURL string) *url.URL {
 		panic(err)
 	}
 	return u
+}
+
+func slowFFmpegPath(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if filepath.Separator == '\\' {
+		path := filepath.Join(dir, "ffmpeg.cmd")
+		if err := os.WriteFile(path, []byte("@echo off\r\nping -n 6 127.0.0.1 > nul\r\nexit /b 1\r\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	path := filepath.Join(dir, "ffmpeg")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nsleep 5\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
