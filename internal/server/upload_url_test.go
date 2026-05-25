@@ -74,7 +74,7 @@ func testServer(t *testing.T, videoEnabled bool) (*Server, *http.ServeMux) {
 	t.Helper()
 
 	appDir := t.TempDir()
-	t.Setenv("APPDATA", appDir)
+	t.Setenv("IMAGEPAD_DATA_DIR", appDir)
 
 	if err := settings.Update(func(s *settings.Settings) error {
 		s.VideoPlayerEnabled = videoEnabled

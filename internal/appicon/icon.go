@@ -1,5 +1,12 @@
 package appicon
 
+import _ "embed"
+
+// MenuBarTemplatePNG contains the macOS menu bar template image.
+//
+//go:embed imagepad-menubar-template.png
+var MenuBarTemplatePNG []byte
+
 // IconICO contains the application icon in ICO format.
 var IconICO = []byte{
 	0x00, 0x00, 0x01, 0x00, 0x04, 0x00, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00,

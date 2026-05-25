@@ -55,7 +55,10 @@ const (
 	ClipDuration = "10"
 
 	ffmpegDownloadURL    = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+	ffmpegSHA256URL      = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip.sha256"
 	ytdlpDownloadURL     = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+	ytdlpMacOSURL        = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos"
+	ytdlpSHA256SumsURL   = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS"
 	ffmpegDownloadSHA256 = ""
 	ytdlpDownloadSHA256  = ""
 )
@@ -689,8 +692,8 @@ func EnsureFFmpeg() (string, error) {
 	if ffmpeg, err := ffmpegPath(); err == nil {
 		return ffmpeg, nil
 	}
-	if runtime.GOOS != "windows" {
-		return "", errors.New("FFmpeg not found. Automatic download is currently supported on Windows only. Set IMAGEPAD_FFMPEG or add ffmpeg to PATH.")
+	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
+		return "", fmt.Errorf("FFmpeg not found. %s You can also set IMAGEPAD_FFMPEG.", toolInstallHint("ffmpeg"))
 	}
 	return downloadFFmpeg()
 }
@@ -699,8 +702,8 @@ func EnsureYTDLP() (string, error) {
 	if exe, err := ytdlpPath(); err == nil {
 		return exe, nil
 	}
-	if runtime.GOOS != "windows" {
-		return "", errors.New("yt-dlp not found. Automatic download is currently supported on Windows only. Add yt-dlp to PATH.")
+	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
+		return "", fmt.Errorf("yt-dlp not found. %s You can also set IMAGEPAD_YTDLP.", toolInstallHint("yt-dlp"))
 	}
 	return downloadYTDLP()
 }
@@ -916,9 +919,23 @@ func localYTDLPPath() string {
 	return filepath.Join(settings.Dir(), "bin", name)
 }
 
+func toolInstallHint(name string) string {
+	switch runtime.GOOS {
+	case "darwin":
+		return fmt.Sprintf("Install it with Homebrew (`brew install %s`) or add it to PATH.", name)
+	case "linux":
+		return fmt.Sprintf("Install %s with your package manager or add it to PATH.", name)
+	default:
+		return fmt.Sprintf("Add %s to PATH.", name)
+	}
+}
+
 func downloadFFmpeg() (string, error) {
+	if runtime.GOOS == "darwin" {
+		return downloadDarwinFFmpeg()
+	}
 	if runtime.GOOS != "windows" {
-		return "", errors.New("automatic FFmpeg download is currently supported on Windows only")
+		return "", errors.New("automatic FFmpeg download is currently supported on Windows and macOS only")
 	}
 
 	target := localFFmpegPath()
@@ -931,7 +948,11 @@ func downloadFFmpeg() (string, error) {
 		checksum = ffmpegDownloadSHA256
 	}
 	if checksum == "" {
-		return "", errors.New("automatic FFmpeg download is disabled until a trusted SHA256 checksum is configured")
+		var err error
+		checksum, err = remoteTextSHA256(ffmpegSHA256URL)
+		if err != nil {
+			return "", fmt.Errorf("failed to resolve FFmpeg checksum: %w", err)
+		}
 	}
 
 	zipPath := filepath.Join(settings.Dir(), "bin", "ffmpeg-release-essentials.zip")
@@ -947,8 +968,11 @@ func downloadFFmpeg() (string, error) {
 }
 
 func downloadYTDLP() (string, error) {
+	if runtime.GOOS == "darwin" {
+		return downloadDarwinYTDLP()
+	}
 	if runtime.GOOS != "windows" {
-		return "", errors.New("automatic yt-dlp download is currently supported on Windows only")
+		return "", errors.New("automatic yt-dlp download is currently supported on Windows and macOS only")
 	}
 	target := localYTDLPPath()
 	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
@@ -960,11 +984,74 @@ func downloadYTDLP() (string, error) {
 		checksum = ytdlpDownloadSHA256
 	}
 	if checksum == "" {
-		return "", errors.New("automatic yt-dlp download is disabled until a trusted SHA256 checksum is configured")
+		var err error
+		checksum, err = remoteSHA256For("yt-dlp.exe")
+		if err != nil {
+			return "", fmt.Errorf("failed to resolve yt-dlp checksum: %w", err)
+		}
 	}
 
 	if err := downloadFile(target, ytdlpDownloadURL, 50<<20, checksum); err != nil {
 		return "", fmt.Errorf("failed to download yt-dlp: %w", err)
+	}
+	return target, nil
+}
+
+func downloadDarwinFFmpeg() (string, error) {
+	target := localFFmpegPath()
+	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+		return "", fmt.Errorf("failed to prepare FFmpeg folder: %w", err)
+	}
+	rawURL, err := darwinFFmpegDownloadURL()
+	if err != nil {
+		return "", err
+	}
+	zipPath := filepath.Join(settings.Dir(), "bin", "ffmpeg-macos.zip")
+	checksum := strings.TrimSpace(os.Getenv("IMAGEPAD_FFMPEG_SHA256"))
+	if err := downloadFileAllowMissingChecksum(zipPath, rawURL, 180<<20, checksum); err != nil {
+		return "", fmt.Errorf("failed to download FFmpeg: %w", err)
+	}
+	defer os.Remove(zipPath)
+	if err := extractNamedBinaryFromZip(zipPath, target, "ffmpeg"); err != nil {
+		return "", fmt.Errorf("failed to install FFmpeg: %w", err)
+	}
+	if err := validateExecutable(target, "-version"); err != nil {
+		_ = os.Remove(target)
+		return "", err
+	}
+	return target, nil
+}
+
+func darwinFFmpegDownloadURL() (string, error) {
+	switch runtime.GOARCH {
+	case "arm64":
+		return "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip", nil
+	case "amd64":
+		return "https://ffmpeg.martin-riedl.de/redirect/latest/macos/amd64/release/ffmpeg.zip", nil
+	default:
+		return "", fmt.Errorf("automatic FFmpeg install is not available for darwin/%s", runtime.GOARCH)
+	}
+}
+
+func downloadDarwinYTDLP() (string, error) {
+	target := localYTDLPPath()
+	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+		return "", fmt.Errorf("failed to prepare yt-dlp folder: %w", err)
+	}
+	checksum := strings.TrimSpace(os.Getenv("IMAGEPAD_YTDLP_SHA256"))
+	if checksum == "" {
+		var err error
+		checksum, err = remoteSHA256For("yt-dlp_macos")
+		if err != nil {
+			return "", fmt.Errorf("failed to resolve yt-dlp checksum: %w", err)
+		}
+	}
+	if err := downloadExecutable(target, ytdlpMacOSURL, 80<<20, checksum); err != nil {
+		return "", fmt.Errorf("failed to download yt-dlp: %w", err)
+	}
+	if err := validateExecutable(target, "--version"); err != nil {
+		_ = os.Remove(target)
+		return "", err
 	}
 	return target, nil
 }
@@ -1021,6 +1108,118 @@ func downloadFile(path, rawURL string, maxBytes int64, expectedSHA256 string) er
 	return os.Rename(tempPath, path)
 }
 
+func downloadFileAllowMissingChecksum(path, rawURL string, maxBytes int64, expectedSHA256 string) error {
+	client := &http.Client{Timeout: 5 * time.Minute}
+	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", "ImagePadServer/1.0")
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("download returned %s", resp.Status)
+	}
+	if resp.ContentLength > maxBytes {
+		return fmt.Errorf("download exceeds size limit")
+	}
+	tempPath := path + ".tmp"
+	out, err := os.OpenFile(tempPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+	written, copyErr := io.Copy(out, io.LimitReader(resp.Body, maxBytes+1))
+	closeErr := out.Close()
+	if copyErr != nil {
+		_ = os.Remove(tempPath)
+		return copyErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(tempPath)
+		return closeErr
+	}
+	if written == 0 || written > maxBytes {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("download has invalid size")
+	}
+	if strings.TrimSpace(expectedSHA256) != "" {
+		if err := verifySHA256(tempPath, expectedSHA256); err != nil {
+			_ = os.Remove(tempPath)
+			return err
+		}
+	}
+	_ = os.Remove(path)
+	return os.Rename(tempPath, path)
+}
+
+func downloadExecutable(path, rawURL string, maxBytes int64, expectedSHA256 string) error {
+	if err := downloadFile(path, rawURL, maxBytes, expectedSHA256); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0755)
+}
+
+func remoteSHA256For(fileName string) (string, error) {
+	client := &http.Client{Timeout: 30 * time.Second}
+	req, err := http.NewRequest(http.MethodGet, ytdlpSHA256SumsURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "ImagePadServer/1.0")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("checksum download returned %s", resp.Status)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		name := strings.TrimPrefix(fields[len(fields)-1], "*")
+		if name == fileName {
+			return fields[0], nil
+		}
+	}
+	return "", fmt.Errorf("checksum for %s was not found", fileName)
+}
+
+func remoteTextSHA256(rawURL string) (string, error) {
+	client := &http.Client{Timeout: 30 * time.Second}
+	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "ImagePadServer/1.0")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("checksum download returned %s", resp.Status)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		return "", err
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) == 0 {
+		return "", errors.New("checksum response was empty")
+	}
+	return fields[0], nil
+}
+
 func verifySHA256(path, expected string) error {
 	expected = strings.ToLower(strings.TrimSpace(expected))
 	if expected == "" {
@@ -1039,6 +1238,10 @@ func verifySHA256(path, expected string) error {
 }
 
 func extractFFmpegExe(zipPath, target string) error {
+	return extractNamedBinaryFromZip(zipPath, target, "ffmpeg.exe")
+}
+
+func extractNamedBinaryFromZip(zipPath, target, binaryName string) error {
 	reader, err := zip.OpenReader(zipPath)
 	if err != nil {
 		return err
@@ -1047,7 +1250,7 @@ func extractFFmpegExe(zipPath, target string) error {
 
 	for _, file := range reader.File {
 		name := strings.ReplaceAll(file.Name, "\\", "/")
-		if !strings.HasSuffix(strings.ToLower(name), "/bin/ffmpeg.exe") {
+		if strings.ToLower(filepath.Base(name)) != strings.ToLower(binaryName) {
 			continue
 		}
 		src, err := file.Open()
@@ -1074,7 +1277,17 @@ func extractFFmpegExe(zipPath, target string) error {
 		_ = os.Remove(target)
 		return os.Rename(tempTarget, target)
 	}
-	return errors.New("ffmpeg.exe was not found in the downloaded archive")
+	return fmt.Errorf("%s was not found in the downloaded archive", binaryName)
+}
+
+func validateExecutable(path string, args ...string) error {
+	cmd := exec.Command(path, args...)
+	hideWindow(cmd)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("installed executable validation failed: %w: %s", err, trimOutput(output))
+	}
+	return nil
 }
 
 func run(ffmpeg string, args ...string) error {

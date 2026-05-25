@@ -1,5 +1,6 @@
-//go:build !windows
+//go:build !windows && !(darwin && cgo)
 // +build !windows
+// +build !darwin !cgo
 
 package tray
 
@@ -17,3 +18,11 @@ func Start(serverURL string, onExit func(), onResume func(), onReconnect func())
 
 // Stop is a no-op on unsupported platforms.
 func (t *Tray) Stop() {}
+
+// MustRunOnMainThread reports whether Start owns the main application loop.
+func MustRunOnMainThread() bool {
+	return false
+}
+
+// StopCurrent is used by platforms whose tray owns the main application loop.
+func StopCurrent() {}

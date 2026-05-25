@@ -109,19 +109,22 @@ func run(useNativeWindow bool) error {
 	trayExit := make(chan struct{})
 	var trayExitOnce sync.Once
 	reconnect := make(chan struct{}, 1)
-	trayIcon, err := tray.Start(localURL, func() {
+	startTray := func() (*tray.Tray, error) {
+		return tray.Start(localURL, func() {
+			trayExitOnce.Do(func() {
+				close(trayExit)
+			})
+		}, func() {
+			requestReconnect(reconnect)
+		}, func() {
+			requestReconnect(reconnect)
+		})
+	}
+
+	trayExitRequested := func() {
 		trayExitOnce.Do(func() {
 			close(trayExit)
 		})
-	}, func() {
-		requestReconnect(reconnect)
-	}, func() {
-		requestReconnect(reconnect)
-	})
-	if err != nil {
-		log.Printf("tray icon unavailable: %v", err)
-	} else {
-		defer trayIcon.Stop()
 	}
 
 	srv.SetPublicNetworkMessage("UPnP auto port mapping is disabled for safety.")
@@ -147,10 +150,35 @@ func run(useNativeWindow bool) error {
 		manageCloudflareTunnel(originURL, srv, &tunnelMu, &tunnelHandle, reconnect, stop)
 	}()
 
-	select {
-	case <-stop:
-	case <-trayExit:
+	if tray.MustRunOnMainThread() {
+		go func() {
+			select {
+			case <-stop:
+				tray.StopCurrent()
+			case <-trayExit:
+				tray.StopCurrent()
+			}
+		}()
+		if _, err := startTray(); err != nil {
+			log.Printf("tray icon unavailable: %v", err)
+			select {
+			case <-stop:
+			case <-trayExit:
+			}
+		}
+	} else {
+		trayIcon, err := startTray()
+		if err != nil {
+			log.Printf("tray icon unavailable: %v", err)
+		} else {
+			defer trayIcon.Stop()
+		}
+		select {
+		case <-stop:
+		case <-trayExit:
+		}
 	}
+	trayExitRequested()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

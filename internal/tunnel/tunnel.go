@@ -1,7 +1,9 @@
 package tunnel
 
 import (
+	"archive/tar"
 	"bufio"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -34,8 +36,12 @@ type Tunnel struct {
 }
 
 const (
-	cloudflaredDownloadURL    = "https://github.com/cloudflare/cloudflared/releases/download/2026.5.0/cloudflared-windows-amd64.exe"
-	cloudflaredDownloadSHA256 = "f141cded099c239171ad2cea6fb5da0fdaa2bd36104c3074d883f9546519eba7"
+	cloudflaredReleaseVersion           = "2026.5.0"
+	cloudflaredWindowsDownloadURL       = "https://github.com/cloudflare/cloudflared/releases/download/2026.5.0/cloudflared-windows-amd64.exe"
+	cloudflaredWindowsSHA256            = "f141cded099c239171ad2cea6fb5da0fdaa2bd36104c3074d883f9546519eba7"
+	cloudflaredDarwinArm64SHA256        = "116ef11a59fc4f31e7f1bcc4378070cd7ca053fa37b4484b1432bb150b358219"
+	cloudflaredDarwinAMD64SHA256        = "7f2c4c8c86e787226804694112682aefacd4cfb98f54508f1a5a841a78bbbef9"
+	cloudflaredDownloadMaxBytes   int64 = 100 << 20
 )
 
 var tryCloudflareURL = regexp.MustCompile(`https://[-a-zA-Z0-9]+\.trycloudflare\.com`)
@@ -154,15 +160,25 @@ func ensureCloudflared() (string, error) {
 	if exe, err := exec.LookPath("cloudflared"); err == nil {
 		return exe, nil
 	}
+	if local := localCloudflaredPath(); fileExists(local) {
+		return local, nil
+	}
 	if runtime.GOOS != "windows" {
-		return "", errors.New("cloudflared was not found in PATH")
+		if runtime.GOOS == "darwin" {
+			exe := localCloudflaredPath()
+			if err := os.MkdirAll(filepath.Dir(exe), 0755); err != nil {
+				return "", err
+			}
+			if err := downloadCloudflared(exe); err != nil {
+				return "", err
+			}
+			return exe, nil
+		}
+		return "", fmt.Errorf("cloudflared was not found. %s", installHint("cloudflared"))
 	}
 
-	binDir := filepath.Join(settings.Dir(), "bin")
-	exe := filepath.Join(binDir, "cloudflared.exe")
-	if _, err := os.Stat(exe); err == nil {
-		return exe, nil
-	}
+	exe := localCloudflaredPath()
+	binDir := filepath.Dir(exe)
 	if err := os.MkdirAll(binDir, 0755); err != nil {
 		return "", err
 	}
@@ -172,13 +188,44 @@ func ensureCloudflared() (string, error) {
 	return exe, nil
 }
 
+func localCloudflaredPath() string {
+	name := "cloudflared"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	return filepath.Join(settings.Dir(), "bin", name)
+}
+
+func fileExists(path string) bool {
+	if path == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func installHint(name string) string {
+	switch runtime.GOOS {
+	case "darwin":
+		return fmt.Sprintf("Install it with Homebrew (`brew install %s`) or add it to PATH.", name)
+	case "linux":
+		return fmt.Sprintf("Install %s with your package manager or add it to PATH.", name)
+	default:
+		return fmt.Sprintf("Add %s to PATH.", name)
+	}
+}
+
 func downloadCloudflared(path string) error {
+	if runtime.GOOS == "darwin" {
+		return downloadDarwinCloudflared(path)
+	}
+
 	checksum := strings.TrimSpace(os.Getenv("IMAGEPAD_CLOUDFLARED_SHA256"))
 	if checksum == "" {
-		checksum = cloudflaredDownloadSHA256
+		checksum = cloudflaredWindowsSHA256
 	}
 	client := http.Client{Timeout: 2 * time.Minute}
-	resp, err := client.Get(cloudflaredDownloadURL)
+	resp, err := client.Get(cloudflaredWindowsDownloadURL)
 	if err != nil {
 		return err
 	}
@@ -212,6 +259,141 @@ func downloadCloudflared(path string) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+func downloadDarwinCloudflared(path string) error {
+	rawURL, checksum, err := darwinCloudflaredDownload()
+	if err != nil {
+		return err
+	}
+	if override := strings.TrimSpace(os.Getenv("IMAGEPAD_CLOUDFLARED_SHA256")); override != "" {
+		checksum = override
+	}
+	archivePath := path + ".tgz"
+	if err := downloadFile(archivePath, rawURL, cloudflaredDownloadMaxBytes, checksum); err != nil {
+		return err
+	}
+	defer os.Remove(archivePath)
+	if err := extractTarGzBinary(archivePath, path, "cloudflared"); err != nil {
+		return err
+	}
+	return validateExecutable(path, "--version")
+}
+
+func darwinCloudflaredDownload() (string, string, error) {
+	switch runtime.GOARCH {
+	case "arm64":
+		return fmt.Sprintf("https://github.com/cloudflare/cloudflared/releases/download/%s/cloudflared-darwin-arm64.tgz", cloudflaredReleaseVersion), cloudflaredDarwinArm64SHA256, nil
+	case "amd64":
+		return fmt.Sprintf("https://github.com/cloudflare/cloudflared/releases/download/%s/cloudflared-darwin-amd64.tgz", cloudflaredReleaseVersion), cloudflaredDarwinAMD64SHA256, nil
+	default:
+		return "", "", fmt.Errorf("automatic cloudflared install is not available for darwin/%s", runtime.GOARCH)
+	}
+}
+
+func downloadFile(path, rawURL string, maxBytes int64, expectedSHA256 string) error {
+	expectedSHA256 = strings.TrimSpace(expectedSHA256)
+	if expectedSHA256 == "" {
+		return errors.New("automatic cloudflared download is disabled until a trusted SHA256 checksum is configured")
+	}
+	client := http.Client{Timeout: 2 * time.Minute}
+	resp, err := client.Get(rawURL)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("cloudflared download failed: %s", resp.Status)
+	}
+	if resp.ContentLength > maxBytes {
+		return errors.New("cloudflared download exceeds size limit")
+	}
+	tmp := path + ".tmp"
+	file, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+	written, err := io.Copy(file, io.LimitReader(resp.Body, maxBytes+1))
+	closeErr := file.Close()
+	if err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if closeErr != nil {
+		_ = os.Remove(tmp)
+		return closeErr
+	}
+	if written == 0 || written > maxBytes {
+		_ = os.Remove(tmp)
+		return errors.New("cloudflared download has invalid size")
+	}
+	if err := verifySHA256(tmp, expectedSHA256); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	_ = os.Remove(path)
+	return os.Rename(tmp, path)
+}
+
+func extractTarGzBinary(archivePath, targetPath, binaryName string) error {
+	file, err := os.Open(archivePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	gz, err := gzip.NewReader(file)
+	if err != nil {
+		return err
+	}
+	defer gz.Close()
+	reader := tar.NewReader(gz)
+	for {
+		header, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if header.FileInfo().IsDir() || filepath.Base(header.Name) != binaryName {
+			continue
+		}
+		return writeExecutable(targetPath, reader)
+	}
+	return fmt.Errorf("%s was not found in archive", binaryName)
+}
+
+func writeExecutable(path string, r io.Reader) error {
+	tmp := path + ".tmp"
+	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0755)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(out, r)
+	closeErr := out.Close()
+	if copyErr != nil {
+		_ = os.Remove(tmp)
+		return copyErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(tmp)
+		return closeErr
+	}
+	if err := os.Chmod(tmp, 0755); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	_ = os.Remove(path)
+	return os.Rename(tmp, path)
+}
+
+func validateExecutable(path string, args ...string) error {
+	cmd := exec.Command(path, args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("installed executable validation failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
 }
 
 func verifySHA256(path, expected string) error {

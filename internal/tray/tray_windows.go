@@ -85,6 +85,14 @@ var (
 	currentTrayIconOwned bool
 )
 
+// MustRunOnMainThread reports whether Start owns the main application loop.
+func MustRunOnMainThread() bool {
+	return false
+}
+
+// StopCurrent is used by platforms whose tray owns the main application loop.
+func StopCurrent() {}
+
 type wndClassEx struct {
 	Size       uint32
 	Style      uint32

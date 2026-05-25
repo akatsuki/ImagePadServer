@@ -1,13 +1,13 @@
-//go:build !windows
-// +build !windows
+//go:build !windows && !darwin
+// +build !windows,!darwin
 
 package clipboard
 
 import "errors"
 
-var errUnsupported = errors.New("clipboard copy is only supported on Windows")
+var errUnsupported = errors.New("clipboard copy is not supported on this platform")
 
-// CopyText is unsupported on non-Windows platforms.
+// CopyText is unsupported on platforms without a local clipboard bridge.
 func CopyText(text string) error {
 	_ = text
 	return errUnsupported

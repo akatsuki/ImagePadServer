@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 )
 
@@ -103,11 +104,24 @@ func saveUnlocked(settings Settings) error {
 }
 
 func Dir() string {
-	base := os.Getenv("APPDATA")
-	if base == "" {
-		base = os.TempDir()
+	if configured := os.Getenv("IMAGEPAD_DATA_DIR"); configured != "" {
+		return configured
 	}
-	return filepath.Join(base, "ImagePadServer")
+	if legacy := os.Getenv("APPDATA"); legacy != "" && runtime.GOOS == "windows" {
+		return filepath.Join(legacy, "ImagePadServer")
+	}
+	if base, err := os.UserConfigDir(); err == nil && base != "" {
+		return filepath.Join(base, "ImagePadServer")
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		switch runtime.GOOS {
+		case "darwin":
+			return filepath.Join(home, "Library", "Application Support", "ImagePadServer")
+		default:
+			return filepath.Join(home, ".config", "ImagePadServer")
+		}
+	}
+	return filepath.Join(os.TempDir(), "ImagePadServer")
 }
 
 func path() string {

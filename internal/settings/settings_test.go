@@ -9,7 +9,7 @@ import (
 
 func TestSaveIsAtomicAndConcurrentSafe(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("APPDATA", dir)
+	t.Setenv("IMAGEPAD_DATA_DIR", filepath.Join(dir, "ImagePadServer"))
 
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
@@ -39,5 +39,15 @@ func TestSaveIsAtomicAndConcurrentSafe(t *testing.T) {
 	}
 	if len(data) == 0 {
 		t.Fatal("expected settings file content")
+	}
+}
+
+func TestDirUsesExplicitDataDir(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("IMAGEPAD_DATA_DIR", dir)
+	t.Setenv("APPDATA", t.TempDir())
+
+	if got := Dir(); got != dir {
+		t.Fatalf("Dir() = %q, want %q", got, dir)
 	}
 }

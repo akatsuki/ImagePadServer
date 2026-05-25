@@ -146,7 +146,7 @@ func TestPrimaryShareURL(t *testing.T) {
 }
 
 func TestStateExposesHLSURLOnlyAfterFirstSegment(t *testing.T) {
-	t.Setenv("APPDATA", t.TempDir())
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
 	if err := settings.Update(func(s *settings.Settings) error {
 		s.VideoPlayerEnabled = true
 		return nil
