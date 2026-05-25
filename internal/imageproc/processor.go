@@ -13,8 +13,11 @@ import (
 	"io"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"imagepadserver/internal/video"
 
 	"github.com/srwiley/oksvg"
 	"github.com/srwiley/rasterx"
@@ -52,7 +55,7 @@ func DefaultOptions() Options {
 	}
 }
 
-func Process(reader io.Reader, _ string, outDir string, opts Options) (Result, error) {
+func Process(reader io.Reader, name string, outDir string, opts Options) (Result, error) {
 	if opts.MaxDimension <= 0 || opts.MaxDimension > maxImageDimension {
 		opts.MaxDimension = 2048
 	}
@@ -77,7 +80,7 @@ func Process(reader io.Reader, _ string, outDir string, opts Options) (Result, e
 	}
 	orientation := exifOrientation(input)
 
-	img, format, err := decodeImage(input)
+	img, format, err := decodeImage(input, name, outDir, opts.MaxDimension)
 	if err != nil {
 		return Result{}, fmt.Errorf("unsupported or invalid image: %w", err)
 	}
@@ -132,12 +135,131 @@ func Process(reader io.Reader, _ string, outDir string, opts Options) (Result, e
 	}, nil
 }
 
-func decodeImage(input []byte) (image.Image, string, error) {
+func decodeImage(input []byte, name, outDir string, maxDimension int) (image.Image, string, error) {
 	if isSVG(input) {
 		img, err := rasterizeSVG(input)
 		return img, "svg", err
 	}
-	return image.Decode(bytes.NewReader(input))
+	img, format, err := image.Decode(bytes.NewReader(input))
+	if err == nil {
+		return img, format, nil
+	}
+	if !IsCameraRAWName(name) {
+		return nil, "", err
+	}
+	rawImg, rawErr := decodeCameraRAW(input, name, outDir, maxDimension)
+	if rawErr != nil {
+		return nil, "", fmt.Errorf("%w; camera RAW fallback failed: %v", err, rawErr)
+	}
+	return rawImg, "raw", nil
+}
+
+func IsCameraRAWName(name string) bool {
+	ext := strings.ToLower(filepath.Ext(name))
+	_, ok := cameraRAWExtensions[ext]
+	return ok
+}
+
+var cameraRAWExtensions = map[string]struct{}{
+	".arw": {},
+	".srf": {},
+	".sr2": {},
+	".crw": {},
+	".cr2": {},
+	".cr3": {},
+	".rw2": {},
+	".raw": {},
+	".orf": {},
+	".raf": {},
+	".nef": {},
+	".nrw": {},
+	".x3f": {},
+	".dng": {},
+}
+
+func decodeCameraRAW(input []byte, name, outDir string, maxDimension int) (image.Image, error) {
+	ffmpeg, err := video.EnsureFFmpeg()
+	if err != nil {
+		return nil, fmt.Errorf("FFmpeg is required to convert camera RAW files: %w", err)
+	}
+	if err := os.MkdirAll(outDir, 0700); err != nil {
+		return nil, err
+	}
+
+	ext := strings.ToLower(filepath.Ext(name))
+	if ext == "" {
+		ext = ".raw"
+	}
+	in, err := os.CreateTemp(outDir, "raw-source-*"+ext)
+	if err != nil {
+		return nil, err
+	}
+	inPath := in.Name()
+	defer os.Remove(inPath)
+	if _, err := in.Write(input); err != nil {
+		_ = in.Close()
+		return nil, err
+	}
+	if err := in.Close(); err != nil {
+		return nil, err
+	}
+
+	out, err := os.CreateTemp(outDir, "raw-decoded-*.png")
+	if err != nil {
+		return nil, err
+	}
+	outPath := out.Name()
+	_ = out.Close()
+	defer os.Remove(outPath)
+
+	args := []string{
+		"-y",
+		"-hide_banner",
+		"-loglevel", "error",
+		"-i", inPath,
+		"-frames:v", "1",
+	}
+	if maxDimension > 0 {
+		args = append(args, "-vf", rawScaleFilter(maxDimension))
+	}
+	args = append(args, outPath)
+
+	cmd := exec.Command(ffmpeg, args...)
+	hideWindow(cmd)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", err, trimCommandOutput(output))
+	}
+
+	file, err := os.Open(outPath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	img, err := png.Decode(file)
+	if err != nil {
+		return nil, err
+	}
+	return img, nil
+}
+
+func rawScaleFilter(maxDimension int) string {
+	if maxDimension <= 0 || maxDimension > maxImageDimension {
+		maxDimension = 2048
+	}
+	max := fmt.Sprintf("%d", maxDimension)
+	return "scale=w='min(" + max + ",iw)':h='min(" + max + ",ih)':force_original_aspect_ratio=decrease"
+}
+
+func trimCommandOutput(output []byte) string {
+	text := strings.TrimSpace(string(output))
+	if len(text) > 700 {
+		return text[len(text)-700:]
+	}
+	if text == "" {
+		return "no output"
+	}
+	return text
 }
 
 func isSVG(input []byte) bool {

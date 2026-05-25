@@ -3,6 +3,8 @@ package server
 import (
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,8 +50,44 @@ func TestRemoteContentTypeAllowed(t *testing.T) {
 	if !remoteContentTypeAllowed("image/svg+xml; charset=utf-8") {
 		t.Fatal("expected image/svg+xml to be allowed")
 	}
+	if !remoteContentTypeAllowed("application/octet-stream") {
+		t.Fatal("expected octet-stream to be allowed for RAW image downloads")
+	}
 	if remoteContentTypeAllowed("text/html") {
 		t.Fatal("expected text/html to be rejected")
+	}
+}
+
+func TestRemoteFileNameInfersRAWExtensions(t *testing.T) {
+	u := mustURL("https://example.com/download?id=1&filename=sample.CR3")
+	if got := remoteFileName(u, "application/octet-stream"); got != "download.cr3" {
+		t.Fatalf("remoteFileName = %q, want download.cr3", got)
+	}
+
+	u = mustURL("https://example.com/raw")
+	if got := remoteFileName(u, "image/x-nikon-nef"); got != "raw.nef" {
+		t.Fatalf("remoteFileName = %q, want raw.nef", got)
+	}
+}
+
+func TestHandleFFmpegChecksConfiguredBinaryWithoutEnablingVideoMode(t *testing.T) {
+	ffmpegPath := filepath.Join(t.TempDir(), "ffmpeg.exe")
+	if err := os.WriteFile(ffmpegPath, []byte("fake"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("IMAGEPAD_FFMPEG", ffmpegPath)
+
+	srv, mux := testServer(t, false)
+	defer srv.store.Reset()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/ffmpeg", nil)
+	rec := adminJSON(t, mux, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %q", rec.Code, rec.Body.String())
+	}
+	if srv.videoPlayerEnabled() {
+		t.Fatal("expected FFmpeg check not to enable video player mode")
 	}
 }
 
@@ -239,4 +277,12 @@ func adminRequest(rawURL, remoteAddr string) *http.Request {
 	}
 	req.RemoteAddr = remoteAddr
 	return req
+}
+
+func mustURL(rawURL string) *url.URL {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		panic(err)
+	}
+	return u
 }

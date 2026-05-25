@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"imagepadserver/internal/imageproc"
 )
 
 func downloadRemoteImage(rawURL string, maxBytes int64) (io.ReadCloser, string, error) {
@@ -45,7 +47,7 @@ func downloadRemoteImage(rawURL string, maxBytes int64) (io.ReadCloser, string, 
 		return nil, "", err
 	}
 	req.Header.Set("User-Agent", "ImagePadServer/1.0")
-	req.Header.Set("Accept", "image/webp,image/svg+xml,image/png,image/jpeg,image/gif,image/bmp,image/tiff,image/*;q=0.8,*/*;q=0.2")
+	req.Header.Set("Accept", "image/webp,image/svg+xml,image/png,image/jpeg,image/gif,image/bmp,image/tiff,image/x-sony-arw,image/x-sony-srf,image/x-sony-sr2,image/x-canon-crw,image/x-canon-cr2,image/x-canon-cr3,image/x-panasonic-rw2,image/x-olympus-orf,image/x-fuji-raf,image/x-nikon-nef,image/x-nikon-nrw,image/x-sigma-x3f,image/x-adobe-dng,image/*;q=0.8,application/octet-stream;q=0.6,*/*;q=0.2")
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -164,6 +166,9 @@ func remoteFileName(u *url.URL, contentType string) string {
 	if filepath.Ext(name) != "" {
 		return name
 	}
+	if rawExt := rawExtensionFromQuery(u.RawQuery); rawExt != "" {
+		return name + rawExt
+	}
 	mediaType, _, _ := mime.ParseMediaType(contentType)
 	switch strings.ToLower(mediaType) {
 	case "image/jpeg":
@@ -180,7 +185,49 @@ func remoteFileName(u *url.URL, contentType string) string {
 		return name + ".tiff"
 	case "image/svg+xml":
 		return name + ".svg"
+	case "image/x-sony-arw":
+		return name + ".arw"
+	case "image/x-sony-srf":
+		return name + ".srf"
+	case "image/x-sony-sr2":
+		return name + ".sr2"
+	case "image/x-canon-crw":
+		return name + ".crw"
+	case "image/x-canon-cr2":
+		return name + ".cr2"
+	case "image/x-canon-cr3":
+		return name + ".cr3"
+	case "image/x-panasonic-rw2":
+		return name + ".rw2"
+	case "image/x-olympus-orf":
+		return name + ".orf"
+	case "image/x-fuji-raf":
+		return name + ".raf"
+	case "image/x-nikon-nef":
+		return name + ".nef"
+	case "image/x-nikon-nrw":
+		return name + ".nrw"
+	case "image/x-sigma-x3f":
+		return name + ".x3f"
+	case "image/x-adobe-dng":
+		return name + ".dng"
 	default:
 		return name
 	}
+}
+
+func rawExtensionFromQuery(rawQuery string) string {
+	values, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return ""
+	}
+	for _, key := range []string{"filename", "file", "name"} {
+		for _, value := range values[key] {
+			ext := strings.ToLower(filepath.Ext(value))
+			if ext != "" && imageproc.IsCameraRAWName("remote"+ext) {
+				return ext
+			}
+		}
+	}
+	return ""
 }

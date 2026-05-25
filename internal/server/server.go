@@ -96,6 +96,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	// SteamVR integration is frozen indefinitely. Keep internal/steamvr as an
 	// archived asset, but do not expose its management API.
 	mux.HandleFunc("/api/video-player", s.admin(s.handleVideoPlayer))
+	mux.HandleFunc("/api/ffmpeg", s.admin(s.handleFFmpeg))
 	mux.HandleFunc("/api/video-quality", s.admin(s.handleVideoQuality))
 	mux.HandleFunc("/api/network-check", s.admin(s.handleNetworkCheck))
 	mux.HandleFunc("/qr/phone.png", s.admin(s.handlePhoneQR))
@@ -850,6 +851,22 @@ func (s *Server) handleVideoPlayer(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func (s *Server) handleFFmpeg(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	path, err := video.EnsureFFmpeg()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]interface{}{
+		"ok":   true,
+		"path": path,
+	})
 }
 
 func (s *Server) handleVideoQuality(w http.ResponseWriter, r *http.Request) {

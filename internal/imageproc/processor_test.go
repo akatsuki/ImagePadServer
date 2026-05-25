@@ -160,6 +160,35 @@ func TestProcessRasterizesSVG(t *testing.T) {
 	}
 }
 
+func TestIsCameraRAWName(t *testing.T) {
+	rawNames := []string{
+		"sony.ARW",
+		"sony.srf",
+		"sony.sr2",
+		"canon.crw",
+		"canon.cr2",
+		"canon.cr3",
+		"panasonic.rw2",
+		"olympus.orf",
+		"fujifilm.raf",
+		"nikon.nef",
+		"nikon.nrw",
+		"sigma.x3f",
+		"adobe.dng",
+	}
+	for _, name := range rawNames {
+		if !IsCameraRAWName(name) {
+			t.Fatalf("expected %s to be treated as camera RAW", name)
+		}
+	}
+
+	for _, name := range []string{"photo.jpg", "image.png", "movie.mp4", "raw.txt"} {
+		if IsCameraRAWName(name) {
+			t.Fatalf("expected %s not to be treated as camera RAW", name)
+		}
+	}
+}
+
 func jpegWithOrientation(jpegBytes []byte, orientation byte) []byte {
 	exif := []byte{
 		'E', 'x', 'i', 'f', 0, 0,

@@ -29,7 +29,7 @@ https://akatsuki.github.io/ImagePadServer/
 Windows ではビルド済み exe を起動します。
 
 ```powershell
-.\dist\imagepadserver-v1.1.0.exe
+.\dist\imagepadserver-v1.1.1.exe
 ```
 
 macOS / Linux では Go を入れたうえで、ソースから起動できます。
@@ -129,7 +129,7 @@ brew install ffmpeg yt-dlp cloudflared
 ```powershell
 $env:IMAGEPAD_FFMPEG="C:\tools\ffmpeg\bin\ffmpeg.exe"
 $env:IMAGEPAD_YTDLP="C:\tools\yt-dlp\yt-dlp.exe"
-.\dist\imagepadserver-v1.1.0.exe
+.\dist\imagepadserver-v1.1.1.exe
 ```
 
 Windows では FFmpeg / yt-dlp / cloudflared を非表示で起動するため、変換中にコマンドプロンプトは表示されない想定です。
@@ -207,7 +207,7 @@ IMAGEPAD_PORT=8080
 
 ```powershell
 $env:IMAGEPAD_PORT="8095"
-.\dist\imagepadserver-v1.1.0.exe
+.\dist\imagepadserver-v1.1.1.exe
 ```
 
 ## トラブルシュート
@@ -288,7 +288,7 @@ go build -trimpath -ldflags "-H=windowsgui" -o dist\imagepadserver-windows-amd64
 
 ## バージョン
 
-- Version: `v1.1.0`
+- Version: `v1.1.1`
 - Author: Akat / 赤月さん
 - Copyright: Copyright (c) 2026 Akat / 赤月さん
 - License: MIT License

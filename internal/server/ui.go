@@ -684,7 +684,7 @@ const indexHTML = `<!doctype html>
             <button class="mode-tab" id="linkModeButton" type="button" role="tab" aria-selected="false">リンク</button>
           </div>
           <div class="upload-panel active" id="fileUploadPanel">
-            <input id="imageInput" name="image" type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp,image/tiff,image/svg+xml,.jpg,.jpeg,.png,.gif,.webp,.bmp,.tif,.tiff,.svg" required>
+            <input id="imageInput" name="image" type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp,image/tiff,image/svg+xml,image/x-sony-arw,image/x-canon-crw,image/x-canon-cr2,image/x-canon-cr3,image/x-panasonic-rw2,image/x-olympus-orf,image/x-fuji-raf,image/x-nikon-nef,image/x-nikon-nrw,image/x-sigma-x3f,image/x-adobe-dng,.jpg,.jpeg,.png,.gif,.webp,.bmp,.tif,.tiff,.svg,.arw,.srf,.sr2,.crw,.cr2,.cr3,.rw2,.raw,.orf,.raf,.nef,.nrw,.x3f,.dng" required>
           </div>
           <div class="upload-panel" id="linkUploadPanel">
             <input id="imageURLInput" name="imageURL" type="url" inputmode="url" placeholder="https://example.com/image.webp">
@@ -796,8 +796,12 @@ const indexHTML = `<!doctype html>
     let lastAppliedStateSeq = 0;
     let localChangeChannel = null;
     let wingMode = 'history';
-    const imageAccept = 'image/png,image/jpeg,image/gif,image/webp,image/bmp,image/tiff,image/svg+xml,.jpg,.jpeg,.png,.gif,.webp,.bmp,.tif,.tiff,.svg';
+    const imageAccept = 'image/png,image/jpeg,image/gif,image/webp,image/bmp,image/tiff,image/svg+xml,image/x-sony-arw,image/x-canon-crw,image/x-canon-cr2,image/x-canon-cr3,image/x-panasonic-rw2,image/x-olympus-orf,image/x-fuji-raf,image/x-nikon-nef,image/x-nikon-nrw,image/x-sigma-x3f,image/x-adobe-dng,.jpg,.jpeg,.png,.gif,.webp,.bmp,.tif,.tiff,.svg,.arw,.srf,.sr2,.crw,.cr2,.cr3,.rw2,.raw,.orf,.raf,.nef,.nrw,.x3f,.dng';
     const mediaAccept = imageAccept + ',video/*,video/mp4,video/quicktime,video/webm,video/x-matroska,.mp4,.mov,.m4v,.webm,.mkv,.avi';
+    const rawExtensions = new Set(['.arw', '.srf', '.sr2', '.crw', '.cr2', '.cr3', '.rw2', '.raw', '.orf', '.raf', '.nef', '.nrw', '.x3f', '.dng']);
+    let ffmpegPending = false;
+    let ffmpegReady = false;
+    let ffmpegPromise = null;
 
     function syncFailureMessage(error) {
       const text = String((error && error.message) || error || '').trim();
@@ -1199,6 +1203,9 @@ const indexHTML = `<!doctype html>
     uploadForm.addEventListener('submit', async (event) => {
       event.preventDefault();
       const action = event.submitter && event.submitter.value === 'queue' ? 'queue' : 'publish';
+      if (uploadMode === 'file' && selectedRAWFile() && !await ensureFFmpegForRAWSelection()) {
+        return;
+      }
       uploadButton.disabled = true;
       queueUploadButton.disabled = true;
       toast.textContent = action === 'queue' ? '動画変換に追加中...' : 'アップロード中...';
@@ -1263,6 +1270,43 @@ const indexHTML = `<!doctype html>
           maxMB: formData.get('maxMB')
         })
       });
+    }
+
+    function selectedRAWFile() {
+      const file = imageInput.files && imageInput.files[0];
+      if (!file || !file.name) return false;
+      const dot = file.name.lastIndexOf('.');
+      if (dot < 0) return false;
+      return rawExtensions.has(file.name.slice(dot).toLowerCase());
+    }
+
+    async function ensureFFmpegForRAWSelection() {
+      if (!selectedRAWFile() || ffmpegReady) return true;
+      if (ffmpegPromise) return ffmpegPromise;
+      ffmpegPromise = runFFmpegCheckForRAWSelection();
+      return ffmpegPromise;
+    }
+
+    async function runFFmpegCheckForRAWSelection() {
+      ffmpegPending = true;
+      uploadButton.disabled = true;
+      queueUploadButton.disabled = true;
+      toast.textContent = 'Checking FFmpeg for RAW conversion...';
+      try {
+        const res = await fetch('/api/ffmpeg', { method: 'POST' });
+        if (!res.ok) throw new Error(await res.text());
+        ffmpegReady = true;
+        toast.textContent = 'FFmpeg is ready for RAW conversion.';
+        return true;
+      } catch (error) {
+        toast.textContent = error.message || 'Failed to check FFmpeg for RAW conversion.';
+        return false;
+      } finally {
+        ffmpegPending = false;
+        ffmpegPromise = null;
+        uploadButton.disabled = false;
+        queueUploadButton.disabled = false;
+      }
     }
 
     document.getElementById('clearButton').addEventListener('click', async () => {
@@ -1461,6 +1505,7 @@ const indexHTML = `<!doctype html>
     });
     fileModeButton.addEventListener('click', () => setUploadMode('file'));
     linkModeButton.addEventListener('click', () => setUploadMode('link'));
+    imageInput.addEventListener('change', ensureFFmpegForRAWSelection);
     qualityMode.addEventListener('change', async () => {
       try {
         const res = await fetch('/api/video-quality', {
