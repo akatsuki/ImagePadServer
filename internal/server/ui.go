@@ -66,6 +66,31 @@ const indexHTML = `<!doctype html>
       border-radius: 8px;
       margin: 0 auto 8px;
     }
+    body.obs-protect .phone-connect {
+      position: relative;
+    }
+    body.obs-protect .phone-connect .qr {
+      filter: blur(8px);
+    }
+    body.obs-protect .phone-connect::after {
+      content: "配信保護中";
+      position: absolute;
+      top: 46px;
+      left: 50%;
+      width: min(100% - 20px, 142px);
+      aspect-ratio: 1 / 1;
+      display: grid;
+      place-items: center;
+      transform: translateX(-50%);
+      border-radius: 8px;
+      background: rgba(23, 32, 42, .52);
+      color: #fff;
+      text-align: center;
+      font-weight: 800;
+      font-size: 13px;
+      line-height: 1.3;
+      pointer-events: none;
+    }
     .urlbox {
       display: grid;
       grid-template-columns: 1fr auto;
@@ -125,14 +150,16 @@ const indexHTML = `<!doctype html>
     }
     .mode-tabs {
       display: grid;
-      grid-template-columns: 1fr auto 1fr;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       align-items: center;
       gap: 6px;
       margin-bottom: 8px;
     }
+    .mode-tabs.has-obs {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
     .mode-tabs .divider {
-      color: var(--muted);
-      font-weight: 700;
+      display: none;
     }
     .mode-tab {
       min-height: 36px;
@@ -154,6 +181,10 @@ const indexHTML = `<!doctype html>
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 8px;
+    }
+    body.obs-protect .controls,
+    body.obs-protect .quality-row {
+      display: none !important;
     }
     label span {
       display: block;
@@ -313,6 +344,21 @@ const indexHTML = `<!doctype html>
       grid-template-columns: 1fr;
       gap: 8px;
       margin-top: 8px;
+    }
+    .obs-grid {
+      display: grid;
+      gap: 8px;
+    }
+    .secret-actions {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+    .icon-button {
+      width: 34px;
+      min-width: 34px;
+      padding: 0;
+      font-size: 15px;
     }
     .wing-tabs {
       display: grid;
@@ -682,12 +728,36 @@ const indexHTML = `<!doctype html>
             <button class="mode-tab active" id="fileModeButton" type="button" role="tab" aria-selected="true">画像</button>
             <span class="divider" aria-hidden="true">|</span>
             <button class="mode-tab" id="linkModeButton" type="button" role="tab" aria-selected="false">リンク</button>
+            <button class="mode-tab" id="obsModeButton" type="button" role="tab" aria-selected="false" hidden>OBS</button>
           </div>
           <div class="upload-panel active" id="fileUploadPanel">
             <input id="imageInput" name="image" type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp,image/tiff,image/svg+xml,image/x-sony-arw,image/x-canon-crw,image/x-canon-cr2,image/x-canon-cr3,image/x-panasonic-rw2,image/x-olympus-orf,image/x-fuji-raf,image/x-nikon-nef,image/x-nikon-nrw,image/x-sigma-x3f,image/x-adobe-dng,.jpg,.jpeg,.png,.gif,.webp,.bmp,.tif,.tiff,.svg,.arw,.srf,.sr2,.crw,.cr2,.cr3,.rw2,.raw,.orf,.raf,.nef,.nrw,.x3f,.dng" required>
           </div>
           <div class="upload-panel" id="linkUploadPanel">
             <input id="imageURLInput" name="imageURL" type="url" inputmode="url" placeholder="https://example.com/image.webp">
+          </div>
+          <div class="upload-panel" id="obsUploadPanel">
+            <div class="obs-grid">
+              <div class="urlbox">
+                <div>
+                  <strong>OBS Server</strong>
+                  <code id="obsServerAddress">RTMP receiver is stopped</code>
+                </div>
+                <button type="button" data-copy="obsServerAddress">コピー</button>
+              </div>
+              <div class="urlbox">
+                <div>
+                  <strong>Stream Key</strong>
+                  <code id="obsStreamKey">-</code>
+                </div>
+                <div class="secret-actions">
+                  <button type="button" class="secondary icon-button" id="obsKeyRevealButton" title="Stream Keyを表示" aria-label="Stream Keyを表示">&#128065;</button>
+                  <button type="button" data-copy="obsStreamKey">コピー</button>
+                  <button type="button" class="secondary" id="obsKeyRotateButton">更新</button>
+                </div>
+              </div>
+              <div class="pill"><strong>OBS</strong><span id="obsStatus">確認中</span></div>
+            </div>
           </div>
           <div class="controls">
             <label><span>最大辺</span><input name="maxDimension" type="number" min="64" max="8192" value="2048"></label>
@@ -762,7 +832,9 @@ const indexHTML = `<!doctype html>
       videoQueue: [],
       videoPlayerEnabled: false,
       videoQuality: null,
+      obs: null,
       currentID: "",
+      obsPreviewID: "",
       previewMode: "empty"
     };
 
@@ -770,12 +842,16 @@ const indexHTML = `<!doctype html>
     const uploadForm = document.getElementById('uploadForm');
     const uploadButton = document.getElementById('uploadButton');
     const queueUploadButton = document.getElementById('queueUploadButton');
+    const modeTabs = document.querySelector('.mode-tabs');
     const imageInput = document.getElementById('imageInput');
     const imageURLInput = document.getElementById('imageURLInput');
     const fileModeButton = document.getElementById('fileModeButton');
     const linkModeButton = document.getElementById('linkModeButton');
+    const obsModeButton = document.getElementById('obsModeButton');
     const fileUploadPanel = document.getElementById('fileUploadPanel');
     const linkUploadPanel = document.getElementById('linkUploadPanel');
+    const obsUploadPanel = document.getElementById('obsUploadPanel');
+    const uploadControls = uploadForm.querySelector('.controls');
     const preview = document.getElementById('preview');
     const historyList = document.getElementById('historyList');
     const wingTabButtons = Array.from(document.querySelectorAll('[data-wing-tab]'));
@@ -787,7 +863,10 @@ const indexHTML = `<!doctype html>
     const updateText = document.getElementById('updateText');
     const qualityMode = document.getElementById('qualityMode');
     const qualityStatus = document.getElementById('qualityStatus');
+    const qualityRow = document.querySelector('.quality-row');
     const networkCheckButton = document.getElementById('networkCheckButton');
+    const clearButton = document.getElementById('clearButton');
+    const obsKeyRotateButton = document.getElementById('obsKeyRotateButton');
     let uploadMode = 'file';
     let videoPlayerPending = false;
     let refreshTimer = 0;
@@ -803,6 +882,7 @@ const indexHTML = `<!doctype html>
     let ffmpegPending = false;
     let ffmpegReady = false;
     let ffmpegPromise = null;
+    let obsKeyVisible = false;
 
     function syncFailureMessage(error) {
       const text = String((error && error.message) || error || '').trim();
@@ -873,6 +953,7 @@ const indexHTML = `<!doctype html>
       state.history = data.history || [];
       state.videoQueue = data.videoQueue || [];
       state.videoQuality = data.videoQuality;
+      state.obs = data.obs || null;
       state.videoPlayerEnabled = !!(data.videoPlayer && data.videoPlayer.enabled);
       document.getElementById('phoneURL').textContent = data.phoneURL;
       document.getElementById('phoneURLMobile').textContent = data.phoneURL;
@@ -882,16 +963,39 @@ const indexHTML = `<!doctype html>
       updateMobileProgress(data.video);
       applyQuality(data.videoQuality);
       applyVideoPlayer(data.videoPlayer);
+      applyOBS(data.obs);
+      applyOBSProtection();
       document.getElementById('upnpText').textContent = publicText(data.tunnel, data.upnp);
       document.getElementById('hasImage').textContent = currentText(data.current);
       const nextCurrentID = data.current ? data.current.id : "";
       renderPreview(data, nextCurrentID);
       renderHistory(state.history, nextCurrentID);
       state.currentID = nextCurrentID;
-      scheduleRefresh(data.video && data.video.active ? 750 : 2000);
+      scheduleRefresh((data.video && data.video.active) || (data.obs && data.obs.connected) ? 750 : 2000);
     }
 
     function renderPreview(data, nextCurrentID) {
+      if (uploadMode === 'obs' && data.obs && data.obs.connected && data.obs.previewURL) {
+        const obsID = data.obs.mediaID || nextCurrentID;
+        if (state.previewMode !== 'obs' || obsID !== state.obsPreviewID) {
+          preview.innerHTML = '';
+          const video = document.createElement('video');
+          video.src = data.obs.previewURL;
+          video.controls = true;
+          video.autoplay = true;
+          video.muted = true;
+          video.playsInline = true;
+          video.style.width = '100%';
+          video.style.height = '100%';
+          video.style.objectFit = 'contain';
+          preview.appendChild(video);
+          state.previewMode = 'obs';
+          state.obsPreviewID = obsID;
+        }
+        state.currentID = obsID;
+        return;
+      }
+      state.obsPreviewID = "";
       if (!data.current) {
         if (state.previewMode !== 'empty') {
           preview.innerHTML = '<div class="empty">まだ画像が選択されていません</div>';
@@ -1207,11 +1311,83 @@ const indexHTML = `<!doctype html>
       videoPlayerText.textContent = data.enabled ? '有効 / 自動コピーはHLS優先' : '無効 / 自動コピーは画像URL';
       imageInput.accept = data.enabled ? mediaAccept : imageAccept;
       fileModeButton.textContent = data.enabled ? '画像/動画' : '画像';
-      queueUploadButton.hidden = !data.enabled;
+      queueUploadButton.hidden = !data.enabled || uploadMode === 'obs';
+      obsModeButton.hidden = !data.enabled;
+      if (modeTabs) {
+        modeTabs.classList.toggle('has-obs', !!data.enabled);
+      }
+      if (!data.enabled && uploadMode === 'obs') {
+        setUploadMode('file');
+      }
+    }
+
+    function applyOBS(data) {
+      const server = document.getElementById('obsServerAddress');
+      const key = document.getElementById('obsStreamKey');
+      const status = document.getElementById('obsStatus');
+      if (!server || !key || !status) return;
+      if (!data) {
+        server.textContent = 'RTMP receiver is unavailable';
+        key.textContent = '-';
+        status.textContent = 'unavailable';
+        return;
+      }
+      server.textContent = data.serverAddress || 'RTMP receiver is stopped';
+      key.textContent = obsKeyVisible ? (data.streamKey || '-') : maskSecret(data.streamKey);
+      if (data.connected && data.publishing) {
+        status.textContent = 'publishing / HLS event';
+      } else if (data.connected) {
+        status.textContent = 'connected / preview only';
+      } else if (data.listening) {
+        status.textContent = 'waiting';
+      } else {
+        status.textContent = data.message || 'stopped';
+      }
+    }
+
+    function maskSecret(value) {
+      return value ? '*****' : '-';
+    }
+
+    function applyOBSProtection() {
+      const protectedMode = uploadMode === 'obs';
+      document.body.classList.toggle('obs-protect', protectedMode);
+      const protectedText = '配信保護中';
+      document.getElementById('phoneURL').textContent = protectedMode ? protectedText : (state.phoneURL || '');
+      document.getElementById('phoneURLMobile').textContent = protectedMode ? protectedText : (state.phoneURL || '');
+      if (clearButton) {
+        clearButton.textContent = protectedMode ? '配信終了' : '画像クリア';
+        clearButton.title = protectedMode ? 'OBS配信を終了してVOD化し、次の待ち受けを開始' : '';
+      }
+      if (uploadButton) {
+        uploadButton.textContent = protectedMode ? '配信開始' : (uploadMode === 'link' ? 'リンクから変換して公開' : '変換して公開');
+      }
+      if (qualityRow) {
+        qualityRow.hidden = protectedMode;
+      }
     }
 
     uploadForm.addEventListener('submit', async (event) => {
       event.preventDefault();
+      if (uploadMode === 'obs') {
+        uploadButton.disabled = true;
+        toast.textContent = 'OBS配信を開始中...';
+        try {
+          const res = await fetch('/api/obs/start', { method: 'POST' });
+          if (!res.ok) throw new Error(await res.text());
+          const data = await res.json();
+          applyState(data);
+          setUploadMode('obs');
+          await copyStartedOBSURL(data);
+          announceLocalChange();
+          toast.textContent = data.obs && data.obs.connected ? 'OBS配信を公開しました' : 'OBS配信開始を予約しました';
+        } catch (error) {
+          toast.textContent = error.message || 'OBS配信開始に失敗しました';
+        } finally {
+          uploadButton.disabled = false;
+        }
+        return;
+      }
       const action = event.submitter && event.submitter.value === 'queue' ? 'queue' : 'publish';
       if (uploadMode === 'file' && selectedRAWFile() && !await ensureFFmpegForRAWSelection()) {
         return;
@@ -1248,15 +1424,26 @@ const indexHTML = `<!doctype html>
     function setUploadMode(mode) {
       uploadMode = mode;
       const linkMode = mode === 'link';
-      fileModeButton.classList.toggle('active', !linkMode);
+      const obsMode = mode === 'obs';
+      fileModeButton.classList.toggle('active', !linkMode && !obsMode);
       linkModeButton.classList.toggle('active', linkMode);
-      fileModeButton.setAttribute('aria-selected', String(!linkMode));
+      obsModeButton.classList.toggle('active', obsMode);
+      fileModeButton.setAttribute('aria-selected', String(!linkMode && !obsMode));
       linkModeButton.setAttribute('aria-selected', String(linkMode));
-      fileUploadPanel.classList.toggle('active', !linkMode);
+      obsModeButton.setAttribute('aria-selected', String(obsMode));
+      fileUploadPanel.classList.toggle('active', !linkMode && !obsMode);
       linkUploadPanel.classList.toggle('active', linkMode);
-      imageInput.required = !linkMode;
+      obsUploadPanel.classList.toggle('active', obsMode);
+      if (uploadControls) {
+        uploadControls.hidden = obsMode;
+      }
+      imageInput.required = !linkMode && !obsMode;
       imageURLInput.required = linkMode;
+      uploadButton.hidden = false;
+      queueUploadButton.hidden = obsMode || !state.videoPlayerEnabled;
       uploadButton.textContent = linkMode ? 'リンクから変換して公開' : '変換して公開';
+      applyOBSProtection();
+      applyOBS(state.obs);
       if (linkMode) {
         imageURLInput.focus();
       }
@@ -1265,6 +1452,22 @@ const indexHTML = `<!doctype html>
     function uploadFromFile(action) {
       const formData = new FormData(uploadForm);
       return fetch(action === 'queue' ? '/api/upload-queue' : '/api/upload', { method: 'POST', body: formData });
+    }
+
+    async function copyStartedOBSURL(data) {
+      const url = data && (data.shareURL || data.hlsURL || data.publicHLSURL);
+      if (!url || !url.startsWith('http')) {
+        return;
+      }
+      const source = document.getElementById('shareURL');
+      try {
+        await copyText(url, source);
+      } catch (error) {
+      }
+      try {
+        await copyURLOnPC('shareURL');
+      } catch (error) {
+      }
     }
 
     function uploadFromLink(action) {
@@ -1319,17 +1522,21 @@ const indexHTML = `<!doctype html>
       }
     }
 
-    document.getElementById('clearButton').addEventListener('click', async () => {
-      toast.textContent = '画像をクリア中...';
+    clearButton.addEventListener('click', async () => {
+      const obsEnd = uploadMode === 'obs';
+      clearButton.disabled = true;
+      toast.textContent = obsEnd ? 'OBS配信を終了中...' : '画像をクリア中...';
       try {
-        const res = await fetch('/api/clear', { method: 'POST' });
+        const res = await fetch(obsEnd ? '/api/obs/end' : '/api/clear', { method: 'POST' });
         if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
         applyState(data);
         announceLocalChange();
-        toast.textContent = '画像をクリアしました';
+        toast.textContent = obsEnd ? 'OBS配信を終了し、次の待ち受けを開始しました' : '画像をクリアしました';
       } catch (error) {
-        toast.textContent = error.message || '画像クリアに失敗しました';
+        toast.textContent = error.message || (obsEnd ? 'OBS配信の終了に失敗しました' : '画像クリアに失敗しました');
+      } finally {
+        clearButton.disabled = false;
       }
     });
 
@@ -1420,8 +1627,14 @@ const indexHTML = `<!doctype html>
       if (!target) return;
       const id = target.getAttribute('data-copy');
       const source = document.getElementById(id);
-      const text = source.textContent;
-      if (!text || !text.startsWith('http')) {
+      let text = source.textContent;
+      if (id === 'obsStreamKey' && state.obs && state.obs.streamKey) {
+        text = state.obs.streamKey;
+      }
+      if ((id === 'phoneURL' || id === 'phoneURLMobile') && uploadMode === 'obs') {
+        text = '';
+      }
+      if (!text || text === '-' || text === '*****') {
         toast.textContent = 'コピーできるURLがありません';
         return;
       }
@@ -1498,6 +1711,32 @@ const indexHTML = `<!doctype html>
     }
 
     document.getElementById('refreshButton').addEventListener('click', refreshState);
+    document.getElementById('obsKeyRevealButton').addEventListener('click', () => {
+      obsKeyVisible = !obsKeyVisible;
+      const button = document.getElementById('obsKeyRevealButton');
+      button.title = obsKeyVisible ? 'Stream Keyを隠す' : 'Stream Keyを表示';
+      button.setAttribute('aria-label', button.title);
+      applyOBS(state.obs);
+    });
+    obsKeyRotateButton.addEventListener('click', async () => {
+      if (!window.confirm('OBSのStream Keyを更新します。OBS側のキーも差し替える必要があります。よろしいですか？')) {
+        return;
+      }
+      obsKeyRotateButton.disabled = true;
+      toast.textContent = 'OBS Stream Keyを更新中...';
+      try {
+        const res = await fetch('/api/obs/key', { method: 'POST' });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        applyState(data);
+        announceLocalChange();
+        toast.textContent = 'OBS Stream Keyを更新しました';
+      } catch (error) {
+        toast.textContent = error.message || 'OBS Stream Keyの更新に失敗しました';
+      } finally {
+        obsKeyRotateButton.disabled = false;
+      }
+    });
     document.getElementById('tunnelReconnectButton').addEventListener('click', async () => {
       const button = document.getElementById('tunnelReconnectButton');
       button.disabled = true;
@@ -1515,6 +1754,7 @@ const indexHTML = `<!doctype html>
     });
     fileModeButton.addEventListener('click', () => setUploadMode('file'));
     linkModeButton.addEventListener('click', () => setUploadMode('link'));
+    obsModeButton.addEventListener('click', () => setUploadMode('obs'));
     imageInput.addEventListener('change', ensureFFmpegForRAWSelection);
     qualityMode.addEventListener('change', async () => {
       try {

@@ -72,6 +72,7 @@ type activeJob struct {
 	Done         chan struct{}
 	TotalSeconds int
 	QueueJob     *queueJob
+	MediaID      string
 }
 
 type queueState struct {
@@ -856,6 +857,31 @@ func PlaylistName(id string) string {
 	return playlistName(id)
 }
 
+func SegmentPattern(id string) string {
+	return segmentPattern(id)
+}
+
+func FinalizeHLSPlaylist(outDir, id string) error {
+	return finalizeHLSPlaylist(outDir, id)
+}
+
+func BeginExternalHLS(outDir, id string, preset QualityPreset, cancel context.CancelFunc, done chan struct{}) {
+	activeHLS.Store(outDir, &activeJob{
+		Preset:  preset,
+		Cancel:  cancel,
+		Done:    done,
+		MediaID: id,
+	})
+}
+
+func EndExternalHLS(outDir string, done chan struct{}) {
+	if current, ok := activeHLS.Load(outDir); ok {
+		if job, ok := current.(*activeJob); ok && job != nil && job.Done == done {
+			activeHLS.Delete(outDir)
+		}
+	}
+}
+
 func isActive(outDir string) bool {
 	return isActiveForID(outDir, "")
 }
@@ -872,7 +898,7 @@ func isActiveForID(outDir, id string) bool {
 	if !ok || job == nil {
 		return false
 	}
-	return id == "" || (job.QueueJob != nil && job.QueueJob.MediaID == id)
+	return id == "" || (job.QueueJob != nil && job.QueueJob.MediaID == id) || (job.MediaID != "" && job.MediaID == id)
 }
 
 func isPendingForID(outDir, id string) bool {

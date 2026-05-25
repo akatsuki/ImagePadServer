@@ -160,6 +160,17 @@ func (s *Store) SetCurrent(srcPath string, info CurrentImage) error {
 
 func (s *Store) SetCurrentInfo(info CurrentImage) error {
 	info.ID = randomID()
+	return s.setCurrentInfo(info)
+}
+
+func (s *Store) SetCurrentInfoWithID(info CurrentImage) error {
+	if info.ID == "" {
+		info.ID = randomID()
+	}
+	return s.setCurrentInfo(info)
+}
+
+func (s *Store) setCurrentInfo(info CurrentImage) error {
 	info.UpdatedAt = time.Now()
 	if info.Kind == "" {
 		info.Kind = "image"

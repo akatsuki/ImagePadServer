@@ -17,6 +17,7 @@ type Settings struct {
 	NetworkMbps               int    `json:"networkMbps,omitempty"`
 	NetworkUploadMbps         int    `json:"networkUploadMbps,omitempty"`
 	AdminToken                string `json:"adminToken,omitempty"`
+	OBSStreamKey              string `json:"obsStreamKey,omitempty"`
 }
 
 var fileMu sync.Mutex
@@ -64,6 +65,47 @@ func EnsureAdminToken() (string, error) {
 		return "", err
 	}
 	settings.AdminToken = token
+	if err := saveUnlocked(settings); err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+func EnsureOBSStreamKey() (string, error) {
+	fileMu.Lock()
+	defer fileMu.Unlock()
+
+	settings, err := loadUnlocked()
+	if err != nil {
+		return "", err
+	}
+	if settings.OBSStreamKey != "" {
+		return settings.OBSStreamKey, nil
+	}
+	token, err := newToken()
+	if err != nil {
+		return "", err
+	}
+	settings.OBSStreamKey = token
+	if err := saveUnlocked(settings); err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+func RotateOBSStreamKey() (string, error) {
+	fileMu.Lock()
+	defer fileMu.Unlock()
+
+	settings, err := loadUnlocked()
+	if err != nil {
+		return "", err
+	}
+	token, err := newToken()
+	if err != nil {
+		return "", err
+	}
+	settings.OBSStreamKey = token
 	if err := saveUnlocked(settings); err != nil {
 		return "", err
 	}

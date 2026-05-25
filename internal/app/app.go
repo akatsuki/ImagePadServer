@@ -90,6 +90,7 @@ func run(useNativeWindow bool) error {
 	mux := http.NewServeMux()
 	srv := server.New(cfg, store, "")
 	srv.Register(mux)
+	srv.SyncOBSReceiver()
 	httpServer.Handler = mux
 	go measureNetworkOnce()
 
@@ -182,6 +183,7 @@ func run(useNativeWindow bool) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	srv.StopOBSReceiver()
 	tunnelMu.Lock()
 	if tunnelHandle != nil {
 		tunnelHandle.Stop()

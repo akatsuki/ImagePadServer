@@ -27,6 +27,7 @@ import (
 	"imagepadserver/internal/imageproc"
 	"imagepadserver/internal/library"
 	"imagepadserver/internal/network"
+	"imagepadserver/internal/obsrtmp"
 	"imagepadserver/internal/settings"
 	"imagepadserver/internal/upnp"
 	"imagepadserver/internal/video"
@@ -52,6 +53,7 @@ type Server struct {
 	tunnelURLBase   string
 	tunnelReconnect chan<- struct{}
 	adminToken      string
+	obs             *obsrtmp.Manager
 }
 
 func New(cfg config.Config, store *library.Store, imageURLBase string) *Server {
@@ -64,7 +66,11 @@ func New(cfg config.Config, store *library.Store, imageURLBase string) *Server {
 	if err != nil {
 		adminToken = ""
 	}
-	return &Server{
+	obsStreamKey, err := settings.EnsureOBSStreamKey()
+	if err != nil {
+		obsStreamKey = adminToken
+	}
+	srv := &Server{
 		cfg:            cfg,
 		store:          store,
 		upnp:           upnp.Result{Message: "Checking router UPnP support..."},
@@ -75,6 +81,11 @@ func New(cfg config.Config, store *library.Store, imageURLBase string) *Server {
 		tunnelStatus:   map[string]interface{}{"ok": false, "message": "Cloudflare Tunnel starting..."},
 		adminToken:     adminToken,
 	}
+	srv.obs = obsrtmp.New(store.Dir(), advertisedHost, 1935, obsStreamKey, srv.videoQualityPreset, obsrtmp.Callbacks{
+		OnStart: srv.handleOBSStreamStart,
+		OnDone:  srv.handleOBSStreamDone,
+	})
+	return srv
 }
 
 func (s *Server) Register(mux *http.ServeMux) {
@@ -86,6 +97,9 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/upload-url", s.admin(s.handleUploadURL))
 	mux.HandleFunc("/api/upload-url-queue", s.admin(s.handleUploadURLQueue))
 	mux.HandleFunc("/api/clear", s.admin(s.handleClear))
+	mux.HandleFunc("/api/obs/start", s.admin(s.handleOBSStart))
+	mux.HandleFunc("/api/obs/end", s.admin(s.handleOBSEnd))
+	mux.HandleFunc("/api/obs/key", s.admin(s.handleOBSKey))
 	mux.HandleFunc("/api/history", s.admin(s.handleHistory))
 	mux.HandleFunc("/api/history/favorite", s.admin(s.handleHistoryFavorite))
 	mux.HandleFunc("/api/history/queue", s.admin(s.handleHistoryQueue))
@@ -152,6 +166,23 @@ func (s *Server) SetTunnelStatus(ok bool, baseURL, message string) {
 		"ok":      ok,
 		"url":     s.tunnelURLBase,
 		"message": message,
+	}
+}
+
+func (s *Server) SyncOBSReceiver() {
+	if s.obs == nil {
+		return
+	}
+	if s.videoPlayerEnabled() {
+		s.obs.Start()
+		return
+	}
+	s.obs.Stop()
+}
+
+func (s *Server) StopOBSReceiver() {
+	if s.obs != nil {
+		s.obs.Stop()
 	}
 }
 
@@ -542,6 +573,51 @@ func (s *Server) createVideoThumbnail(sourcePath string) string {
 	return name
 }
 
+func (s *Server) handleOBSStreamStart(session obsrtmp.Session) {
+	info := library.CurrentImage{
+		ID:           session.ID,
+		Kind:         "video",
+		FileName:     filepath.Base(session.Recording),
+		PublicName:   "obs-" + session.ID + ".mp4",
+		ContentType:  "video/mp4",
+		OriginalName: session.Title,
+	}
+	_ = s.store.SetCurrentInfoWithID(info)
+}
+
+func (s *Server) handleOBSStreamDone(session obsrtmp.Session) {
+	current := s.store.Current()
+	thumbnail := s.createVideoThumbnail(session.Recording)
+	info := library.CurrentImage{
+		ID:           session.ID,
+		Kind:         "video",
+		FileName:     filepath.Base(session.Recording),
+		PublicName:   "obs-" + session.ID + ".mp4",
+		ContentType:  "video/mp4",
+		OriginalName: session.Title,
+		Thumbnail:    thumbnail,
+	}
+	if current != nil && current.ID == session.ID {
+		info = *current
+	}
+	info.ID = session.ID
+	info.Kind = "video"
+	info.FileName = filepath.Base(session.Recording)
+	info.PublicName = "obs-" + session.ID + ".mp4"
+	info.ContentType = "video/mp4"
+	info.OriginalName = session.Title
+	info.Thumbnail = thumbnail
+	if stat, err := os.Stat(session.Recording); err == nil {
+		info.SizeBytes = stat.Size()
+	}
+	if err := s.store.SetCurrentInfoWithID(info); err == nil {
+		files := video.GeneratedFiles(s.store.Dir(), session.ID)
+		if len(files) > 0 {
+			_ = s.store.MarkConverted(session.ID, files)
+		}
+	}
+}
+
 func (s *Server) withClipboardResult(state map[string]interface{}) map[string]interface{} {
 	copiedURL := urlForClipboard(state)
 	clipboardCopied := false
@@ -608,6 +684,58 @@ func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to clear image", http.StatusInternalServerError)
 		return
 	}
+	writeJSON(w, s.state(r))
+}
+
+func (s *Server) handleOBSEnd(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.videoPlayerEnabled() {
+		http.Error(w, "video player support is disabled", http.StatusBadRequest)
+		return
+	}
+	if s.obs == nil {
+		http.Error(w, "OBS receiver is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	s.obs.Restart(8 * time.Second)
+	writeJSON(w, s.state(r))
+}
+
+func (s *Server) handleOBSStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.videoPlayerEnabled() {
+		http.Error(w, "video player support is disabled", http.StatusBadRequest)
+		return
+	}
+	if s.obs == nil {
+		http.Error(w, "OBS receiver is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	s.obs.StartPublishing()
+	writeJSON(w, s.state(r))
+}
+
+func (s *Server) handleOBSKey(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.obs == nil {
+		http.Error(w, "OBS receiver is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	key, err := settings.RotateOBSStreamKey()
+	if err != nil {
+		http.Error(w, "failed to update OBS stream key", http.StatusInternalServerError)
+		return
+	}
+	s.obs.SetStreamKey(key, 8*time.Second)
 	writeJSON(w, s.state(r))
 }
 
@@ -847,6 +975,7 @@ func (s *Server) handleVideoPlayer(w http.ResponseWriter, r *http.Request) {
 				s.enqueueStillConversion(imagePath, current.ID, current.OriginalName)
 			}
 		}
+		s.SyncOBSReceiver()
 		writeJSON(w, s.videoPlayerState())
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1051,6 +1180,10 @@ func (s *Server) handleCurrentHLS(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if requestedID := streamRequestID(r); requestedID != "" && s.obsMediaActive(requestedID) {
+		s.serveGeneratedFile(w, r, video.PlaylistName(requestedID), "application/vnd.apple.mpegurl", "current.m3u8", time.Now())
+		return
+	}
 	img := s.store.Current()
 	if img == nil {
 		http.NotFound(w, r)
@@ -1080,6 +1213,15 @@ func (s *Server) handleCurrentHLSSegment(w http.ResponseWriter, r *http.Request)
 		http.NotFound(w, r)
 		return
 	}
+	if requestedID := streamRequestID(r); requestedID != "" && s.obsMediaActive(requestedID) {
+		fileName := filepath.Base(r.URL.Path)
+		if !isHLSSegmentName(fileName) {
+			http.NotFound(w, r)
+			return
+		}
+		s.serveGeneratedFile(w, r, fileName, "video/mp2t", fileName, time.Now())
+		return
+	}
 	img := s.store.Current()
 	if img == nil {
 		http.NotFound(w, r)
@@ -1095,6 +1237,14 @@ func (s *Server) handleCurrentHLSSegment(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	s.serveGeneratedFile(w, r, fileName, "video/mp2t", fileName, img.UpdatedAt)
+}
+
+func (s *Server) obsMediaActive(id string) bool {
+	if s.obs == nil || id == "" {
+		return false
+	}
+	status := s.obs.Status()
+	return status.Connected && status.MediaID == id
 }
 
 func (s *Server) serveGeneratedFile(w http.ResponseWriter, r *http.Request, fileName, contentType, publicName string, modTime time.Time) {
@@ -1228,10 +1378,12 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 			videoURL = imageURLBase + "video/current.mp4?v=" + current.ID
 			publicVideoURL = tunnelURLBase + "video/current.mp4?v=" + current.ID
 		}
-		if videoEnabled && tunnelURLBase != "" && (videoStatus.HLS || videoStatus.Active) {
+		if videoEnabled && (videoStatus.HLS || videoStatus.Active) {
 			streamPath := hlsURLPath(current.ID)
 			hlsURL = imageURLBase + streamPath
-			publicHLSURL = tunnelURLBase + streamPath
+			if tunnelURLBase != "" {
+				publicHLSURL = tunnelURLBase + streamPath
+			}
 		}
 	} else {
 		videoPlayer := s.videoPlayerEmptyState()
@@ -1283,6 +1435,7 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 		"video":           videoPlayer["status"],
 		"videoPlayer":     videoPlayer,
 		"videoQuality":    s.videoQualityState(),
+		"obs":             s.obsState(),
 		"videoQueue":      s.videoQueueState(),
 		"current":         s.store.Current(),
 		"history":         s.historyState(),
@@ -1315,6 +1468,7 @@ func (s *Server) stateWithMedia(r *http.Request, upnpResult upnp.Result, tunnelS
 		"video":           videoPlayer["status"],
 		"videoPlayer":     videoPlayer,
 		"videoQuality":    s.videoQualityState(),
+		"obs":             s.obsState(),
 		"videoQueue":      s.videoQueueState(),
 		"current":         s.store.Current(),
 		"history":         s.historyState(),
@@ -1443,6 +1597,17 @@ func (s *Server) videoQualityState() map[string]interface{} {
 		"uploadMbps": preset.UploadMbps,
 		"preset":     preset,
 	}
+}
+
+func (s *Server) obsState() obsrtmp.Status {
+	if s.obs == nil {
+		return obsrtmp.Status{Message: "OBS RTMP receiver is unavailable."}
+	}
+	status := s.obs.Status()
+	if status.MediaID != "" {
+		status.PreviewURL = s.adminPath("/stream/" + url.PathEscape(status.MediaID) + "/" + video.PlaylistName(status.MediaID))
+	}
+	return status
 }
 
 func normalizeQualityMode(mode string) string {
@@ -1577,6 +1742,14 @@ func urlForCopyTarget(state map[string]interface{}, target string) string {
 	case "publicHLSURL":
 		if publicURL, ok := state["publicHLSURL"].(string); ok {
 			return publicURL
+		}
+	case "obsServerAddress":
+		if obs, ok := state["obs"].(obsrtmp.Status); ok {
+			return obs.ServerAddress
+		}
+	case "obsStreamKey":
+		if obs, ok := state["obs"].(obsrtmp.Status); ok {
+			return obs.StreamKey
 		}
 	default:
 		if imageURL, ok := state["imageURL"].(string); ok && strings.HasPrefix(imageURL, "http") {
