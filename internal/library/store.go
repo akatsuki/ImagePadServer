@@ -55,7 +55,9 @@ func ResetDir(dir string) error {
 
 func NewStore(dir string) (*Store, error) {
 	if err := ResetDir(dir); err != nil {
-		return nil, err
+		if mkdirErr := os.MkdirAll(dir, 0700); mkdirErr != nil {
+			return nil, err
+		}
 	}
 	store := &Store{
 		dir:          dir,
