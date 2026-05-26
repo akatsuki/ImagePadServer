@@ -294,6 +294,23 @@ const indexHTML = `<!doctype html>
       min-width: 0;
       min-height: 0;
     }
+    .preview.obs-preview {
+      height: auto;
+      min-height: 0;
+      aspect-ratio: 16 / 9;
+      background: #05080b;
+      border-style: solid;
+      overflow: visible;
+    }
+    .preview.obs-preview video {
+      width: 100%;
+      height: 100%;
+      max-width: 100%;
+      max-height: min(54vh, 420px);
+      object-fit: contain;
+      display: block;
+      background: #000;
+    }
     .empty {
       color: var(--muted);
       text-align: center;
@@ -622,6 +639,9 @@ const indexHTML = `<!doctype html>
         height: auto;
         min-height: 320px;
       }
+      .preview.obs-preview {
+        min-height: 0;
+      }
       .wing-list {
         max-height: none;
       }
@@ -637,6 +657,10 @@ const indexHTML = `<!doctype html>
       .preview {
         height: 210px;
         min-height: 150px;
+      }
+      .preview.obs-preview {
+        height: auto;
+        min-height: 0;
       }
       .about {
         gap: 2px;
@@ -978,6 +1002,7 @@ const indexHTML = `<!doctype html>
       if (uploadMode === 'obs' && data.obs && data.obs.connected && data.obs.previewURL) {
         const obsID = data.obs.mediaID || nextCurrentID;
         if (state.previewMode !== 'obs' || obsID !== state.obsPreviewID) {
+          preview.classList.add('obs-preview');
           preview.innerHTML = '';
           const video = document.createElement('video');
           video.src = data.obs.previewURL;
@@ -985,9 +1010,6 @@ const indexHTML = `<!doctype html>
           video.autoplay = true;
           video.muted = true;
           video.playsInline = true;
-          video.style.width = '100%';
-          video.style.height = '100%';
-          video.style.objectFit = 'contain';
           preview.appendChild(video);
           state.previewMode = 'obs';
           state.obsPreviewID = obsID;
@@ -995,6 +1017,7 @@ const indexHTML = `<!doctype html>
         state.currentID = obsID;
         return;
       }
+      preview.classList.remove('obs-preview');
       state.obsPreviewID = "";
       if (!data.current) {
         if (state.previewMode !== 'empty') {
