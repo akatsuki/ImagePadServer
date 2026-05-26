@@ -254,6 +254,15 @@ func (s *Store) SetCurrentFromHistory(id string) error {
 	if stat, err := os.Stat(dstPath); err == nil {
 		info.SizeBytes = stat.Size()
 	}
+	if item.Converted {
+		srcConverted := filepath.Join(s.convertedDir, item.ID)
+		if item.Persistent {
+			srcConverted = filepath.Join(s.favoriteDir, "converted", item.ID)
+		}
+		if err := copyDir(s.dir, srcConverted); err != nil {
+			return err
+		}
+	}
 	s.current = &info
 	return s.saveCurrentLocked()
 }

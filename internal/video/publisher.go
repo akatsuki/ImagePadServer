@@ -753,15 +753,30 @@ func GenerateThumbnail(sourcePath, outPath string) error {
 	if err := os.MkdirAll(filepath.Dir(outPath), 0700); err != nil {
 		return err
 	}
-	return run(ffmpeg,
-		"-y",
-		"-ss", "00:00:01",
-		"-i", sourcePath,
-		"-frames:v", "1",
-		"-vf", "scale='min(480,iw)':-2",
-		"-q:v", "4",
-		outPath,
-	)
+	var lastErr error
+	for _, seek := range []string{"00:00:01", "00:00:00"} {
+		args := []string{"-y"}
+		if seek != "" {
+			args = append(args, "-ss", seek)
+		}
+		args = append(args,
+			"-i", sourcePath,
+			"-frames:v", "1",
+			"-vf", "scale='min(480,iw)':-2",
+			"-q:v", "4",
+			outPath,
+		)
+		if err := run(ffmpeg, args...); err == nil {
+			if stat, statErr := os.Stat(outPath); statErr == nil && stat.Size() > 0 {
+				return nil
+			}
+			lastErr = errors.New("thumbnail output was empty")
+			continue
+		} else {
+			lastErr = err
+		}
+	}
+	return lastErr
 }
 
 type NetworkMeasurement struct {

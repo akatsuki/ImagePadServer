@@ -45,3 +45,53 @@ func TestStoreResetClearsCurrent(t *testing.T) {
 		t.Fatal("expected current image to be cleared after reset")
 	}
 }
+
+func TestSetCurrentFromHistoryRestoresConvertedFiles(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(dir, "obs-recording.mp4")
+	if err := os.WriteFile(source, []byte("mp4"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.AddHistory(source, CurrentImage{
+		ID:           "obs1",
+		Kind:         "video",
+		FileName:     "obs-recording.mp4",
+		PublicName:   "obs-obs1.mp4",
+		ContentType:  "video/mp4",
+		OriginalName: "OBS",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	playlist := filepath.Join(dir, "current-"+item.ID+".m3u8")
+	segment := filepath.Join(dir, "current-"+item.ID+"-0.ts")
+	if err := os.WriteFile(playlist, []byte("#EXTM3U\n#EXT-X-ENDLIST\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(segment, []byte("ts"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkConverted(item.ID, []string{playlist, segment}); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Remove(playlist)
+	_ = os.Remove(segment)
+
+	if err := store.SetCurrentFromHistory(item.ID); err != nil {
+		t.Fatal(err)
+	}
+	current := store.Current()
+	if current == nil || !current.Converted {
+		t.Fatalf("expected converted current item, got %#v", current)
+	}
+	if _, err := os.Stat(playlist); err != nil {
+		t.Fatalf("expected playlist restored: %v", err)
+	}
+	if _, err := os.Stat(segment); err != nil {
+		t.Fatalf("expected segment restored: %v", err)
+	}
+}

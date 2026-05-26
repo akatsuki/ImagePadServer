@@ -573,6 +573,17 @@ func (s *Server) createVideoThumbnail(sourcePath string) string {
 	return name
 }
 
+func (s *Server) createOBSVideoThumbnail(session obsrtmp.Session) string {
+	if thumbnail := s.createVideoThumbnail(session.Recording); thumbnail != "" {
+		return thumbnail
+	}
+	playlist := filepath.Join(s.store.Dir(), session.PlaylistName)
+	if thumbnail := s.createVideoThumbnail(playlist); thumbnail != "" {
+		return thumbnail
+	}
+	return ""
+}
+
 func (s *Server) handleOBSStreamStart(session obsrtmp.Session) {
 	info := library.CurrentImage{
 		ID:           session.ID,
@@ -587,7 +598,7 @@ func (s *Server) handleOBSStreamStart(session obsrtmp.Session) {
 
 func (s *Server) handleOBSStreamDone(session obsrtmp.Session) {
 	current := s.store.Current()
-	thumbnail := s.createVideoThumbnail(session.Recording)
+	thumbnail := s.createOBSVideoThumbnail(session)
 	info := library.CurrentImage{
 		ID:           session.ID,
 		Kind:         "video",
@@ -806,6 +817,11 @@ func (s *Server) handleHistorySelect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "history item not found", http.StatusNotFound)
 		return
 	}
+	current := s.store.Current()
+	if current != nil && current.Converted {
+		writeJSON(w, s.state(r))
+		return
+	}
 	if path, current, ok := s.store.CurrentPath(); ok && s.videoPlayerEnabled() {
 		if current.Kind == "video" {
 			s.enqueueUploadedConversion(path, current.ID, current.OriginalName)
@@ -820,6 +836,9 @@ func (s *Server) enqueueHistoryItem(id string) error {
 	path, item, ok := s.store.HistoryPath(id)
 	if !ok {
 		return os.ErrNotExist
+	}
+	if item.Converted {
+		return s.store.SetCurrentFromHistory(id)
 	}
 	if item.Kind == "video" {
 		s.enqueueUploadedConversion(path, item.ID, item.OriginalName)
