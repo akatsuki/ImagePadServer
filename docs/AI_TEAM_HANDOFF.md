@@ -59,6 +59,16 @@ Users can upload images or videos from a PC or phone, then copy a URL that VRCha
 - Keep Windows UX quiet: background FFmpeg/yt-dlp/cloudflared processes should not flash console windows.
 - Keep UI text as valid UTF-8 Japanese.
 
+## Release Numbering Rules
+
+- Do not overwrite or replace assets on an already published stable release number.
+- If a published stable release needs a fix, create a new stable version such as `v1.2.1`; do not mutate `v1.2.0`.
+- Development/test builds may be published as prereleases using monotonically increasing dev suffixes such as `v1.2.1-dev1`, `v1.2.1-dev2`, etc.
+- Do not overwrite dev release assets either; create the next dev number when another test build is needed.
+- Only create or update a stable release when the user explicitly asks to release it.
+- The official site/download links should point at stable releases only unless the user explicitly asks to publish a dev link.
+- Moving tags, replacing checksums, or clobbering release assets requires explicit confirmation from the user.
+
 ## Current Development Themes
 
 1. Fix or improve Japanese UI strings where mojibake appears in embedded UI code.
