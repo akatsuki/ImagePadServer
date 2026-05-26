@@ -182,7 +182,7 @@ func (s *Server) SyncOBSReceiver() {
 
 func (s *Server) StopOBSReceiver() {
 	if s.obs != nil {
-		s.obs.Stop()
+		s.obs.StopAndWait(8 * time.Second)
 	}
 }
 
@@ -322,7 +322,7 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, state)
 		return
 	}
-	remote, name, err := downloadRemoteImage(req.URL, opts.MaxBytes)
+	remote, name, err := downloadRemoteImage(req.URL, opts.MaxInputBytes)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -379,7 +379,7 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, state)
 		return
 	}
-	remote, name, err := downloadRemoteImage(req.URL, opts.MaxBytes)
+	remote, name, err := downloadRemoteImage(req.URL, opts.MaxInputBytes)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

@@ -276,9 +276,11 @@ func (m *Manager) runOne(parent context.Context) error {
 		cancel()
 		return fmt.Errorf("failed to start OBS RTMP receiver: %w", err)
 	}
+	untrack := video.TrackStartedFFmpeg(cmd)
 	errCh := make(chan error, 1)
 	waitDone := make(chan struct{})
 	go func() {
+		defer untrack()
 		errCh <- cmd.Wait()
 		close(waitDone)
 	}()

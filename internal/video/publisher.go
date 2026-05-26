@@ -1346,7 +1346,7 @@ func extractNamedBinaryFromZip(zipPath, target, binaryName string) error {
 func validateExecutable(path string, args ...string) error {
 	cmd := exec.Command(path, args...)
 	hideWindow(cmd)
-	output, err := cmd.CombinedOutput()
+	output, err := CombinedOutputTrackedFFmpeg(cmd)
 	if err != nil {
 		return fmt.Errorf("installed executable validation failed: %w: %s", err, trimOutput(output))
 	}
@@ -1356,7 +1356,7 @@ func validateExecutable(path string, args ...string) error {
 func run(ffmpeg string, args ...string) error {
 	cmd := exec.Command(ffmpeg, args...)
 	hideWindow(cmd)
-	output, err := cmd.CombinedOutput()
+	output, err := CombinedOutputTrackedFFmpeg(cmd)
 	if err != nil {
 		return fmt.Errorf("%w: %s", err, trimOutput(output))
 	}
@@ -1367,7 +1367,7 @@ func runInDir(dir, ffmpeg string, args ...string) error {
 	cmd := exec.Command(ffmpeg, args...)
 	cmd.Dir = dir
 	hideWindow(cmd)
-	output, err := cmd.CombinedOutput()
+	output, err := CombinedOutputTrackedFFmpeg(cmd)
 	if err != nil {
 		return fmt.Errorf("%w: %s", err, trimOutput(output))
 	}
@@ -1378,7 +1378,7 @@ func runInDirContext(ctx context.Context, dir, ffmpeg string, args ...string) er
 	cmd := exec.CommandContext(ctx, ffmpeg, args...)
 	cmd.Dir = dir
 	hideWindow(cmd)
-	output, err := cmd.CombinedOutput()
+	output, err := CombinedOutputTrackedFFmpeg(cmd)
 	if err != nil {
 		return fmt.Errorf("%w: %s", err, trimOutput(output))
 	}

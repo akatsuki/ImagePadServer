@@ -32,10 +32,11 @@ const (
 )
 
 type Options struct {
-	MaxDimension int
-	Format       string
-	JPEGQuality  int
-	MaxBytes     int64
+	MaxDimension  int
+	Format        string
+	JPEGQuality   int
+	MaxInputBytes int64
+	MaxBytes      int64
 }
 
 type Result struct {
@@ -48,10 +49,11 @@ type Result struct {
 
 func DefaultOptions() Options {
 	return Options{
-		MaxDimension: 2048,
-		Format:       "jpeg",
-		JPEGQuality:  88,
-		MaxBytes:     30 << 20,
+		MaxDimension:  2048,
+		Format:        "jpeg",
+		JPEGQuality:   88,
+		MaxInputBytes: maxImageBytes,
+		MaxBytes:      30 << 20,
 	}
 }
 
@@ -65,18 +67,21 @@ func Process(reader io.Reader, name string, outDir string, opts Options) (Result
 	if opts.MaxBytes <= 0 || opts.MaxBytes > maxImageBytes {
 		opts.MaxBytes = maxImageBytes
 	}
+	if opts.MaxInputBytes <= 0 || opts.MaxInputBytes > maxImageBytes {
+		opts.MaxInputBytes = maxImageBytes
+	}
 	opts.Format = strings.ToLower(opts.Format)
 	if opts.Format != "png" {
 		opts.Format = "jpeg"
 	}
 
-	limited := io.LimitReader(reader, opts.MaxBytes+1)
+	limited := io.LimitReader(reader, opts.MaxInputBytes+1)
 	input, err := io.ReadAll(limited)
 	if err != nil {
 		return Result{}, err
 	}
-	if int64(len(input)) > opts.MaxBytes {
-		return Result{}, fmt.Errorf("image exceeds size limit of %d bytes", opts.MaxBytes)
+	if int64(len(input)) > opts.MaxInputBytes {
+		return Result{}, fmt.Errorf("image exceeds size limit of %d bytes", opts.MaxInputBytes)
 	}
 	orientation := exifOrientation(input)
 
@@ -226,7 +231,7 @@ func decodeCameraRAW(input []byte, name, outDir string, maxDimension int) (image
 
 	cmd := exec.Command(ffmpeg, args...)
 	hideWindow(cmd)
-	output, err := cmd.CombinedOutput()
+	output, err := video.CombinedOutputTrackedFFmpeg(cmd)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", err, trimCommandOutput(output))
 	}
@@ -263,9 +268,16 @@ func trimCommandOutput(output []byte) string {
 }
 
 func isSVG(input []byte) bool {
-	head := strings.TrimSpace(string(input[:min(len(input), 512)]))
-	head = strings.ToLower(head)
-	return strings.HasPrefix(head, "<svg") || strings.Contains(head, "<svg ")
+	head := bytes.TrimSpace(input[:min(len(input), 1024)])
+	head = bytes.TrimPrefix(head, []byte{0xef, 0xbb, 0xbf})
+	head = bytes.ToLower(head)
+	if bytes.HasPrefix(head, []byte("<svg")) {
+		return true
+	}
+	if bytes.HasPrefix(head, []byte("<?xml")) || bytes.HasPrefix(head, []byte("<!doctype")) {
+		return bytes.Contains(head, []byte("<svg"))
+	}
+	return false
 }
 
 func rasterizeSVG(input []byte) (image.Image, error) {

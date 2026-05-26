@@ -65,6 +65,12 @@ func run(useNativeWindow bool) error {
 		return nil
 	}
 
+	if killed, err := video.CleanupTrackedFFmpeg(); err != nil {
+		log.Printf("failed to clean up stale FFmpeg processes: %v", err)
+	} else if killed > 0 {
+		log.Printf("stopped %d stale FFmpeg process(es) from a previous ImagePadServer run", killed)
+	}
+
 	storeDir := filepath.Join(settings.Dir(), "media")
 	store, err := library.NewStore(storeDir)
 	if err != nil {
@@ -184,6 +190,11 @@ func run(useNativeWindow bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	srv.StopOBSReceiver()
+	if killed, err := video.CleanupTrackedFFmpeg(); err != nil {
+		log.Printf("failed to stop FFmpeg processes during shutdown: %v", err)
+	} else if killed > 0 {
+		log.Printf("stopped %d FFmpeg process(es) during shutdown", killed)
+	}
 	tunnelMu.Lock()
 	if tunnelHandle != nil {
 		tunnelHandle.Stop()

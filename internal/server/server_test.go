@@ -107,6 +107,19 @@ func TestIsHLSSegmentName(t *testing.T) {
 	}
 }
 
+func TestOptionsFromValuesDefaultAllows8KUpload(t *testing.T) {
+	opts := optionsFromValues(func(string) string { return "" })
+	if opts.MaxDimension != 2048 {
+		t.Fatalf("MaxDimension = %d, want 2048", opts.MaxDimension)
+	}
+	if opts.MaxInputBytes != 120<<20 {
+		t.Fatalf("MaxInputBytes = %d, want %d", opts.MaxInputBytes, int64(120<<20))
+	}
+	if opts.MaxBytes != 30<<20 {
+		t.Fatalf("MaxBytes = %d, want %d", opts.MaxBytes, int64(30<<20))
+	}
+}
+
 func TestStreamRequestID(t *testing.T) {
 	req := adminRequest("https://example.com/stream/abc123/current-abc123.m3u8", "127.0.0.1:50000")
 	if got := streamRequestID(req); got != "abc123" {

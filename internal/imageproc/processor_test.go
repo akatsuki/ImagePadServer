@@ -25,7 +25,10 @@ func TestProcessResizesToVRChatLimit(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	result, err := Process(&input, "large.png", dir, DefaultOptions())
+	opts := DefaultOptions()
+	opts.MaxDimension = 2048
+	opts.MaxBytes = 30 << 20
+	result, err := Process(&input, "large.png", dir, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,6 +43,19 @@ func TestProcessResizesToVRChatLimit(t *testing.T) {
 	}
 	if _, err := os.Stat(result.Path); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDefaultOptionsAllow8KUploads(t *testing.T) {
+	opts := DefaultOptions()
+	if opts.MaxDimension != 2048 {
+		t.Fatalf("MaxDimension = %d, want 2048", opts.MaxDimension)
+	}
+	if opts.MaxInputBytes != maxImageBytes {
+		t.Fatalf("MaxInputBytes = %d, want %d", opts.MaxInputBytes, maxImageBytes)
+	}
+	if opts.MaxBytes != 30<<20 {
+		t.Fatalf("MaxBytes = %d, want %d", opts.MaxBytes, int64(30<<20))
 	}
 }
 
@@ -74,7 +90,7 @@ func TestProcessSupportsLargeMaxDimension(t *testing.T) {
 func TestProcessRejectsInputOverMaxBytes(t *testing.T) {
 	payload := bytes.Repeat([]byte{0xff}, 2048)
 	opts := DefaultOptions()
-	opts.MaxBytes = 1024
+	opts.MaxInputBytes = 1024
 
 	_, err := Process(bytes.NewReader(payload), "big.bin", t.TempDir(), opts)
 	if err == nil {
@@ -157,6 +173,20 @@ func TestProcessRasterizesSVG(t *testing.T) {
 	}
 	if result.ContentType != "image/png" {
 		t.Fatalf("content type = %s, want image/png", result.ContentType)
+	}
+}
+
+func TestIsSVGDoesNotMatchEmbeddedMetadata(t *testing.T) {
+	input := append([]byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rc2pa icon image/svg+xml "), []byte(`<svg width="16" height="16"></svg>`)...)
+	if isSVG(input) {
+		t.Fatal("expected binary PNG metadata containing SVG text not to be treated as an SVG file")
+	}
+}
+
+func TestIsSVGMatchesXMLWrappedSVG(t *testing.T) {
+	input := []byte(`<?xml version="1.0" encoding="UTF-8"?><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"></svg>`)
+	if !isSVG(input) {
+		t.Fatal("expected XML-wrapped SVG to be treated as an SVG file")
 	}
 }
 
