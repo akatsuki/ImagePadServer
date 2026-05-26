@@ -41,13 +41,13 @@
             PCやスマホからアップロードした画像・動画、またはOBSから送ったRTMP配信を、VRChatワールド内のImagePad系ツールやAVPro系ビデオプレーヤーへ渡せるURLとして配信します。
           </p>
           <div class="hero-actions" aria-label="主要アクション">
-            <a class="button primary" id="hero-download-link" href="https://github.com/akatsuki/ImagePadServer/releases/latest/download/imagepadserver-v1.2.1-windows-amd64.zip">最新版をダウンロード</a>
+            <a class="button primary" id="hero-download-link" href="https://github.com/akatsuki/ImagePadServer/releases/latest">最新版をダウンロード</a>
             <a class="button secondary" href="https://github.com/akatsuki/ImagePadServer">GitHubで見る</a>
           </div>
           <dl class="release-facts" aria-label="リリース情報">
             <div>
               <dt>Latest</dt>
-              <dd>v1.2.1</dd>
+              <dd id="latest-version">v1.2.1</dd>
             </div>
             <div>
               <dt>Platform</dt>
@@ -132,7 +132,7 @@
           </p>
         </div>
         <div class="download-actions">
-          <a class="button primary" id="download-primary-link" href="https://github.com/akatsuki/ImagePadServer/releases/latest/download/imagepadserver-v1.2.1-windows-amd64.zip">Windows ZIPをダウンロード</a>
+          <a class="button primary" id="download-primary-link" href="https://github.com/akatsuki/ImagePadServer/releases/latest">Windows ZIPをダウンロード</a>
           <a class="text-link" id="download-secondary-link" href="https://github.com/akatsuki/ImagePadServer/releases/latest">macOS版を選ぶ</a>
           <a class="text-link" href="https://github.com/akatsuki/ImagePadServer/releases/latest">リリースノートを見る</a>
         </div>
@@ -195,16 +195,19 @@
     </footer>
     <script>
       (() => {
+        const releaseURL = "https://github.com/akatsuki/ImagePadServer/releases/latest";
+        const latestReleaseAPI = "https://api.github.com/repos/akatsuki/ImagePadServer/releases/latest";
         const downloads = {
           macos: {
             label: "macOS版を選ぶ",
-            href: "https://github.com/akatsuki/ImagePadServer/releases/latest",
+            href: releaseURL,
           },
           windows: {
             label: "Windows ZIPをダウンロード",
-            href: "https://github.com/akatsuki/ImagePadServer/releases/latest/download/imagepadserver-v1.2.1-windows-amd64.zip",
+            href: releaseURL,
           },
         };
+        const windowsAssetPattern = /windows-amd64\.zip$/;
         const platform = `${navigator.userAgentData?.platform || navigator.platform || navigator.userAgent || ""}`.toLowerCase();
         const isMac = platform.includes("mac");
         const selected = isMac ? downloads.macos : downloads.windows;
@@ -212,19 +215,41 @@
         const heroLink = document.getElementById("hero-download-link");
         const primaryLink = document.getElementById("download-primary-link");
         const secondaryLink = document.getElementById("download-secondary-link");
+        const latestVersion = document.getElementById("latest-version");
 
-        if (heroLink) {
-          heroLink.href = selected.href;
-          heroLink.textContent = selected.label;
+        function windowsAssetURL(release) {
+          return release.assets?.find((asset) => windowsAssetPattern.test(asset.name))?.browser_download_url || releaseURL;
         }
-        if (primaryLink) {
-          primaryLink.href = selected.href;
-          primaryLink.textContent = selected.label;
+
+        function updateLinks() {
+          if (heroLink) {
+            heroLink.href = selected.href;
+            heroLink.textContent = selected.label;
+          }
+          if (primaryLink) {
+            primaryLink.href = selected.href;
+            primaryLink.textContent = selected.label;
+          }
+          if (secondaryLink) {
+            secondaryLink.href = alternative.href;
+            secondaryLink.textContent = alternative.label;
+          }
         }
-        if (secondaryLink) {
-          secondaryLink.href = alternative.href;
-          secondaryLink.textContent = alternative.label;
-        }
+
+        updateLinks();
+
+        fetch(latestReleaseAPI, { headers: { Accept: "application/vnd.github+json" } })
+          .then((response) => response.ok ? response.json() : Promise.reject(new Error("release lookup failed")))
+          .then((release) => {
+            if (latestVersion && release.tag_name) {
+              latestVersion.textContent = release.tag_name;
+            }
+            downloads.windows.href = windowsAssetURL(release);
+            updateLinks();
+          })
+          .catch(() => {
+            updateLinks();
+          });
       })();
     </script>
   </body>
