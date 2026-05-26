@@ -285,6 +285,8 @@
   - ユーザー向けの操作手順、公開 URL / 動画モードの説明。
 - `docs/TAILSCALE.md`
   - Tailscale 経路推奨とネットワーク設定に関する補足。
+- `docs/OSHARE.md`
+  - PC を持たないユーザー向けの「おすそ分け」投稿機能の設計メモ。
 - `docs/WINDOWS_STEAMVR_HANDOFF.md`
   - SteamVR 開発／検証時の引き継ぎ用メモ。
 - `docs/AI_DEVELOPMENT_WORKFLOW.md`, `docs/AI_SESSION_LOG.md`, `docs/AI_TEAM_HANDOFF.md`

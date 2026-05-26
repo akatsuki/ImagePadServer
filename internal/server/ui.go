@@ -177,6 +177,85 @@ const indexHTML = `<!doctype html>
       display: grid;
       gap: 8px;
     }
+    .drop-zone {
+      display: grid;
+      gap: 8px;
+      place-items: center;
+      min-height: 104px;
+      padding: 12px;
+      border: 2px dashed #aebdc6;
+      border-radius: 8px;
+      background: #f8fafb;
+      text-align: center;
+      transition: border-color .15s ease, background .15s ease, box-shadow .15s ease;
+    }
+    .drop-zone.dragover {
+      border-color: var(--accent);
+      background: var(--soft);
+      box-shadow: 0 0 0 3px rgba(27, 127, 107, .12);
+    }
+    .drop-zone input[type="file"] {
+      max-width: 100%;
+    }
+    .drop-hint {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.4;
+    }
+    .drop-file-name {
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: #263746;
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .drag-drop-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: rgba(23, 32, 42, .58);
+      color: #fff;
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transition: opacity .12s ease, visibility .12s ease;
+    }
+    body.drag-drop-active .drag-drop-overlay {
+      opacity: 1;
+      visibility: visible;
+    }
+    body.drag-drop-active header,
+    body.drag-drop-active main {
+      filter: grayscale(1);
+    }
+    .drag-drop-message {
+      width: min(92vw, 420px);
+      min-height: 160px;
+      display: grid;
+      place-items: center;
+      gap: 8px;
+      padding: 24px;
+      border: 2px dashed rgba(255, 255, 255, .78);
+      border-radius: 8px;
+      background: rgba(23, 32, 42, .36);
+      text-align: center;
+      box-shadow: 0 16px 48px rgba(0, 0, 0, .28);
+    }
+    .drag-drop-message strong {
+      font-size: 24px;
+      letter-spacing: 0;
+    }
+    .drag-drop-message span {
+      color: rgba(255, 255, 255, .82);
+      font-size: 13px;
+      font-weight: 700;
+    }
     .controls {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -755,7 +834,11 @@ const indexHTML = `<!doctype html>
             <button class="mode-tab" id="obsModeButton" type="button" role="tab" aria-selected="false" hidden>OBS</button>
           </div>
           <div class="upload-panel active" id="fileUploadPanel">
-            <input id="imageInput" name="image" type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp,image/tiff,image/svg+xml,image/x-sony-arw,image/x-canon-crw,image/x-canon-cr2,image/x-canon-cr3,image/x-panasonic-rw2,image/x-olympus-orf,image/x-fuji-raf,image/x-nikon-nef,image/x-nikon-nrw,image/x-sigma-x3f,image/x-adobe-dng,.jpg,.jpeg,.png,.gif,.webp,.bmp,.tif,.tiff,.svg,.arw,.srf,.sr2,.crw,.cr2,.cr3,.rw2,.raw,.orf,.raf,.nef,.nrw,.x3f,.dng" required>
+            <div class="drop-zone" id="fileDropZone">
+              <div class="drop-hint" id="dropHint">Drop image or RAW files here</div>
+              <input id="imageInput" name="image" type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp,image/tiff,image/svg+xml,image/x-sony-arw,image/x-canon-crw,image/x-canon-cr2,image/x-canon-cr3,image/x-panasonic-rw2,image/x-olympus-orf,image/x-fuji-raf,image/x-nikon-nef,image/x-nikon-nrw,image/x-sigma-x3f,image/x-adobe-dng,.jpg,.jpeg,.png,.gif,.webp,.bmp,.tif,.tiff,.svg,.arw,.srf,.sr2,.crw,.cr2,.cr3,.rw2,.raw,.orf,.raf,.nef,.nrw,.x3f,.dng" required>
+              <div class="drop-file-name" id="dropFileName">No file selected</div>
+            </div>
           </div>
           <div class="upload-panel" id="linkUploadPanel">
             <input id="imageURLInput" name="imageURL" type="url" inputmode="url" placeholder="https://example.com/image.webp">
@@ -841,6 +924,12 @@ const indexHTML = `<!doctype html>
       </section>
     </div>
   </main>
+  <div class="drag-drop-overlay" id="dragDropOverlay" aria-hidden="true">
+    <div class="drag-drop-message">
+      <strong>ドロップして選択</strong>
+      <span id="dragDropOverlayHint">画像またはRAWファイルを選択します</span>
+    </div>
+  </div>
   <script>
     const state = {
       imageURL: {{printf "%q" .imageURL}},
@@ -868,6 +957,11 @@ const indexHTML = `<!doctype html>
     const queueUploadButton = document.getElementById('queueUploadButton');
     const modeTabs = document.querySelector('.mode-tabs');
     const imageInput = document.getElementById('imageInput');
+    const fileDropZone = document.getElementById('fileDropZone');
+    const dropHint = document.getElementById('dropHint');
+    const dropFileName = document.getElementById('dropFileName');
+    const dragDropOverlay = document.getElementById('dragDropOverlay');
+    const dragDropOverlayHint = document.getElementById('dragDropOverlayHint');
     const imageURLInput = document.getElementById('imageURLInput');
     const fileModeButton = document.getElementById('fileModeButton');
     const linkModeButton = document.getElementById('linkModeButton');
@@ -1333,6 +1427,8 @@ const indexHTML = `<!doctype html>
       videoPlayerToggle.disabled = videoPlayerPending;
       videoPlayerText.textContent = data.enabled ? '有効 / 自動コピーはHLS優先' : '無効 / 自動コピーは画像URL';
       imageInput.accept = data.enabled ? mediaAccept : imageAccept;
+      dropHint.textContent = data.enabled ? 'Drop image, RAW, or video files here' : 'Drop image or RAW files here';
+      dragDropOverlayHint.textContent = data.enabled ? '画像、RAW、動画ファイルを選択します' : '画像またはRAWファイルを選択します';
       fileModeButton.textContent = data.enabled ? '画像/動画' : '画像';
       queueUploadButton.hidden = !data.enabled || uploadMode === 'obs';
       obsModeButton.hidden = !data.enabled;
@@ -1389,6 +1485,108 @@ const indexHTML = `<!doctype html>
         qualityRow.hidden = protectedMode;
       }
     }
+
+    function hasDroppedFiles(event) {
+      return event.dataTransfer && Array.from(event.dataTransfer.types || []).includes('Files');
+    }
+
+    function showGlobalDropOverlay() {
+      document.body.classList.add('drag-drop-active');
+      dragDropOverlay.setAttribute('aria-hidden', 'false');
+    }
+
+    function hideGlobalDropOverlay() {
+      document.body.classList.remove('drag-drop-active');
+      dragDropOverlay.setAttribute('aria-hidden', 'true');
+      fileDropZone.classList.remove('dragover');
+    }
+
+    function leavingWindow(event) {
+      return event.clientX <= 0 || event.clientY <= 0 || event.clientX >= window.innerWidth || event.clientY >= window.innerHeight;
+    }
+
+    function setSelectedFile(file) {
+      if (!file) return false;
+      if (typeof DataTransfer === 'undefined') {
+        toast.textContent = 'This browser cannot accept dropped files here. Use the file picker.';
+        return false;
+      }
+      const transfer = new DataTransfer();
+      transfer.items.add(file);
+      imageInput.files = transfer.files;
+      imageInput.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    }
+
+    function updateSelectedFileName() {
+      const file = imageInput.files && imageInput.files[0];
+      dropFileName.textContent = file ? file.name : 'No file selected';
+      dropFileName.title = file ? file.name : '';
+    }
+
+    function handleFileDrop(event) {
+      if (!hasDroppedFiles(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      hideGlobalDropOverlay();
+      const file = event.dataTransfer.files && event.dataTransfer.files[0];
+      if (!file) return;
+      if (uploadMode !== 'file') {
+        setUploadMode('file');
+      }
+      if (setSelectedFile(file)) {
+        const extra = event.dataTransfer.files.length > 1 ? ' (first file only)' : '';
+        toast.textContent = 'Selected ' + file.name + extra;
+      }
+    }
+
+    fileDropZone.addEventListener('dragenter', (event) => {
+      if (!hasDroppedFiles(event)) return;
+      event.preventDefault();
+      showGlobalDropOverlay();
+      fileDropZone.classList.add('dragover');
+    });
+    fileDropZone.addEventListener('dragover', (event) => {
+      if (!hasDroppedFiles(event)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'copy';
+      showGlobalDropOverlay();
+      fileDropZone.classList.add('dragover');
+    });
+    fileDropZone.addEventListener('dragleave', (event) => {
+      if (!fileDropZone.contains(event.relatedTarget)) {
+        fileDropZone.classList.remove('dragover');
+      }
+    });
+    fileDropZone.addEventListener('drop', handleFileDrop);
+    uploadForm.addEventListener('drop', handleFileDrop);
+    window.addEventListener('dragenter', (event) => {
+      if (!hasDroppedFiles(event)) return;
+      event.preventDefault();
+      showGlobalDropOverlay();
+    });
+    window.addEventListener('dragover', (event) => {
+      if (!hasDroppedFiles(event)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'copy';
+      showGlobalDropOverlay();
+    });
+    window.addEventListener('dragleave', (event) => {
+      if (leavingWindow(event)) {
+        hideGlobalDropOverlay();
+      }
+    });
+    window.addEventListener('drop', (event) => {
+      if (hasDroppedFiles(event)) {
+        handleFileDrop(event);
+      } else {
+        hideGlobalDropOverlay();
+      }
+    });
+    window.addEventListener('dragend', hideGlobalDropOverlay);
+    window.addEventListener('blur', hideGlobalDropOverlay);
+    imageInput.addEventListener('change', updateSelectedFileName);
+    updateSelectedFileName();
 
     uploadForm.addEventListener('submit', async (event) => {
       event.preventDefault();
