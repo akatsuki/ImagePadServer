@@ -17,6 +17,13 @@ import (
 	"imagepadserver/internal/video"
 )
 
+const (
+	lowLatencySegmentSeconds = "0.5"
+	lowLatencyListSize       = "3"
+	lowLatencyFrameRate      = "30"
+	lowLatencyGOPFrames      = "15"
+)
+
 type Callbacks struct {
 	OnStart func(Session)
 	OnDone  func(Session)
@@ -344,7 +351,7 @@ func (m *Manager) runOne(parent context.Context) error {
 }
 
 func (m *Manager) waitForStart(ctx context.Context, session Session, errCh <-chan error) (bool, error) {
-	ticker := time.NewTicker(500 * time.Millisecond)
+	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		select {
@@ -380,30 +387,52 @@ func (m *Manager) waitForStart(ctx context.Context, session Session, errCh <-cha
 
 func (m *Manager) ffmpegArgs(id, recording string, preset video.QualityPreset) []string {
 	inputURL := fmt.Sprintf("rtmp://0.0.0.0:%d/live/%s", m.port, m.key)
-	common := []string{
-		"-map", "0:v:0",
-		"-map", "0:a:0?",
-		"-c", "copy",
-	}
+	scaleFilter := "scale=w='min(1920,iw)':h='min(" + strconv.Itoa(preset.Height) + ",ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,pad=ceil(iw/2)*2:ceil(ih/2)*2"
 	args := []string{
 		"-hide_banner",
 		"-loglevel", "warning",
 		"-y",
 		"-listen", "1",
+		"-fflags", "nobuffer",
+		"-flags", "low_delay",
+		"-analyzeduration", "100000",
+		"-probesize", "32768",
 		"-i", inputURL,
 	}
-	args = append(args, common...)
 	args = append(args,
+		"-map", "0:v:0",
+		"-map", "0:a:0?",
+		"-vf", scaleFilter,
+		"-r", lowLatencyFrameRate,
+		"-c:v", "libx264",
+		"-preset", "ultrafast",
+		"-tune", "zerolatency",
+		"-pix_fmt", "yuv420p",
+		"-g", lowLatencyGOPFrames,
+		"-keyint_min", lowLatencyGOPFrames,
+		"-sc_threshold", "0",
+		"-force_key_frames", "expr:gte(t,n_forced*"+lowLatencySegmentSeconds+")",
+		"-b:v", preset.VideoBitrate,
+		"-maxrate", preset.MaxRate,
+		"-bufsize", preset.VideoBitrate,
+		"-c:a", "aac",
+		"-b:a", preset.AudioBitrate,
+		"-ar", "48000",
+		"-ac", "2",
+		"-flush_packets", "1",
 		"-f", "hls",
-		"-hls_time", "2",
-		"-hls_list_size", "0",
-		"-hls_playlist_type", "event",
-		"-hls_flags", "independent_segments",
+		"-hls_time", lowLatencySegmentSeconds,
+		"-hls_list_size", lowLatencyListSize,
+		"-hls_delete_threshold", "4",
+		"-hls_allow_cache", "0",
+		"-hls_flags", "delete_segments+independent_segments+program_date_time",
 		"-hls_segment_filename", video.SegmentPattern(id),
 		video.PlaylistName(id),
 	)
-	args = append(args, common...)
 	args = append(args,
+		"-map", "0:v:0",
+		"-map", "0:a:0?",
+		"-c", "copy",
 		"-movflags", "+faststart",
 		recording,
 	)
