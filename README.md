@@ -273,9 +273,7 @@ go test ./...
 クロスプラットフォーム確認:
 
 ```sh
-GOOS=darwin GOARCH=arm64 go build -o dist/imagepadserver-macos-arm64 ./cmd/imagepadserver
-GOOS=linux GOARCH=amd64 go build -o dist/imagepadserver-linux-amd64 ./cmd/imagepadserver
-GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-H=windowsgui" -o dist/imagepadserver-windows-amd64.exe ./cmd/imagepadserver
+scripts/build-release.sh
 ```
 
 Windows PowerShell で exe ビルド:
@@ -284,8 +282,11 @@ Windows PowerShell で exe ビルド:
 $env:CGO_ENABLED="0"
 $env:GOOS="windows"
 $env:GOARCH="amd64"
-go build -trimpath -ldflags "-H=windowsgui" -o dist\imagepadserver-windows-amd64.exe .\cmd\imagepadserver
+go build -trimpath -ldflags "-H=windowsgui" -o dist\1.2.2\dev\dev1\win\imagepadserver-v1.2.2-dev1-windows-amd64.exe .\cmd\imagepadserver
 ```
+
+`scripts/build-release.sh` writes builds under `dist/<version>/release/<platform>/` for stable versions and `dist/<version>/dev/<devN>/<platform>/` for dev versions.
+For example, `v1.2.2` goes to `dist/1.2.2/release/win/`, while `v1.2.2-dev1` goes to `dist/1.2.2/dev/dev1/win/`.
 
 ## バージョン
 

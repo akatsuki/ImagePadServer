@@ -6,6 +6,17 @@ DIST_DIR="$ROOT_DIR/dist"
 APP_NAME="imagepadserver"
 VERSION="$(sed -n 's/.*Version[[:space:]]*=[[:space:]]*"\(v[^"]*\)".*/\1/p' "$ROOT_DIR/internal/about/about.go" | head -n 1)"
 VERSION_NUMBER="${VERSION#v}"
+if printf '%s\n' "$VERSION_NUMBER" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+-dev[0-9]+$'; then
+  RELEASE_VERSION="${VERSION_NUMBER%%-dev*}"
+  DEV_NAME="${VERSION_NUMBER#*-}"
+  BUILD_DIR="$DIST_DIR/$RELEASE_VERSION/dev/$DEV_NAME"
+else
+  RELEASE_VERSION="$VERSION_NUMBER"
+  BUILD_DIR="$DIST_DIR/$RELEASE_VERSION/release"
+fi
+WIN_DIR="$BUILD_DIR/win"
+MAC_DIR="$BUILD_DIR/mac"
+LINUX_DIR="$BUILD_DIR/linux"
 AUTHOR="$(sed -n 's/.*Author[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$ROOT_DIR/internal/about/about.go" | head -n 1)"
 COPYRIGHT="$(sed -n 's/.*Copyright[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$ROOT_DIR/internal/about/about.go" | head -n 1)"
 GO_VERSION="$(go env GOVERSION 2>/dev/null || true)"
@@ -13,7 +24,16 @@ if [ -z "$GO_VERSION" ]; then
   GO_VERSION="$(go version | awk '{print $3}')"
 fi
 
-mkdir -p "$DIST_DIR"
+mkdir -p "$WIN_DIR" "$MAC_DIR" "$LINUX_DIR"
+
+platform_dir() {
+  case "$1" in
+    windows) printf '%s\n' "$WIN_DIR" ;;
+    darwin) printf '%s\n' "$MAC_DIR" ;;
+    linux) printf '%s\n' "$LINUX_DIR" ;;
+    *) printf '%s\n' "$BUILD_DIR/$1" ;;
+  esac
+}
 
 build_one() {
   goos="$1"
@@ -23,7 +43,9 @@ build_one() {
     echo "skipping darwin/arm64: Go 1.16 or newer is required for this target"
     return
   fi
-  out="$DIST_DIR/${APP_NAME}-${goos}-${goarch}${ext}"
+  out_dir="$(platform_dir "$goos")"
+  mkdir -p "$out_dir"
+  out="$out_dir/${APP_NAME}-${VERSION}-${goos}-${goarch}${ext}"
   echo "building $out"
   ldflags=""
   if [ "$goos" = "windows" ]; then
@@ -34,7 +56,7 @@ build_one() {
 
 build_macos_app() {
   goarch="$1"
-  app_dir="$DIST_DIR/ImagePadServer-$goarch.app"
+  app_dir="$MAC_DIR/ImagePadServer-$goarch.app"
   contents_dir="$app_dir/Contents"
   macos_dir="$contents_dir/MacOS"
   resources_dir="$contents_dir/Resources"
@@ -80,10 +102,10 @@ PLIST
 }
 
 build_macos_universal_app() {
-  universal_dir="$DIST_DIR/ImagePadServer.app"
-  amd64_dir="$DIST_DIR/ImagePadServer-amd64.app"
-  arm64_dir="$DIST_DIR/ImagePadServer-arm64.app"
-  archive="$DIST_DIR/${APP_NAME}-${VERSION}-macos-universal.zip"
+  universal_dir="$MAC_DIR/ImagePadServer.app"
+  amd64_dir="$MAC_DIR/ImagePadServer-amd64.app"
+  arm64_dir="$MAC_DIR/ImagePadServer-arm64.app"
+  archive="$MAC_DIR/${APP_NAME}-${VERSION}-macos-universal.zip"
 
   echo "building $universal_dir"
   rm -rf "$universal_dir"
@@ -109,4 +131,4 @@ fi
 build_one linux amd64 ""
 build_one linux arm64 ""
 
-echo "done: $DIST_DIR"
+echo "done: $BUILD_DIR"

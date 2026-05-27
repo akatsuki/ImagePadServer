@@ -46,5 +46,5 @@ go test ./...
 $env:CGO_ENABLED = "0"
 $env:GOOS = "windows"
 $env:GOARCH = "amd64"
-go build -trimpath -ldflags "-H=windowsgui" -o dist\imagepadserver-windows-amd64.exe .\cmd\imagepadserver
+go build -trimpath -ldflags "-H=windowsgui" -o dist\1.2.2\dev\dev1\win\imagepadserver-v1.2.2-dev1-windows-amd64.exe .\cmd\imagepadserver
 ```
