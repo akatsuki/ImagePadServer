@@ -17,25 +17,76 @@ import (
 	"imagepadserver/internal/video"
 )
 
-const (
-	lowLatencySegmentSeconds = "0.5"
-	lowLatencyListSize       = "3"
-	lowLatencyFrameRate      = "30"
-	lowLatencyGOPFrames      = "15"
-)
-
 type Callbacks struct {
 	OnStart func(Session)
 	OnDone  func(Session)
 }
 
+type LatencyProfile struct {
+	Mode           string `json:"mode"`
+	Label          string `json:"label"`
+	Target         string `json:"target"`
+	SegmentSeconds string `json:"segmentSeconds"`
+	ListSize       string `json:"listSize"`
+	FrameRate      string `json:"frameRate,omitempty"`
+	GOPFrames      string `json:"gopFrames,omitempty"`
+	Reencode       bool   `json:"reencode"`
+	Message        string `json:"message,omitempty"`
+}
+
+var latencyProfiles = map[string]LatencyProfile{
+	"auto": {
+		Mode:           "auto",
+		Label:          "自動",
+		Target:         "10s",
+		SegmentSeconds: "2",
+		ListSize:       "5",
+		FrameRate:      "30",
+		GOPFrames:      "60",
+		Reencode:       true,
+		Message:        "回線測定値が低い場合は普通より高い遅延を選びます。",
+	},
+	"normal": {
+		Mode:           "normal",
+		Label:          "普通",
+		Target:         "5s",
+		SegmentSeconds: "1",
+		ListSize:       "5",
+		FrameRate:      "30",
+		GOPFrames:      "30",
+		Reencode:       true,
+	},
+	"low": {
+		Mode:           "low",
+		Label:          "低遅延",
+		Target:         "1s",
+		SegmentSeconds: "0.5",
+		ListSize:       "2",
+		FrameRate:      "30",
+		GOPFrames:      "15",
+		Reencode:       true,
+	},
+	"ultra": {
+		Mode:           "ultra",
+		Label:          "超低遅延",
+		Target:         "0.1-0.3s",
+		SegmentSeconds: "0.2",
+		ListSize:       "2",
+		FrameRate:      "30",
+		GOPFrames:      "6",
+		Reencode:       true,
+		Message:        "ffmpegの短セグメント化は可能ですが、HLSプレイヤー側のバッファで0.1-0.3秒にならない場合があります。",
+	},
+}
+
 type Manager struct {
-	outDir string
-	host   string
-	port   int
-	key    string
-	preset func() video.QualityPreset
-	cb     Callbacks
+	outDir  string
+	host    string
+	port    int
+	key     string
+	preset  func() video.QualityPreset
+	latency func() LatencyProfile
+	cb      Callbacks
 
 	mu      sync.Mutex
 	running bool
@@ -56,21 +107,22 @@ type Session struct {
 }
 
 type Status struct {
-	Enabled       bool      `json:"enabled"`
-	Listening     bool      `json:"listening"`
-	Connected     bool      `json:"connected"`
-	ServerAddress string    `json:"serverAddress"`
-	StreamKey     string    `json:"streamKey"`
-	Port          int       `json:"port"`
-	MediaID       string    `json:"mediaID,omitempty"`
-	PreviewURL    string    `json:"previewURL,omitempty"`
-	Publishing    bool      `json:"publishing"`
-	Message       string    `json:"message"`
-	StartedAt     time.Time `json:"startedAt,omitempty"`
-	FinishedAt    time.Time `json:"finishedAt,omitempty"`
+	Enabled       bool           `json:"enabled"`
+	Listening     bool           `json:"listening"`
+	Connected     bool           `json:"connected"`
+	ServerAddress string         `json:"serverAddress"`
+	StreamKey     string         `json:"streamKey"`
+	Port          int            `json:"port"`
+	MediaID       string         `json:"mediaID,omitempty"`
+	PreviewURL    string         `json:"previewURL,omitempty"`
+	Publishing    bool           `json:"publishing"`
+	Latency       LatencyProfile `json:"latency"`
+	Message       string         `json:"message"`
+	StartedAt     time.Time      `json:"startedAt,omitempty"`
+	FinishedAt    time.Time      `json:"finishedAt,omitempty"`
 }
 
-func New(outDir, host string, port int, key string, preset func() video.QualityPreset, cb Callbacks) *Manager {
+func New(outDir, host string, port int, key string, preset func() video.QualityPreset, latency func() LatencyProfile, cb Callbacks) *Manager {
 	if port <= 0 {
 		port = 1935
 	}
@@ -79,16 +131,18 @@ func New(outDir, host string, port int, key string, preset func() video.QualityP
 		key = "imagepad"
 	}
 	return &Manager{
-		outDir: outDir,
-		host:   host,
-		port:   port,
-		key:    key,
-		preset: preset,
-		cb:     cb,
+		outDir:  outDir,
+		host:    host,
+		port:    port,
+		key:     key,
+		preset:  preset,
+		latency: latency,
+		cb:      cb,
 		status: Status{
 			Port:          port,
 			ServerAddress: serverAddress(host, port),
 			StreamKey:     key,
+			Latency:       NormalizeLatencyProfile("auto"),
 			Message:       "OBS RTMP receiver is stopped.",
 		},
 	}
@@ -212,6 +266,7 @@ func (m *Manager) Status() Status {
 	status.ServerAddress = serverAddress(m.host, m.port)
 	status.StreamKey = m.key
 	status.Port = m.port
+	status.Latency = m.currentLatency()
 	return status
 }
 
@@ -387,7 +442,7 @@ func (m *Manager) waitForStart(ctx context.Context, session Session, errCh <-cha
 
 func (m *Manager) ffmpegArgs(id, recording string, preset video.QualityPreset) []string {
 	inputURL := fmt.Sprintf("rtmp://0.0.0.0:%d/live/%s", m.port, m.key)
-	scaleFilter := "scale=w='min(1920,iw)':h='min(" + strconv.Itoa(preset.Height) + ",ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,pad=ceil(iw/2)*2:ceil(ih/2)*2"
+	latency := m.currentLatency()
 	args := []string{
 		"-hide_banner",
 		"-loglevel", "warning",
@@ -399,19 +454,40 @@ func (m *Manager) ffmpegArgs(id, recording string, preset video.QualityPreset) [
 		"-probesize", "32768",
 		"-i", inputURL,
 	}
+	if !latency.Reencode {
+		args = append(args,
+			"-map", "0:v:0",
+			"-map", "0:a:0?",
+			"-c", "copy",
+			"-f", "hls",
+			"-hls_time", latency.SegmentSeconds,
+			"-hls_list_size", latency.ListSize,
+			"-hls_playlist_type", "event",
+			"-hls_flags", "independent_segments",
+			"-hls_segment_filename", video.SegmentPattern(id),
+			video.PlaylistName(id),
+			"-map", "0:v:0",
+			"-map", "0:a:0?",
+			"-c", "copy",
+			"-movflags", "+faststart",
+			recording,
+		)
+		return args
+	}
+	scaleFilter := "scale=w='min(1920,iw)':h='min(" + strconv.Itoa(preset.Height) + ",ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,pad=ceil(iw/2)*2:ceil(ih/2)*2"
 	args = append(args,
 		"-map", "0:v:0",
 		"-map", "0:a:0?",
 		"-vf", scaleFilter,
-		"-r", lowLatencyFrameRate,
+		"-r", latency.FrameRate,
 		"-c:v", "libx264",
 		"-preset", "ultrafast",
 		"-tune", "zerolatency",
 		"-pix_fmt", "yuv420p",
-		"-g", lowLatencyGOPFrames,
-		"-keyint_min", lowLatencyGOPFrames,
+		"-g", latency.GOPFrames,
+		"-keyint_min", latency.GOPFrames,
 		"-sc_threshold", "0",
-		"-force_key_frames", "expr:gte(t,n_forced*"+lowLatencySegmentSeconds+")",
+		"-force_key_frames", "expr:gte(t,n_forced*"+latency.SegmentSeconds+")",
 		"-b:v", preset.VideoBitrate,
 		"-maxrate", preset.MaxRate,
 		"-bufsize", preset.VideoBitrate,
@@ -421,8 +497,8 @@ func (m *Manager) ffmpegArgs(id, recording string, preset video.QualityPreset) [
 		"-ac", "2",
 		"-flush_packets", "1",
 		"-f", "hls",
-		"-hls_time", lowLatencySegmentSeconds,
-		"-hls_list_size", lowLatencyListSize,
+		"-hls_time", latency.SegmentSeconds,
+		"-hls_list_size", latency.ListSize,
 		"-hls_delete_threshold", "4",
 		"-hls_allow_cache", "0",
 		"-hls_flags", "delete_segments+independent_segments+program_date_time",
@@ -444,6 +520,65 @@ func (m *Manager) currentPreset() video.QualityPreset {
 		return video.ResolveQuality("auto", 0)
 	}
 	return m.preset()
+}
+
+func (m *Manager) currentLatency() LatencyProfile {
+	if m.latency == nil {
+		return NormalizeLatencyProfile("auto")
+	}
+	return normalizeLatencyProfile(m.latency())
+}
+
+func NormalizeLatencyProfile(mode string) LatencyProfile {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if profile, ok := latencyProfiles[mode]; ok {
+		return profile
+	}
+	return latencyProfiles["auto"]
+}
+
+func ResolveLatencyProfile(mode string, uploadMbps int) LatencyProfile {
+	profile := NormalizeLatencyProfile(mode)
+	if profile.Mode != "auto" {
+		return profile
+	}
+	switch {
+	case uploadMbps > 0 && uploadMbps < 3:
+		profile.Target = "16s"
+		profile.SegmentSeconds = "4"
+		profile.ListSize = "4"
+		profile.GOPFrames = "120"
+	case uploadMbps > 0 && uploadMbps < 8:
+		profile.Target = "10s"
+		profile.SegmentSeconds = "2"
+		profile.ListSize = "5"
+		profile.GOPFrames = "60"
+	default:
+		profile.Target = "5s"
+		profile.SegmentSeconds = "1"
+		profile.ListSize = "5"
+		profile.GOPFrames = "30"
+	}
+	profile.Message = "回線測定値に応じてOBS HLS遅延を自動調整します。低速時は普通より高い遅延になります。"
+	return profile
+}
+
+func normalizeLatencyProfile(profile LatencyProfile) LatencyProfile {
+	normalized := NormalizeLatencyProfile(profile.Mode)
+	if profile.Mode != "auto" {
+		return normalized
+	}
+	if profile.SegmentSeconds != "" {
+		normalized.Target = profile.Target
+		normalized.SegmentSeconds = profile.SegmentSeconds
+		normalized.ListSize = profile.ListSize
+		normalized.FrameRate = profile.FrameRate
+		normalized.GOPFrames = profile.GOPFrames
+		normalized.Reencode = profile.Reencode
+		normalized.Message = profile.Message
+		return normalized
+	}
+	return normalized
 }
 
 func (m *Manager) isPublishingArmed() bool {

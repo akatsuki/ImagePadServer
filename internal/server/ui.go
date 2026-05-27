@@ -864,6 +864,18 @@ const indexHTML = `<!doctype html>
                 </div>
               </div>
               <div class="pill"><strong>OBS</strong><span id="obsStatus">確認中</span></div>
+              <div class="urlbox">
+                <div>
+                  <strong>OBS Latency</strong>
+                  <span id="obsLatencyStatus">auto</span>
+                </div>
+                <select id="obsLatencyMode" aria-label="OBS latency mode">
+                  <option value="auto">自動</option>
+                  <option value="normal">普通（5s）</option>
+                  <option value="low">低遅延（1s）</option>
+                  <option value="ultra">超低遅延（0.1-0.3s）</option>
+                </select>
+              </div>
             </div>
           </div>
           <div class="controls">
@@ -985,6 +997,8 @@ const indexHTML = `<!doctype html>
     const networkCheckButton = document.getElementById('networkCheckButton');
     const clearButton = document.getElementById('clearButton');
     const obsKeyRotateButton = document.getElementById('obsKeyRotateButton');
+    const obsLatencyMode = document.getElementById('obsLatencyMode');
+    const obsLatencyStatus = document.getElementById('obsLatencyStatus');
     let uploadMode = 'file';
     let videoPlayerPending = false;
     let refreshTimer = 0;
@@ -1449,10 +1463,18 @@ const indexHTML = `<!doctype html>
         server.textContent = 'RTMP receiver is unavailable';
         key.textContent = '-';
         status.textContent = 'unavailable';
+        if (obsLatencyStatus) obsLatencyStatus.textContent = 'unavailable';
         return;
       }
       server.textContent = data.serverAddress || 'RTMP receiver is stopped';
       key.textContent = obsKeyVisible ? (data.streamKey || '-') : maskSecret(data.streamKey);
+      const latency = data.latency || {};
+      if (obsLatencyMode) obsLatencyMode.value = latency.mode || 'auto';
+      if (obsLatencyStatus) {
+        const target = latency.target && latency.target !== 'auto' ? ' / ' + latency.target : '';
+        obsLatencyStatus.textContent = (latency.label || latency.mode || 'auto') + target;
+        obsLatencyStatus.title = latency.message || '';
+      }
       if (data.connected && data.publishing) {
         status.textContent = 'publishing / HLS event';
       } else if (data.connected) {
@@ -1956,6 +1978,26 @@ const indexHTML = `<!doctype html>
         toast.textContent = error.message || 'OBS Stream Keyの更新に失敗しました';
       } finally {
         obsKeyRotateButton.disabled = false;
+      }
+    });
+    obsLatencyMode.addEventListener('change', async () => {
+      obsLatencyMode.disabled = true;
+      try {
+        const res = await fetch('/api/obs/latency', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: obsLatencyMode.value })
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        state.obs = data || null;
+        applyOBS(data);
+        announceLocalChange();
+        toast.textContent = 'OBS latency mode updated';
+      } catch (error) {
+        toast.textContent = error.message || 'Failed to update OBS latency mode';
+      } finally {
+        obsLatencyMode.disabled = false;
       }
     });
     document.getElementById('tunnelReconnectButton').addEventListener('click', async () => {

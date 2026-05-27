@@ -18,6 +18,7 @@ type Settings struct {
 	NetworkUploadMbps         int    `json:"networkUploadMbps,omitempty"`
 	AdminToken                string `json:"adminToken,omitempty"`
 	OBSStreamKey              string `json:"obsStreamKey,omitempty"`
+	OBSLatencyMode            string `json:"obsLatencyMode,omitempty"`
 }
 
 var fileMu sync.Mutex

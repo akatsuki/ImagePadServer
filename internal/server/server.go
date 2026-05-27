@@ -81,7 +81,7 @@ func New(cfg config.Config, store *library.Store, imageURLBase string) *Server {
 		tunnelStatus:   map[string]interface{}{"ok": false, "message": "Cloudflare Tunnel starting..."},
 		adminToken:     adminToken,
 	}
-	srv.obs = obsrtmp.New(store.Dir(), advertisedHost, 1935, obsStreamKey, srv.videoQualityPreset, obsrtmp.Callbacks{
+	srv.obs = obsrtmp.New(store.Dir(), advertisedHost, 1935, obsStreamKey, srv.videoQualityPreset, srv.obsLatencyProfile, obsrtmp.Callbacks{
 		OnStart: srv.handleOBSStreamStart,
 		OnDone:  srv.handleOBSStreamDone,
 	})
@@ -100,6 +100,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/obs/start", s.admin(s.handleOBSStart))
 	mux.HandleFunc("/api/obs/end", s.admin(s.handleOBSEnd))
 	mux.HandleFunc("/api/obs/key", s.admin(s.handleOBSKey))
+	mux.HandleFunc("/api/obs/latency", s.admin(s.handleOBSLatency))
 	mux.HandleFunc("/api/history", s.admin(s.handleHistory))
 	mux.HandleFunc("/api/history/favorite", s.admin(s.handleHistoryFavorite))
 	mux.HandleFunc("/api/history/queue", s.admin(s.handleHistoryQueue))
@@ -748,6 +749,35 @@ func (s *Server) handleOBSKey(w http.ResponseWriter, r *http.Request) {
 	}
 	s.obs.SetStreamKey(key, 8*time.Second)
 	writeJSON(w, s.state(r))
+}
+
+func (s *Server) handleOBSLatency(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, s.obsState())
+	case http.MethodPost:
+		var req struct {
+			Mode string `json:"mode"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid OBS latency request", http.StatusBadRequest)
+			return
+		}
+		profile := obsrtmp.NormalizeLatencyProfile(req.Mode)
+		if err := settings.Update(func(appSettings *settings.Settings) error {
+			appSettings.OBSLatencyMode = profile.Mode
+			return nil
+		}); err != nil {
+			http.Error(w, "failed to save settings", http.StatusInternalServerError)
+			return
+		}
+		if s.obs != nil {
+			s.obs.Restart(8 * time.Second)
+		}
+		writeJSON(w, s.obsState())
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
@@ -1616,6 +1646,14 @@ func (s *Server) videoQualityState() map[string]interface{} {
 		"uploadMbps": preset.UploadMbps,
 		"preset":     preset,
 	}
+}
+
+func (s *Server) obsLatencyProfile() obsrtmp.LatencyProfile {
+	appSettings, err := settings.Load()
+	if err != nil {
+		return obsrtmp.NormalizeLatencyProfile("auto")
+	}
+	return obsrtmp.ResolveLatencyProfile(appSettings.OBSLatencyMode, appSettings.NetworkUploadMbps)
 }
 
 func (s *Server) obsState() obsrtmp.Status {
