@@ -19,6 +19,7 @@ type Settings struct {
 	AdminToken                string `json:"adminToken,omitempty"`
 	OBSStreamKey              string `json:"obsStreamKey,omitempty"`
 	OBSLatencyMode            string `json:"obsLatencyMode,omitempty"`
+	OBSDVREnabled             bool   `json:"obsDVREnabled,omitempty"`
 }
 
 var fileMu sync.Mutex

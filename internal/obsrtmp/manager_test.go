@@ -14,7 +14,7 @@ func TestFFmpegArgsUseLowLatencyHLS(t *testing.T) {
 
 	wantValues := map[string]string{
 		"-hls_time":      "0.5",
-		"-hls_list_size": "2",
+		"-hls_list_size": "12",
 		"-g":             "15",
 		"-keyint_min":    "15",
 		"-preset":        "ultrafast",
@@ -52,20 +52,51 @@ func TestFFmpegArgsUseAutoLatencyProfile(t *testing.T) {
 	}
 }
 
-func TestFFmpegArgsUseUltraLowLatencyProfile(t *testing.T) {
-	manager := newTestManager(t, "ultra")
+func TestFFmpegArgsUseNormalLatencyProfile(t *testing.T) {
+	manager := newTestManager(t, "normal")
 	args := manager.ffmpegArgs("media123", "recording.mp4", video.ResolveQuality("720", 0))
 
 	wantValues := map[string]string{
-		"-hls_time":      "0.2",
-		"-hls_list_size": "2",
-		"-g":             "6",
-		"-keyint_min":    "6",
+		"-hls_time":      "1",
+		"-hls_list_size": "8",
+		"-g":             "30",
+		"-keyint_min":    "30",
 	}
 	for flag, want := range wantValues {
 		if got := valueAfter(args, flag); got != want {
 			t.Fatalf("%s = %q, want %q\nargs: %s", flag, got, want, strings.Join(args, " "))
 		}
+	}
+}
+
+func TestFFmpegArgsUseUltraLowLatencyProfile(t *testing.T) {
+	manager := newTestManager(t, "ultra")
+	args := manager.ffmpegArgs("media123", "recording.mp4", video.ResolveQuality("720", 0))
+
+	wantValues := map[string]string{
+		"-hls_time":      "0.5",
+		"-hls_list_size": "16",
+		"-g":             "15",
+		"-keyint_min":    "15",
+	}
+	for flag, want := range wantValues {
+		if got := valueAfter(args, flag); got != want {
+			t.Fatalf("%s = %q, want %q\nargs: %s", flag, got, want, strings.Join(args, " "))
+		}
+	}
+}
+
+func TestFFmpegArgsUseDVRListSize(t *testing.T) {
+	manager := New(t.TempDir(), "127.0.0.1", 1935, "secret", nil, func() LatencyProfile {
+		return EnableDVR(NormalizeLatencyProfile("low"))
+	}, Callbacks{})
+	args := manager.ffmpegArgs("media123", "recording.mp4", video.ResolveQuality("720", 0))
+
+	if got := valueAfter(args, "-hls_time"); got != "0.5" {
+		t.Fatalf("hls_time = %q, want 0.5\nargs: %s", got, strings.Join(args, " "))
+	}
+	if got := valueAfter(args, "-hls_list_size"); got != "3600" {
+		t.Fatalf("hls_list_size = %q, want 3600\nargs: %s", got, strings.Join(args, " "))
 	}
 }
 

@@ -32,3 +32,19 @@ func TestIsTailscaleCandidate(t *testing.T) {
 		t.Fatal("expected normal LAN address not to be a Tailscale candidate")
 	}
 }
+
+func TestIsPrivateNonTailscaleIPv4(t *testing.T) {
+	valid := []string{"10.0.0.5", "172.16.0.5", "192.168.1.20"}
+	for _, raw := range valid {
+		if !isPrivateNonTailscaleIPv4(net.ParseIP(raw)) {
+			t.Fatalf("expected %s to be a private non-Tailscale IPv4 address", raw)
+		}
+	}
+
+	invalid := []string{"100.64.0.1", "8.8.8.8", "fd7a:115c:a1e0::1"}
+	for _, raw := range invalid {
+		if isPrivateNonTailscaleIPv4(net.ParseIP(raw)) {
+			t.Fatalf("expected %s not to be a private non-Tailscale IPv4 address", raw)
+		}
+	}
+}

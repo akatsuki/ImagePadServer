@@ -873,8 +873,9 @@ const indexHTML = `<!doctype html>
                   <option value="auto">自動</option>
                   <option value="normal">普通（5s）</option>
                   <option value="low">低遅延（1s）</option>
-                  <option value="ultra">超低遅延（0.1-0.3s）</option>
+                  <option value="ultra">超低遅延（0.5s+）</option>
                 </select>
+                <label><input id="obsDVRToggle" type="checkbox"> DVR 30min</label>
               </div>
             </div>
           </div>
@@ -999,6 +1000,7 @@ const indexHTML = `<!doctype html>
     const obsKeyRotateButton = document.getElementById('obsKeyRotateButton');
     const obsLatencyMode = document.getElementById('obsLatencyMode');
     const obsLatencyStatus = document.getElementById('obsLatencyStatus');
+    const obsDVRToggle = document.getElementById('obsDVRToggle');
     let uploadMode = 'file';
     let videoPlayerPending = false;
     let refreshTimer = 0;
@@ -1104,6 +1106,20 @@ const indexHTML = `<!doctype html>
       renderHistory(state.history, nextCurrentID);
       state.currentID = nextCurrentID;
       scheduleRefresh((data.video && data.video.active) || (data.obs && data.obs.connected) ? 750 : 2000);
+    }
+
+    function resetOBSPreview() {
+      if (state.previewMode === 'obs') {
+        const video = preview.querySelector('video');
+        if (video) {
+          video.pause();
+          video.removeAttribute('src');
+          video.load();
+        }
+        preview.innerHTML = '<div class="empty">OBS preview restarting...</div>';
+      }
+      state.previewMode = 'obs-restarting';
+      state.obsPreviewID = "";
     }
 
     function renderPreview(data, nextCurrentID) {
@@ -1470,9 +1486,11 @@ const indexHTML = `<!doctype html>
       key.textContent = obsKeyVisible ? (data.streamKey || '-') : maskSecret(data.streamKey);
       const latency = data.latency || {};
       if (obsLatencyMode) obsLatencyMode.value = latency.mode || 'auto';
+      if (obsDVRToggle) obsDVRToggle.checked = !!latency.dvr;
       if (obsLatencyStatus) {
         const target = latency.target && latency.target !== 'auto' ? ' / ' + latency.target : '';
-        obsLatencyStatus.textContent = (latency.label || latency.mode || 'auto') + target;
+        const dvr = latency.dvr ? ' / DVR 30min' : '';
+        obsLatencyStatus.textContent = (latency.label || latency.mode || 'auto') + target + dvr;
         obsLatencyStatus.title = latency.message || '';
       }
       if (data.connected && data.publishing) {
@@ -1981,25 +1999,35 @@ const indexHTML = `<!doctype html>
       }
     });
     obsLatencyMode.addEventListener('change', async () => {
+      updateOBSLatency();
+    });
+    obsDVRToggle.addEventListener('change', async () => {
+      updateOBSLatency();
+    });
+    async function updateOBSLatency() {
       obsLatencyMode.disabled = true;
+      obsDVRToggle.disabled = true;
       try {
         const res = await fetch('/api/obs/latency', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mode: obsLatencyMode.value })
+          body: JSON.stringify({ mode: obsLatencyMode.value, dvr: obsDVRToggle.checked })
         });
         if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
         state.obs = data || null;
         applyOBS(data);
+        resetOBSPreview();
+        refreshAgain = true;
         announceLocalChange();
-        toast.textContent = 'OBS latency mode updated';
+        toast.textContent = 'OBS latency mode updated. Restarting preview...';
       } catch (error) {
         toast.textContent = error.message || 'Failed to update OBS latency mode';
       } finally {
         obsLatencyMode.disabled = false;
+        obsDVRToggle.disabled = false;
       }
-    });
+    }
     document.getElementById('tunnelReconnectButton').addEventListener('click', async () => {
       const button = document.getElementById('tunnelReconnectButton');
       button.disabled = true;

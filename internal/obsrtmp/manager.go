@@ -28,9 +28,11 @@ type LatencyProfile struct {
 	Target         string `json:"target"`
 	SegmentSeconds string `json:"segmentSeconds"`
 	ListSize       string `json:"listSize"`
+	DVRListSize    string `json:"dvrListSize,omitempty"`
 	FrameRate      string `json:"frameRate,omitempty"`
 	GOPFrames      string `json:"gopFrames,omitempty"`
 	Reencode       bool   `json:"reencode"`
+	DVR            bool   `json:"dvr"`
 	Message        string `json:"message,omitempty"`
 }
 
@@ -41,6 +43,7 @@ var latencyProfiles = map[string]LatencyProfile{
 		Target:         "10s",
 		SegmentSeconds: "2",
 		ListSize:       "5",
+		DVRListSize:    "900",
 		FrameRate:      "30",
 		GOPFrames:      "60",
 		Reencode:       true,
@@ -51,7 +54,8 @@ var latencyProfiles = map[string]LatencyProfile{
 		Label:          "普通",
 		Target:         "5s",
 		SegmentSeconds: "1",
-		ListSize:       "5",
+		ListSize:       "8",
+		DVRListSize:    "1800",
 		FrameRate:      "30",
 		GOPFrames:      "30",
 		Reencode:       true,
@@ -61,7 +65,8 @@ var latencyProfiles = map[string]LatencyProfile{
 		Label:          "低遅延",
 		Target:         "1s",
 		SegmentSeconds: "0.5",
-		ListSize:       "2",
+		ListSize:       "12",
+		DVRListSize:    "3600",
 		FrameRate:      "30",
 		GOPFrames:      "15",
 		Reencode:       true,
@@ -69,13 +74,14 @@ var latencyProfiles = map[string]LatencyProfile{
 	"ultra": {
 		Mode:           "ultra",
 		Label:          "超低遅延",
-		Target:         "0.1-0.3s",
-		SegmentSeconds: "0.2",
-		ListSize:       "2",
+		Target:         "0.5s+",
+		SegmentSeconds: "0.5",
+		ListSize:       "16",
+		DVRListSize:    "3600",
 		FrameRate:      "30",
-		GOPFrames:      "6",
+		GOPFrames:      "15",
 		Reencode:       true,
-		Message:        "ffmpegの短セグメント化は可能ですが、HLSプレイヤー側のバッファで0.1-0.3秒にならない場合があります。",
+		Message:        "0.5秒セグメントを長めに保持し、VRChat側の遅れによるセグメント欠落を避けます。",
 	},
 }
 
@@ -515,6 +521,18 @@ func (m *Manager) ffmpegArgs(id, recording string, preset video.QualityPreset) [
 	return args
 }
 
+func EnableDVR(profile LatencyProfile) LatencyProfile {
+	profile = normalizeLatencyProfile(profile)
+	if profile.DVRListSize != "" {
+		profile.ListSize = profile.DVRListSize
+	}
+	profile.DVR = true
+	if profile.Message == "" {
+		profile.Message = "DVR is enabled. Up to 30 minutes of HLS segments are kept for players that support live seeking."
+	}
+	return profile
+}
+
 func (m *Manager) currentPreset() video.QualityPreset {
 	if m.preset == nil {
 		return video.ResolveQuality("auto", 0)
@@ -565,6 +583,18 @@ func ResolveLatencyProfile(mode string, uploadMbps int) LatencyProfile {
 
 func normalizeLatencyProfile(profile LatencyProfile) LatencyProfile {
 	normalized := NormalizeLatencyProfile(profile.Mode)
+	if profile.DVR {
+		if normalized.DVRListSize != "" {
+			normalized.ListSize = normalized.DVRListSize
+		}
+		normalized.DVR = true
+		if profile.Message != "" {
+			normalized.Message = profile.Message
+		} else if normalized.Message == "" {
+			normalized.Message = "DVR is enabled. Up to 30 minutes of HLS segments are kept for players that support live seeking."
+		}
+		return normalized
+	}
 	if profile.Mode != "auto" {
 		return normalized
 	}
@@ -572,9 +602,11 @@ func normalizeLatencyProfile(profile LatencyProfile) LatencyProfile {
 		normalized.Target = profile.Target
 		normalized.SegmentSeconds = profile.SegmentSeconds
 		normalized.ListSize = profile.ListSize
+		normalized.DVRListSize = profile.DVRListSize
 		normalized.FrameRate = profile.FrameRate
 		normalized.GOPFrames = profile.GOPFrames
 		normalized.Reencode = profile.Reencode
+		normalized.DVR = profile.DVR
 		normalized.Message = profile.Message
 		return normalized
 	}
