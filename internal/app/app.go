@@ -70,6 +70,7 @@ func run(useNativeWindow bool) error {
 	} else if killed > 0 {
 		log.Printf("stopped %d stale FFmpeg process(es) from a previous ImagePadServer run", killed)
 	}
+	go updateYTDLPOnStartup()
 
 	storeDir := filepath.Join(settings.Dir(), "media")
 	store, err := library.NewStore(storeDir)
@@ -201,6 +202,22 @@ func run(useNativeWindow bool) error {
 	}
 	tunnelMu.Unlock()
 	return httpServer.Shutdown(ctx)
+}
+
+func updateYTDLPOnStartup() {
+	path, updated, err := video.EnsureLatestYTDLP()
+	if err != nil {
+		log.Printf("yt-dlp update check failed: %v", err)
+		return
+	}
+	if path == "" {
+		return
+	}
+	if updated {
+		log.Printf("yt-dlp updated: %s", path)
+		return
+	}
+	log.Printf("yt-dlp is up to date: %s", path)
 }
 
 func resetMediaWorkspace(store *library.Store) {

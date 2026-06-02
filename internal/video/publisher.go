@@ -714,6 +714,34 @@ func EnsureYTDLP() (string, error) {
 	return downloadYTDLP()
 }
 
+func EnsureLatestYTDLP() (string, bool, error) {
+	if configured := strings.TrimSpace(os.Getenv("IMAGEPAD_YTDLP")); configured != "" {
+		if _, err := os.Stat(configured); err == nil {
+			return configured, false, nil
+		}
+		return "", false, fmt.Errorf("IMAGEPAD_YTDLP does not exist: %s", configured)
+	}
+	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
+		return "", false, nil
+	}
+
+	checksum, err := remoteSHA256For(ytdlpAssetName())
+	if err != nil {
+		return "", false, err
+	}
+	target := localYTDLPPath()
+	if fileExists(target) {
+		if err := verifySHA256(target, checksum); err == nil {
+			return target, false, nil
+		}
+	}
+	path, err := downloadYTDLPWithChecksum(checksum)
+	if err != nil {
+		return "", false, err
+	}
+	return path, true, nil
+}
+
 func DownloadURL(rawURL, outDir string) (string, string, error) {
 	exe, err := EnsureYTDLP()
 	if err != nil {
@@ -997,6 +1025,13 @@ func localYTDLPPath() string {
 	return filepath.Join(settings.Dir(), "bin", name)
 }
 
+func ytdlpAssetName() string {
+	if runtime.GOOS == "darwin" {
+		return "yt-dlp_macos"
+	}
+	return "yt-dlp.exe"
+}
+
 func toolInstallHint(name string) string {
 	switch runtime.GOOS {
 	case "darwin":
@@ -1046,8 +1081,12 @@ func downloadFFmpeg() (string, error) {
 }
 
 func downloadYTDLP() (string, error) {
+	return downloadYTDLPWithChecksum("")
+}
+
+func downloadYTDLPWithChecksum(checksum string) (string, error) {
 	if runtime.GOOS == "darwin" {
-		return downloadDarwinYTDLP()
+		return downloadDarwinYTDLPWithChecksum(checksum)
 	}
 	if runtime.GOOS != "windows" {
 		return "", errors.New("automatic yt-dlp download is currently supported on Windows and macOS only")
@@ -1057,7 +1096,10 @@ func downloadYTDLP() (string, error) {
 		return "", fmt.Errorf("failed to prepare yt-dlp folder: %w", err)
 	}
 
-	checksum := strings.TrimSpace(os.Getenv("IMAGEPAD_YTDLP_SHA256"))
+	checksum = strings.TrimSpace(checksum)
+	if checksum == "" {
+		checksum = strings.TrimSpace(os.Getenv("IMAGEPAD_YTDLP_SHA256"))
+	}
 	if checksum == "" {
 		checksum = ytdlpDownloadSHA256
 	}
@@ -1112,11 +1154,18 @@ func darwinFFmpegDownloadURL() (string, error) {
 }
 
 func downloadDarwinYTDLP() (string, error) {
+	return downloadDarwinYTDLPWithChecksum("")
+}
+
+func downloadDarwinYTDLPWithChecksum(checksum string) (string, error) {
 	target := localYTDLPPath()
 	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 		return "", fmt.Errorf("failed to prepare yt-dlp folder: %w", err)
 	}
-	checksum := strings.TrimSpace(os.Getenv("IMAGEPAD_YTDLP_SHA256"))
+	checksum = strings.TrimSpace(checksum)
+	if checksum == "" {
+		checksum = strings.TrimSpace(os.Getenv("IMAGEPAD_YTDLP_SHA256"))
+	}
 	if checksum == "" {
 		var err error
 		checksum, err = remoteSHA256For("yt-dlp_macos")
