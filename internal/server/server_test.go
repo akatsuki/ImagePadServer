@@ -1,6 +1,9 @@
 package server
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"imagepadserver/internal/config"
 	"imagepadserver/internal/library"
@@ -281,6 +285,40 @@ func TestStateExposesHLSURLForPendingStillConversion(t *testing.T) {
 	}
 }
 
+func TestHistorySelectReturnsClipboardURL(t *testing.T) {
+	srv, mux := testServer(t, false)
+	source := filepath.Join(t.TempDir(), "input.png")
+	if err := os.WriteFile(source, []byte("image"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	item, err := srv.store.AddHistory(source, library.CurrentImage{
+		PublicName:  "current.png",
+		ContentType: "image/png",
+		Width:       640,
+		Height:      480,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/history/select", strings.NewReader(fmt.Sprintf(`{"id":%q}`, item.ID)))
+	rec := adminJSON(t, mux, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %q", rec.Code, rec.Body.String())
+	}
+	var state map[string]interface{}
+	if err := json.NewDecoder(rec.Body).Decode(&state); err != nil {
+		t.Fatal(err)
+	}
+	copiedURL, _ := state["copiedURL"].(string)
+	if !strings.Contains(copiedURL, "/image/current") || !strings.Contains(copiedURL, item.ID) {
+		t.Fatalf("copiedURL = %q, want restored current image URL for history item", copiedURL)
+	}
+	if _, ok := state["clipboardCopied"].(bool); !ok {
+		t.Fatalf("clipboardCopied missing or wrong type: %#v", state["clipboardCopied"])
+	}
+}
+
 func TestStateIgnoresHLSConversionForDifferentCurrentMedia(t *testing.T) {
 	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
 	t.Setenv("IMAGEPAD_FFMPEG", slowFFmpegPath(t))
@@ -349,11 +387,121 @@ func TestBitrateOnlyPresetKeepsActiveResolution(t *testing.T) {
 	}
 }
 
+func TestOBSRelayConfigEnablesReceiverAndReturnsConnectionInfo(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+
+	body, err := srv.obsRelayConfig(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["serverAddress"] == "" || body["streamKey"] == "" || body["rtmpURL"] == "" {
+		t.Fatalf("missing OBS relay connection info: %#v", body)
+	}
+	if !strings.HasPrefix(body["rtmpURL"].(string), body["serverAddress"].(string)+"/") {
+		t.Fatalf("rtmpURL = %q, serverAddress = %q", body["rtmpURL"], body["serverAddress"])
+	}
+	if enabled, _ := body["videoPlayerEnabled"].(bool); !enabled {
+		t.Fatalf("videoPlayerEnabled = %#v, want true", body["videoPlayerEnabled"])
+	}
+	appSettings, err := settings.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !appSettings.VideoPlayerEnabled {
+		t.Fatal("expected relay config request to enable video player support")
+	}
+}
+
+func TestPairingIssuesRelayDeviceAndSignedRelayAuthWorks(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+
+	requestBody := `{"clientName":"BrowserRelayStreamer","deviceName":"Relay PC"}`
+	req := httptest.NewRequest(http.MethodPost, "http://192.168.1.20:8080/api/pairing/request", strings.NewReader(requestBody))
+	req.RemoteAddr = "192.168.1.50:50000"
+	rr := httptest.NewRecorder()
+	srv.handlePairingRequest(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("request status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var pairingResp struct {
+		PairingID string `json:"pairingId"`
+		Nonce     string `json:"nonce"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &pairingResp); err != nil {
+		t.Fatal(err)
+	}
+	srv.mu.Lock()
+	pairing := srv.pairings[pairingResp.PairingID]
+	srv.mu.Unlock()
+	if pairing.PIN == "" {
+		t.Fatal("expected pairing PIN to be stored for UI display")
+	}
+	proof := hmacSHA256Hex(pairing.PIN, strings.Join([]string{pairing.ID, pairing.Nonce, "BrowserRelayStreamer", "Relay PC"}, "\n"))
+	confirmBody := fmt.Sprintf(`{"pairingId":%q,"clientName":"BrowserRelayStreamer","deviceName":"Relay PC","proof":%q}`, pairingResp.PairingID, proof)
+	req = httptest.NewRequest(http.MethodPost, "http://192.168.1.20:8080/api/pairing/confirm", strings.NewReader(confirmBody))
+	req.RemoteAddr = "192.168.1.50:50000"
+	rr = httptest.NewRecorder()
+	srv.handlePairingConfirm(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("confirm status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var device struct {
+		ClientID     string `json:"clientId"`
+		ClientSecret string `json:"clientSecret"`
+		Scope        string `json:"scope"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &device); err != nil {
+		t.Fatal(err)
+	}
+	if device.ClientID == "" || device.ClientSecret == "" || device.Scope != relayScope {
+		t.Fatalf("bad device response: %#v", device)
+	}
+
+	authReq := signedRelayRequest(t, device.ClientID, device.ClientSecret, "nonce-1")
+	if !srv.relayDeviceAllowed(authReq) {
+		t.Fatal("expected signed relay request to authenticate")
+	}
+	replayed := signedRelayRequest(t, device.ClientID, device.ClientSecret, "nonce-1")
+	if srv.relayDeviceAllowed(replayed) {
+		t.Fatal("expected nonce replay to be rejected")
+	}
+}
+
 func TestVideoURLDownloadError(t *testing.T) {
 	msg := videoURLDownloadError(fmt.Errorf("not found"))
 	if !strings.Contains(msg, "yt-dlp") {
 		t.Fatalf("message = %q, want yt-dlp guidance", msg)
 	}
+}
+
+func signedRelayRequest(t *testing.T, clientID, clientSecret, nonce string) *http.Request {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "http://192.168.1.20:8080/api/obs/relay-config", nil)
+	req.RemoteAddr = "192.168.1.50:50000"
+	timestamp := time.Now().UTC().Format(time.RFC3339)
+	bodyHash := sha256.Sum256(nil)
+	message := strings.Join([]string{
+		req.Method,
+		req.URL.RequestURI(),
+		timestamp,
+		nonce,
+		hex.EncodeToString(bodyHash[:]),
+	}, "\n")
+	req.Header.Set("X-ImagePad-Client-Id", clientID)
+	req.Header.Set("X-ImagePad-Timestamp", timestamp)
+	req.Header.Set("X-ImagePad-Nonce", nonce)
+	req.Header.Set("X-ImagePad-Signature", hmacSHA256Base64URL(clientSecret, message))
+	return req
 }
 
 func TestAutoQualityPrefersUploadBandwidth(t *testing.T) {

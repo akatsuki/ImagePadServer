@@ -288,6 +288,9 @@ go build -trimpath -ldflags "-H=windowsgui" -o dist\1.2.2\dev\dev1\win\imagepads
 `scripts/build-release.sh` writes builds under `dist/<version>/release/<platform>/` for stable versions and `dist/<version>/dev/<devN>/<platform>/` for dev versions.
 For example, `v1.2.2` goes to `dist/1.2.2/release/win/`, while `v1.2.2-dev1` goes to `dist/1.2.2/dev/dev1/win/`.
 
+GitHub Actions also publishes a GitHub Release automatically when you push a `v*` tag.
+Dev tags such as `v1.2.2-dev1` are published as `dev-release` prereleases.
+
 ## バージョン
 
 - Version: `v1.1.1`

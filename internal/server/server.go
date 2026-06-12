@@ -54,6 +54,8 @@ type Server struct {
 	tunnelReconnect chan<- struct{}
 	adminToken      string
 	obs             *obsrtmp.Manager
+	pairings        map[string]pairingRequest
+	relayNonces     map[string]time.Time
 }
 
 func New(cfg config.Config, store *library.Store, imageURLBase string) *Server {
@@ -80,6 +82,8 @@ func New(cfg config.Config, store *library.Store, imageURLBase string) *Server {
 		previewURLBase: lanURL,
 		tunnelStatus:   map[string]interface{}{"ok": false, "message": "Cloudflare Tunnel starting..."},
 		adminToken:     adminToken,
+		pairings:       make(map[string]pairingRequest),
+		relayNonces:    make(map[string]time.Time),
 	}
 	srv.obs = obsrtmp.New(store.Dir(), advertisedHost, 1935, obsStreamKey, srv.videoQualityPreset, srv.obsLatencyProfile, obsrtmp.Callbacks{
 		OnStart: srv.handleOBSStreamStart,
@@ -97,6 +101,9 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/upload-url", s.admin(s.handleUploadURL))
 	mux.HandleFunc("/api/upload-url-queue", s.admin(s.handleUploadURLQueue))
 	mux.HandleFunc("/api/clear", s.admin(s.handleClear))
+	mux.HandleFunc("/api/pairing/request", s.handlePairingRequest)
+	mux.HandleFunc("/api/pairing/confirm", s.handlePairingConfirm)
+	mux.HandleFunc("/api/obs/relay-config", s.handleOBSRelayConfig)
 	mux.HandleFunc("/api/obs/start", s.admin(s.handleOBSStart))
 	mux.HandleFunc("/api/obs/end", s.admin(s.handleOBSEnd))
 	mux.HandleFunc("/api/obs/key", s.admin(s.handleOBSKey))
@@ -733,6 +740,56 @@ func (s *Server) handleOBSStart(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.state(r))
 }
 
+func (s *Server) handleOBSRelayConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.adminAllowed(r) && !s.relayDeviceAllowed(r) {
+		http.Error(w, "OBS relay config requires admin access or a paired relay device", http.StatusForbidden)
+		return
+	}
+	s.rememberAdminToken(w, r)
+	if s.obs == nil {
+		http.Error(w, "OBS receiver is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	relayConfig, err := s.obsRelayConfig(true)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, relayConfig)
+}
+
+func (s *Server) obsRelayConfig(startReceiver bool) (map[string]interface{}, error) {
+	if s.obs == nil {
+		return nil, fmt.Errorf("OBS receiver is unavailable")
+	}
+	if err := settings.Update(func(appSettings *settings.Settings) error {
+		appSettings.VideoPlayerEnabled = true
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("failed to enable video player support")
+	}
+	if startReceiver {
+		s.obs.Start()
+		s.obs.StartPublishing()
+	}
+	status := s.obs.Status()
+	serverAddress := strings.TrimRight(status.ServerAddress, "/")
+	return map[string]interface{}{
+		"ok":                 true,
+		"serverAddress":      status.ServerAddress,
+		"streamKey":          status.StreamKey,
+		"rtmpURL":            serverAddress + "/" + url.PathEscape(status.StreamKey),
+		"videoPlayerEnabled": true,
+		"listening":          status.Listening,
+		"publishing":         status.Publishing,
+		"latency":            status.Latency,
+	}, nil
+}
+
 func (s *Server) handleOBSKey(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -851,7 +908,7 @@ func (s *Server) handleHistorySelect(w http.ResponseWriter, r *http.Request) {
 	}
 	current := s.store.Current()
 	if current != nil && current.Converted {
-		writeJSON(w, s.state(r))
+		writeJSON(w, s.withClipboardResult(s.state(r)))
 		return
 	}
 	if path, current, ok := s.store.CurrentPath(); ok && s.videoPlayerEnabled() {
@@ -861,7 +918,7 @@ func (s *Server) handleHistorySelect(w http.ResponseWriter, r *http.Request) {
 			s.enqueueStillConversion(path, current.ID, current.OriginalName)
 		}
 	}
-	writeJSON(w, s.state(r))
+	writeJSON(w, s.withClipboardResult(s.state(r)))
 }
 
 func (s *Server) enqueueHistoryItem(id string) error {
@@ -1487,6 +1544,7 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 		"videoPlayer":     videoPlayer,
 		"videoQuality":    s.videoQualityState(),
 		"obs":             s.obsState(),
+		"pairing":         s.pairingState(),
 		"videoQueue":      s.videoQueueState(),
 		"current":         s.store.Current(),
 		"history":         s.historyState(),
@@ -1520,6 +1578,7 @@ func (s *Server) stateWithMedia(r *http.Request, upnpResult upnp.Result, tunnelS
 		"videoPlayer":     videoPlayer,
 		"videoQuality":    s.videoQualityState(),
 		"obs":             s.obsState(),
+		"pairing":         s.pairingState(),
 		"videoQueue":      s.videoQueueState(),
 		"current":         s.store.Current(),
 		"history":         s.historyState(),

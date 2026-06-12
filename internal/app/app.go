@@ -18,6 +18,7 @@ import (
 	"imagepadserver/internal/appwindow"
 	"imagepadserver/internal/browser"
 	"imagepadserver/internal/config"
+	"imagepadserver/internal/discovery"
 	"imagepadserver/internal/library"
 	"imagepadserver/internal/network"
 	"imagepadserver/internal/server"
@@ -104,6 +105,11 @@ func run(useNativeWindow bool) error {
 	publicURL := cfg.URLForHost(advertisedHost)
 
 	log.Printf("%s %s listening on %s", about.AppName, about.Version, publicURL)
+	discoveryCtx, stopDiscovery := context.WithCancel(context.Background())
+	defer stopDiscovery()
+	if err := discovery.StartResponder(discoveryCtx, discovery.DefaultInfo(about.AppName, about.Version, publicURL)); err != nil {
+		log.Printf("LAN discovery beacon unavailable: %v", err)
+	}
 
 	// SteamVR integration is intentionally frozen. Keep the implementation
 	// under internal/steamvr as an archived asset, but do not register or start it.

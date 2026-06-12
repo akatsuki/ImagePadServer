@@ -11,15 +11,26 @@ import (
 )
 
 type Settings struct {
-	SteamVRExplicitlyDisabled bool   `json:"steamvrExplicitlyDisabled"`
-	VideoPlayerEnabled        bool   `json:"videoPlayerEnabled"`
-	VideoQualityMode          string `json:"videoQualityMode,omitempty"`
-	NetworkMbps               int    `json:"networkMbps,omitempty"`
-	NetworkUploadMbps         int    `json:"networkUploadMbps,omitempty"`
-	AdminToken                string `json:"adminToken,omitempty"`
-	OBSStreamKey              string `json:"obsStreamKey,omitempty"`
-	OBSLatencyMode            string `json:"obsLatencyMode,omitempty"`
-	OBSDVREnabled             bool   `json:"obsDVREnabled,omitempty"`
+	SteamVRExplicitlyDisabled bool          `json:"steamvrExplicitlyDisabled"`
+	VideoPlayerEnabled        bool          `json:"videoPlayerEnabled"`
+	VideoQualityMode          string        `json:"videoQualityMode,omitempty"`
+	NetworkMbps               int           `json:"networkMbps,omitempty"`
+	NetworkUploadMbps         int           `json:"networkUploadMbps,omitempty"`
+	AdminToken                string        `json:"adminToken,omitempty"`
+	OBSStreamKey              string        `json:"obsStreamKey,omitempty"`
+	OBSLatencyMode            string        `json:"obsLatencyMode,omitempty"`
+	OBSDVREnabled             bool          `json:"obsDVREnabled,omitempty"`
+	RelayDevices              []RelayDevice `json:"relayDevices,omitempty"`
+}
+
+type RelayDevice struct {
+	ClientID     string `json:"clientId"`
+	ClientSecret string `json:"clientSecret"`
+	DeviceName   string `json:"deviceName"`
+	Scope        string `json:"scope"`
+	CreatedAt    string `json:"createdAt"`
+	LastSeenAt   string `json:"lastSeenAt,omitempty"`
+	RevokedAt    string `json:"revokedAt,omitempty"`
 }
 
 var fileMu sync.Mutex

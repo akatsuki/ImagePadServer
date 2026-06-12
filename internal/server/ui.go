@@ -640,6 +640,43 @@ const indexHTML = `<!doctype html>
       font-weight: 700;
       font-size: 13px;
     }
+    .pairing-panel {
+      display: none;
+      position: fixed;
+      inset: auto 18px 18px auto;
+      z-index: 20;
+      width: min(360px, calc(100vw - 36px));
+      border: 2px solid #101820;
+      border-radius: 8px;
+      background: #ffffff;
+      box-shadow: 0 14px 40px rgba(0, 0, 0, .22);
+      padding: 14px;
+    }
+    .pairing-panel.active {
+      display: block;
+    }
+    .pairing-title {
+      margin: 0 0 6px;
+      color: #17202a;
+      font-size: 14px;
+      font-weight: 800;
+    }
+    .pairing-pin {
+      display: block;
+      margin: 4px 0 8px;
+      color: #111827;
+      font-size: 64px;
+      line-height: 1;
+      font-weight: 900;
+      letter-spacing: 0;
+      font-variant-numeric: tabular-nums;
+    }
+    .pairing-detail {
+      margin: 0;
+      color: #405564;
+      font-size: 12px;
+      line-height: 1.45;
+    }
     .mobile-progress {
       display: none;
       gap: 7px;
@@ -943,6 +980,11 @@ const indexHTML = `<!doctype html>
       <span id="dragDropOverlayHint">画像またはRAWファイルを選択します</span>
     </div>
   </div>
+  <div class="pairing-panel" id="pairingPanel" role="status" aria-live="polite">
+    <p class="pairing-title">BrowserRelayStreamer pairing code</p>
+    <strong class="pairing-pin" id="pairingPin">0000</strong>
+    <p class="pairing-detail" id="pairingDetail">Enter this code on the other computer.</p>
+  </div>
   <script>
     const state = {
       imageURL: {{printf "%q" .imageURL}},
@@ -959,6 +1001,7 @@ const indexHTML = `<!doctype html>
       videoPlayerEnabled: false,
       videoQuality: null,
       obs: null,
+      pairing: null,
       currentID: "",
       obsPreviewID: "",
       previewMode: "empty"
@@ -1001,6 +1044,9 @@ const indexHTML = `<!doctype html>
     const obsLatencyMode = document.getElementById('obsLatencyMode');
     const obsLatencyStatus = document.getElementById('obsLatencyStatus');
     const obsDVRToggle = document.getElementById('obsDVRToggle');
+    const pairingPanel = document.getElementById('pairingPanel');
+    const pairingPin = document.getElementById('pairingPin');
+    const pairingDetail = document.getElementById('pairingDetail');
     let uploadMode = 'file';
     let videoPlayerPending = false;
     let refreshTimer = 0;
@@ -1088,6 +1134,7 @@ const indexHTML = `<!doctype html>
       state.videoQueue = data.videoQueue || [];
       state.videoQuality = data.videoQuality;
       state.obs = data.obs || null;
+      state.pairing = data.pairing || null;
       state.videoPlayerEnabled = !!(data.videoPlayer && data.videoPlayer.enabled);
       document.getElementById('phoneURL').textContent = data.phoneURL;
       document.getElementById('phoneURLMobile').textContent = data.phoneURL;
@@ -1098,6 +1145,7 @@ const indexHTML = `<!doctype html>
       applyQuality(data.videoQuality);
       applyVideoPlayer(data.videoPlayer);
       applyOBS(data.obs);
+      applyPairing(data.pairing);
       applyOBSProtection();
       document.getElementById('upnpText').textContent = publicText(data.tunnel, data.upnp);
       document.getElementById('hasImage').textContent = currentText(data.current);
@@ -1120,6 +1168,18 @@ const indexHTML = `<!doctype html>
       }
       state.previewMode = 'obs-restarting';
       state.obsPreviewID = "";
+    }
+
+    function applyPairing(pairing) {
+      if (!pairingPanel || !pairingPin || !pairingDetail) return;
+      if (!pairing || !pairing.active || !pairing.pin) {
+        pairingPanel.classList.remove('active');
+        return;
+      }
+      pairingPin.textContent = pairing.pin;
+      const name = pairing.deviceName || pairing.clientName || 'BrowserRelayStreamer';
+      pairingDetail.textContent = name + ' is requesting access. Enter this code on that computer.';
+      pairingPanel.classList.add('active');
     }
 
     function renderPreview(data, nextCurrentID) {
@@ -1877,7 +1937,7 @@ const indexHTML = `<!doctype html>
         const data = await res.json();
         applyState(data);
         announceLocalChange();
-        toast.textContent = '履歴から復元しました';
+        toast.textContent = data.clipboardCopied ? '履歴から公開し、URLをPCにコピーしました' : '履歴から復元しました';
       } catch (error) {
         toast.textContent = error.message || '履歴の復元に失敗しました';
       }
