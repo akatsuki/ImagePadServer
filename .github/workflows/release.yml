@@ -1,0 +1,58 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    name: Build and Release
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Verify tag matches version
+        run: |
+          version="$(sed -n 's/.*Version[[:space:]]*=[[:space:]]*"\(v[^"]*\)".*/\1/p' internal/about/about.go | head -n 1)"
+          if [ "$version" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME does not match internal/about version $version" >&2
+            exit 1
+          fi
+      - run: go test ./...
+      - run: sh ./scripts/build-release.sh
+      - name: Publish dev GitHub Release
+        if: contains(github.ref_name, '-dev')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: dev-release ${{ github.ref_name }}
+          generate_release_notes: true
+          prerelease: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/**/win/*.exe
+            dist/**/linux/imagepadserver-*
+            dist/**/mac/imagepadserver-*-macos-universal.zip
+      - name: Publish stable GitHub Release
+        if: ${{ !contains(github.ref_name, '-dev') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          prerelease: false
+          fail_on_unmatched_files: true
+          files: |
+            dist/**/win/*.exe
+            dist/**/linux/imagepadserver-*
+            dist/**/mac/imagepadserver-*-macos-universal.zip
