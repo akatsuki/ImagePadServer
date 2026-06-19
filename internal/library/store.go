@@ -27,6 +27,9 @@ type CurrentImage struct {
 	Thumbnail    string    `json:"thumbnail,omitempty"`
 	Converted    bool      `json:"converted,omitempty"`
 	UpdatedAt    time.Time `json:"updatedAt"`
+	Title        string    `json:"title,omitempty"`
+	Artist       string    `json:"artist,omitempty"`
+	Album        string    `json:"album,omitempty"`
 }
 
 type HistoryItem struct {

@@ -323,7 +323,13 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if media.Kind == "soundcloud" {
-			state, err := s.processSoundCloudFileAndPublish(r, media)
+			acquired := video.AcquiredAudio{
+				SourcePath:            media.SourcePath,
+				SourceName:            media.Name,
+				Kind:                  video.SourceSoundCloud,
+				SoundCloudArtworkPath: media.ArtworkPath,
+			}
+			state, err := s.processAudioFileAndPublish(r, acquired)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
@@ -389,7 +395,13 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if media.Kind == "soundcloud" {
-			state, err := s.processSoundCloudFileAndQueue(r, media)
+			acquired := video.AcquiredAudio{
+				SourcePath:            media.SourcePath,
+				SourceName:            media.Name,
+				Kind:                  video.SourceSoundCloud,
+				SoundCloudArtworkPath: media.ArtworkPath,
+			}
+			state, err := s.processAudioFileAndQueue(r, acquired)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
@@ -938,12 +950,24 @@ func (s *Server) handleHistorySelect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if path, current, ok := s.store.CurrentPath(); ok && s.videoPlayerEnabled() {
-		if current.SourceKind == "soundcloud" {
+		if current.SourceKind == "soundcloud" || current.SourceKind == "local_audio" || current.SourceKind == "remote_audio" {
 			artworkPath := ""
 			if current.Thumbnail != "" {
 				artworkPath = filepath.Join(s.store.Dir(), current.Thumbnail)
 			}
-			s.enqueueSoundCloudConversion(path, artworkPath, current.ID, current.OriginalName)
+			kind := video.SourceKind(current.SourceKind)
+			meta := video.AudioMetadata{
+				Title:  current.Title,
+				Artist: current.Artist,
+				Album:  current.Album,
+			}
+			input := video.AudioRenderInput{
+				SourcePath:  path,
+				Kind:        kind,
+				Metadata:    meta,
+				ArtworkPath: artworkPath,
+			}
+			s.enqueueAudioConversion(input, current.ID, current.OriginalName)
 		} else if current.Kind == "video" {
 			s.enqueueUploadedConversion(path, current.ID, current.OriginalName)
 		} else {
@@ -961,12 +985,24 @@ func (s *Server) enqueueHistoryItem(id string) error {
 	if item.Converted {
 		return s.store.SetCurrentFromHistory(id)
 	}
-	if item.SourceKind == "soundcloud" {
+	if item.SourceKind == "soundcloud" || item.SourceKind == "local_audio" || item.SourceKind == "remote_audio" {
 		artworkPath := ""
-		if path, _, ok := s.store.HistoryThumbnailPath(id); ok {
-			artworkPath = path
+		if thumbPath, _, ok := s.store.HistoryThumbnailPath(id); ok {
+			artworkPath = thumbPath
 		}
-		s.enqueueSoundCloudConversion(path, artworkPath, item.ID, item.OriginalName)
+		kind := video.SourceKind(item.SourceKind)
+		meta := video.AudioMetadata{
+			Title:  item.Title,
+			Artist: item.Artist,
+			Album:  item.Album,
+		}
+		input := video.AudioRenderInput{
+			SourcePath:  path,
+			Kind:        kind,
+			Metadata:    meta,
+			ArtworkPath: artworkPath,
+		}
+		s.enqueueAudioConversion(input, item.ID, item.OriginalName)
 		return nil
 	}
 	if item.Kind == "video" {
@@ -1059,7 +1095,12 @@ func soundCloudCurrentInfo(media video.DownloadedMedia, publicName, thumbnail st
 }
 
 func (s *Server) enqueueSoundCloudConversion(audioPath, artworkPath, id, title string) {
-	jobID := video.EnqueueSoundCloudForID(audioPath, artworkPath, s.store.Dir(), id, title, s.videoQualityPreset(), 0)
+	input := video.AudioRenderInput{
+		SourcePath:  audioPath,
+		Kind:        video.SourceSoundCloud,
+		ArtworkPath: artworkPath,
+	}
+	jobID := video.EnqueueAudioForID(input, s.store.Dir(), id, title, s.videoQualityPreset())
 	s.watchConversion(jobID, id)
 }
 

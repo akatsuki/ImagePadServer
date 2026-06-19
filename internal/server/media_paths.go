@@ -48,6 +48,12 @@ func videoContentType(name string) string {
 	}
 }
 
+// audioContentType returns the MIME type for an audio file based on its
+// extension. It is a generic version of soundCloudContentType.
+func audioContentType(name string) string {
+	return soundCloudContentType(name)
+}
+
 func soundCloudContentType(name string) string {
 	switch strings.ToLower(filepath.Ext(name)) {
 	case ".mp3":

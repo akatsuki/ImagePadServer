@@ -95,3 +95,81 @@ func TestSetCurrentFromHistoryRestoresConvertedFiles(t *testing.T) {
 		t.Fatalf("expected segment restored: %v", err)
 	}
 }
+
+func TestCurrentImageAudioMetadata(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	info := CurrentImage{
+		FileName:    "test.mp3",
+		PublicName:  "test.mp3",
+		ContentType: "audio/mpeg",
+		SourceKind:  "soundcloud",
+		Title:       "Test Title",
+		Artist:      "Test Artist",
+		Album:       "Test Album",
+	}
+
+	if err := store.SetCurrentInfo(info); err != nil {
+		t.Fatal(err)
+	}
+
+	current := store.Current()
+	if current.SourceKind != "soundcloud" {
+		t.Fatalf("SourceKind = %q, want soundcloud", current.SourceKind)
+	}
+	if current.Title != "Test Title" {
+		t.Fatalf("Title = %q, want Test Title", current.Title)
+	}
+	if current.Artist != "Test Artist" {
+		t.Fatalf("Artist = %q, want Test Artist", current.Artist)
+	}
+	if current.Album != "Test Album" {
+		t.Fatalf("Album = %q, want Test Album", current.Album)
+	}
+}
+
+func TestHistoryPreservesAudioMetadata(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	source := filepath.Join(dir, "source.mp3")
+	if err := os.WriteFile(source, []byte("audio data"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	item, err := store.AddHistory(source, CurrentImage{
+		FileName:    "source.mp3",
+		PublicName:  "source.mp3",
+		ContentType: "audio/mpeg",
+		SourceKind:  "soundcloud",
+		Title:       "History Title",
+		Artist:      "History Artist",
+		Album:       "History Album",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.Title != "History Title" {
+		t.Fatalf("Title = %q, want History Title", item.Title)
+	}
+	if item.Artist != "History Artist" {
+		t.Fatalf("Artist = %q, want History Artist", item.Artist)
+	}
+	if item.Album != "History Album" {
+		t.Fatalf("Album = %q, want History Album", item.Album)
+	}
+
+	history := store.History()
+	if len(history) != 1 {
+		t.Fatalf("expected 1 history item, got %d", len(history))
+	}
+	if history[0].Title != "History Title" {
+		t.Fatalf("history Title = %q, want History Title", history[0].Title)
+	}
+}
