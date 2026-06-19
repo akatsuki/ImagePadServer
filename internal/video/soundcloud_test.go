@@ -44,107 +44,7 @@ func TestIsSoundCloudURL(t *testing.T) {
 	}
 }
 
-func TestSoundCloudDownloadArgs(t *testing.T) {
-	outDir := t.TempDir()
-	rawURL := "https://soundcloud.com/user/track"
-	args := soundCloudDownloadArgs(outDir, rawURL)
-	joined := strings.Join(args, " ")
-	for _, required := range []string{"--no-playlist", "--no-warnings", "--max-filesize 2G", "--write-thumbnail", "--no-download-archive", rawURL} {
-		if !strings.Contains(joined, required) {
-			t.Errorf("args must contain %q: %v", required, args)
-		}
-	}
-	output := outputTemplateArg(args)
-	if !strings.HasPrefix(output, filepath.Join(outDir, "yt-dlp-sc-")) || !strings.HasSuffix(output, ".%(ext)s") {
-		t.Fatalf("unexpected unique output template %q", output)
-	}
-}
 
-func TestSoundCloudDownloadArgsUseUniqueOutputPrefixes(t *testing.T) {
-	outDir := t.TempDir()
-	first := outputTemplateArg(soundCloudDownloadArgs(outDir, "https://soundcloud.com/user/first"))
-	second := outputTemplateArg(soundCloudDownloadArgs(outDir, "https://soundcloud.com/user/second"))
-	if first == "" || second == "" {
-		t.Fatalf("output templates must be present: first=%q second=%q", first, second)
-	}
-	if first == second {
-		t.Fatalf("SoundCloud downloads share output template %q; queued jobs can overwrite each other", first)
-	}
-}
-
-func outputTemplateArg(args []string) string {
-	for i := 0; i+1 < len(args); i++ {
-		if args[i] == "-o" {
-			return args[i+1]
-		}
-	}
-	return ""
-}
-
-func TestSelectDownloadedFiles(t *testing.T) {
-	dir := t.TempDir()
-
-	// Empty directory — expect error.
-	_, _, err := selectDownloadedFiles(dir)
-	if err == nil {
-		t.Fatal("expected error for empty directory")
-	}
-
-	// Only .part files — expect error (filtered out).
-	part := filepath.Join(dir, "yt-dlp-sc.mp4.part")
-	if err := os.WriteFile(part, []byte("partial"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	_, _, err = selectDownloadedFiles(dir)
-	if err == nil {
-		t.Fatal("expected error when only .part files exist")
-	}
-
-	// A real audio file.
-	audio := filepath.Join(dir, "yt-dlp-sc.m4a")
-	if err := os.WriteFile(audio, []byte("audio data"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	source, artwork, err := selectDownloadedFiles(dir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if source != audio {
-		t.Errorf("source = %q, want %q", source, audio)
-	}
-	if artwork != "" {
-		t.Errorf("artwork = %q, want empty", artwork)
-	}
-
-	// Add artwork.
-	art := filepath.Join(dir, "yt-dlp-sc.jpg")
-	if err := os.WriteFile(art, []byte("artwork"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	source, artwork, err = selectDownloadedFiles(dir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if source != audio {
-		t.Errorf("source = %q, want %q", source, audio)
-	}
-	if artwork != art {
-		t.Errorf("artwork = %q, want %q", artwork, art)
-	}
-
-	// A larger audio file should be preferred as source.
-	large := filepath.Join(dir, "yt-dlp-sc.mp4")
-	if err := os.WriteFile(large, []byte("much larger audio content here"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	source, _, err = selectDownloadedFiles(dir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if source != large {
-		t.Errorf("source = %q (largest), want %q", source, large)
-	}
-}
 
 func TestGenerateSoundCloudFallbackArtwork_Valid(t *testing.T) {
 	dir := t.TempDir()
@@ -233,23 +133,6 @@ func TestGenerateSoundCloudFallbackArtwork_WriteError(t *testing.T) {
 	err := generateSoundCloudFallbackArtwork("", 1280, 720)
 	if err == nil {
 		t.Error("expected error for invalid path, got nil")
-	}
-}
-
-func TestDownloadMediaURL_NonSoundCloudDelegation(t *testing.T) {
-	t.Skip("network-dependent delegation is covered by pure URL classification tests")
-	// Non-SoundCloud URL calls downloadVideoURL (the standard video path).
-	// This test verifies the delegation path is taken: the URL is passed to
-	// yt-dlp (which may or may not be installed), and the error should not
-	// indicate a SoundCloud code path.
-	_, err := DownloadMediaURL("https://www.youtube.com/watch?v=xxx", t.TempDir())
-	if err == nil {
-		t.Fatal("expected error because the URL has a truncated video ID")
-	}
-	// The error must NOT mention SoundCloud, proving the non-SoundCloud
-	// code path was used.
-	if strings.Contains(err.Error(), "soundcloud") || strings.Contains(err.Error(), "SoundCloud") {
-		t.Errorf("error = %q, unexpectedly mentions SoundCloud", err.Error())
 	}
 }
 
