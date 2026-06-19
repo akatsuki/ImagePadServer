@@ -29,16 +29,62 @@ func isAudioUpload(name, contentType string) bool {
 	}
 }
 
+// shouldProbeUploadedMedia reports whether an enabled media upload is not a
+// known image/RAW input and therefore must be classified from ffprobe stream
+// data. This deliberately avoids an audio extension allowlist.
+func shouldProbeUploadedMedia(name, contentType string) bool {
+	if isImageOrRAWName(name) {
+		return false
+	}
+	mediaType, _, _ := mime.ParseMediaType(contentType)
+	return !strings.HasPrefix(strings.ToLower(mediaType), "image/")
+}
+
 // safeAudioExt returns the file extension for name when it is a recognised
-// audio extension; otherwise it returns ".wav" as a safe default.
+// audio extension; otherwise it returns ".bin" and lets ffprobe inspect the
+// bytes rather than lying about the container.
 func safeAudioExt(name string) string {
 	ext := strings.ToLower(filepath.Ext(name))
 	switch ext {
 	case ".mp3", ".wav", ".flac", ".ogg", ".opus", ".m4a", ".aac", ".wma":
 		return ext
 	default:
-		return ".wav"
+		return ".bin"
 	}
+}
+
+func soundCloudAcquiredFromProbe(media video.DownloadedMedia, probe video.MediaProbe, candidates []video.ArtworkCandidate) video.AcquiredAudio {
+	return video.AcquiredAudio{
+		SourcePath:                media.SourcePath,
+		SourceName:                media.Name,
+		Kind:                      video.SourceSoundCloud,
+		Probe:                     probe,
+		EmbeddedMetadata:          extractEmbeddedMetadata(probe),
+		SoundCloudMetadata:        media.Metadata,
+		EmbeddedArtwork:           candidates,
+		SoundCloudArtworkPath:     media.ArtworkPath,
+		SoundCloudInformationPath: media.InformationPath,
+	}
+}
+
+func (s *Server) acquireDownloadedSoundCloud(ctx context.Context, media video.DownloadedMedia) (video.AcquiredAudio, error) {
+	ffprobe, err := findFFprobe()
+	if err != nil {
+		return video.AcquiredAudio{}, err
+	}
+	probe, err := video.ProbeMedia(ctx, ffprobe, media.SourcePath)
+	if err != nil {
+		return video.AcquiredAudio{}, fmt.Errorf("probe SoundCloud audio: %w", err)
+	}
+	if video.ClassifyMediaProbe(probe) != video.MediaAudio {
+		return video.AcquiredAudio{}, fmt.Errorf("SoundCloud download is not playable audio")
+	}
+	ffmpeg, err := video.EnsureFFmpeg()
+	if err != nil {
+		return video.AcquiredAudio{}, err
+	}
+	candidates, _ := video.ExtractEmbeddedArtwork(ctx, ffmpeg, media.SourcePath, s.store.Dir(), probe)
+	return soundCloudAcquiredFromProbe(media, probe, candidates), nil
 }
 
 // ffprobeExeName returns the platform-specific ffprobe executable name.

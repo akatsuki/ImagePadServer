@@ -166,3 +166,20 @@ func TestLocalAudioNeverUsesSoundCloudMetadata(t *testing.T) {
 		t.Fatalf("Album = %q, want empty for local audio", current.Album)
 	}
 }
+
+func TestShouldProbeUploadedMediaWithoutAudioExtension(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		contentType string
+		want        bool
+	}{
+		{name: "track.ape", contentType: "application/octet-stream", want: true},
+		{name: "track", contentType: "application/octet-stream", want: true},
+		{name: "cover.png", contentType: "image/png", want: false},
+		{name: "camera.nef", contentType: "application/octet-stream", want: false},
+	} {
+		if got := shouldProbeUploadedMedia(tc.name, tc.contentType); got != tc.want {
+			t.Errorf("shouldProbeUploadedMedia(%q, %q) = %v, want %v", tc.name, tc.contentType, got, tc.want)
+		}
+	}
+}

@@ -17,17 +17,38 @@ import (
 )
 
 func AudioVisualizerFFmpegArgs(audioPath, assPath, fontDir, id string, preset QualityPreset) []string {
+	return audioVisualizerFFmpegArgs(audioPath, assPath, fontDir, id, preset, nil)
+}
+
+func audioVisualizerFFmpegArgs(audioPath, assPath, fontDir, id string, preset QualityPreset, mode *ForegroundMode) []string {
+	height := preset.Height
+	if height <= 0 {
+		height = 720
+	}
+	width := height * 16 / 9
+	if width%2 != 0 {
+		width++
+	}
+	waveW := int(math.Round(752 * float64(width) / 1280))
+	waveH := int(math.Round(168 * float64(height) / 720))
+	waveX := int(math.Round(432 * float64(width) / 1280))
+	waveY := int(math.Round(320 * float64(height) / 720))
+	waveColor := "#FFFFFF@0.55"
+	if mode != nil {
+		waveColor = fmt.Sprintf("#%02X%02X%02X@0.55", mode.Color.R, mode.Color.G, mode.Color.B)
+	}
 	return []string{
 		"-v", "error",
 		"-f", "rawvideo",
 		"-pix_fmt", "rgba",
-		"-s", fmt.Sprintf("%dx%d", 1280, 720),
+		"-s", fmt.Sprintf("%dx%d", width, height),
 		"-r", "30",
 		"-i", "pipe:0",
 		"-i", audioPath,
 		"-filter_complex",
 		fmt.Sprintf(
-			"[1:a]showwaves=s=752x168:rate=30:mode=line:colors=white@0.55[wave];[0:v]format=yuv420p[vis];[vis][wave]overlay=432:320[vid];[vid]ass=%s:fontsdir=%s[out]",
+			"[1:a]showwaves=s=%dx%d:rate=30:mode=line:colors=%s[wave];[0:v]format=yuv420p[vis];[vis][wave]overlay=%d:%d[vid];[vid]ass=filename='%s':fontsdir='%s'[out]",
+			waveW, waveH, waveColor, waveX, waveY,
 			escapeFilterPath(assPath),
 			escapeFilterPath(fontDir),
 		),
@@ -44,9 +65,10 @@ func AudioVisualizerFFmpegArgs(audioPath, assPath, fontDir, id string, preset Qu
 		"-f", "hls",
 		"-hls_time", "2",
 		"-hls_list_size", "0",
-		"-hls_segment_filename", "%s/seg-%%05d.ts",
-		"-hls_flags", "event+omit_endlist",
-		"%s/playlist.m3u8",
+		"-hls_playlist_type", "event",
+		"-hls_segment_filename", "%s/" + segmentPattern(id),
+		"-hls_flags", "independent_segments",
+		"%s/" + playlistName(id),
 	}
 }
 
@@ -54,6 +76,18 @@ func escapeFilterPath(p string) string {
 	p = strings.ReplaceAll(p, "\\", "/")
 	p = strings.ReplaceAll(p, ":", "\\:")
 	return p
+}
+
+func formatVisualizerOutputArgs(args []string, outDir string) []string {
+	formatted := append([]string(nil), args...)
+	prefix := filepath.ToSlash(outDir) + "/"
+	for i, arg := range formatted {
+		if strings.Contains(arg, "%s/") {
+			formatted[i] = strings.Replace(arg, "%s/", prefix, 1)
+			formatted[i] = strings.ReplaceAll(formatted[i], "%%", "%")
+		}
+	}
+	return formatted
 }
 
 // WriteVisualizerRGBAFrames renders each analysis frame as a raw RGBA image
@@ -78,10 +112,6 @@ func WriteVisualizerRGBAFrames(ctx context.Context, dst io.Writer, input AudioRe
 	for fi, frame := range input.Analysis.Frames {
 		// Copy base image (background + artwork).
 		draw.Draw(canvas, canvas.Bounds(), base, image.Point{}, draw.Src)
-
-		// Readability overlay — semi-transparent fill over the entire frame.
-		overlayRect := image.Rect(0, 0, frameW, frameH)
-		draw.Draw(canvas, overlayRect, &image.Uniform{mode.Overlay}, image.Point{}, draw.Over)
 
 		// Spectrum bars.
 		drawSpectrum(canvas, frame.Spectrum24, mode, layout)
@@ -194,6 +224,7 @@ func drawLoudness(canvas *image.RGBA, envelope [1000]float64, mode ForegroundMod
 	graphBottom := layout.Loudness.Y + layout.Loudness.H
 	graphH := float64(layout.Loudness.H)
 
+	lineWidth := max(1, int(math.Round(2*float64(canvas.Bounds().Dx())/1280)))
 	for i := 0; i < 1000 && i < len(envelope); i++ {
 		val := envelope[i]
 		if val < 0 {
@@ -211,10 +242,10 @@ func drawLoudness(canvas *image.RGBA, envelope [1000]float64, mode ForegroundMod
 			y = graphBottom - 1
 		}
 
-		x := layout.Loudness.X + i
-		// Line width 2.
-		blendPixel(canvas, x, y, lineColor)
-		blendPixel(canvas, x+1, y, lineColor)
+		x := layout.Loudness.X + int(math.Round(float64(i)*float64(layout.Loudness.W-1)/999.0))
+		for dx := 0; dx < lineWidth && x+dx < layout.Loudness.X+layout.Loudness.W; dx++ {
+			blendPixel(canvas, x+dx, y, lineColor)
+		}
 	}
 }
 
@@ -283,7 +314,14 @@ func drawCircle(canvas *image.RGBA, cx, cy, radius int, c color.RGBA) {
 // ---------------------------------------------------------------------------
 
 func RunAudioVisualizerHLS(ctx context.Context, outDir, ffmpeg string, input AudioRenderInput, id string, preset QualityPreset) error {
-	width, height := 1280, 720
+	height := preset.Height
+	if height <= 0 {
+		height = 720
+	}
+	width := height * 16 / 9
+	if width%2 != 0 {
+		width++
+	}
 
 	// Compute layout.
 	layout, err := LayoutForSize(width, height)
@@ -324,26 +362,25 @@ func RunAudioVisualizerHLS(ctx context.Context, outDir, ffmpeg string, input Aud
 	assPath := filepath.Join(outDir, id+".ass")
 
 	metrics := map[string]TextMetrics{}
-	titleMetrics, _ := MeasureTextWithFFmpeg(ctx, ffmpeg, fonts.SemiBold600, input.Metadata.Title, 28)
-	artistMetrics, _ := MeasureTextWithFFmpeg(ctx, ffmpeg, fonts.Medium500, input.Metadata.Artist, 20)
+	titleSize := scaledFontSize(48, width)
+	artistSize := scaledFontSize(28, width)
+	albumSize := scaledFontSize(24, width)
+	titleMetrics, _ := MeasureTextWithFFmpeg(ctx, ffmpeg, fonts.SemiBold600, input.Metadata.Title, titleSize)
+	artistMetrics, _ := MeasureTextWithFFmpeg(ctx, ffmpeg, fonts.Medium500, input.Metadata.Artist, artistSize)
 	metrics["title"] = titleMetrics
 	metrics["artist"] = artistMetrics
 	if input.Metadata.Album != "" {
-		albumMetrics, _ := MeasureTextWithFFmpeg(ctx, ffmpeg, fonts.Regular400, input.Metadata.Album, 16)
+		albumMetrics, _ := MeasureTextWithFFmpeg(ctx, ffmpeg, fonts.Regular400, input.Metadata.Album, albumSize)
 		metrics["album"] = albumMetrics
 	}
 
-	ass := BuildVisualizerASS(input.Metadata, input.Analysis.Duration, layout, fonts, metrics)
+	ass := BuildVisualizerASSWithMode(input.Metadata, input.Analysis.Duration, layout, fonts, metrics, mode, width, height)
 	if err := os.WriteFile(assPath, []byte(ass), 0644); err != nil {
 		return fmt.Errorf("write ass: %w", err)
 	}
 
 	// Build FFmpeg arguments.
-	args := AudioVisualizerFFmpegArgs(input.SourcePath, assPath, filepath.Dir(fonts.Regular400), id, preset)
-	outArg := fmt.Sprintf(args[len(args)-2], outDir)
-	playlistArg := fmt.Sprintf(args[len(args)-1], outDir)
-	args[len(args)-2] = outArg
-	args[len(args)-1] = playlistArg
+	args := formatVisualizerOutputArgs(audioVisualizerFFmpegArgs(input.SourcePath, assPath, filepath.Dir(fonts.Regular400), id, preset, &mode), outDir)
 
 	cmd := exec.CommandContext(ctx, ffmpeg, args...)
 	frameReader, frameWriter, err := os.Pipe()

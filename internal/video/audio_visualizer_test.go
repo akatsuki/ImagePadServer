@@ -55,6 +55,89 @@ func TestAudioVisualizerFFmpegArgsHLS(t *testing.T) {
 	}
 }
 
+func TestAudioVisualizerFFmpegArgsUsesValidHLSOptions(t *testing.T) {
+	joined := strings.Join(AudioVisualizerFFmpegArgs("a.m4a", "s.ass", "/f", "id", QualityPreset{Height: 720, CRF: 27, AudioBitrate: "128k"}), " ")
+	if !strings.Contains(joined, "-hls_playlist_type event") || !strings.Contains(joined, "-hls_flags independent_segments") {
+		t.Fatalf("invalid HLS option set: %s", joined)
+	}
+	if strings.Contains(joined, "event+omit_endlist") {
+		t.Fatalf("event was incorrectly encoded as hls_flags: %s", joined)
+	}
+}
+
+func TestAudioVisualizerFFmpegArgsUsesPresetResolution(t *testing.T) {
+	preset := ResolveQuality("1080", 0)
+	args := AudioVisualizerFFmpegArgs("song.m4a", "text.ass", "fonts", "id", preset)
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "1920x1080") {
+		t.Fatalf("args do not contain 1920x1080: %s", joined)
+	}
+	if strings.Contains(joined, "-s 1280x720") {
+		t.Fatalf("args still force 1280x720: %s", joined)
+	}
+}
+
+func TestAudioVisualizerFFmpegArgsQuotesASSPaths(t *testing.T) {
+	args := AudioVisualizerFFmpegArgs(`C:\audio\song.m4a`, `C:\temp\text.ass`, `C:\Program Files\fonts`, "id", QualityPreset{Height: 720, CRF: 27, AudioBitrate: "128k"})
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, `ass=filename='C\:/temp/text.ass':fontsdir='C\:/Program Files/fonts'`) {
+		t.Fatalf("ASS paths are not quoted safely: %s", joined)
+	}
+}
+
+func TestFormatVisualizerOutputArgsReplacesOnlyPathPlaceholders(t *testing.T) {
+	args := []string{"-hls_segment_filename", "%s/seg-%%05d.ts", "-hls_flags", "independent_segments", "%s/playlist.m3u8"}
+	got := formatVisualizerOutputArgs(args, `C:\out`)
+	joined := strings.Join(got, "|")
+	if strings.Contains(joined, "%!(EXTRA") || strings.Contains(joined, "%s/") {
+		t.Fatalf("unresolved or corrupt formatting: %s", joined)
+	}
+	if strings.Contains(joined, "%%05d") || !strings.Contains(joined, "%05d") {
+		t.Fatalf("segment sequence was not normalized: %s", joined)
+	}
+	if got[3] != "independent_segments" {
+		t.Fatalf("hls_flags corrupted: %q", got[3])
+	}
+}
+
+func TestWriteVisualizerFramesDoesNotTintBaseArtwork(t *testing.T) {
+	layout, _ := LayoutForSize(128, 72)
+	base := image.NewRGBA(image.Rect(0, 0, 128, 72))
+	artX, artY := layout.Artwork.X+layout.Artwork.W/2, layout.Artwork.Y+layout.Artwork.H/2
+	base.SetRGBA(artX, artY, color.RGBA{R: 240, G: 20, B: 10, A: 255})
+	input := AudioRenderInput{Analysis: AudioAnalysis{FPS: 30, Duration: 1, Frames: []AudioFrame{{}}}}
+	mode := ForegroundMode{Color: color.RGBA{255, 255, 255, 255}, Overlay: color.RGBA{0, 0, 0, 200}}
+	var buf bytes.Buffer
+	if err := WriteVisualizerRGBAFrames(context.Background(), &buf, input, base, mode, layout, 128, 72); err != nil {
+		t.Fatal(err)
+	}
+	pixel := buf.Bytes()[(artY*128+artX)*4:]
+	if pixel[0] != 240 || pixel[1] != 20 || pixel[2] != 10 {
+		t.Fatalf("artwork pixel was tinted: got RGB(%d,%d,%d)", pixel[0], pixel[1], pixel[2])
+	}
+}
+
+func TestDrawLoudnessScalesThousandSamplesIntoLayoutWidth(t *testing.T) {
+	layout, _ := LayoutForSize(640, 360)
+	canvas := image.NewRGBA(image.Rect(0, 0, 640, 360))
+	var envelope [1000]float64
+	for i := range envelope {
+		envelope[i] = 0.5
+	}
+	mode := ForegroundMode{Color: color.RGBA{255, 255, 255, 255}}
+	drawLoudness(canvas, envelope, mode, layout)
+	y := layout.Loudness.Y + layout.Loudness.H/2
+	left := canvas.RGBAAt(layout.Loudness.X, y)
+	right := canvas.RGBAAt(layout.Loudness.X+layout.Loudness.W-1, y)
+	after := canvas.RGBAAt(layout.Loudness.X+layout.Loudness.W+2, y)
+	if left.A == 0 || right.A == 0 {
+		t.Fatalf("curve does not span scaled graph: left=%v right=%v", left, right)
+	}
+	if after.A != 0 {
+		t.Fatalf("curve escaped scaled graph bounds: %v", after)
+	}
+}
+
 func TestWriteVisualizerRGBAFramesBasic(t *testing.T) {
 	base := image.NewRGBA(image.Rect(0, 0, 128, 72))
 	mode := ForegroundMode{Color: color.RGBA{255, 255, 255, 255}, Overlay: color.RGBA{0, 0, 0, 92}}
@@ -469,7 +552,7 @@ func TestSpectrumBottomFade(t *testing.T) {
 
 	// First bar is at X=443, barBottom = 488.
 	barBottom := layout.Spectrum.Y + layout.Spectrum.H // 488
-	firstBarX := layout.Spectrum.X + 11                 // 443
+	firstBarX := layout.Spectrum.X + 11                // 443
 	barW := 18
 	barGap := 13
 

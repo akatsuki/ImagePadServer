@@ -1,9 +1,38 @@
 package video
 
 import (
+	"image/color"
 	"strings"
 	"testing"
 )
+
+func TestBuildVisualizerASSUsesGlobalForegroundMode(t *testing.T) {
+	layout, _ := LayoutForSize(1280, 720)
+	fonts := FontSet{Regular400: "regular.otf", Medium500: "medium.otf", SemiBold600: "semibold.otf"}
+	meta := AudioMetadata{Title: "Title", Artist: "Artist"}
+	metrics := map[string]TextMetrics{"title": {Width: 100}, "artist": {Width: 80}}
+	darkMode := ForegroundMode{Color: color.RGBA{0, 0, 0, 255}}
+	ass := BuildVisualizerASSWithMode(meta, 60, layout, fonts, metrics, darkMode, 1280, 720)
+	if !strings.Contains(ass, "&H1F000000") {
+		t.Fatalf("ASS does not use black at 88%% opacity:\n%s", ass)
+	}
+	if strings.Contains(ass, "&H00FFFFFF") {
+		t.Fatal("ASS still contains opaque white foreground")
+	}
+}
+
+func TestBuildVisualizerASSUsesSpecifiedCanonicalFontSizes(t *testing.T) {
+	layout, _ := LayoutForSize(1280, 720)
+	fonts := FontSet{Regular400: "regular.otf", Medium500: "medium.otf", SemiBold600: "semibold.otf"}
+	meta := AudioMetadata{Title: "Title", Artist: "Artist", Album: "Album"}
+	metrics := map[string]TextMetrics{"title": {Width: 100}, "artist": {Width: 80}, "album": {Width: 60}}
+	ass := BuildVisualizerASSWithMode(meta, 60, layout, fonts, metrics, ForegroundMode{Color: color.RGBA{255, 255, 255, 255}}, 1280, 720)
+	for _, want := range []string{"Style: Title,semibold.otf,48,", "Style: Artist,medium.otf,28,", "Style: Album,regular.otf,24,", "Style: TimeText,medium.otf,22,"} {
+		if !strings.Contains(ass, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+}
 
 func TestBuildVisualizerASS_Basic(t *testing.T) {
 	meta := AudioMetadata{

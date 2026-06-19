@@ -143,6 +143,54 @@ func TestHandleUploadURLRemoteAudioPublish(t *testing.T) {
 	}
 }
 
+func TestHandleUploadURLUsesSecureDirectDownloader(t *testing.T) {
+	srv, mux := testServer(t, true)
+	defer srv.store.Reset()
+
+	audioPath := writeTestWAV(t, t.TempDir(), "secure-direct.wav")
+	ffprobe := requireFFprobe(t)
+	probe, err := video.ProbeMedia(context.Background(), ffprobe, audioPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	old := directMediaDownloader
+	defer func() { directMediaDownloader = old }()
+	called := false
+	directMediaDownloader = func(ctx context.Context, rawURL, outDir string, probeFn func(context.Context, string) (video.MediaProbe, error)) (downloadedRemoteMedia, error) {
+		called = true
+		return downloadedRemoteMedia{Path: audioPath, Name: "secure-direct.wav", Class: video.MediaAudio, Probe: probe}, nil
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/upload-url", strings.NewReader(`{"url":"https://example.com/song"}`))
+	rec := adminJSON(t, mux, req)
+	if !called {
+		t.Fatal("secure direct downloader was not called")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if current := srv.store.Current(); current == nil || current.SourceKind != "remote_audio" {
+		t.Fatalf("current = %#v, want remote_audio", current)
+	}
+}
+
+func TestSoundCloudAcquiredAudioKeepsEmbeddedMetadata(t *testing.T) {
+	media := video.DownloadedMedia{
+		SourcePath:      "track.m4a",
+		Name:            "track.m4a",
+		Kind:            "soundcloud",
+		ArtworkPath:     "page.jpg",
+		Metadata:        video.AudioMetadata{Title: "Page title", Artist: "Page artist"},
+		InformationPath: "track.info.json",
+	}
+	probe := video.MediaProbe{FormatTags: map[string]string{"title": "GUNPEI", "artist": "embedded artist"}}
+	got := soundCloudAcquiredFromProbe(media, probe, nil)
+	if got.EmbeddedMetadata.Title != "GUNPEI" || got.SoundCloudMetadata.Title != "Page title" {
+		t.Fatalf("metadata precedence inputs lost: embedded=%#v soundcloud=%#v", got.EmbeddedMetadata, got.SoundCloudMetadata)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // 2. Remote audio via queue path → SourceKind = remote_audio in history
 // ---------------------------------------------------------------------------

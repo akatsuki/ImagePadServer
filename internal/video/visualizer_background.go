@@ -267,6 +267,12 @@ func PrepareVisualizerBase(ctx context.Context, ffmpeg, artworkPath string, fall
 		return ForegroundMode{}, fmt.Errorf("load blurred background: %w", err)
 	}
 	bgRGBA := toRGBA(bg)
+	metaRect := image.Rect(layout.Title.X, layout.Title.Y, layout.Title.X+layout.Title.W, layout.Title.Y+layout.Title.H)
+	graphRect := image.Rect(layout.Loudness.X, layout.Loudness.Y, layout.Loudness.X+layout.Loudness.W, layout.Loudness.Y+layout.Loudness.H)
+	mode := SelectForegroundMode(bgRGBA, metaRect, graphRect)
+	// The readability overlay belongs to the background layer. Applying it
+	// before the shadow and artwork keeps the foreground cover color-accurate.
+	draw.Draw(bgRGBA, bgRGBA.Bounds(), &image.Uniform{mode.Overlay}, image.Point{}, draw.Over)
 
 	// -----------------------------------------------------------------------
 	// 2. Foreground artwork — scale to fill artwork rect
@@ -302,19 +308,6 @@ func PrepareVisualizerBase(ctx context.Context, ffmpeg, artworkPath string, fall
 	// -----------------------------------------------------------------------
 	masked := applyRoundedCorners(fgScaled, cr)
 	draw.Draw(bgRGBA, artRect, masked, image.Point{}, draw.Over)
-
-	// -----------------------------------------------------------------------
-	// 5. Select foreground mode and save
-	// -----------------------------------------------------------------------
-	metaRect := image.Rect(
-		layout.Title.X, layout.Title.Y,
-		layout.Title.X+layout.Title.W, layout.Title.Y+layout.Title.H,
-	)
-	graphRect := image.Rect(
-		layout.Loudness.X, layout.Loudness.Y,
-		layout.Loudness.X+layout.Loudness.W, layout.Loudness.Y+layout.Loudness.H,
-	)
-	mode := SelectForegroundMode(bgRGBA, metaRect, graphRect)
 
 	if err := savePNG(outPath, bgRGBA); err != nil {
 		return ForegroundMode{}, fmt.Errorf("save output: %w", err)

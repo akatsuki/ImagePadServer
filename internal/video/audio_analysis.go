@@ -23,14 +23,12 @@ type pcmAnalyzer interface {
 	Finish() (AudioAnalysis, error)
 }
 
-var maxRetainedSamples = 20 * 48000 * 2 // 20 seconds stereo
-
 const (
 	fftWindowSize   = 2048
 	frameAdvance    = 1600
 	sampleRate      = 48000
 	envelopeSamples = 1000
-	onsetHopSamples = 480  // 10 ms at 48 kHz
+	onsetHopSamples = 480                          // 10 ms at 48 kHz
 	onsetRate       = sampleRate / onsetHopSamples // 100 Hz
 )
 
@@ -152,161 +150,188 @@ func AnalyzeAudio(ctx context.Context, ffmpeg, sourcePath string) (AudioAnalysis
 }
 
 type streamAnalyzer struct {
-	pcm           []int16
-	totalSamples  int64
-	frameIndex    int
-	fft           *fourier.FFT
-	frames        []AudioFrame
-	flux          []float64
-	monoBuf       []float64
-	envelopeSumSq float64
-	envelopeCount int64
-	mu            sync.Mutex
+	pcm               []float64
+	totalMonoSamples  int64
+	fft               *fourier.FFT
+	frames            []AudioFrame
+	monoBuf           []float64
+	onsetFlux         []float64
+	onsetPositiveDiff float64
+	previousMono      float64
+	havePreviousMono  bool
+	loudnessSumSq     float64
+	loudnessCount     int
+	loudnessBlocks    []float64
+	fingerprintSum    [64]float64
+	fingerprintFrames int
+	centroidSum       float64
+	lowRatioSum       float64
+	spectralFrames    int
+	mu                sync.Mutex
 }
 
 func newStreamAnalyzer() *streamAnalyzer {
 	return &streamAnalyzer{
-		pcm:  make([]int16, 0, maxRetainedSamples),
-		fft:  fourier.NewFFT(fftWindowSize),
-		frames: make([]AudioFrame, 0, 3000),
+		pcm:            make([]float64, 0, fftWindowSize+frameAdvance),
+		fft:            fourier.NewFFT(fftWindowSize),
+		frames:         make([]AudioFrame, 0, 3000),
+		monoBuf:        make([]float64, 0, onsetHopSamples),
+		onsetFlux:      make([]float64, 0, 6000),
+		loudnessBlocks: make([]float64, 0, 6000),
 	}
 }
 
 func (a *streamAnalyzer) ConsumeStereo(samples []int16) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-
-	a.pcm = append(a.pcm, samples...)
-	a.totalSamples += int64(len(samples))
-
-	// Bound retained capacity
-	if len(a.pcm) > maxRetainedSamples {
-		excess := len(a.pcm) - maxRetainedSamples
-		a.pcm = a.pcm[excess:]
+	if len(samples)%2 != 0 {
+		return ErrIncompleteSample
 	}
-
-	// Accumulate envelope RMS
-	for _, s := range samples {
-		f := float64(s) / 32768.0
-		a.envelopeSumSq += f * f
-		a.envelopeCount++
-	}
-
-	// Build mono onset buffer for BPM
-	totalMono := len(samples) / 2
-	for i := 0; i < totalMono; i++ {
-		mono := float64(samples[i*2]+samples[i*2+1]) / 2
+	for i := 0; i < len(samples); i += 2 {
+		mono := (float64(samples[i]) + float64(samples[i+1])) / 2
+		a.totalMonoSamples++
+		a.pcm = append(a.pcm, mono)
+		if a.havePreviousMono {
+			if diff := mono - a.previousMono; diff > 0 {
+				a.onsetPositiveDiff += diff
+			}
+		}
+		a.previousMono, a.havePreviousMono = mono, true
 		a.monoBuf = append(a.monoBuf, mono)
+		normalized := mono / 32768.0
+		a.loudnessSumSq += normalized * normalized
+		a.loudnessCount++
+		if len(a.monoBuf) == onsetHopSamples {
+			a.onsetFlux = append(a.onsetFlux, a.onsetPositiveDiff)
+			a.onsetPositiveDiff = 0
+			a.monoBuf = a.monoBuf[:0]
+			a.loudnessBlocks = append(a.loudnessBlocks, math.Sqrt(a.loudnessSumSq/float64(a.loudnessCount)))
+			a.loudnessSumSq, a.loudnessCount = 0, 0
+		}
+		for len(a.pcm) >= fftWindowSize {
+			a.consumeSpectrumWindow(a.pcm[:fftWindowSize])
+			copy(a.pcm, a.pcm[frameAdvance:])
+			a.pcm = a.pcm[:len(a.pcm)-frameAdvance]
+		}
 	}
-
 	return nil
+}
+
+func (a *streamAnalyzer) consumeSpectrumWindow(window []float64) {
+	weighted := make([]float64, fftWindowSize)
+	for i := range weighted {
+		weighted[i] = window[i] * 0.5 * (1 - math.Cos(2*math.Pi*float64(i)/float64(fftWindowSize-1)))
+	}
+	spectrum := a.fft.Coefficients(nil, weighted)
+	a.frames = append(a.frames, AudioFrame{Spectrum24: mapBands(spectrum)})
+	centroid, lowRatio := spectrumFeatures(spectrum, sampleRate)
+	a.centroidSum += centroid
+	a.lowRatioSum += lowRatio
+	a.spectralFrames++
+	bands64 := mapLogBands(spectrum, 64)
+	for i := range a.fingerprintSum {
+		a.fingerprintSum[i] += bands64[i]
+	}
+	a.fingerprintFrames++
 }
 
 func (a *streamAnalyzer) Finish() (AudioAnalysis, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-
-	totalFrames := int(a.totalSamples / 2 / int64(frameAdvance))
-	if totalFrames < 1 {
-		totalFrames = 1
-	}
-
-	duration := float64(a.totalSamples) / float64(sampleRate*2)
+	duration := float64(a.totalMonoSamples) / sampleRate
 	if duration <= 0 {
 		return AudioAnalysis{}, fmt.Errorf("zero duration")
 	}
-
-	expectedVideoFrames := int(math.Ceil(duration * 30))
-	a.frames = make([]AudioFrame, expectedVideoFrames)
-	fft := fourier.NewFFT(fftWindowSize)
-
-	pcm := a.pcm
-	for i := 0; i < expectedVideoFrames; i++ {
-		center := i * frameAdvance
+	if a.loudnessCount > 0 {
+		a.loudnessBlocks = append(a.loudnessBlocks, math.Sqrt(a.loudnessSumSq/float64(a.loudnessCount)))
+	}
+	expectedFrames := int(math.Ceil(duration * 30))
+	for len(a.frames) < expectedFrames {
 		window := make([]float64, fftWindowSize)
-		for j := 0; j < fftWindowSize; j++ {
-			s := center + j - fftWindowSize/2
-			if s >= 0 && s < len(pcm) {
-				hann := 0.5 * (1 - math.Cos(2*math.Pi*float64(j)/float64(fftWindowSize-1)))
-				window[j] = float64(pcm[s]) * hann
+		copy(window, a.pcm)
+		a.consumeSpectrumWindow(window)
+		if len(a.pcm) > frameAdvance {
+			a.pcm = a.pcm[frameAdvance:]
+		} else {
+			a.pcm = nil
+		}
+	}
+	if len(a.frames) > expectedFrames {
+		a.frames = a.frames[:expectedFrames]
+	}
+	features := AudioFeatures{
+		BPM:              computeBPMFromFlux(a.onsetFlux),
+		LoudnessEnvelope: resampleEnvelope(a.loudnessBlocks),
+	}
+	if a.spectralFrames > 0 {
+		features.SpectralCentroid = a.centroidSum / float64(a.spectralFrames)
+		features.LowFrequencyRatio = a.lowRatioSum / float64(a.spectralFrames)
+	}
+	if a.fingerprintFrames > 0 {
+		var peak float64
+		for i := range features.Fingerprint64 {
+			features.Fingerprint64[i] = a.fingerprintSum[i] / float64(a.fingerprintFrames)
+			peak = math.Max(peak, features.Fingerprint64[i])
+		}
+		if peak > 0 {
+			for i := range features.Fingerprint64 {
+				features.Fingerprint64[i] /= peak
 			}
 		}
-		spectrum := fft.Coefficients(nil, window)
-		a.frames[i].Spectrum24 = mapBands(spectrum)
 	}
-
-	frames := smoothBands(a.frames)
-
-	// Compute features from retained PCM
-	features := AudioFeatures{}
-
-	// Spectral centroid (first window)
-	if len(pcm) >= fftWindowSize {
-		window := make([]float64, fftWindowSize)
-		for i := 0; i < fftWindowSize; i++ {
-			hann := 0.5 * (1 - math.Cos(2*math.Pi*float64(i)/float64(fftWindowSize-1)))
-			window[i] = float64(pcm[i]) * hann
-		}
-		spectrum := fft.Coefficients(nil, window)
-		var weightedSum, totalMag float64
-		nyquist := float64(sampleRate) / 2
-		for i := 1; i < len(spectrum); i++ {
-			mag := cmag(spectrum[i])
-			freq := float64(i) / float64(len(spectrum)) * nyquist
-			weightedSum += mag * freq
-			totalMag += mag
-		}
-		if totalMag > 0 {
-			features.SpectralCentroid = weightedSum / totalMag
-		}
-	}
-
-	// Low frequency ratio
-	if len(pcm) >= fftWindowSize {
-		window := make([]float64, fftWindowSize)
-		for i := 0; i < fftWindowSize; i++ {
-			hann := 0.5 * (1 - math.Cos(2*math.Pi*float64(i)/float64(fftWindowSize-1)))
-			window[i] = float64(pcm[i]) * hann
-		}
-		spectrum := fft.Coefficients(nil, window)
-		nyquist := float64(sampleRate) / 2
-		var lowMag, totalMag float64
-		for i := 1; i < len(spectrum); i++ {
-			mag := cmag(spectrum[i])
-			freq := float64(i) / float64(len(spectrum)) * nyquist
-			if freq <= 250 {
-				lowMag += mag
-			}
-			totalMag += mag
-		}
-		if totalMag > 0 {
-			features.LowFrequencyRatio = lowMag / totalMag
-		}
-	}
-
-	// BPM from onset buffer
-	if len(a.monoBuf) > 0 {
-		features.BPM = computeBPMFromMono(a.monoBuf, sampleRate)
-	}
-
-	// Loudness envelope (last portion of PCM)
-	if len(pcm) > 0 {
-		features.LoudnessEnvelope = computeLoudnessEnvelopeFast(pcm, envelopeSamples)
-	}
-
-	// Fingerprint
-	if len(pcm) >= sampleRate {
-		features.Fingerprint64 = computeFingerprint(pcm, sampleRate)
-	}
-
 	clampFeatures(&features)
+	return AudioAnalysis{FPS: 30, Duration: duration, Frames: smoothBands(a.frames), Features: features}, nil
+}
 
-	return AudioAnalysis{
-		FPS:      30,
-		Duration: duration,
-		Frames:   frames,
-		Features: features,
-	}, nil
+func spectrumFeatures(spectrum []complex128, rate int) (centroid, lowRatio float64) {
+	var weighted, low, total float64
+	nyquist := float64(rate) / 2
+	for i := 1; i < len(spectrum); i++ {
+		magnitude := cmag(spectrum[i])
+		frequency := float64(i) / float64(len(spectrum)) * nyquist
+		weighted += magnitude * frequency
+		total += magnitude
+		if frequency <= 250 {
+			low += magnitude
+		}
+	}
+	if total == 0 {
+		return 0, 0
+	}
+	return weighted / total, low / total
+}
+
+func mapLogBands(spectrum []complex128, count int) []float64 {
+	out := make([]float64, count)
+	nyquist := float64(sampleRate) / 2
+	for band := range out {
+		lo := 20 * math.Pow(1000, float64(band)/float64(count))
+		hi := 20 * math.Pow(1000, float64(band+1)/float64(count))
+		loBin := max(1, int(lo/nyquist*float64(len(spectrum))))
+		hiBin := min(len(spectrum), int(hi/nyquist*float64(len(spectrum))))
+		for i := loBin; i < hiBin; i++ {
+			out[band] += cmag(spectrum[i])
+		}
+		if hiBin > loBin {
+			out[band] /= float64(hiBin - loBin)
+		}
+	}
+	return out
+}
+
+func resampleEnvelope(blocks []float64) [1000]float64 {
+	var out [1000]float64
+	if len(blocks) == 0 {
+		return out
+	}
+	for i := range out {
+		position := float64(i) * float64(len(blocks)-1) / float64(len(out)-1)
+		left := int(math.Floor(position))
+		right := min(left+1, len(blocks)-1)
+		fraction := position - float64(left)
+		out[i] = blocks[left]*(1-fraction) + blocks[right]*fraction
+	}
+	return out
 }
 
 func computeBPM(pcm []int16, rate int) float64 {
@@ -336,7 +361,10 @@ func computeBPMFromMono(mono []float64, rate int) float64 {
 		}
 		flux[i] = sum
 	}
+	return computeBPMFromFlux(flux)
+}
 
+func computeBPMFromFlux(flux []float64) float64 {
 	minLag := onsetRate * 60 / 200
 	maxLag := onsetRate * 60 / 60
 

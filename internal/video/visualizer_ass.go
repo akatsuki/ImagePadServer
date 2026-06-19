@@ -2,6 +2,7 @@ package video
 
 import (
 	"fmt"
+	"image/color"
 	"math"
 	"strings"
 )
@@ -17,34 +18,17 @@ const (
 // The styles use the exact font paths from fonts, and the events include
 // positioned/clipped text for title, artist, album, and per-second time text.
 func BuildVisualizerASS(metadata AudioMetadata, duration float64, layout VisualizerLayout, fonts FontSet, metrics map[string]TextMetrics) string {
+	return BuildVisualizerASSWithMode(metadata, duration, layout, fonts, metrics, ForegroundMode{Color: color.RGBA{255, 255, 255, 255}}, 1280, 720)
+}
+
+func BuildVisualizerASSWithMode(metadata AudioMetadata, duration float64, layout VisualizerLayout, fonts FontSet, metrics map[string]TextMetrics, mode ForegroundMode, width, height int) string {
 	var b strings.Builder
 
 	// --- [Script Info] ---
 	b.WriteString("[Script Info]\n")
 	b.WriteString("ScriptType: v4.00+\n")
-	// PlayRes matches the output resolution: compute from layout extents.
-	playResX := 0
-	playResY := 0
-	for _, r := range []Rect{layout.Artwork, layout.Title, layout.Artist, layout.Album, layout.Spectrum, layout.Loudness, layout.Progress, layout.Time} {
-		if r.X+r.W > playResX {
-			playResX = r.X + r.W
-		}
-		if r.Y+r.H > playResY {
-			playResY = r.Y + r.H
-		}
-	}
-	// If we somehow got zero, fall back to 1280x720 assumptions.
-	// The Time rect extends to X=1216 which is less than 1280. For the
-	// canonical 1280x720 output the frame width is 1280. We use the
-	// bounding box of all elements plus a margin to the right edge.
-	if playResX < 1280 {
-		playResX = 1280
-	}
-	if playResY < 720 {
-		playResY = 720
-	}
-	b.WriteString(fmt.Sprintf("PlayResX: %d\n", playResX))
-	b.WriteString(fmt.Sprintf("PlayResY: %d\n", playResY))
+	b.WriteString(fmt.Sprintf("PlayResX: %d\n", width))
+	b.WriteString(fmt.Sprintf("PlayResY: %d\n", height))
 	b.WriteString("ScaledBorderAndShadow: yes\n")
 	b.WriteString("\n")
 
@@ -52,17 +36,18 @@ func BuildVisualizerASS(metadata AudioMetadata, duration float64, layout Visuali
 	b.WriteString("[V4+ Styles]\n")
 	b.WriteString("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n")
 
-	titleSize := fontSizeForHeight(layout.Title.H)
-	artistSize := fontSizeForHeight(layout.Artist.H)
-	albumSize := fontSizeForHeight(layout.Album.H)
-	timeSize := fontSizeForHeight(layout.Time.H)
+	titleSize := scaledFontSize(48, width)
+	artistSize := scaledFontSize(28, width)
+	albumSize := scaledFontSize(24, width)
+	timeSize := scaledFontSize(22, width)
 
-	writeStyle(&b, "Title", fonts.SemiBold600, titleSize, 0)
-	writeStyle(&b, "Artist", fonts.Medium500, artistSize, 0)
-	writeStyle(&b, "TimeText", fonts.Medium500, timeSize, 8) // centered alignment
+	primary := assForegroundColor(mode.Color, 0.88)
+	writeStyle(&b, "Title", fonts.SemiBold600, titleSize, 0, primary)
+	writeStyle(&b, "Artist", fonts.Medium500, artistSize, 0, primary)
+	writeStyle(&b, "TimeText", fonts.Medium500, timeSize, 8, primary) // centered alignment
 
 	if metadata.Album != "" {
-		writeStyle(&b, "Album", fonts.Regular400, albumSize, 0)
+		writeStyle(&b, "Album", fonts.Regular400, albumSize, 0, primary)
 	}
 	b.WriteString("\n")
 
@@ -83,7 +68,7 @@ func BuildVisualizerASS(metadata AudioMetadata, duration float64, layout Visuali
 		if end > totalDuration {
 			end = totalDuration
 		}
-		timeStr := FormatMediaTime(s)
+		timeStr := FormatMediaTime(s) + " / " + FormatMediaTime(int(math.Floor(totalDuration)))
 
 		// Position time text at the Time rect; center alignment (style 8)
 		timeX := layout.Time.X + layout.Time.W/2
@@ -152,14 +137,17 @@ func BuildVisualizerASS(metadata AudioMetadata, duration float64, layout Visuali
 // ASS helpers
 // ---------------------------------------------------------------------------
 
-func writeStyle(b *strings.Builder, name, fontName string, fontSize, alignment int) {
+func writeStyle(b *strings.Builder, name, fontName string, fontSize, alignment int, primary string) {
 	if alignment == 0 {
 		alignment = 1 // left-aligned by default
 	}
-	// PrimaryColour: white at 88% opacity (0xE0 = 224)
-	// Using &H00FFFFFF with alpha handled by the renderer
-	b.WriteString(fmt.Sprintf("Style: %s,%s,%d,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,%d,0,0,0,1\n",
-		name, fontName, fontSize, alignment))
+	b.WriteString(fmt.Sprintf("Style: %s,%s,%d,%s,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,%d,0,0,0,1\n",
+		name, fontName, fontSize, primary, alignment))
+}
+
+func assForegroundColor(c color.RGBA, opacity float64) string {
+	alpha := uint8(math.Round((1 - opacity) * 255))
+	return fmt.Sprintf("&H%02X%02X%02X%02X", alpha, c.B, c.G, c.R)
 }
 
 // assTimestamp formats a float64 seconds value as ASS timestamp H:MM:SS.cc
@@ -244,6 +232,6 @@ func buildScrollingDialogue(b *strings.Builder, totalDuration float64, style, te
 
 // fontSizeForHeight returns an appropriate font size for a viewport of the
 // given height, assuming 1.2x line height and vertical centering.
-func fontSizeForHeight(viewportHeight int) int {
-	return int(math.Round(float64(viewportHeight) / 1.2))
+func scaledFontSize(canonical, width int) int {
+	return max(1, int(math.Round(float64(canonical)*float64(width)/1280.0)))
 }

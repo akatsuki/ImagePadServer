@@ -21,6 +21,18 @@ type downloadedRemoteMedia struct {
 	Probe video.MediaProbe
 }
 
+var directMediaDownloader = downloadRemoteMedia
+
+func (s *Server) downloadDirectMedia(ctx context.Context, rawURL string) (downloadedRemoteMedia, error) {
+	ffprobe, err := findFFprobe()
+	if err != nil {
+		return downloadedRemoteMedia{}, err
+	}
+	return directMediaDownloader(ctx, rawURL, s.store.Dir(), func(ctx context.Context, path string) (video.MediaProbe, error) {
+		return video.ProbeMedia(ctx, ffprobe, path)
+	})
+}
+
 // downloadRemoteMedia downloads media from rawURL, validates it against SSRF
 // rules and size limits, writes it to outDir, probes the result via the
 // provided probe function, and returns metadata.
@@ -113,5 +125,3 @@ func mediaFileName(u *url.URL, header http.Header) string {
 	}
 	return name
 }
-
-
