@@ -18,6 +18,8 @@ const (
 	frameAdvance    = 1600
 	sampleRate      = 48000
 	envelopeSamples = 1000
+	onsetHopSamples = 480  // 10 ms at 48 kHz
+	onsetRate       = sampleRate / onsetHopSamples // 100 Hz
 )
 
 func SelectMoodPalette(features AudioFeatures) (startHex, endHex string) {
@@ -249,11 +251,16 @@ func computeBPM(pcm []int16, rate int) float64 {
 		mono[i] = float64(pcm[i*2]+pcm[i*2+1]) / 2
 	}
 
-	flux := make([]float64, len(mono)/rate)
+	// Build onset flux: one value per onsetHopSamples (10 ms at 48 kHz)
+	nOnset := len(mono) / onsetHopSamples
+	if nOnset < 2 {
+		return 0
+	}
+	flux := make([]float64, nOnset)
 	for i := range flux {
 		var sum float64
-		for j := 0; j < rate/100; j++ {
-			idx := i*(rate/100) + j
+		for j := 0; j < onsetHopSamples; j++ {
+			idx := i*onsetHopSamples + j
 			if idx < len(mono)-1 {
 				diff := mono[idx+1] - mono[idx]
 				if diff > 0 {
@@ -264,8 +271,9 @@ func computeBPM(pcm []int16, rate int) float64 {
 		flux[i] = sum
 	}
 
-	minLag := rate * 60 / 200
-	maxLag := rate * 60 / 60
+	// Lag bounds in onset-frame units (not PCM samples)
+	minLag := onsetRate * 60 / 200 // 30 for BPM 200
+	maxLag := onsetRate * 60 / 60  // 100 for BPM 60
 
 	bestCorr := -1.0
 	bestLag := 0
@@ -283,8 +291,11 @@ func computeBPM(pcm []int16, rate int) float64 {
 		denom := math.Sqrt(sumA * sumB)
 		if denom > 0 {
 			corr := sum / denom
-			if corr > bestCorr {
-				bestCorr = corr
+			// Weight toward shorter lags to prefer higher BPM
+			// (avoids picking 60 BPM when 180 BPM is the true tempo)
+			weighted := corr * (1.0 - 0.4*float64(lag-minLag)/float64(maxLag-minLag))
+			if weighted > bestCorr {
+				bestCorr = weighted
 				bestLag = lag
 			}
 		}
@@ -293,7 +304,8 @@ func computeBPM(pcm []int16, rate int) float64 {
 	if bestCorr <= 0 {
 		return 0
 	}
-	return 6000.0 / (float64(bestLag) / float64(rate) * 60)
+	// BPM = 60 * onsetRate / bestLag
+	return 60.0 * float64(onsetRate) / float64(bestLag)
 }
 
 func computeLoudnessEnvelope(pcm []int16, n int) [1000]float64 {

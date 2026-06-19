@@ -1,6 +1,9 @@
 package video
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestSelectMoodPaletteHighEnergy(t *testing.T) {
 	start, end := SelectMoodPalette(AudioFeatures{BPM: 120})
@@ -68,5 +71,92 @@ func TestAnalyzeAudioFPSConstant(t *testing.T) {
 	}
 	if a.FPS != 30 {
 		t.Fatal("FPS must be 30")
+	}
+}
+
+func generateClickTrack(bpm float64, durationSec float64, sampleRate int) []int16 {
+	totalSamples := int(durationSec * float64(sampleRate))
+	pcm := make([]int16, totalSamples*2) // stereo interleaved
+	beatSamples := int(60.0 / bpm * float64(sampleRate))
+	clickSamples := int(0.010 * float64(sampleRate)) // 10 ms click duration
+	for i := 0; i < totalSamples; i++ {
+		positionInBeat := i % beatSamples
+		var val int16
+		if positionInBeat < clickSamples {
+			amplitude := math.Sin(2 * math.Pi * 440 * float64(i) / float64(sampleRate))
+			val = int16(amplitude * 8000)
+		}
+		pcm[i*2] = val
+		pcm[i*2+1] = val
+	}
+	return pcm
+}
+
+func TestComputeBPM60(t *testing.T) {
+	pcm := generateClickTrack(60, 10, sampleRate)
+	bpm := computeBPM(pcm, sampleRate)
+	diff := math.Abs(bpm - 60)
+	if diff > 2 {
+		t.Fatalf("expected BPM ~60, got %.1f (diff %.1f)", bpm, diff)
+	}
+}
+
+func TestComputeBPM90(t *testing.T) {
+	pcm := generateClickTrack(90, 8, sampleRate)
+	bpm := computeBPM(pcm, sampleRate)
+	diff := math.Abs(bpm - 90)
+	if diff > 2 {
+		t.Fatalf("expected BPM ~90, got %.1f (diff %.1f)", bpm, diff)
+	}
+}
+
+func TestComputeBPM120(t *testing.T) {
+	pcm := generateClickTrack(120, 8, sampleRate)
+	bpm := computeBPM(pcm, sampleRate)
+	diff := math.Abs(bpm - 120)
+	if diff > 2 {
+		t.Fatalf("expected BPM ~120, got %.1f (diff %.1f)", bpm, diff)
+	}
+}
+
+func TestComputeBPM180(t *testing.T) {
+	pcm := generateClickTrack(180, 6, sampleRate)
+	bpm := computeBPM(pcm, sampleRate)
+	diff := math.Abs(bpm - 180)
+	if diff > 2 {
+		t.Fatalf("expected BPM ~180, got %.1f (diff %.1f)", bpm, diff)
+	}
+}
+
+func TestComputeBPMUsesOnsetFrameUnits(t *testing.T) {
+	// Prove the autocorrelation lag for 120 BPM is approximately 50 onset frames
+	// (onsetRate * 60 / 120 = 100 * 60 / 120 = 50), not 24000 PCM samples.
+	// We back-compute the lag from the BPM result.
+	pcm := generateClickTrack(120, 8, sampleRate)
+	bpm := computeBPM(pcm, sampleRate)
+	if bpm <= 0 {
+		t.Fatalf("expected positive BPM, got %.1f", bpm)
+	}
+	// lag = 60 * onsetRate / bpm
+	bestLag := int(60.0*float64(onsetRate)/bpm + 0.5)
+	// Should be ~50 onset frames — not 24000 PCM samples
+	if bestLag < 40 || bestLag > 60 {
+		t.Fatalf("expected lag ~50 onset frames for 120 BPM, got ~%d (BPM=%.1f)", bestLag, bpm)
+	}
+}
+
+func TestComputeBPMSilence(t *testing.T) {
+	pcm := make([]int16, sampleRate*2*2) // 2 seconds of silence
+	bpm := computeBPM(pcm, sampleRate)
+	if bpm != 0 {
+		t.Fatalf("expected 0 BPM for silence, got %.1f", bpm)
+	}
+}
+
+func TestComputeBPMSmallInput(t *testing.T) {
+	pcm := make([]int16, sampleRate) // 0.5 seconds (sub-two-second)
+	bpm := computeBPM(pcm, sampleRate)
+	if bpm != 0 {
+		t.Fatalf("expected 0 BPM for small input, got %.1f", bpm)
 	}
 }
