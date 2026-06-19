@@ -178,6 +178,23 @@ normalized = clamp((pointDB - (peakDB - 36)) / 36, 0, 1)
 
 Tests must cover quiet-to-loud, uniformly quiet, uniformly loud, one transient peak, and silence. Multiplying every PCM sample by a constant that does not clip must produce the same relative graph within floating-point tolerance.
 
+### 8.1 Smoothed loudness trend line
+
+Keep the existing 1000-point relative loudness line and add a second line that communicates the slower loudness flow across phrases and chorus sections.
+
+1. Smooth the normalized 1000-point envelope with a Gaussian kernel whose full effective window represents `8.0` seconds of media time.
+2. For tracks shorter than `16` seconds, reduce the effective window to half the track duration so the trend does not collapse into one average value.
+3. Convert the time window to envelope samples using the exact media duration. Do not use a fixed number of graph points independent of duration.
+4. Use reflected samples at both boundaries. Do not zero-pad because that would create false downward slopes at the beginning and end.
+5. Clamp the smoothed values to `0..1`.
+6. Draw the original detailed loudness line first at its existing width and 80% opacity.
+7. Draw the smoothed trend line above it using the global complementary foreground RGB, `95%` opacity, and width `3` canonical pixels at 720p. Scale the width with output resolution.
+8. Do not connect trend samples with visibly angular one-pixel segments. Construct a monotone cubic Hermite curve so local extrema do not overshoot outside the source sample range.
+9. Rasterize the trend curve at `4x` the target graph resolution with antialiasing, then downsample with Lanczos to the final frame.
+10. The trend layer is static for the complete track. Render and cache it once per visualizer job instead of recomputing it for every video frame.
+
+The detailed line remains the source for moment-to-moment changes. The trend line is explanatory only and must not replace, delay, or alter the detailed line.
+
 ## 9. Verification
 
 - Unit tests for ASS alignment, clip padding, same-renderer width, scroll endpoints, cycle duration, and frame-contiguous reset.
@@ -190,6 +207,9 @@ Tests must cover quiet-to-loud, uniformly quiet, uniformly loud, one transient p
 - Color tests for hue rotation, chroma clamp, contrast, determinism, and white/black fallback.
 - Golden tests for fallback artwork with dark, light, and saturated palettes.
 - Loudness invariance and silence tests.
+- Gaussian trend tests for duration-to-window conversion, reflected boundaries, short tracks, and constant input.
+- Trend-curve tests proving finite `0..1` output, no monotone-segment overshoot, and correct 3px/4.5px/1.5px scaled widths at 720p/1080p/360p.
+- Pixel-level trend QA after 4x rasterization and Lanczos downsampling; direct one-pixel polyline output is not acceptable.
 - Encoded-frame extraction at hold, mid-scroll, scroll end, and reset timestamps.
 - 360p, 720p, and 1080p frame checks.
 - Full package tests, build, vet baseline comparison, and live GUNPEI HLS verification.
