@@ -20,34 +20,40 @@ type Palette struct {
 	Start, End color.RGBA
 }
 
-// PaletteForFeatures selects a mood palette using the same first-match order
-// as SelectMoodPalette but returns RGBA values instead of hex strings.
+// PaletteForFeatures selects a mood palette using the first-match order
+// defined in the visualizer design specification section 14.1.
+//
+//  1. High energy:      BPM >= 130 or integrated loudness >= -11 LUFS
+//  2. Bass-focused:     energy ratio at 20..250 Hz  >= 0.45
+//  3. Bright:           spectral centroid >= 3500 Hz
+//  4. Calm:             BPM < 95 and integrated loudness <= -16 LUFS
+//  5. Balanced/default: all other tracks
 func PaletteForFeatures(features AudioFeatures) Palette {
 	switch {
-	case features.BPM >= 120:
+	case features.BPM >= 130 || features.IntegratedLUFS >= -11:
 		return Palette{
-			Start: color.RGBA{255, 69, 0, 255},
-			End:   color.RGBA{139, 0, 0, 255},
+			Start: color.RGBA{122, 29, 79, 255},   // #7A1D4F
+			End:   color.RGBA{255, 107, 53, 255},  // #FF6B35
 		}
-	case features.LowFrequencyRatio >= 0.4:
+	case features.LowFrequencyRatio >= 0.45:
 		return Palette{
-			Start: color.RGBA{30, 144, 255, 255},
-			End:   color.RGBA{0, 0, 139, 255},
+			Start: color.RGBA{36, 16, 63, 255},    // #24103F
+			End:   color.RGBA{124, 58, 237, 255},  // #7C3AED
 		}
-	case features.SpectralCentroid >= 3000:
+	case features.SpectralCentroid >= 3500:
 		return Palette{
-			Start: color.RGBA{255, 215, 0, 255},
-			End:   color.RGBA{255, 140, 0, 255},
+			Start: color.RGBA{11, 85, 99, 255},    // #0B5563
+			End:   color.RGBA{32, 199, 201, 255},  // #20C7C9
 		}
-	case features.IntegratedLUFS >= -14:
+	case features.BPM < 95 && features.IntegratedLUFS <= -16:
 		return Palette{
-			Start: color.RGBA{152, 251, 152, 255},
-			End:   color.RGBA{0, 100, 0, 255},
+			Start: color.RGBA{31, 42, 68, 255},    // #1F2A44
+			End:   color.RGBA{94, 92, 230, 255},   // #5E5CE6
 		}
 	default:
 		return Palette{
-			Start: color.RGBA{147, 112, 219, 255},
-			End:   color.RGBA{76, 0, 130, 255},
+			Start: color.RGBA{23, 59, 87, 255},    // #173B57
+			End:   color.RGBA{58, 134, 255, 255},  // #3A86FF
 		}
 	}
 }
