@@ -1119,21 +1119,10 @@ func (s *Server) handleHistorySelect(w http.ResponseWriter, r *http.Request) {
 	}
 	if path, current, ok := s.store.CurrentPath(); ok && s.videoPlayerEnabled() {
 		if current.SourceKind == "soundcloud" || current.SourceKind == "local_audio" || current.SourceKind == "remote_audio" {
-			artworkPath := ""
-			if current.Thumbnail != "" {
-				artworkPath = filepath.Join(s.store.Dir(), current.Thumbnail)
-			}
-			kind := video.SourceKind(current.SourceKind)
-			meta := video.AudioMetadata{
-				Title:  current.Title,
-				Artist: current.Artist,
-				Album:  current.Album,
-			}
-			input := video.AudioRenderInput{
-				SourcePath:  path,
-				Kind:        kind,
-				Metadata:    meta,
-				ArtworkPath: artworkPath,
+			input, err := s.audioRenderInputForStored(r.Context(), path, *current)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
 			}
 			s.enqueueAudioConversion(input, current.ID, current.OriginalName)
 		} else if current.Kind == "video" {
@@ -1154,21 +1143,9 @@ func (s *Server) enqueueHistoryItem(id string) error {
 		return s.store.SetCurrentFromHistory(id)
 	}
 	if item.SourceKind == "soundcloud" || item.SourceKind == "local_audio" || item.SourceKind == "remote_audio" {
-		artworkPath := ""
-		if thumbPath, _, ok := s.store.HistoryThumbnailPath(id); ok {
-			artworkPath = thumbPath
-		}
-		kind := video.SourceKind(item.SourceKind)
-		meta := video.AudioMetadata{
-			Title:  item.Title,
-			Artist: item.Artist,
-			Album:  item.Album,
-		}
-		input := video.AudioRenderInput{
-			SourcePath:  path,
-			Kind:        kind,
-			Metadata:    meta,
-			ArtworkPath: artworkPath,
+		input, err := s.audioRenderInputForStored(context.Background(), path, item.CurrentImage)
+		if err != nil {
+			return fmt.Errorf("audio re-analysis: %w", err)
 		}
 		s.enqueueAudioConversion(input, item.ID, item.OriginalName)
 		return nil
