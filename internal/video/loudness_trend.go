@@ -2,6 +2,117 @@ package video
 
 import "math"
 
+// monotoneHermite interpolates the input slice to outputCount samples using
+// Fritsch-Carlson monotone cubic Hermite interpolation.
+//
+// The input points are treated as equally spaced on [0, n-1] where n =
+// len(input). The output covers the same interval with outputCount samples.
+// Fritsch-Carlson tangents ensure monotonicity — the interpolated curve never
+// overshoots the range of adjacent input points within any segment.
+//
+// An empty input or outputCount <= 0 returns nil. A single-element input
+// returns a constant array of the single value.
+func monotoneHermite(input []float64, outputCount int) []float64 {
+	n := len(input)
+	if n == 0 || outputCount <= 0 {
+		return nil
+	}
+	if outputCount == 1 {
+		return []float64{input[0]}
+	}
+	if n == 1 {
+		out := make([]float64, outputCount)
+		for i := range out {
+			out[i] = input[0]
+		}
+		return out
+	}
+
+	// Secant slopes between adjacent input points (implicit h=1).
+	secants := make([]float64, n-1)
+	for i := 0; i < n-1; i++ {
+		secants[i] = input[i+1] - input[i]
+	}
+
+	// Fritsch-Carlson tangents.
+	tangents := make([]float64, n)
+
+	// Interior points: weighted harmonic mean when secants share a sign.
+	for i := 1; i < n-1; i++ {
+		if secants[i-1]*secants[i] > 0 {
+			// With h=1 for all segments, the weighted harmonic mean
+			// simplifies to the ordinary arithmetic mean.
+			tangents[i] = (secants[i-1] + secants[i]) / 2
+		} else {
+			tangents[i] = 0
+		}
+	}
+
+	// Endpoint tangents.
+	tangents[0] = secants[0]
+	tangents[n-1] = secants[n-2]
+
+	// Sufficient monotonicity constraint per segment (Fritsch-Carlson).
+	for i := 0; i < n-1; i++ {
+		d := secants[i]
+		if d == 0 {
+			tangents[i] = 0
+			tangents[i+1] = 0
+			continue
+		}
+		alpha := tangents[i] / d
+		beta := tangents[i+1] / d
+
+		// Clamp negative tangents to zero (non-monotone → flat).
+		if alpha < 0 {
+			alpha = 0
+			tangents[i] = 0
+		}
+		if beta < 0 {
+			beta = 0
+			tangents[i+1] = 0
+		}
+
+		// Scale when alpha² + beta² exceeds 9 (sufficient condition).
+		sq := alpha*alpha + beta*beta
+		if sq > 9 {
+			tau := 3.0 / math.Sqrt(sq)
+			tangents[i] = tau * d * alpha
+			tangents[i+1] = tau * d * beta
+		}
+	}
+
+	// Interpolate to outputCount points using cubic Hermite basis.
+	out := make([]float64, outputCount)
+	maxPos := float64(n - 1)
+	maxOut := float64(outputCount - 1)
+
+	for j := 0; j < outputCount; j++ {
+		x := float64(j) * maxPos / maxOut
+
+		seg := int(math.Floor(x))
+		if seg < 0 {
+			seg = 0
+		}
+		if seg >= n-1 {
+			seg = n - 2
+		}
+		t := x - float64(seg)
+
+		// Hermite basis functions.
+		t2 := t * t
+		t3 := t2 * t
+		h00 := 2*t3 - 3*t2 + 1
+		h10 := t3 - 2*t2 + t
+		h01 := -2*t3 + 3*t2
+		h11 := t3 - t2
+
+		out[j] = h00*input[seg] + h10*tangents[seg] + h01*input[seg+1] + h11*tangents[seg+1]
+	}
+
+	return out
+}
+
 // trendWindowSize computes the Gaussian kernel size in envelope samples (0..999)
 // for a track of the given duration in seconds.
 //
