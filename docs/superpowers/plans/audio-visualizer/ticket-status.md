@@ -7,15 +7,15 @@ The active AI owns this ledger. Workers report evidence; they do not edit status
 | AV-000 | MERGED | none | c35cc35 | active AI | c35cc35 | prototype checkpointed |
 | AV-001 | MERGED | AV-000 | c35cc35 | active AI | dc7f807 | shared contracts defined |
 | AV-100 | MERGED | AV-001 | dc7f807 | llm-flash | f1347e4 | ffprobe toolchain: 4 tests, 55 package |
-| AV-101 | READY | AV-001, AV-100 | - | - | - | media probe |
+| AV-101 | MERGED | AV-001, AV-100 | a0a4f37 | llm-flash | 8abfe49 | media probe: 7 focused, 86 package |
 | AV-102 | MERGED | AV-001 | dc7f807 | llm-flash | 31b640e | metadata: 16 focused, 71 package |
 | AV-103 | MERGED | AV-001 | dc7f807 | llm-flash | baee2db | media limit: 6 focused, 79 package |
 | AV-104 | MERGED | AV-001 | dc7f807 | llm-flash | e53f61a | Noto fonts: 3 static fonts, 79 package |
-| AV-201 | WAITING_DEPENDENCY | AV-101, AV-102 | - | - | - | embedded artwork |
-| AV-202 | WAITING_DEPENDENCY | AV-100, AV-101, AV-102, AV-103 | - | - | - | SoundCloud acquisition |
-| AV-203 | WAITING_DEPENDENCY | AV-101, AV-103 | - | - | - | direct remote media |
-| AV-204 | WAITING_DEPENDENCY | AV-100, AV-101 | - | - | - | audio analysis |
-| AV-205 | WAITING_DEPENDENCY | AV-101, AV-103 | - | - | - | local classification |
+| AV-201 | READY | AV-101, AV-102 | - | - | - | embedded artwork |
+| AV-202 | READY | AV-100, AV-101, AV-102, AV-103 | - | - | - | SoundCloud acquisition |
+| AV-203 | READY | AV-101, AV-103 | - | - | - | direct remote media |
+| AV-204 | READY | AV-100, AV-101 | - | - | - | audio analysis |
+| AV-205 | READY | AV-101, AV-103 | - | - | - | local classification |
 | AV-301 | WAITING_DEPENDENCY | AV-104, AV-204 | - | - | - | fallback artwork |
 | AV-302 | READY | AV-100, AV-102, AV-104 | - | - | - | layout and ASS text |
 | AV-303 | WAITING_DEPENDENCY | AV-201, AV-301 | - | - | - | artwork/background |
@@ -130,4 +130,18 @@ Commands rerun by active AI: rtk go test ./internal/video -run '^TestVisualizerF
 Observed result: 1 passed in 1 packages
 Evidence paths: worktree verified then merged into main
 Reason: Noto font bundle implemented and merged
+```
+
+```text
+Timestamp: 2026-06-19
+Ticket: AV-101
+Old status: READY
+New status: MERGED
+Base commit: a0a4f37
+Worker/worktree: llm-flash / ImagePadServer-av-101
+Commit: 8abfe49
+Commands rerun by active AI: rtk go test ./internal/video -run '^Test(Parse|Classify|Probe)Media' -count=1 -v
+Observed result: 7 passed in 1 packages
+Evidence paths: worktree verified then merged into main
+Reason: media probe implemented and merged
 ```
