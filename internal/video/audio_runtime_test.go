@@ -310,8 +310,20 @@ func TestIntegrationGUNPEI(t *testing.T) {
 		BufferSize:   "5000k",
 		AudioBitrate: "128k",
 	}
-	if err := runSoundCloudHLS(ctx, hlsDir, ffmpeg, audio.SourcePath, audio.SoundCloudArtworkPath, "gunpei-test", preset); err != nil {
-		t.Fatalf("runSoundCloudHLS: %v", err)
+	meta := ResolveAudioMetadata(audio.Kind, audio.SourceName, audio.EmbeddedMetadata, audio.SoundCloudMetadata)
+	input := AudioRenderInput{
+		SourcePath:  audio.SourcePath,
+		Kind:        audio.Kind,
+		Metadata:    meta,
+		ArtworkPath: audio.SoundCloudArtworkPath,
+	}
+	analysis, aerr := AnalyzeAudio(ctx, ffmpeg, audio.SourcePath)
+	if aerr != nil {
+		t.Fatalf("AnalyzeAudio: %v", aerr)
+	}
+	input.Analysis = analysis
+	if err := RunAudioVisualizerHLS(ctx, hlsDir, ffmpeg, input, "gunpei-test", preset); err != nil {
+		t.Fatalf("RunAudioVisualizerHLS: %v", err)
 	}
 
 	// Verify HLS outputs.
