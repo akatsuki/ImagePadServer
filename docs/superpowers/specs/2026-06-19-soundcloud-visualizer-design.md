@@ -148,6 +148,56 @@ A non-SoundCloud HTTP or HTTPS URL may resolve to an audio file. Preserve the ex
 7. If the URL resolves to video, preserve the existing remote-video path.
 8. If it resolves to neither supported image, audio, nor video, reject it.
 
+### 4.7 SoundCloud download outputs and sidecar isolation
+
+The SoundCloud downloader must produce and bind three logical outputs:
+
+- the acquired audio file;
+- the downloaded SoundCloud artwork, when present;
+- the yt-dlp information JSON used for SoundCloud metadata fallback.
+
+Do not identify the audio file as the largest non-image file in a directory. An information JSON, subtitle, temporary file, or another yt-dlp sidecar must never become the audio source, even when it is larger than a very short audio file.
+
+Use this deterministic procedure:
+
+1. Create a unique output prefix for each download job.
+2. Run yt-dlp with `--write-thumbnail` and `--write-info-json`.
+3. Invoke yt-dlp with `--print-to-file after_move:filepath <job-specific-manifest>` so the final moved audio path is written directly to a job-specific manifest instead of being parsed from progress output.
+4. Require the manifest to contain exactly one non-empty path line, then read the audio path from it. Do not derive it by scanning for the largest file.
+5. Resolve both the job directory and manifest path to canonical absolute paths, then require the media path to remain inside the job output directory.
+6. Require the manifest path to exist, be a regular file, remain within the `4,294,967,295`-byte limit, and contain a playable audio stream according to ffprobe.
+7. Resolve the information JSON only from the same unique output prefix and the `.info.json` suffix.
+8. Resolve SoundCloud artwork only from the same unique output prefix and supported image files that successfully decode with non-zero dimensions.
+9. Treat `.json`, `.part`, `.ytdl`, subtitle files, manifests, and all other sidecars as metadata or temporary artifacts, never as media candidates.
+10. Remove job-specific temporary and sidecar files after their required data has been copied into persistent media state.
+
+If the audio manifest is absent or invalid, fail the download instead of guessing. If the information JSON is absent or invalid, continue with embedded metadata and filename fallbacks. If the artwork is absent or invalid, continue through the artwork priority in section 4.3.
+
+### 4.8 Legacy metadata encoding normalization
+
+Treat yt-dlp information JSON as UTF-8. Treat embedded audio tags returned by ffprobe as untrusted text that may contain legacy Japanese bytes misinterpreted as ISO-8859-1 Unicode code points.
+
+Normalize each embedded title, artist, and album value independently:
+
+1. Trim leading and trailing Unicode whitespace and NUL characters.
+2. If the value contains no Unicode C1 control characters in `U+0080..U+009F`, has no replacement character `U+FFFD`, and at least 90% of its non-whitespace characters are printable, keep it unchanged.
+3. Otherwise, attempt the legacy-Japanese repair only when every code point is in `U+0000..U+00FF`.
+4. Convert those code points back to bytes using the one-byte ISO-8859-1 mapping.
+5. Decode the bytes as strict Windows-31J/CP932. Do not replace invalid byte sequences.
+6. Accept the repaired candidate only when decoding succeeds, it contains no `U+FFFD`, it contains fewer C1/control characters than the original, and at least 90% of its non-whitespace characters are printable.
+7. If the repaired candidate is not strictly better, discard it and keep the original only when the original passed step 2; otherwise treat the tag as empty.
+8. Apply the normal source-specific metadata fallback from section 4.4 after normalization.
+
+Do not blindly reinterpret every Latin-1-looking value as CP932. Ordinary ASCII, valid Japanese Unicode, valid Chinese/Korean Unicode, and valid accented Latin metadata must remain unchanged.
+
+The verified SoundCloud fixture `https://soundcloud.com/hujikopro/hujiko-pro-gunpei` must normalize these observed ffprobe values:
+
+- title `GUNPEI` remains `GUNPEI`;
+- artist mojibake represented by bytes `93 A1 8E 71 96 BC 90 6C` becomes `藤子名人`;
+- album mojibake represented by bytes `94 5A 93 78` becomes `濃度`.
+
+For this fixture, the acquired M4A has no embedded `attached_pic`; therefore its downloaded SoundCloud JPEG must be selected after embedded-artwork lookup returns empty.
+
 ## 5. Layer order
 
 Render back to front in this exact order:
@@ -404,6 +454,12 @@ All metadata, spectrum, waveform, loudness graph, progress display, and time rul
 20. The enabled file tab reads `画像/音声/動画`, while disabled mode preserves the image/RAW-only state.
 21. Audio and video inputs accept at most `4,294,967,295` bytes through every acquisition path.
 22. Direct audio-file URLs use the local-audio visualization path after secure download and probing.
+23. SoundCloud download selection uses the explicit yt-dlp final-path manifest; `.info.json` and other sidecars can never be selected as audio.
+24. A test fixture whose information JSON is larger than its audio still selects the manifest-listed audio file.
+25. Valid UTF-8 Japanese, Chinese, Korean, accented Latin, and ASCII tags pass through unchanged.
+26. The verified GUNPEI fixture repairs the observed legacy artist and album values to `藤子名人` and `濃度`.
+27. Invalid or ambiguous legacy-text repair is rejected and falls through to the source-specific metadata fallback.
+28. The verified GUNPEI fixture selects the downloaded 715 x 706 SoundCloud JPEG because its M4A has no embedded image.
 
 ## 17. Implementation boundary
 
@@ -415,6 +471,8 @@ This document defines appearance and observable behavior only. The implementatio
 - cache keys for whole-track analysis and fallback artwork;
 - ffprobe-based image/audio/video classification and `attached_pic` handling;
 - embedded metadata and artwork extraction;
+- strict legacy-tag normalization with unchanged-valid-Unicode tests and the verified GUNPEI regression fixture;
+- yt-dlp final-path manifest handling and explicit exclusion of information JSON and other sidecars from media selection;
 - source-kind-aware artwork and metadata resolution;
 - secure direct-audio-URL acquisition and size enforcement;
 - replacement of the current uncommitted SoundCloud-only path with a shared audio HLS pipeline;
