@@ -60,6 +60,83 @@ func fractionalLogBandEnergies(coeff []complex128, sampleRate int) [24]float64 {
 	return bands
 }
 
+// releaseFraction returns the normalized release-curve multiplier at time t
+// seconds into the release phase.
+//
+// The curve follows:
+//
+//	releaseFraction(t) = (exp(-3.5*t) - exp(-3.5)) / (1 - exp(-3.5))
+//
+// At t=0 the result is 1.0; at t=1 it is exactly 0. For t>1 it returns 0.
+// Expected values: ~0.3987 at 0.25s, ~0.1481 at 0.50s, ~0.0436 at 0.75s.
+func releaseFraction(seconds float64) float64 {
+	if seconds <= 0 {
+		return 1.0
+	}
+	if seconds >= 1.0 {
+		return 0.0
+	}
+	const k = 3.5
+	eNeg35 := math.Exp(-k)
+	return (math.Exp(-k*seconds) - eNeg35) / (1.0 - eNeg35)
+}
+
+// applySpectrumMotion applies attack and release smoothing to a sequence of
+// normalized spectrum frames.
+//
+// Attack uses a 15ms time constant: display approaches raw value exponentially
+// with alpha = 1 - exp(-dt/0.015). At 30fps this reaches ~89% in one frame
+// and ~99% in two frames. Release follows the exponential curve defined by
+// releaseFraction over exactly 1.0 second.
+//
+// Each band is smoothed independently. The function never releases below the
+// current raw input value. If a new peak arrives, the release is cancelled
+// and attack applies immediately.
+//
+// The output has the same dimensions as the input.
+func applySpectrumMotion(raw [][24]float64, fps float64) [][24]float64 {
+	if len(raw) == 0 {
+		return raw
+	}
+
+	frameDuration := 1.0 / fps
+	result := make([][24]float64, len(raw))
+
+	var displayed [24]float64
+	var peak [24]float64
+	var releaseTimer [24]float64
+
+	for fi, frame := range raw {
+		for bi, v := range frame {
+			if v > displayed[bi] {
+				// Attack: exponential approach with 15ms time constant.
+				alpha := 1.0 - math.Exp(-frameDuration/0.015)
+				newVal := displayed[bi] + (v-displayed[bi])*alpha
+				result[fi][bi] = newVal
+				displayed[bi] = newVal
+				peak[bi] = newVal
+				releaseTimer[bi] = 0
+			} else {
+				// Release: advance timer and apply decay.
+				releaseTimer[bi] += frameDuration
+				decayed := peak[bi] * releaseFraction(releaseTimer[bi])
+				if decayed < v {
+					// Never release below the raw value.
+					result[fi][bi] = v
+					displayed[bi] = v
+					peak[bi] = v
+					releaseTimer[bi] = 0
+				} else {
+					result[fi][bi] = decayed
+					displayed[bi] = decayed
+				}
+			}
+		}
+	}
+
+	return result
+}
+
 // normalizeSpectrumTrack converts raw per-frame 24-band magnitudes into
 // display-ready normalized values using global track statistics.
 //
