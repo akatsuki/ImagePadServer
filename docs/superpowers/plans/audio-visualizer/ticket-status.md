@@ -4,13 +4,13 @@ The active AI owns this ledger. Workers report evidence; they do not edit status
 
 | Ticket | Status | Dependencies | Base commit | Owner/worktree | Review commit | Evidence summary |
 | --- | --- | --- | --- | --- | --- | --- |
-| AV-000 | READY | none | current worktree | active AI | - | checkpoint dirty prototype |
-| AV-001 | WAITING_DEPENDENCY | AV-000 | - | - | - | shared contracts |
-| AV-100 | WAITING_DEPENDENCY | AV-001 | - | - | - | ffprobe toolchain |
+| AV-000 | MERGED | none | c35cc35 | active AI | c35cc35 | prototype checkpointed |
+| AV-001 | MERGED | AV-000 | c35cc35 | active AI | dc7f807 | shared contracts defined |
+| AV-100 | READY | AV-001 | dc7f807 | - | - | ffprobe toolchain |
 | AV-101 | WAITING_DEPENDENCY | AV-001, AV-100 | - | - | - | media probe |
-| AV-102 | WAITING_DEPENDENCY | AV-001 | - | - | - | metadata normalization |
-| AV-103 | WAITING_DEPENDENCY | AV-001 | - | - | - | media limit |
-| AV-104 | WAITING_DEPENDENCY | AV-001 | - | - | - | Noto fonts |
+| AV-102 | READY | AV-001 | dc7f807 | - | - | metadata normalization |
+| AV-103 | READY | AV-001 | dc7f807 | - | - | media limit |
+| AV-104 | READY | AV-001 | dc7f807 | - | - | Noto fonts |
 | AV-201 | WAITING_DEPENDENCY | AV-101, AV-102 | - | - | - | embedded artwork |
 | AV-202 | WAITING_DEPENDENCY | AV-100, AV-101, AV-102, AV-103 | - | - | - | SoundCloud acquisition |
 | AV-203 | WAITING_DEPENDENCY | AV-101, AV-103 | - | - | - | direct remote media |
@@ -47,3 +47,31 @@ Reason:
 ```
 
 Do not rewrite or delete older transition blocks.
+
+```text
+Timestamp: 2026-06-19
+Ticket: AV-000
+Old status: READY
+New status: MERGED
+Base commit: c35cc35
+Worker/worktree: active AI (main)
+Commit: c35cc35
+Commands rerun by active AI: rtk git diff --check, rtk go test ./... -count=1
+Observed result: git diff --check clean; go test 104 passed in 20 packages
+Evidence paths: main worktree
+Reason: prototype checkpoint completed and verified
+```
+
+```text
+Timestamp: 2026-06-19
+Ticket: AV-001
+Old status: WAITING_DEPENDENCY
+New status: MERGED
+Base commit: c35cc35
+Worker/worktree: active AI (main)
+Commit: dc7f807
+Commands rerun by active AI: rtk go test ./internal/video -run '^TestAudioContracts$' -count=1 -v
+Observed result: RED (compile error) then GREEN (1 passed)
+Evidence paths: main worktree
+Reason: shared contracts defined and frozen
+```
