@@ -1516,10 +1516,15 @@ const indexHTML = `<!doctype html>
       videoPlayerToggle.checked = !!data.enabled;
       videoPlayerToggle.disabled = videoPlayerPending;
       videoPlayerText.textContent = data.enabled ? '有効 / 自動コピーはHLS優先' : '無効 / 自動コピーは画像URL';
-      imageInput.accept = data.enabled ? mediaAccept : imageAccept;
-      dropHint.textContent = data.enabled ? 'Drop image, RAW, or video files here' : 'Drop image or RAW files here';
-      dragDropOverlayHint.textContent = data.enabled ? '画像、RAW、動画ファイルを選択します' : '画像またはRAWファイルを選択します';
-      fileModeButton.textContent = data.enabled ? '画像/動画' : '画像';
+      imageInput.accept = data.enabled ? '' : imageAccept;
+      dropHint.textContent = data.enabled ? 'Drop image, audio, or video files here' : 'Drop image or RAW files here';
+      dragDropOverlayHint.textContent = data.enabled ? '画像、RAW、音声、動画ファイルを選択します' : '画像またはRAWファイルを選択します';
+      fileModeButton.textContent = data.enabled ? '画像/音声/動画' : '画像';
+      const uploadHeading = document.querySelector('.content section:first-child h2');
+      if (uploadHeading) {
+        uploadHeading.textContent = data.enabled ? 'メディアアップロード' : '画像アップロード';
+      }
+      imageURLInput.placeholder = data.enabled ? 'https://example.com/image_or_video.webp' : 'https://example.com/image.webp';
       queueUploadButton.hidden = !data.enabled || uploadMode === 'obs';
       obsModeButton.hidden = !data.enabled;
       if (modeTabs) {
