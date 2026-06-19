@@ -71,11 +71,21 @@ func (s *Server) processAudioFileAndPublish(r *http.Request, acquired video.Acqu
 		usedArtwork = filepath.Join(s.store.Dir(), thumbnail)
 	}
 
+	ffmpegPath, err := video.EnsureFFmpeg()
+	if err != nil {
+		return nil, err
+	}
+	analysis, err := video.AnalyzeAudio(r.Context(), ffmpegPath, acquired.SourcePath)
+	if err != nil {
+		return nil, fmt.Errorf("analyze audio: %w", err)
+	}
+
 	input := video.AudioRenderInput{
 		SourcePath:  acquired.SourcePath,
 		Kind:        acquired.Kind,
 		Metadata:    meta,
 		ArtworkPath: usedArtwork,
+		Analysis:    analysis,
 	}
 
 	s.enqueueAudioConversion(input, currentID, acquired.SourceName)
@@ -105,6 +115,15 @@ func (s *Server) processAudioFileAndQueue(r *http.Request, acquired video.Acquir
 	thumbnail := ""
 	if artworkPath != "" {
 		thumbnail = s.createVideoThumbnail(artworkPath)
+	}
+
+	ffmpegPath2, err := video.EnsureFFmpeg()
+	if err != nil {
+		return nil, err
+	}
+	analysis, err := video.AnalyzeAudio(r.Context(), ffmpegPath2, acquired.SourcePath)
+	if err != nil {
+		return nil, fmt.Errorf("analyze audio: %w", err)
 	}
 
 	sourceKind := string(acquired.Kind)
@@ -138,6 +157,7 @@ func (s *Server) processAudioFileAndQueue(r *http.Request, acquired video.Acquir
 			Kind:        acquired.Kind,
 			Metadata:    meta,
 			ArtworkPath: usedArtwork,
+			Analysis:    analysis,
 		}
 		s.enqueueAudioConversion(input, historyItem.ID, historyItem.OriginalName)
 	}

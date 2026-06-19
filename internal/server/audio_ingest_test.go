@@ -9,18 +9,44 @@ import (
 	"imagepadserver/internal/video"
 )
 
+func writeTestWAV(t *testing.T, dir, name string) string {
+	t.Helper()
+	var pcm []byte
+	for i := 0; i < 4800; i++ {
+		s := int16(i * 13)
+		pcm = append(pcm, byte(s), byte(s>>8), byte(s), byte(s>>8))
+	}
+	dataLen := len(pcm)
+	fileLen := 36 + dataLen
+	header := []byte{
+		0x52, 0x49, 0x46, 0x46,
+		byte(fileLen), byte(fileLen >> 8), byte(fileLen >> 16), byte(fileLen >> 24),
+		0x57, 0x41, 0x56, 0x45,
+		0x66, 0x6D, 0x74, 0x20,
+		0x10, 0x00, 0x00, 0x00,
+		0x01, 0x00, 0x02, 0x00,
+		0x80, 0xBB, 0x00, 0x00,
+		0x00, 0xEE, 0x02, 0x00,
+		0x04, 0x00, 0x10, 0x00,
+		0x64, 0x61, 0x74, 0x61,
+		byte(dataLen), byte(dataLen >> 8), byte(dataLen >> 16), byte(dataLen >> 24),
+	}
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, append(header, pcm...), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func TestProcessAudioFileAndPublish_SoundCloud(t *testing.T) {
 	srv, _ := testServer(t, true)
 	defer srv.store.Reset()
 
-	audioPath := filepath.Join(t.TempDir(), "source.mp3")
-	if err := os.WriteFile(audioPath, []byte("fake audio"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	audioPath := writeTestWAV(t, t.TempDir(), "source.wav")
 
 	acquired := video.AcquiredAudio{
 		SourcePath: audioPath,
-		SourceName: "Test Track.mp3",
+		SourceName: "Test Track.wav",
 		Kind:       video.SourceSoundCloud,
 		SoundCloudMetadata: video.AudioMetadata{
 			Title:  "SoundCloud Title",
@@ -63,14 +89,11 @@ func TestProcessAudioFileAndPublish_LocalAudio(t *testing.T) {
 	srv, _ := testServer(t, true)
 	defer srv.store.Reset()
 
-	audioPath := filepath.Join(t.TempDir(), "track.flac")
-	if err := os.WriteFile(audioPath, []byte("fake flac"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	audioPath := writeTestWAV(t, t.TempDir(), "track.wav")
 
 	acquired := video.AcquiredAudio{
 		SourcePath: audioPath,
-		SourceName: "local.flac",
+		SourceName: "local.wav",
 		Kind:       video.SourceLocalAudio,
 		EmbeddedMetadata: video.AudioMetadata{
 			Title:  "Local Title",
@@ -108,14 +131,11 @@ func TestProcessAudioFileAndPublish_RemoteAudio(t *testing.T) {
 	srv, _ := testServer(t, true)
 	defer srv.store.Reset()
 
-	audioPath := filepath.Join(t.TempDir(), "remote_source.m4a")
-	if err := os.WriteFile(audioPath, []byte("fake m4a"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	audioPath := writeTestWAV(t, t.TempDir(), "remote_source.wav")
 
 	acquired := video.AcquiredAudio{
 		SourcePath: audioPath,
-		SourceName: "remote_audio.m4a",
+		SourceName: "remote_audio.wav",
 		Kind:       video.SourceRemoteAudio,
 		EmbeddedMetadata: video.AudioMetadata{
 			Title:  "Remote Title",
@@ -145,14 +165,11 @@ func TestProcessAudioFileAndQueue_SoundCloud(t *testing.T) {
 	srv, _ := testServer(t, true)
 	defer srv.store.Reset()
 
-	audioPath := filepath.Join(t.TempDir(), "queue_source.mp3")
-	if err := os.WriteFile(audioPath, []byte("fake queue audio"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	audioPath := writeTestWAV(t, t.TempDir(), "queue_source.wav")
 
 	acquired := video.AcquiredAudio{
 		SourcePath: audioPath,
-		SourceName: "Queued Track.mp3",
+		SourceName: "Queued Track.wav",
 		Kind:       video.SourceSoundCloud,
 		SoundCloudMetadata: video.AudioMetadata{
 			Title: "Queued Title",
@@ -195,10 +212,7 @@ func TestProcessAudioFileAndQueue_LocalAudio(t *testing.T) {
 	srv, _ := testServer(t, true)
 	defer srv.store.Reset()
 
-	audioPath := filepath.Join(t.TempDir(), "queue_local.wav")
-	if err := os.WriteFile(audioPath, []byte("fake wav"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	audioPath := writeTestWAV(t, t.TempDir(), "queue_local.wav")
 
 	acquired := video.AcquiredAudio{
 		SourcePath: audioPath,
@@ -229,14 +243,11 @@ func TestProcessAudioFileAndPublish_TitleFallsBackToFilename(t *testing.T) {
 	srv, _ := testServer(t, true)
 	defer srv.store.Reset()
 
-	audioPath := filepath.Join(t.TempDir(), "my-awesome-track.mp3")
-	if err := os.WriteFile(audioPath, []byte("fake"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	audioPath := writeTestWAV(t, t.TempDir(), "my-awesome-track.wav")
 
 	acquired := video.AcquiredAudio{
 		SourcePath: audioPath,
-		SourceName: "my-awesome-track.mp3",
+		SourceName: "my-awesome-track.wav",
 		Kind:       video.SourceLocalAudio,
 	}
 
