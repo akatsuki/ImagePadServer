@@ -324,10 +324,12 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 		}
 		if media.Kind == "soundcloud" {
 			acquired := video.AcquiredAudio{
-				SourcePath:            media.SourcePath,
-				SourceName:            media.Name,
-				Kind:                  video.SourceSoundCloud,
-				SoundCloudArtworkPath: media.ArtworkPath,
+				SourcePath:                media.SourcePath,
+				SourceName:                media.Name,
+				Kind:                      video.SourceSoundCloud,
+				SoundCloudArtworkPath:     media.ArtworkPath,
+				SoundCloudMetadata:        media.Metadata,
+				SoundCloudInformationPath: media.InformationPath,
 			}
 			state, err := s.processAudioFileAndPublish(r, acquired)
 			if err != nil {
@@ -396,10 +398,12 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 		}
 		if media.Kind == "soundcloud" {
 			acquired := video.AcquiredAudio{
-				SourcePath:            media.SourcePath,
-				SourceName:            media.Name,
-				Kind:                  video.SourceSoundCloud,
-				SoundCloudArtworkPath: media.ArtworkPath,
+				SourcePath:                media.SourcePath,
+				SourceName:                media.Name,
+				Kind:                      video.SourceSoundCloud,
+				SoundCloudArtworkPath:     media.ArtworkPath,
+				SoundCloudMetadata:        media.Metadata,
+				SoundCloudInformationPath: media.InformationPath,
 			}
 			state, err := s.processAudioFileAndQueue(r, acquired)
 			if err != nil {

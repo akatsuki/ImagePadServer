@@ -239,6 +239,48 @@ func TestProcessAudioFileAndQueue_LocalAudio(t *testing.T) {
 	}
 }
 
+func TestProcessAudioFileAndPublish_SoundCloudGUNPEIFallback(t *testing.T) {
+	srv, _ := testServer(t, true)
+	defer srv.store.Reset()
+
+	audioPath := writeTestWAV(t, t.TempDir(), "gunpei.wav")
+
+	acquired := video.AcquiredAudio{
+		SourcePath: audioPath,
+		SourceName: "gunpei.wav",
+		Kind:       video.SourceSoundCloud,
+		// Embedded metadata is empty; SoundCloud metadata should supply values.
+		SoundCloudMetadata: video.AudioMetadata{
+			Title:  "GUNPEI",
+			Artist: "藤子名人",
+			Album:  "濃度",
+		},
+	}
+
+	req := httptest.NewRequest("GET", "/", nil)
+	_, err := srv.processAudioFileAndPublish(req, acquired)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	current := srv.store.Current()
+	if current == nil {
+		t.Fatal("expected current image after publish")
+	}
+	if current.SourceKind != "soundcloud" {
+		t.Fatalf("SourceKind = %q, want soundcloud", current.SourceKind)
+	}
+	if current.Title != "GUNPEI" {
+		t.Fatalf("Title = %q, want GUNPEI", current.Title)
+	}
+	if current.Artist != "藤子名人" {
+		t.Fatalf("Artist = %q, want 藤子名人", current.Artist)
+	}
+	if current.Album != "濃度" {
+		t.Fatalf("Album = %q, want 濃度", current.Album)
+	}
+}
+
 func TestProcessAudioFileAndPublish_TitleFallsBackToFilename(t *testing.T) {
 	srv, _ := testServer(t, true)
 	defer srv.store.Reset()
