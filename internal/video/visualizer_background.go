@@ -15,6 +15,211 @@ import (
 	xdraw "golang.org/x/image/draw"
 )
 
+// srgbLinearizeLUT is a 256-entry lookup table for srgbLinearize(v/255.0).
+// It eliminates math.Pow calls in the hot path of regionContrastOK.
+var srgbLinearizeLUT [256]float64
+
+func init() {
+	for i := 0; i < 256; i++ {
+		srgbLinearizeLUT[i] = srgbLinearize(float64(i) / 255.0)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ComplementaryForeground
+// ---------------------------------------------------------------------------
+
+// ComplementaryForeground derives a global foreground colour from the blurred
+// full-frame background by computing the complementary hue in OKLCH and
+// searching OKLCH lightness in 0.01 increments for a variant that passes
+// WCAG 4.5:1 in both the metadata and bottom-graph regions.
+//
+// Unlike the naive approach of checking contrast against raw background
+// pixels, this function searches overlay opacity first — for each chromatic
+// OKLCH candidate it composites the candidate over the background at various
+// overlay opacities (0–60 %, 5‑point steps) and evaluates WCAG contrast
+// against the composited result.  This allows candidates that would fail raw
+// contrast to pass once the overlay is applied.
+//
+//  1. Pixels in metadataRect and graphRect are sampled and their average sRGB
+//     colour computed.
+//  2. The average is converted to OKLCH, hue rotated 180°, chroma clamped to
+//     [0.05, 0.18].
+//  3. Lightness is searched in 0.01 increments from 0.01 to 0.99.
+//  4. For each lightness candidate, overlay opacity is searched from 0 % to
+//     60 % in 5‑point steps.  The first opacity that achieves WCAG >= 4.5:1
+//     in both regions (after Porter‑Duff Over compositing) is recorded.
+//  5. The candidate whose L is closest to the original complement L is
+//     returned together with its overlay.
+//  6. If no chromatic candidate passes with any overlay, the function falls
+//     back to white or black with the lowest overlay opacity that reaches
+//     4.5:1 in both regions.
+func ComplementaryForeground(bg image.Image, metadataRect, graphRect image.Rectangle) ForegroundMode {
+	avg := averageColorForRegions(bg, metadataRect, graphRect)
+
+	oklch := SRGBToOKLCH(avg)
+	comp := oklch.RotateHue(180).ClampChroma(0.05, 0.18)
+	origL := comp.L
+
+	type chromaPair struct {
+		color   color.RGBA
+		overlay color.RGBA
+	}
+	var best chromaPair
+	bestDiff := math.MaxFloat64
+
+	for l := 0.01; l < 1.0; l += 0.01 {
+		cand := OKLCH{L: l, C: comp.C, H: comp.H}
+		rgba := OKLCHToSRGB(cand)
+		fgLum := srgbLuminance(rgba)
+
+		// Pick overlay colour: dark overlay for light text, light overlay
+		// for dark text.
+		var overlayColor color.RGBA
+		if fgLum > 0.5 {
+			overlayColor = color.RGBA{R: 0, G: 0, B: 0, A: 255}
+		} else {
+			overlayColor = color.RGBA{R: 255, G: 255, B: 255, A: 255}
+		}
+
+		for opacity := 0.0; opacity <= 0.60; opacity += 0.05 {
+			roundedAlpha := uint8(math.Round(opacity * 255))
+			actualAlpha := float64(roundedAlpha) / 255.0
+
+			metaOK := regionContrastOK(bg, metadataRect, overlayColor, actualAlpha, fgLum, 4.5)
+			graphOK := regionContrastOK(bg, graphRect, overlayColor, actualAlpha, fgLum, 4.5)
+			if metaOK && graphOK {
+				diff := math.Abs(l - origL)
+				if diff < bestDiff {
+					best = chromaPair{
+						color:   rgba,
+						overlay: color.RGBA{R: overlayColor.R, G: overlayColor.G, B: overlayColor.B, A: roundedAlpha},
+					}
+					bestDiff = diff
+				}
+				break
+			}
+		}
+	}
+
+	if bestDiff != math.MaxFloat64 {
+		return ForegroundMode{Color: best.color, Overlay: best.overlay}
+	}
+
+	return fallbackWithOverlay(bg, metadataRect, graphRect)
+}
+
+// fallbackWithOverlay tries black and white at increasing overlay opacities
+// (0–60 %, 5‑point steps) and picks the best pair that achieves WCAG
+// >= 4.5:1 in both regions.  When both colours pass, the one with the
+// higher minimum contrast ratio at 60 % opacity wins and its lowest
+// passing overlay opacity (0–60 %) is used.  When neither reaches 4.5:1
+// the colour with the higher minimum contrast ratio at 60 % opacity is used.
+func fallbackWithOverlay(bg image.Image, metadataRect, graphRect image.Rectangle) ForegroundMode {
+	white := color.RGBA{R: 255, G: 255, B: 255, A: 255}
+	black := color.RGBA{R: 0, G: 0, B: 0, A: 255}
+
+	type attempt struct {
+		mode    ForegroundMode
+		ratio60 float64
+		passed  bool
+	}
+
+	// tryFg evaluates the given foreground colour with its corresponding
+	// overlay colour (dark overlay for light fg, light overlay for dark fg)
+	// across the opacity range.
+	tryFg := func(fg, overlay color.RGBA) attempt {
+		fgLum := srgbLuminance(fg)
+
+		// Always compute the minimum contrast ratio at 60 % opacity for
+		// selection (used when both black and white pass).
+		mr := minRegionContrast(bg, metadataRect, overlay, 0.60, fgLum)
+		gr := minRegionContrast(bg, graphRect, overlay, 0.60, fgLum)
+		ratio60 := mr
+		if gr < mr {
+			ratio60 = gr
+		}
+
+		for opacity := 0.0; opacity <= 0.60; opacity += 0.05 {
+			roundedAlpha := uint8(math.Round(opacity * 255))
+			actualAlpha := float64(roundedAlpha) / 255.0
+			if regionContrastOK(bg, metadataRect, overlay, actualAlpha, fgLum, 4.5) &&
+				regionContrastOK(bg, graphRect, overlay, actualAlpha, fgLum, 4.5) {
+				return attempt{
+					mode: ForegroundMode{
+						Color:   fg,
+						Overlay: color.RGBA{R: overlay.R, G: overlay.G, B: overlay.B, A: roundedAlpha},
+					},
+					ratio60: ratio60,
+					passed:  true,
+				}
+			}
+		}
+		return attempt{ratio60: ratio60}
+	}
+
+	// White fg → dark overlay.
+	aWhite := tryFg(white, color.RGBA{R: 0, G: 0, B: 0, A: 255})
+	// Black fg → light overlay.
+	aBlack := tryFg(black, color.RGBA{R: 255, G: 255, B: 255, A: 255})
+
+	switch {
+	case aWhite.passed && aBlack.passed:
+		// Both pass: pick the one with higher minimum contrast at 60 %.
+		if aWhite.ratio60 >= aBlack.ratio60 {
+			return aWhite.mode
+		}
+		return aBlack.mode
+	case aWhite.passed:
+		return aWhite.mode
+	case aBlack.passed:
+		return aBlack.mode
+	default:
+		cappedA := uint8(math.Round(0.60 * 255))
+		if aWhite.ratio60 >= aBlack.ratio60 {
+			return ForegroundMode{
+				Color:   white,
+				Overlay: color.RGBA{R: 0, G: 0, B: 0, A: cappedA},
+			}
+		}
+		return ForegroundMode{
+			Color:   black,
+			Overlay: color.RGBA{R: 255, G: 255, B: 255, A: cappedA},
+		}
+	}
+}
+
+// averageColorForRegions computes the mean sRGB colour across all pixels in the
+// given regions of img. Returns an opaque colour.
+func averageColorForRegions(img image.Image, rects ...image.Rectangle) color.RGBA {
+	var sumR, sumG, sumB float64
+	var n int
+
+	for _, rect := range rects {
+		rect = rect.Intersect(img.Bounds())
+		for y := rect.Min.Y; y < rect.Max.Y; y++ {
+			for x := rect.Min.X; x < rect.Max.X; x++ {
+				r, g, b, _ := img.At(x, y).RGBA()
+				sumR += float64(r >> 8)
+				sumG += float64(g >> 8)
+				sumB += float64(b >> 8)
+				n++
+			}
+		}
+	}
+
+	if n == 0 {
+		return color.RGBA{R: 128, G: 128, B: 128, A: 255}
+	}
+
+	return color.RGBA{
+		R: uint8(math.Round(sumR / float64(n))),
+		G: uint8(math.Round(sumG / float64(n))),
+		B: uint8(math.Round(sumB / float64(n))),
+		A: 255,
+	}
+}
+
 // ---------------------------------------------------------------------------
 // ForegroundMode
 // ---------------------------------------------------------------------------
@@ -65,8 +270,8 @@ func SelectForegroundMode(background image.Image, metadataRect, graphRect image.
 	fgLum := srgbLuminance(fgColor)
 
 	for opacity <= 0.60 {
-		metaOK := regionContrastOK(background, metadataRect, overlayColor, opacity, fgLum)
-		graphOK := regionContrastOK(background, graphRect, overlayColor, opacity, fgLum)
+		metaOK := regionContrastOK(background, metadataRect, overlayColor, opacity, fgLum, 4.5)
+		graphOK := regionContrastOK(background, graphRect, overlayColor, opacity, fgLum, 4.5)
 		if metaOK && graphOK {
 			break
 		}
@@ -135,60 +340,131 @@ func wcagContrast(l1, l2 float64) float64 {
 }
 
 // regionContrastOK reports whether every pixel in the given rectangle, after
-// the semi‑transparent overlay is applied, achieves at least 4.5:1 contrast
-// against the foreground colour.
-func regionContrastOK(img image.Image, rect image.Rectangle, overlayColor color.RGBA, overlayAlpha, fgLum float64) bool {
+// the semi‑transparent overlay is applied, achieves at least minRatio:1
+// contrast against the foreground colour.  The overlay is applied using
+// Porter‑Duff Over compositing with integer arithmetic (matching
+// draw.Draw with draw.Over) so that the check agrees with the actual
+// rendered output.
+func regionContrastOK(img image.Image, rect image.Rectangle, overlayColor color.RGBA, overlayAlpha, fgLum, minRatio float64) bool {
 	rect = rect.Intersect(img.Bounds())
 	if rect.Empty() {
 		return true
 	}
 
-	// For light mode (white text, black overlay) the worst case is the
-	// pixel with the highest effective luminance; for dark mode it is the
-	// pixel with the lowest effective luminance.
-	whiteFg := fgLum > 0.5 // true for white (1.0), false for black (0.0)
+	// Pre‑compute the integer alpha used by draw.Draw / draw.Over.
+	alpha := uint8(math.Round(overlayAlpha * 255))
+	invAlpha := 255 - alpha // 255 when overlayAlpha==0
 
-	oa := overlayAlpha
-	or := float64(overlayColor.R)
-	og := float64(overlayColor.G)
-	ob := float64(overlayColor.B)
+	or := int(overlayColor.R) * int(alpha)
+	og := int(overlayColor.G) * int(alpha)
+	ob := int(overlayColor.B) * int(alpha)
 
-	extreme := -1.0 // sentinel
+	worst := 999.0 // sentinel — minimum contrast ratio found
 
-	for y := rect.Min.Y; y < rect.Max.Y; y++ {
-		for x := rect.Min.X; x < rect.Max.X; x++ {
-			r, g, b, _ := img.At(x, y).RGBA()
-			// 16‑bit → 8‑bit.
-			br := float64(r>>8) * (1 - oa)
-			bg := float64(g>>8) * (1 - oa)
-			bb := float64(b>>8) * (1 - oa)
+	// Fast-path for *image.RGBA: pixel access via RGBAAt is faster than
+	// the image.Image interface dispatch.
+	if rgba, ok := img.(*image.RGBA); ok {
+		for y := rect.Min.Y; y < rect.Max.Y; y++ {
+			for x := rect.Min.X; x < rect.Max.X; x++ {
+				c := rgba.RGBAAt(x, y)
 
-			effR := or*oa + br
-			effG := og*oa + bg
-			effB := ob*oa + bb
+				// Porter‑Duff Over with truncating integer division.
+				effR := uint8((or + int(c.R)*int(invAlpha)) / 255)
+				effG := uint8((og + int(c.G)*int(invAlpha)) / 255)
+				effB := uint8((ob + int(c.B)*int(invAlpha)) / 255)
 
-			lum := srgbLuminance8(effR, effG, effB)
-
-			if whiteFg {
-				// Need the highest effective luminance.
-				if lum > extreme {
-					extreme = lum
+				lum := 0.2126*srgbLinearizeLUT[effR] + 0.7152*srgbLinearizeLUT[effG] + 0.0722*srgbLinearizeLUT[effB]
+				ratio := wcagContrast(fgLum, lum)
+				if ratio < worst {
+					worst = ratio
 				}
-			} else {
-				// Need the lowest effective luminance.
-				if extreme < 0 || lum < extreme {
-					extreme = lum
+			}
+		}
+	} else {
+		for y := rect.Min.Y; y < rect.Max.Y; y++ {
+			for x := rect.Min.X; x < rect.Max.X; x++ {
+				r, g, b, _ := img.At(x, y).RGBA()
+				// 16‑bit → 8‑bit.
+				br := int(r >> 8)
+				bg := int(g >> 8)
+				bb := int(b >> 8)
+
+				// Porter‑Duff Over with truncating integer division.
+				effR := uint8((or + br*int(invAlpha)) / 255)
+				effG := uint8((og + bg*int(invAlpha)) / 255)
+				effB := uint8((ob + bb*int(invAlpha)) / 255)
+
+				lum := 0.2126*srgbLinearizeLUT[effR] + 0.7152*srgbLinearizeLUT[effG] + 0.0722*srgbLinearizeLUT[effB]
+				ratio := wcagContrast(fgLum, lum)
+				if ratio < worst {
+					worst = ratio
 				}
 			}
 		}
 	}
 
-	if extreme < 0 {
+	if worst == 999.0 {
 		return true
 	}
 
-	ratio := wcagContrast(fgLum, extreme)
-	return ratio >= 4.5
+	return worst >= minRatio
+}
+
+// minRegionContrast computes the minimum WCAG contrast ratio for the given
+// region after the semi‑transparent overlay is composited over the background,
+// against the given foreground luminance.  This is the ratio-producing
+// counterpart of regionContrastOK.
+func minRegionContrast(img image.Image, rect image.Rectangle, overlayColor color.RGBA, overlayAlpha, fgLum float64) float64 {
+	rect = rect.Intersect(img.Bounds())
+	if rect.Empty() {
+		return 999.0
+	}
+
+	alpha := uint8(math.Round(overlayAlpha * 255))
+	invAlpha := 255 - alpha
+	or := int(overlayColor.R) * int(alpha)
+	og := int(overlayColor.G) * int(alpha)
+	ob := int(overlayColor.B) * int(alpha)
+
+	worst := 999.0
+
+	if rgba, ok := img.(*image.RGBA); ok {
+		for y := rect.Min.Y; y < rect.Max.Y; y++ {
+			for x := rect.Min.X; x < rect.Max.X; x++ {
+				c := rgba.RGBAAt(x, y)
+				effR := uint8((or + int(c.R)*int(invAlpha)) / 255)
+				effG := uint8((og + int(c.G)*int(invAlpha)) / 255)
+				effB := uint8((ob + int(c.B)*int(invAlpha)) / 255)
+				lum := 0.2126*srgbLinearizeLUT[effR] + 0.7152*srgbLinearizeLUT[effG] + 0.0722*srgbLinearizeLUT[effB]
+				ratio := wcagContrast(fgLum, lum)
+				if ratio < worst {
+					worst = ratio
+				}
+			}
+		}
+	} else {
+		for y := rect.Min.Y; y < rect.Max.Y; y++ {
+			for x := rect.Min.X; x < rect.Max.X; x++ {
+				r, g, b, _ := img.At(x, y).RGBA()
+				br := int(r >> 8)
+				bg := int(g >> 8)
+				bb := int(b >> 8)
+				effR := uint8((or + br*int(invAlpha)) / 255)
+				effG := uint8((og + bg*int(invAlpha)) / 255)
+				effB := uint8((ob + bb*int(invAlpha)) / 255)
+				lum := 0.2126*srgbLinearizeLUT[effR] + 0.7152*srgbLinearizeLUT[effG] + 0.0722*srgbLinearizeLUT[effB]
+				ratio := wcagContrast(fgLum, lum)
+				if ratio < worst {
+					worst = ratio
+				}
+			}
+		}
+	}
+
+	if worst == 999.0 {
+		return 999.0
+	}
+	return worst
 }
 
 // srgbLuminance8 is a fast path that accepts 8‑bit R/G/B directly.
@@ -269,10 +545,20 @@ func PrepareVisualizerBase(ctx context.Context, ffmpeg, artworkPath string, fall
 	bgRGBA := toRGBA(bg)
 	metaRect := image.Rect(layout.Title.X, layout.Title.Y, layout.Title.X+layout.Title.W, layout.Title.Y+layout.Title.H)
 	graphRect := image.Rect(layout.Loudness.X, layout.Loudness.Y, layout.Loudness.X+layout.Loudness.W, layout.Loudness.Y+layout.Loudness.H)
-	mode := SelectForegroundMode(bgRGBA, metaRect, graphRect)
+	mode := ComplementaryForeground(bgRGBA, metaRect, graphRect)
 	// The readability overlay belongs to the background layer. Applying it
 	// before the shadow and artwork keeps the foreground cover color-accurate.
-	draw.Draw(bgRGBA, bgRGBA.Bounds(), &image.Uniform{mode.Overlay}, image.Point{}, draw.Over)
+	//
+	// NOTE: we use color.NRGBA here because Go 1.26.3's drawFillOver has a
+	// bug when passed a color.RGBA (non-premultiplied) source — it
+	// under-composites the source colour, producing a result near the
+	// original background instead of the expected Porter-Duff Over.
+	draw.Draw(bgRGBA, bgRGBA.Bounds(), &image.Uniform{color.NRGBA{
+		R: mode.Overlay.R,
+		G: mode.Overlay.G,
+		B: mode.Overlay.B,
+		A: mode.Overlay.A,
+	}}, image.Point{}, draw.Over)
 
 	// -----------------------------------------------------------------------
 	// 2. Foreground artwork — scale to fill artwork rect
