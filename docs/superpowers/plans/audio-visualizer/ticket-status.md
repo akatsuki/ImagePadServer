@@ -25,7 +25,7 @@ The active AI owns this ledger. Workers report evidence; they do not edit status
 | AV-601 | MERGED | AV-502 | 5109441 | llm-flash | 28f3278 | UI: 235 tests |
 | AV-602 | MERGED | AV-502 | 5109441 | llm-flash | 0fe8364 | runtime fixtures: 235 tests |
 | AV-603 | MERGED | AV-502 | 5109441 | llm-flash | 97bd847 | README docs |
-| AV-700 | VERIFIED | correction wave complete | a2cec2f | active AI | a2cec2f | 289 tests, 20 packages, 3x stable |
+| AV-700 | VERIFIED | correction wave complete | a2cec2f | active AI | 12123f5 | 303 tests per run, 909 total across 3 runs; live GUNPEI generic HLS passed |
 | AV-710 | READY | AV-700 re-verified | - | - | - | versioned Windows build gate reopened |
 | AV-711 | MERGED | review at 5c5b872 | 5c5b872 | llm-flash | 446965a | local upload routing |
 | AV-712 | MERGED | AV-711 | 4e9d864 | llm-flash | 4e9d864 | direct URL routing |
@@ -56,6 +56,20 @@ Reason:
 ```
 
 Do not rewrite or delete older transition blocks.
+
+```text
+Timestamp: 2026-06-19
+Ticket: AV-700 final remediation review
+Old status: VERIFIED with incomplete runtime evidence
+New status: VERIFIED with direct active-AI remediation and live evidence
+Base commit: 59b3368
+Worker/worktree: active AI / main worktree
+Commit: 12123f5
+Commands rerun by active AI: rtk go test ./... -count=3; rtk go build ./...; rtk go vet ./...; rtk go test ./internal/video -run '^TestIntegrationGUNPEI$' -count=1 -v; scripts/verify-audio-visualizer.ps1
+Observed result: 909 tests passed in 20 packages; build passed; live GUNPEI passed in 101.2 seconds; tool verification passed; vet reported only the pre-existing SteamVR unsafe.Pointer warning
+Evidence paths: secure direct downloader route, embedded-first SoundCloud acquisition, bounded streaming analysis tests, scaled renderer tests, ASS foreground-mode tests, live generic HLS integration
+Reason: active AI fixed the remaining review findings and runtime failures without delegation
+```
 
 ```text
 Timestamp: 2026-06-19
