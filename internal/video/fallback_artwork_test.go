@@ -11,51 +11,94 @@ import (
 	"testing"
 )
 
+// updateGolden is set when the RTK_UPDATE_GOLDEN environment variable is
+// present; it causes TestRenderFallbackArtworkGolden to rewrite the golden
+// PNG file instead of comparing against it.
+func updateGolden() bool {
+	v, _ := os.LookupEnv("RTK_UPDATE_GOLDEN")
+	return v == "1" || v == "true"
+}
+
 func TestPaletteForFeaturesHighEnergy(t *testing.T) {
-	p := PaletteForFeatures(AudioFeatures{BPM: 120})
-	want := Palette{Start: color.RGBA{255, 69, 0, 255}, End: color.RGBA{139, 0, 0, 255}}
+	// BPM >= 130 triggers high energy.
+	p := PaletteForFeatures(AudioFeatures{BPM: 130})
+	want := Palette{Start: color.RGBA{122, 29, 79, 255}, End: color.RGBA{255, 107, 53, 255}}
 	if p != want {
-		t.Fatalf("high energy: got %+v, want %+v", p, want)
+		t.Fatalf("high energy via BPM: got %+v, want %+v", p, want)
+	}
+	// IntegratedLUFS >= -11 also triggers high energy (OR condition).
+	p = PaletteForFeatures(AudioFeatures{BPM: 0, IntegratedLUFS: -11})
+	if p != want {
+		t.Fatalf("high energy via loudness: got %+v, want %+v", p, want)
 	}
 }
 
 func TestPaletteForFeaturesBassFocused(t *testing.T) {
-	p := PaletteForFeatures(AudioFeatures{BPM: 100, LowFrequencyRatio: 0.4})
-	want := Palette{Start: color.RGBA{30, 144, 255, 255}, End: color.RGBA{0, 0, 139, 255}}
+	// LowFrequencyRatio >= 0.45; must not match high energy first.
+	p := PaletteForFeatures(AudioFeatures{
+		BPM:               100,
+		LowFrequencyRatio: 0.45,
+		IntegratedLUFS:    -12,
+	})
+	want := Palette{Start: color.RGBA{36, 16, 63, 255}, End: color.RGBA{124, 58, 237, 255}}
 	if p != want {
 		t.Fatalf("bass focused: got %+v, want %+v", p, want)
 	}
 }
 
 func TestPaletteForFeaturesBright(t *testing.T) {
-	p := PaletteForFeatures(AudioFeatures{BPM: 100, LowFrequencyRatio: 0.1, SpectralCentroid: 3000})
-	want := Palette{Start: color.RGBA{255, 215, 0, 255}, End: color.RGBA{255, 140, 0, 255}}
+	// SpectralCentroid >= 3500; must not match high energy or bass first.
+	p := PaletteForFeatures(AudioFeatures{
+		BPM:               100,
+		LowFrequencyRatio: 0.3,
+		SpectralCentroid:  3500,
+		IntegratedLUFS:    -12,
+	})
+	want := Palette{Start: color.RGBA{11, 85, 99, 255}, End: color.RGBA{32, 199, 201, 255}}
 	if p != want {
 		t.Fatalf("bright: got %+v, want %+v", p, want)
 	}
 }
 
 func TestPaletteForFeaturesCalm(t *testing.T) {
-	p := PaletteForFeatures(AudioFeatures{BPM: 100, LowFrequencyRatio: 0.1, SpectralCentroid: 2000, IntegratedLUFS: -14})
-	want := Palette{Start: color.RGBA{152, 251, 152, 255}, End: color.RGBA{0, 100, 0, 255}}
+	// BPM < 95 AND IntegratedLUFS <= -16; must not match earlier rules.
+	p := PaletteForFeatures(AudioFeatures{
+		BPM:               94,
+		LowFrequencyRatio: 0.3,
+		SpectralCentroid:  1000,
+		IntegratedLUFS:    -16,
+	})
+	want := Palette{Start: color.RGBA{31, 42, 68, 255}, End: color.RGBA{94, 92, 230, 255}}
 	if p != want {
 		t.Fatalf("calm: got %+v, want %+v", p, want)
 	}
 }
 
 func TestPaletteForFeaturesDefault(t *testing.T) {
-	p := PaletteForFeatures(AudioFeatures{BPM: 80, LowFrequencyRatio: 0.1, SpectralCentroid: 1500, IntegratedLUFS: -25})
-	want := Palette{Start: color.RGBA{147, 112, 219, 255}, End: color.RGBA{76, 0, 130, 255}}
+	// No rule matches: BPM < 130, LFR < 0.45, SC < 3500, not calm (IL > -16).
+	p := PaletteForFeatures(AudioFeatures{
+		BPM:               94,
+		LowFrequencyRatio: 0.3,
+		SpectralCentroid:  1000,
+		IntegratedLUFS:    -15,
+	})
+	want := Palette{Start: color.RGBA{23, 59, 87, 255}, End: color.RGBA{58, 134, 255, 255}}
 	if p != want {
 		t.Fatalf("default: got %+v, want %+v", p, want)
 	}
 }
 
 func TestPaletteForFeaturesBoundaryExclusive(t *testing.T) {
-	p := PaletteForFeatures(AudioFeatures{BPM: 119, LowFrequencyRatio: 0.39, SpectralCentroid: 2999, IntegratedLUFS: -15})
-	want := Palette{Start: color.RGBA{147, 112, 219, 255}, End: color.RGBA{76, 0, 130, 255}}
+	// Values just below each threshold fall through to default.
+	p := PaletteForFeatures(AudioFeatures{
+		BPM:               129, // < 130
+		LowFrequencyRatio: 0.44, // < 0.45
+		SpectralCentroid:  3499, // < 3500
+		IntegratedLUFS:    -12, // < -11 but > -16, and BPM 129 is not < 95
+	})
+	want := Palette{Start: color.RGBA{23, 59, 87, 255}, End: color.RGBA{58, 134, 255, 255}}
 	if p != want {
-		t.Fatalf("exclusive default: got %+v, want %+v", p, want)
+		t.Fatalf("boundary exclusive: got %+v, want %+v", p, want)
 	}
 }
 
@@ -118,21 +161,20 @@ func TestRenderFallbackArtworkGolden(t *testing.T) {
 	goldenPath := filepath.Join("testdata", "golden", "fallback-720.png")
 	raw := pngBytes(t, img)
 
-	if _, err := os.Stat(goldenPath); os.IsNotExist(err) {
+	if updateGolden() {
 		if err := os.WriteFile(goldenPath, raw, 0644); err != nil {
 			t.Fatalf("write golden: %v", err)
 		}
 		t.Log("wrote golden file", goldenPath)
-	} else if err != nil {
-		t.Fatalf("stat golden: %v", err)
-	} else {
-		want, err := os.ReadFile(goldenPath)
-		if err != nil {
-			t.Fatalf("read golden: %v", err)
-		}
-		if !bytes.Equal(raw, want) {
-			t.Fatal("rendered output differs from golden file")
-		}
+		return
+	}
+
+	want, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("read golden: %v", err)
+	}
+	if !bytes.Equal(raw, want) {
+		t.Fatal("rendered output differs from golden file")
 	}
 }
 
