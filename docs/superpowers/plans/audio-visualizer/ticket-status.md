@@ -16,17 +16,17 @@ The active AI owns this ledger. Workers report evidence; they do not edit status
 | AV-203 | MERGED | AV-101, AV-103 | c86cba9 | llm-flash | d2bd6fb | remote media: 12 tests, 192 pkg |
 | AV-204 | MERGED | AV-100, AV-101 | dabfa75 | active AI | dabfa75 | audio analysis: 9 tests, 192 pkg |
 | AV-205 | MERGED | AV-101, AV-103 | c86cba9 | llm-flash | 40303ed | classification: 7 tests, 192 pkg |
-| AV-301 | READY | AV-104, AV-204 | - | - | - | fallback artwork |
+| AV-301 | MERGED | AV-104, AV-204 | d86b1bb | llm-flash | d86b1bb | fallback: 8 tests, 151 package |
 | AV-302 | MERGED | AV-100, AV-102, AV-104 | c86cba9 | llm-flash | 70a519f | layout+ASS: 13 tests, 192 pkg |
-| AV-303 | WAITING_DEPENDENCY | AV-201, AV-301 | - | - | - | artwork/background |
-| AV-401 | WAITING_DEPENDENCY | AV-204, AV-302, AV-303 | - | - | - | HLS renderer |
-| AV-501 | WAITING_DEPENDENCY | AV-401 | - | - | - | publisher queue |
-| AV-502 | WAITING_DEPENDENCY | AV-202, AV-203, AV-205, AV-501 | - | - | - | server/store integration |
-| AV-601 | WAITING_DEPENDENCY | AV-502 | - | - | - | UI |
-| AV-602 | WAITING_DEPENDENCY | AV-502 | - | - | - | runtime fixtures |
-| AV-603 | WAITING_DEPENDENCY | AV-502, runtime claims require AV-602 | - | - | - | README |
-| AV-700 | WAITING_DEPENDENCY | AV-601, AV-602, AV-603 | - | - | - | final QA |
-| AV-710 | WAITING_DEPENDENCY | AV-700 | - | - | - | versioned Windows build |
+| AV-303 | MERGED | AV-201, AV-301 | d86b1bb | llm-flash | dcad7c0 | background: 5 tests, 156 package |
+| AV-401 | MERGED | AV-204, AV-302, AV-303 | e26c7d7 | active AI | e26c7d7 | HLS: 8 tests, 164 package |
+| AV-501 | MERGED | AV-401 | 28dd59a | llm-flash | 28dd59a | publisher queue: 170 tests |
+| AV-502 | MERGED | AV-202, AV-203, AV-205, AV-501 | 28dd59a | llm-flash | 5109441 | server/store: 227 tests |
+| AV-601 | MERGED | AV-502 | 5109441 | llm-flash | 28f3278 | UI: 235 tests |
+| AV-602 | MERGED | AV-502 | 5109441 | llm-flash | 0fe8364 | runtime fixtures: 235 tests |
+| AV-603 | MERGED | AV-502 | 5109441 | llm-flash | 97bd847 | README docs |
+| AV-700 | MERGED | AV-601, AV-602, AV-603 | 5109441 | active AI | - | 260 tests in 20 packages |
+| AV-710 | READY | AV-700 | - | - | - | versioned Windows build |
 
 ## Status update record
 
