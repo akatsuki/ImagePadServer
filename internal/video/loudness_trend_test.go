@@ -5,6 +5,132 @@ import (
 	"testing"
 )
 
+func TestMonotoneHermite(t *testing.T) {
+	t.Run("returns correct output count", func(t *testing.T) {
+		input := []float64{0, 0.5, 1}
+		got := monotoneHermite(input, 5)
+		if len(got) != 5 {
+			t.Fatalf("expected length 5, got %d", len(got))
+		}
+	})
+
+	t.Run("output count equals input length returns copy", func(t *testing.T) {
+		input := []float64{0.1, 0.3, 0.7, 0.9}
+		got := monotoneHermite(input, 4)
+		if len(got) != 4 {
+			t.Fatalf("expected length 4, got %d", len(got))
+		}
+		for i := range input {
+			if got[i] != input[i] {
+				t.Fatalf("at index %d: expected %v, got %v", i, input[i], got[i])
+			}
+		}
+	})
+
+	t.Run("monotone ascending preserved", func(t *testing.T) {
+		input := []float64{0, 0.25, 0.5, 0.75, 1}
+		got := monotoneHermite(input, 17)
+		if len(got) != 17 {
+			t.Fatalf("expected length 17, got %d", len(got))
+		}
+		// Output must be non-decreasing
+		for i := 1; i < len(got); i++ {
+			if got[i] < got[i-1]-1e-10 {
+				t.Fatalf("non-monotone at index %d: %v < %v", i, got[i], got[i-1])
+			}
+		}
+		// Output must stay within input range
+		if got[0] < 0 || got[len(got)-1] > 1 {
+			t.Fatalf("output out of input range: [%v, %v]", got[0], got[len(got)-1])
+		}
+	})
+
+	t.Run("no segment overshoot for steep transitions", func(t *testing.T) {
+		// Abrupt step: values jump from 0.1 to 0.9 in one segment.
+		// A plain cubic would overshoot below 0.1 or above 0.9.
+		input := []float64{0.1, 0.1, 0.1, 0.9, 0.9, 0.9}
+		got := monotoneHermite(input, 25)
+		if len(got) != 25 {
+			t.Fatalf("expected length 25, got %d", len(got))
+		}
+		for i, v := range got {
+			if v < 0.1-1e-10 || v > 0.9+1e-10 {
+				t.Fatalf("overshoot at index %d: value %v outside [0.1, 0.9]", i, v)
+			}
+		}
+	})
+
+	t.Run("constant input produces constant output", func(t *testing.T) {
+		input := []float64{0.5, 0.5, 0.5}
+		got := monotoneHermite(input, 11)
+		if len(got) != 11 {
+			t.Fatalf("expected length 11, got %d", len(got))
+		}
+		for i, v := range got {
+			if math.Abs(v-0.5) > 1e-10 {
+				t.Fatalf("at index %d: expected 0.5, got %v", i, v)
+			}
+		}
+	})
+
+	t.Run("single element returns single point", func(t *testing.T) {
+		input := []float64{0.42}
+		got := monotoneHermite(input, 1)
+		if len(got) != 1 || got[0] != 0.42 {
+			t.Fatalf("expected [0.42], got %v", got)
+		}
+	})
+
+	t.Run("two elements linear interpolation", func(t *testing.T) {
+		input := []float64{0, 1}
+		got := monotoneHermite(input, 5)
+		expected := []float64{0, 0.25, 0.5, 0.75, 1}
+		if len(got) != 5 {
+			t.Fatalf("expected length 5, got %d", len(got))
+		}
+		for i := range expected {
+			if math.Abs(got[i]-expected[i]) > 1e-10 {
+				t.Fatalf("at index %d: expected %v, got %v", i, expected[i], got[i])
+			}
+		}
+	})
+
+	t.Run("non-monotone input does not exceed bounds", func(t *testing.T) {
+		input := []float64{0.2, 0.8, 0.3, 0.9}
+		got := monotoneHermite(input, 13)
+		if len(got) != 13 {
+			t.Fatalf("expected length 13, got %d", len(got))
+		}
+		for i, v := range got {
+			if v < 0.2-1e-10 || v > 0.9+1e-10 {
+				t.Fatalf("value at index %d (%v) outside input range [0.2, 0.9]", i, v)
+			}
+		}
+	})
+
+	t.Run("edge flattening preserves shape", func(t *testing.T) {
+		// Flat segment followed by rise; Fritsch-Carlson should
+		// set tangent to zero at flat-to-rise boundary.
+		input := []float64{0.2, 0.2, 0.2, 0.6, 0.8, 1.0}
+		got := monotoneHermite(input, 25)
+		if len(got) != 25 {
+			t.Fatalf("expected length 25, got %d", len(got))
+		}
+		// Must be non-decreasing
+		for i := 1; i < len(got); i++ {
+			if got[i] < got[i-1]-1e-10 {
+				t.Fatalf("non-monotone at index %d: %v < %v", i, got[i], got[i-1])
+			}
+		}
+		// Must stay within input bounds
+		for _, v := range got {
+			if v < 0.2-1e-10 || v > 1.0+1e-10 {
+				t.Fatalf("value %v outside input range [0.2, 1.0]", v)
+			}
+		}
+	})
+}
+
 func TestTrendWindow(t *testing.T) {
 	t.Run("longer than 16 seconds uses 8s window", func(t *testing.T) {
 		duration := 240.0
