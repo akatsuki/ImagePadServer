@@ -11,13 +11,13 @@ The active AI owns this ledger. Workers report evidence; they do not edit status
 | AV-102 | MERGED | AV-001 | dc7f807 | llm-flash | 31b640e | metadata: 16 focused, 71 package |
 | AV-103 | MERGED | AV-001 | dc7f807 | llm-flash | baee2db | media limit: 6 focused, 79 package |
 | AV-104 | MERGED | AV-001 | dc7f807 | llm-flash | e53f61a | Noto fonts: 3 static fonts, 79 package |
-| AV-201 | READY | AV-101, AV-102 | - | - | - | embedded artwork |
-| AV-202 | READY | AV-100, AV-101, AV-102, AV-103 | - | - | - | SoundCloud acquisition |
-| AV-203 | READY | AV-101, AV-103 | - | - | - | direct remote media |
-| AV-204 | READY | AV-100, AV-101 | - | - | - | audio analysis |
-| AV-205 | READY | AV-101, AV-103 | - | - | - | local classification |
-| AV-301 | WAITING_DEPENDENCY | AV-104, AV-204 | - | - | - | fallback artwork |
-| AV-302 | READY | AV-100, AV-102, AV-104 | - | - | - | layout and ASS text |
+| AV-201 | MERGED | AV-101, AV-102 | c86cba9 | llm-flash | b60019c | embedded artwork: 11 tests, 192 pkg |
+| AV-202 | MERGED | AV-100, AV-101, AV-102, AV-103 | c86cba9 | llm-flash | a359a0c | SoundCloud: 27 tests, 192 pkg |
+| AV-203 | MERGED | AV-101, AV-103 | c86cba9 | llm-flash | d2bd6fb | remote media: 12 tests, 192 pkg |
+| AV-204 | MERGED | AV-100, AV-101 | dabfa75 | active AI | dabfa75 | audio analysis: 9 tests, 192 pkg |
+| AV-205 | MERGED | AV-101, AV-103 | c86cba9 | llm-flash | 40303ed | classification: 7 tests, 192 pkg |
+| AV-301 | READY | AV-104, AV-204 | - | - | - | fallback artwork |
+| AV-302 | MERGED | AV-100, AV-102, AV-104 | c86cba9 | llm-flash | 70a519f | layout+ASS: 13 tests, 192 pkg |
 | AV-303 | WAITING_DEPENDENCY | AV-201, AV-301 | - | - | - | artwork/background |
 | AV-401 | WAITING_DEPENDENCY | AV-204, AV-302, AV-303 | - | - | - | HLS renderer |
 | AV-501 | WAITING_DEPENDENCY | AV-401 | - | - | - | publisher queue |
@@ -144,4 +144,18 @@ Commands rerun by active AI: rtk go test ./internal/video -run '^Test(Parse|Clas
 Observed result: 7 passed in 1 packages
 Evidence paths: worktree verified then merged into main
 Reason: media probe implemented and merged
+```
+
+```text
+Timestamp: 2026-06-19
+Ticket: AV-201 to AV-205, AV-302
+Old status: READY
+New status: MERGED
+Base commit: c86cba9 / dabfa75
+Worker/worktree: llm-flash or active AI per row
+Commit: various per row
+Commands rerun by active AI: full package test ./internal/video ./internal/server ./internal/library -count=1
+Observed result: 192 passed in 3 packages
+Evidence paths: main worktree
+Reason: Wave 3 and AV-302 done in parallel, merged, all tests pass
 ```
