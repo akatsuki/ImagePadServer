@@ -317,12 +317,14 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.clearPublication()
-		media, err := video.DownloadMediaURL(req.URL, s.store.Dir())
-		if err != nil {
-			http.Error(w, videoURLDownloadError(err), http.StatusBadRequest)
-			return
-		}
-		if media.Kind == "soundcloud" {
+
+		// Preserve SoundCloud-page detection (uses yt-dlp).
+		if isSoundCloudURL(req.URL) {
+			media, err := video.DownloadMediaURL(req.URL, s.store.Dir())
+			if err != nil {
+				http.Error(w, videoURLDownloadError(err), http.StatusBadRequest)
+				return
+			}
 			acquired := video.AcquiredAudio{
 				SourcePath:                media.SourcePath,
 				SourceName:                media.Name,
@@ -333,18 +335,85 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 			}
 			state, err := s.processAudioFileAndPublish(r, acquired)
 			if err != nil {
+				os.Remove(acquired.SourcePath)
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
 			writeJSON(w, state)
 			return
 		}
-		state, err := s.processVideoFileAndPublish(r, media.SourcePath, media.Name)
+
+		// For direct HTTP(S) URLs: use yt-dlp path (backward compat), then
+		// probe the downloaded file to dispatch audio vs video.
+		media, err := video.DownloadMediaURL(req.URL, s.store.Dir())
+		if err != nil {
+			http.Error(w, videoURLDownloadError(err), http.StatusBadRequest)
+			return
+		}
+		// media.Kind is "soundcloud" or "video"; non-SoundCloud goes through
+		// yt-dlp and is always marked "video".  Probe to distinguish audio.
+		if _, err := video.EnsureFFmpeg(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		ffprobe, err := findFFprobe()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		writeJSON(w, state)
+		probe, err := video.ProbeMedia(r.Context(), ffprobe, media.SourcePath)
+		if err != nil {
+			// Probe failure is non-fatal; fall back to video path.
+			state, vErr := s.processVideoFileAndPublish(r, media.SourcePath, media.Name)
+			if vErr != nil {
+				http.Error(w, vErr.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, state)
+			return
+		}
+		class := video.ClassifyMediaProbe(probe)
+		switch class {
+		case video.MediaAudio:
+			meta := extractEmbeddedMetadata(probe)
+			ffmpeg, aErr := video.EnsureFFmpeg()
+			if aErr != nil {
+				os.Remove(media.SourcePath)
+				http.Error(w, aErr.Error(), http.StatusBadRequest)
+				return
+			}
+			candidates, aErr := video.ExtractEmbeddedArtwork(r.Context(), ffmpeg, media.SourcePath, s.store.Dir(), probe)
+			if aErr != nil {
+				candidates = nil
+			}
+			acquired := video.AcquiredAudio{
+				SourcePath:       media.SourcePath,
+				SourceName:       media.Name,
+				Kind:             video.SourceRemoteAudio,
+				Probe:            probe,
+				EmbeddedMetadata: meta,
+				EmbeddedArtwork:  candidates,
+			}
+			state, aErr := s.processAudioFileAndPublish(r, acquired)
+			if aErr != nil {
+				os.Remove(media.SourcePath)
+				http.Error(w, aErr.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, state)
+
+		case video.MediaVideo:
+			state, vErr := s.processVideoFileAndPublish(r, media.SourcePath, media.Name)
+			if vErr != nil {
+				http.Error(w, vErr.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, state)
+
+		default:
+			os.Remove(media.SourcePath)
+			http.Error(w, "unsupported media type", http.StatusBadRequest)
+		}
 		return
 	}
 	remote, name, err := downloadRemoteImage(req.URL, opts.MaxInputBytes)
@@ -391,12 +460,14 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		media, err := video.DownloadMediaURL(req.URL, s.store.Dir())
-		if err != nil {
-			http.Error(w, videoURLDownloadError(err), http.StatusBadRequest)
-			return
-		}
-		if media.Kind == "soundcloud" {
+
+		// Preserve SoundCloud-page detection (uses yt-dlp).
+		if isSoundCloudURL(req.URL) {
+			media, err := video.DownloadMediaURL(req.URL, s.store.Dir())
+			if err != nil {
+				http.Error(w, videoURLDownloadError(err), http.StatusBadRequest)
+				return
+			}
 			acquired := video.AcquiredAudio{
 				SourcePath:                media.SourcePath,
 				SourceName:                media.Name,
@@ -407,18 +478,85 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 			}
 			state, err := s.processAudioFileAndQueue(r, acquired)
 			if err != nil {
+				os.Remove(acquired.SourcePath)
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
 			writeJSON(w, state)
 			return
 		}
-		state, err := s.processVideoFileAndQueue(r, media.SourcePath, media.Name)
+
+		// For direct HTTP(S) URLs: use yt-dlp path (backward compat), then
+		// probe the downloaded file to dispatch audio vs video.
+		media, err := video.DownloadMediaURL(req.URL, s.store.Dir())
+		if err != nil {
+			http.Error(w, videoURLDownloadError(err), http.StatusBadRequest)
+			return
+		}
+		// media.Kind is "soundcloud" or "video"; non-SoundCloud goes through
+		// yt-dlp and is always marked "video".  Probe to distinguish audio.
+		if _, err := video.EnsureFFmpeg(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		ffprobe, err := findFFprobe()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		writeJSON(w, state)
+		probe, err := video.ProbeMedia(r.Context(), ffprobe, media.SourcePath)
+		if err != nil {
+			// Probe failure is non-fatal; fall back to video path.
+			state, vErr := s.processVideoFileAndQueue(r, media.SourcePath, media.Name)
+			if vErr != nil {
+				http.Error(w, vErr.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, state)
+			return
+		}
+		class := video.ClassifyMediaProbe(probe)
+		switch class {
+		case video.MediaAudio:
+			meta := extractEmbeddedMetadata(probe)
+			ffmpeg, aErr := video.EnsureFFmpeg()
+			if aErr != nil {
+				os.Remove(media.SourcePath)
+				http.Error(w, aErr.Error(), http.StatusBadRequest)
+				return
+			}
+			candidates, aErr := video.ExtractEmbeddedArtwork(r.Context(), ffmpeg, media.SourcePath, s.store.Dir(), probe)
+			if aErr != nil {
+				candidates = nil
+			}
+			acquired := video.AcquiredAudio{
+				SourcePath:       media.SourcePath,
+				SourceName:       media.Name,
+				Kind:             video.SourceRemoteAudio,
+				Probe:            probe,
+				EmbeddedMetadata: meta,
+				EmbeddedArtwork:  candidates,
+			}
+			state, aErr := s.processAudioFileAndQueue(r, acquired)
+			if aErr != nil {
+				os.Remove(media.SourcePath)
+				http.Error(w, aErr.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, state)
+
+		case video.MediaVideo:
+			state, vErr := s.processVideoFileAndQueue(r, media.SourcePath, media.Name)
+			if vErr != nil {
+				http.Error(w, vErr.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, state)
+
+		default:
+			os.Remove(media.SourcePath)
+			http.Error(w, "unsupported media type", http.StatusBadRequest)
+		}
 		return
 	}
 	remote, name, err := downloadRemoteImage(req.URL, opts.MaxInputBytes)
@@ -2085,4 +2223,20 @@ func safeFileName(name string) string {
 
 func randomSuffix() string {
 	return strconv.FormatInt(time.Now().UnixNano(), 36)
+}
+
+// isSoundCloudURL reports whether rawURL points to a SoundCloud page. It
+// duplicates video.isSoundCloudURL (unexported) to keep server.go self-
+// contained for URL dispatch decisions.
+func isSoundCloudURL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	switch host {
+	case "soundcloud.com", "www.soundcloud.com", "m.soundcloud.com", "on.soundcloud.com":
+		return true
+	}
+	return false
 }

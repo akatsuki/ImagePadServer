@@ -18,6 +18,7 @@ type downloadedRemoteMedia struct {
 	Path  string
 	Name  string
 	Class video.MediaClass
+	Probe video.MediaProbe
 }
 
 // downloadRemoteMedia downloads media from rawURL, validates it against SSRF
@@ -92,6 +93,7 @@ func downloadRemoteMedia(
 		Path:  outPath,
 		Name:  fileName,
 		Class: class,
+		Probe: probeResult,
 	}, nil
 }
 
