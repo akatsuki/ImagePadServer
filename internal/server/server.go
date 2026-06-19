@@ -437,6 +437,19 @@ func (s *Server) processAndPublish(r *http.Request, reader io.Reader, name, cont
 		return s.processVideoAndPublish(r, reader, name)
 	}
 
+	if s.videoPlayerEnabled() && isAudioUpload(name, contentType) {
+		acquired, err := s.acquireUploadedAudio(r.Context(), reader, name)
+		if err != nil {
+			return nil, err
+		}
+		state, err := s.processAudioFileAndPublish(r, acquired)
+		if err != nil {
+			os.Remove(acquired.SourcePath)
+			return nil, err
+		}
+		return state, nil
+	}
+
 	result, err := imageproc.Process(reader, name, s.store.Dir(), opts)
 	if err != nil {
 		return nil, err
@@ -468,6 +481,19 @@ func (s *Server) processAndQueue(r *http.Request, reader io.Reader, name, conten
 	}
 	if isVideoUpload(name, contentType) {
 		return s.processVideoAndQueue(r, reader, name)
+	}
+
+	if isAudioUpload(name, contentType) {
+		acquired, err := s.acquireUploadedAudio(r.Context(), reader, name)
+		if err != nil {
+			return nil, err
+		}
+		state, err := s.processAudioFileAndQueue(r, acquired)
+		if err != nil {
+			os.Remove(acquired.SourcePath)
+			return nil, err
+		}
+		return state, nil
 	}
 
 	result, err := imageproc.Process(reader, name, s.store.Dir(), opts)
