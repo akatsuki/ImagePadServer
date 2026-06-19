@@ -18,6 +18,7 @@
 - Analysis and rendering tickets: `docs/superpowers/plans/audio-visualizer/02-analysis-and-rendering-tickets.md`
 - Integration and UI tickets: `docs/superpowers/plans/audio-visualizer/03-integration-and-ui-tickets.md`
 - Runtime and release tickets: `docs/superpowers/plans/audio-visualizer/04-runtime-verification-tickets.md`
+- Post-review correction tickets: `docs/superpowers/plans/audio-visualizer/05-review-correction-tickets.md`
 - Status ledger: `docs/superpowers/plans/audio-visualizer/ticket-status.md`
 
 If a ticket conflicts with the design specification, stop with `BLOCKED_SPEC_CONFLICT`. Do not reinterpret the design.
@@ -198,6 +199,16 @@ AV-502 -> AV-602 runtime fixtures
 AV-502 -> AV-603 documentation
 AV-601 + AV-602 + AV-603 -> AV-700 final QA
 AV-700 -> AV-710 versioned Windows test build
+
+Post-review correction wave:
+AV-711 + AV-713 + AV-714 may start in parallel
+AV-711 -> AV-712
+AV-714 -> AV-715
+AV-713 + AV-715 -> AV-716
+AV-712 + AV-715 -> AV-717
+AV-716 + AV-717 -> AV-718
+AV-718 -> AV-719
+AV-719 -> AV-700 re-verification -> AV-710
 ```
 
 ## Parallel execution waves
@@ -215,6 +226,10 @@ AV-700 -> AV-710 versioned Windows test build
 | 7 | AV-601, AV-602, AV-603 | Docs cannot claim results before AV-602 evidence |
 | 8 | AV-700 only | Full integration evidence |
 | 9 | AV-710 only | Version and Windows artifact evidence |
+| C1 | AV-711, AV-713, AV-714 | Local route, metadata propagation, and BPM tests |
+| C2 | AV-712 and AV-715 after their dependencies; write sets are disjoint | Direct URL route and bounded analysis |
+| C3 | AV-716 and AV-717 | Complete renderer and history replay |
+| C4 | AV-718 only, then AV-719 only | Runtime evidence, ledger closure, and release-gate restoration |
 
 The actual number of simultaneous agents is bounded by the current agent platform. When a wave contains more tickets than available slots, dispatch the first available disjoint tickets and continue the same wave as slots free up.
 
@@ -230,6 +245,16 @@ The actual number of simultaneous agents is bounded by the current agent platfor
 8. AV-601, AV-602, AV-603.
 9. AV-700.
 10. AV-710.
+
+The post-review correction merge order overrides steps 9-10 until closed:
+
+1. AV-711, AV-713, AV-714.
+2. AV-712.
+3. AV-715.
+4. AV-716 and AV-717.
+5. AV-718.
+6. AV-719.
+7. Re-run AV-700 and only then execute AV-710.
 
 After every merge, the active AI runs the package tests named in the ticket. After every wave, it runs:
 
@@ -279,6 +304,8 @@ If a merge changes a contract required by another open ticket, revert the merge 
 | 28 verified GUNPEI artwork | AV-201, AV-202, AV-602 | live 715x706 evidence |
 
 No acceptance row may be marked complete from a plan or argument-string test alone when the final-evidence column requires runtime output.
+
+The review at commit `5c5b872` invalidated the previous AV-700 completion claim. Criteria 3-4, 8-13, 18-22, and 28 require correction-wave evidence from AV-711 through AV-719 before AV-700 can return to `VERIFIED`.
 
 The feature is not complete until AV-700 records fresh evidence for all commands:
 

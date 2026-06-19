@@ -1,8 +1,10 @@
 # Runtime Verification and Release Tickets
 
+> **Post-review gate:** The review at commit `5c5b872` rejected the original AV-700 completion claim. Execute AV-711 through AV-719 from `05-review-correction-tickets.md`, then rerun AV-700 from the beginning. AV-710 remains `WAITING_DEPENDENCY` until that rerun is verified.
+
 ### AV-700: Integrate, verify, and open correction tickets
 
-**Dependencies:** AV-601, AV-602, AV-603. **Parallel:** prohibited. **Owner:** active AI.
+**Dependencies:** AV-601, AV-602, AV-603, and AV-719 after the correction wave. **Parallel:** prohibited. **Owner:** active AI.
 
 **Files:**
 - No planned feature edits.
@@ -67,7 +69,7 @@ AV-700 has no commit unless it changes only the status ledger.
 
 ### AV-710: Version and build the Windows test artifact
 
-**Dependencies:** AV-700 VERIFIED. **Parallel:** prohibited.
+**Dependencies:** AV-700 re-verified after AV-719. **Parallel:** prohibited.
 
 **Files:**
 - Modify: `internal/about/about.go`

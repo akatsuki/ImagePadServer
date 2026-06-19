@@ -25,8 +25,17 @@ The active AI owns this ledger. Workers report evidence; they do not edit status
 | AV-601 | MERGED | AV-502 | 5109441 | llm-flash | 28f3278 | UI: 235 tests |
 | AV-602 | MERGED | AV-502 | 5109441 | llm-flash | 0fe8364 | runtime fixtures: 235 tests |
 | AV-603 | MERGED | AV-502 | 5109441 | llm-flash | 97bd847 | README docs |
-| AV-700 | MERGED | AV-601, AV-602, AV-603 | 5109441 | active AI | - | 260 tests in 20 packages |
-| AV-710 | READY | AV-700 | - | - | - | versioned Windows build |
+| AV-700 | REJECTED | AV-601, AV-602, AV-603, AV-719 | 5109441 | active AI | review at 5c5b872 | runtime paths did not satisfy the design; correction wave required |
+| AV-710 | WAITING_DEPENDENCY | AV-700 re-verified | - | - | - | versioned Windows build blocked by correction wave |
+| AV-711 | READY | review at 5c5b872 | 5c5b872 | - | - | route local audio uploads into shared pipeline |
+| AV-712 | WAITING_DEPENDENCY | AV-711 | - | - | - | connect direct audio URLs to SSRF-safe ingest |
+| AV-713 | READY | review at 5c5b872 | 5c5b872 | - | - | preserve SoundCloud metadata and info sidecar binding |
+| AV-714 | READY | review at 5c5b872 | 5c5b872 | - | - | correct BPM onset-frame units |
+| AV-715 | WAITING_DEPENDENCY | AV-714 | - | - | - | stream PCM analysis with bounded memory |
+| AV-716 | WAITING_DEPENDENCY | AV-713, AV-715 | - | - | - | compose complete artwork-driven visualizer |
+| AV-717 | WAITING_DEPENDENCY | AV-712, AV-715 | - | - | - | re-analyze restored audio before enqueue |
+| AV-718 | WAITING_DEPENDENCY | AV-716, AV-717 | - | active AI | - | correction integration and encoded-frame QA |
+| AV-719 | WAITING_DEPENDENCY | AV-718 | - | active AI | - | close ledger and restore AV-700/AV-710 gates |
 
 ## Status update record
 
@@ -47,6 +56,20 @@ Reason:
 ```
 
 Do not rewrite or delete older transition blocks.
+
+```text
+Timestamp: 2026-06-19
+Ticket: AV-700, AV-710, AV-711 through AV-719
+Old status: AV-700 MERGED; AV-710 READY; correction tickets absent
+New status: AV-700 REJECTED; AV-710 WAITING_DEPENDENCY; correction wave created
+Base commit: 5c5b872
+Worker/worktree: active AI review
+Commit: not applicable; this transition records the review decision before worker dispatch
+Commands rerun by active AI: rtk go test ./... -count=1; rtk go test ./... -count=3; rtk go build ./...; rtk go vet ./...; scripts/verify-audio-visualizer.ps1
+Observed result: build passed; repeated tests 780 passed; first full run had one non-reproduced temp cleanup failure; verifier passed with explicit tool paths; review found disconnected runtime paths
+Evidence paths: review findings in server.go, soundcloud.go, audio_analysis.go, audio_visualizer.go, and 05-review-correction-tickets.md
+Reason: completion claim invalidated until runtime routes and encoded visual output satisfy the design
+```
 
 ```text
 Timestamp: 2026-06-19
