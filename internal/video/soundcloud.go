@@ -19,10 +19,12 @@ var soundCloudDownloadSequence uint64
 // DownloadedMedia represents a media file that has been downloaded for
 // publishing. Kind is "video" or "soundcloud".
 type DownloadedMedia struct {
-	SourcePath  string
-	Name        string
-	Kind        string // "video" or "soundcloud"
-	ArtworkPath string
+	SourcePath      string
+	Name            string
+	Kind            string // "video" or "soundcloud"
+	ArtworkPath     string
+	Metadata        AudioMetadata
+	InformationPath string
 }
 
 // isSoundCloudURL reports whether rawURL is a valid http/https URL with
@@ -85,10 +87,12 @@ func DownloadMediaURL(rawURL, outDir string) (DownloadedMedia, error) {
 	}
 
 	return DownloadedMedia{
-		SourcePath:  audio.SourcePath,
-		Name:        audio.SourceName,
-		Kind:        "soundcloud",
-		ArtworkPath: audio.SoundCloudArtworkPath,
+		SourcePath:      audio.SourcePath,
+		Name:            audio.SourceName,
+		Kind:            "soundcloud",
+		ArtworkPath:     audio.SoundCloudArtworkPath,
+		Metadata:        audio.SoundCloudMetadata,
+		InformationPath: audio.SoundCloudInformationPath,
 	}, nil
 }
 

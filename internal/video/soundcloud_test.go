@@ -385,3 +385,58 @@ func TestSoundCloudHLSArgs_DefaultsForZeroPreset(t *testing.T) {
 	}
 	fmt.Println("filter complex with zero preset:", fc)
 }
+
+// ---------------------------------------------------------------------------
+// DownloadedMedia wrapper — metadata preservation (AV-713)
+// ---------------------------------------------------------------------------
+
+func TestDownloadMediaURLPreservesSoundCloudMetadata(t *testing.T) {
+	oldRun := runDownloadCmd
+	runDownloadCmd = testDownloadRun
+	defer func() { runDownloadCmd = oldRun }()
+
+	dir := t.TempDir()
+
+	// Create a mock yt-dlp executable so EnsureYTDLP succeeds.
+	mockExe := filepath.Join(dir, "mock-yt-dlp.exe")
+	if err := os.WriteFile(mockExe, []byte("mock"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("IMAGEPAD_YTDLP", mockExe)
+
+	media, err := DownloadMediaURL("https://soundcloud.com/user/track", dir)
+	if err != nil {
+		t.Fatalf("DownloadMediaURL failed: %v", err)
+	}
+
+	if media.SourcePath == "" {
+		t.Error("SourcePath must not be empty")
+	}
+	if media.Name == "" {
+		t.Error("Name must not be empty")
+	}
+	if media.Kind != "soundcloud" {
+		t.Errorf("Kind = %q, want soundcloud", media.Kind)
+	}
+	if media.ArtworkPath == "" {
+		t.Error("ArtworkPath must not be empty")
+	}
+	if media.Metadata.Title != "Test Track" {
+		t.Errorf("Metadata.Title = %q, want %q", media.Metadata.Title, "Test Track")
+	}
+	if media.Metadata.Artist != "Test Artist" {
+		t.Errorf("Metadata.Artist = %q, want %q", media.Metadata.Artist, "Test Artist")
+	}
+	if media.Metadata.Album != "Test Album" {
+		t.Errorf("Metadata.Album = %q, want %q", media.Metadata.Album, "Test Album")
+	}
+	if media.Metadata.Uploader != "Test Uploader" {
+		t.Errorf("Metadata.Uploader = %q, want %q", media.Metadata.Uploader, "Test Uploader")
+	}
+	if media.InformationPath == "" {
+		t.Error("InformationPath must not be empty")
+	}
+	if !strings.HasSuffix(media.InformationPath, ".info.json") {
+		t.Errorf("InformationPath = %q, want .info.json suffix", media.InformationPath)
+	}
+}
