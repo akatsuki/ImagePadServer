@@ -72,6 +72,7 @@ type queueJob struct {
 	SourcePath   string
 	ArtworkPath  string // for SoundCloud artwork
 	Mode         string
+	Audio        *AudioRenderInput
 	Preset       QualityPreset
 	Cancel       context.CancelFunc
 	Done         chan struct{}
@@ -554,6 +555,8 @@ func runQueueJob(job *queueJob) {
 		err = runStillHLS(ctx, job.OutDir, ffmpeg, job.SourcePath, job.MediaID, job.Preset)
 	case "soundcloud":
 		err = runSoundCloudHLS(ctx, job.OutDir, ffmpeg, job.SourcePath, job.ArtworkPath, job.MediaID, job.Preset)
+	case "audio":
+		err = RunAudioVisualizerHLS(ctx, job.OutDir, ffmpeg, *job.Audio, job.MediaID, job.Preset)
 	default:
 		err = runUploadedHLS(ctx, job.OutDir, ffmpeg, job.SourcePath, job.MediaID, job.Preset)
 	}
