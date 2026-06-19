@@ -21,8 +21,17 @@ func BuildVisualizerASS(metadata AudioMetadata, duration float64, layout Visuali
 	return BuildVisualizerASSWithMode(metadata, duration, layout, fonts, metrics, ForegroundMode{Color: color.RGBA{255, 255, 255, 255}}, 1280, 720)
 }
 
+// ASSClipPadding returns the vertical clip padding for ASS clip rectangles.
+// At 1280px width the padding is 2 canonical pixels; it scales with output
+// width and has a minimum of 1.
+func ASSClipPadding(width int) int {
+	return max(1, int(math.Round(2.0*float64(width)/1280.0)))
+}
+
 func BuildVisualizerASSWithMode(metadata AudioMetadata, duration float64, layout VisualizerLayout, fonts FontSet, metrics map[string]TextMetrics, mode ForegroundMode, width, height int) string {
 	var b strings.Builder
+
+	clipPad := ASSClipPadding(width)
 
 	// --- [Script Info] ---
 	b.WriteString("[Script Info]\n")
@@ -42,12 +51,14 @@ func BuildVisualizerASSWithMode(metadata AudioMetadata, duration float64, layout
 	timeSize := scaledFontSize(22, width)
 
 	primary := assForegroundColor(mode.Color, 0.88)
-	writeStyle(&b, "Title", fonts.SemiBold600, titleSize, 0, primary)
-	writeStyle(&b, "Artist", fonts.Medium500, artistSize, 0, primary)
-	writeStyle(&b, "TimeText", fonts.Medium500, timeSize, 8, primary) // centered alignment
+	// Use alignment 4 (middle-left) for title, artist, album.
+	writeStyle(&b, "Title", fonts.SemiBold600, titleSize, 4, primary)
+	writeStyle(&b, "Artist", fonts.Medium500, artistSize, 4, primary)
+	// Use alignment 5 (middle-center) for time text.
+	writeStyle(&b, "TimeText", fonts.Medium500, timeSize, 5, primary)
 
 	if metadata.Album != "" {
-		writeStyle(&b, "Album", fonts.Regular400, albumSize, 0, primary)
+		writeStyle(&b, "Album", fonts.Regular400, albumSize, 4, primary)
 	}
 	b.WriteString("\n")
 
@@ -70,7 +81,7 @@ func BuildVisualizerASSWithMode(metadata AudioMetadata, duration float64, layout
 		}
 		timeStr := FormatMediaTime(s) + " / " + FormatMediaTime(int(math.Floor(totalDuration)))
 
-		// Position time text at the Time rect; center alignment (style 8)
+		// Position time text at the Time rect; center alignment (style 5)
 		timeX := layout.Time.X + layout.Time.W/2
 		timeY := layout.Time.Y + layout.Time.H/2
 
@@ -91,11 +102,11 @@ func BuildVisualizerASSWithMode(metadata AudioMetadata, duration float64, layout
 		// Stationary, left-aligned
 		posX := viewportX
 		posY := viewportY + viewportH/2
-		clip := fmt.Sprintf("\\clip(%d,%d,%d,%d)", viewportX, viewportY, viewportX+viewportW, viewportY+viewportH)
+		clip := fmt.Sprintf("\\clip(%d,%d,%d,%d)", viewportX, viewportY-clipPad, viewportX+viewportW, viewportY+viewportH+clipPad)
 		writeDialogue(&b, "0:00:00.00", assTimestamp(totalDuration),
 			"Title", fmt.Sprintf("%s\\pos(%d,%d)", clip, posX, posY), titleText)
 	} else {
-		buildScrollingDialogue(&b, totalDuration, "Title", titleText, float64(titleWidth), float64(viewportW), float64(viewportX), float64(viewportY), float64(viewportH))
+		buildScrollingDialogue(&b, totalDuration, "Title", titleText, float64(titleWidth), float64(viewportW), float64(viewportX), float64(viewportY), float64(viewportH), clipPad)
 	}
 
 	// Artist event
@@ -106,11 +117,11 @@ func BuildVisualizerASSWithMode(metadata AudioMetadata, duration float64, layout
 	if artistWidth <= layout.Artist.W {
 		posX := layout.Artist.X
 		posY := layout.Artist.Y + layout.Artist.H/2
-		clip := fmt.Sprintf("\\clip(%d,%d,%d,%d)", layout.Artist.X, layout.Artist.Y, layout.Artist.X+layout.Artist.W, layout.Artist.Y+layout.Artist.H)
+		clip := fmt.Sprintf("\\clip(%d,%d,%d,%d)", layout.Artist.X, layout.Artist.Y-clipPad, layout.Artist.X+layout.Artist.W, layout.Artist.Y+layout.Artist.H+clipPad)
 		writeDialogue(&b, "0:00:00.00", assTimestamp(totalDuration),
 			"Artist", fmt.Sprintf("%s\\pos(%d,%d)", clip, posX, posY), artistText)
 	} else {
-		buildScrollingDialogue(&b, totalDuration, "Artist", artistText, float64(artistWidth), float64(layout.Artist.W), float64(layout.Artist.X), float64(layout.Artist.Y), float64(layout.Artist.H))
+		buildScrollingDialogue(&b, totalDuration, "Artist", artistText, float64(artistWidth), float64(layout.Artist.W), float64(layout.Artist.X), float64(layout.Artist.Y), float64(layout.Artist.H), clipPad)
 	}
 
 	// Album event (only when non-empty)
@@ -122,11 +133,11 @@ func BuildVisualizerASSWithMode(metadata AudioMetadata, duration float64, layout
 		if albumWidth <= layout.Album.W {
 			posX := layout.Album.X
 			posY := layout.Album.Y + layout.Album.H/2
-			clip := fmt.Sprintf("\\clip(%d,%d,%d,%d)", layout.Album.X, layout.Album.Y, layout.Album.X+layout.Album.W, layout.Album.Y+layout.Album.H)
+			clip := fmt.Sprintf("\\clip(%d,%d,%d,%d)", layout.Album.X, layout.Album.Y-clipPad, layout.Album.X+layout.Album.W, layout.Album.Y+layout.Album.H+clipPad)
 			writeDialogue(&b, "0:00:00.00", assTimestamp(totalDuration),
 				"Album", fmt.Sprintf("%s\\pos(%d,%d)", clip, posX, posY), albumText)
 		} else {
-			buildScrollingDialogue(&b, totalDuration, "Album", albumText, float64(albumWidth), float64(layout.Album.W), float64(layout.Album.X), float64(layout.Album.Y), float64(layout.Album.H))
+			buildScrollingDialogue(&b, totalDuration, "Album", albumText, float64(albumWidth), float64(layout.Album.W), float64(layout.Album.X), float64(layout.Album.Y), float64(layout.Album.H), clipPad)
 		}
 	}
 
@@ -180,14 +191,15 @@ func escapeASSText(s string) string {
 }
 
 // buildScrollingDialogue adds ASS events for a scrolling text field.
-func buildScrollingDialogue(b *strings.Builder, totalDuration float64, style, text string, textWidth, viewportW, viewportX, viewportY, viewportH float64) {
+// clipPad is the vertical clip expansion (AV-821).
+func buildScrollingDialogue(b *strings.Builder, totalDuration float64, style, text string, textWidth, viewportW, viewportX, viewportY, viewportH float64, clipPad int) {
 	overflow := textWidth - viewportW
 	cycleDuration := 3.0 + overflow/40.0
 
 	posY := viewportY + viewportH/2.0
 
-	// Clip rectangle for the viewport
-	clipStr := fmt.Sprintf("\\clip(%d,%d,%d,%d)", int(viewportX), int(viewportY), int(viewportX+viewportW), int(viewportY+viewportH))
+	// Clip rectangle for the viewport, expanded vertically by clipPad
+	clipStr := fmt.Sprintf("\\clip(%d,%d,%d,%d)", int(viewportX), int(viewportY)-clipPad, int(viewportX+viewportW), int(viewportY+viewportH)+clipPad)
 
 	if cycleDuration <= 0 {
 		cycleDuration = 0.1
