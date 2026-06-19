@@ -2,7 +2,6 @@ package video
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -13,7 +12,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync/atomic"
 )
 
 var soundCloudDownloadSequence uint64
@@ -57,71 +55,12 @@ func isSoundCloudURL(rawURL string) bool {
 	}
 }
 
-// soundCloudDownloadArgs returns the yt-dlp arguments for downloading
-// a SoundCloud track including thumbnail. The rawURL is placed at the end.
-func soundCloudDownloadArgs(outDir, rawURL string) []string {
-	prefix := "yt-dlp-sc-" + queueID() + "-" + strconv.FormatUint(atomic.AddUint64(&soundCloudDownloadSequence, 1), 36)
-	return []string{
-		"--no-playlist",
-		"--no-warnings",
-		"--max-filesize", "2G",
-		"--write-thumbnail",
-		"--no-download-archive",
-		"-o", filepath.Join(outDir, prefix+".%(ext)s"),
-		rawURL,
-	}
-}
 
-func selectDownloadedFilesForTemplate(outputTemplate string) (sourcePath, artworkPath string, err error) {
-	pattern := strings.ReplaceAll(outputTemplate, "%(ext)s", "*")
-	return selectDownloadedFilesMatching(pattern)
-}
-
-// selectDownloadedFiles examines outDir for files matching the SoundCloud
-// download prefix (yt-dlp-sc.*). It returns the largest non-directory,
-// non-.part file as the source, and the first image file as the artwork.
-// Artwork is optional — if none is found the artworkPath is empty.
-func selectDownloadedFiles(outDir string) (sourcePath, artworkPath string, err error) {
-	return selectDownloadedFilesMatching(filepath.Join(outDir, "yt-dlp-sc.*"))
-}
-
-func selectDownloadedFilesMatching(pattern string) (sourcePath, artworkPath string, err error) {
-	matches, _ := filepath.Glob(pattern)
-
-	var largestFile string
-	var largestSize int64
-	for _, match := range matches {
-		ext := strings.ToLower(filepath.Ext(match))
-		if ext == ".part" {
-			continue
-		}
-		info, statErr := os.Stat(match)
-		if statErr != nil || info.IsDir() {
-			continue
-		}
-		switch ext {
-		case ".jpg", ".jpeg", ".png", ".webp":
-			if artworkPath == "" {
-				artworkPath = match
-			}
-		default:
-			if info.Size() > largestSize {
-				largestSize = info.Size()
-				largestFile = match
-			}
-		}
-	}
-
-	if largestFile == "" {
-		return "", "", errors.New("no SoundCloud audio file found after download")
-	}
-
-	return largestFile, artworkPath, nil
-}
 
 // DownloadMediaURL downloads media from rawURL. For SoundCloud URLs it
-// downloads audio + thumbnail using yt-dlp. For other URLs it delegates
-// to downloadVideoURL (the standard video path in publisher.go).
+// downloads audio + thumbnail using yt-dlp via DownloadSoundCloud. For
+// other URLs it delegates to downloadVideoURL (the standard video path
+// in publisher.go).
 func DownloadMediaURL(rawURL, outDir string) (DownloadedMedia, error) {
 	if !isSoundCloudURL(rawURL) {
 		sourcePath, name, err := downloadVideoURL(rawURL, outDir)
@@ -129,10 +68,9 @@ func DownloadMediaURL(rawURL, outDir string) (DownloadedMedia, error) {
 			return DownloadedMedia{}, err
 		}
 		return DownloadedMedia{
-			SourcePath:  sourcePath,
-			Name:        name,
-			Kind:        "video",
-			ArtworkPath: "",
+			SourcePath: sourcePath,
+			Name:       name,
+			Kind:       "video",
 		}, nil
 	}
 
@@ -140,33 +78,17 @@ func DownloadMediaURL(rawURL, outDir string) (DownloadedMedia, error) {
 	if err != nil {
 		return DownloadedMedia{}, err
 	}
-	if err := os.MkdirAll(outDir, 0700); err != nil {
-		return DownloadedMedia{}, err
-	}
 
-	args := soundCloudDownloadArgs(outDir, rawURL)
-	if err := run(exe, args...); err != nil {
-		return DownloadedMedia{}, err
-	}
-
-	outputTemplate := ""
-	for i := 0; i+1 < len(args); i++ {
-		if args[i] == "-o" {
-			outputTemplate = args[i+1]
-			break
-		}
-	}
-	sourcePath, artworkPath, err := selectDownloadedFilesForTemplate(outputTemplate)
+	audio, err := DownloadSoundCloud(context.Background(), exe, rawURL, outDir)
 	if err != nil {
 		return DownloadedMedia{}, err
 	}
 
-	name := filepath.Base(sourcePath)
 	return DownloadedMedia{
-		SourcePath:  sourcePath,
-		Name:        name,
+		SourcePath:  audio.SourcePath,
+		Name:        audio.SourceName,
 		Kind:        "soundcloud",
-		ArtworkPath: artworkPath,
+		ArtworkPath: audio.SoundCloudArtworkPath,
 	}, nil
 }
 
