@@ -180,6 +180,142 @@ func TestBuildVisualizerASS_LongTitleScroll(t *testing.T) {
 	}
 }
 
+// TestASSMiddleAlignmentAndClipPadding verifies AV-821:
+//   - Title/Artist/Album use ASS alignment 4 (middle-left)
+//   - TimeText uses ASS alignment 5 (middle-center)
+//   - Clip rectangle expands vertically by clipPad = max(1, round(2*width/1280))
+func TestASSMiddleAlignmentAndClipPadding(t *testing.T) {
+	layout, _ := LayoutForSize(1280, 720)
+	fonts := FontSet{Regular400: "reg.otf", Medium500: "med.otf", SemiBold600: "semib.otf"}
+	meta := AudioMetadata{Title: "T", Artist: "A", Album: "Al"}
+	metrics := map[string]TextMetrics{
+		"title":  {Width: 100, Height: 58},
+		"artist": {Width: 80, Height: 34},
+		"album":  {Width: 60, Height: 30},
+	}
+	fg := ForegroundMode{Color: color.RGBA{255, 255, 255, 255}}
+
+	ass := BuildVisualizerASSWithMode(meta, 10.0, layout, fonts, metrics, fg, 1280, 720)
+
+	// Extract a single Style line by name.
+	styleLine := func(name string) string {
+		for _, line := range strings.Split(ass, "\n") {
+			if strings.HasPrefix(line, "Style: "+name+",") {
+				return line
+			}
+		}
+		return ""
+	}
+
+	// The ASS style format (18th field, 0-indexed):
+	//   Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,
+	//   BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,
+	//   Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding
+
+	t.Run("title alignment 4", func(t *testing.T) {
+		s := styleLine("Title")
+		if s == "" {
+			t.Fatal("Title style not found")
+		}
+		parts := strings.Split(s, ",")
+		if len(parts) < 19 {
+			t.Fatalf("Title style has %d fields, want >= 19", len(parts))
+		}
+		if got := parts[18]; got != "4" {
+			t.Errorf("Title alignment = %q, want 4 (middle-left)", got)
+		}
+	})
+	t.Run("artist alignment 4", func(t *testing.T) {
+		s := styleLine("Artist")
+		if s == "" {
+			t.Fatal("Artist style not found")
+		}
+		parts := strings.Split(s, ",")
+		if len(parts) < 19 {
+			t.Fatalf("Artist style has %d fields", len(parts))
+		}
+		if got := parts[18]; got != "4" {
+			t.Errorf("Artist alignment = %q, want 4 (middle-left)", got)
+		}
+	})
+	t.Run("album alignment 4", func(t *testing.T) {
+		s := styleLine("Album")
+		if s == "" {
+			t.Fatal("Album style not found")
+		}
+		parts := strings.Split(s, ",")
+		if len(parts) < 19 {
+			t.Fatalf("Album style has %d fields", len(parts))
+		}
+		if got := parts[18]; got != "4" {
+			t.Errorf("Album alignment = %q, want 4 (middle-left)", got)
+		}
+	})
+	t.Run("timetext alignment 5", func(t *testing.T) {
+		s := styleLine("TimeText")
+		if s == "" {
+			t.Fatal("TimeText style not found")
+		}
+		parts := strings.Split(s, ",")
+		if len(parts) < 19 {
+			t.Fatalf("TimeText style has %d fields", len(parts))
+		}
+		if got := parts[18]; got != "5" {
+			t.Errorf("TimeText alignment = %q, want 5 (middle-center)", got)
+		}
+	})
+
+	// Clip padding at 1280x720: clipPad = max(1, round(2*1280/1280)) = 2
+	// Title:  X=432 Y=152 W=752 H=58  -> clip(432, 150, 1184, 212)
+	// Artist: X=432 Y=224 W=752 H=34  -> clip(432, 222, 1184, 260)
+	// Album:  X=432 Y=264 W=752 H=30  -> clip(432, 262, 1184, 296)
+	t.Run("1280p clip expanded by 2", func(t *testing.T) {
+		if !strings.Contains(ass, "\\clip(432,150,1184,212)") {
+			t.Error("Title clip not expanded by 2px at 1280x720")
+		}
+		if !strings.Contains(ass, "\\clip(432,222,1184,260)") {
+			t.Error("Artist clip not expanded by 2px at 1280x720")
+		}
+		if !strings.Contains(ass, "\\clip(432,262,1184,296)") {
+			t.Error("Album clip not expanded by 2px at 1280x720")
+		}
+	})
+
+	// 1920x1080: clipPad = max(1, round(2*1920/1280)) = 3
+	t.Run("1080p clip expanded by 3", func(t *testing.T) {
+		layout1080, _ := LayoutForSize(1920, 1080)
+		// Title: X=648 Y=228 W=1128 H=87  -> clip(648, 225, 1776, 318)
+		ass1080 := BuildVisualizerASSWithMode(meta, 10.0, layout1080, fonts, metrics, fg, 1920, 1080)
+		if !strings.Contains(ass1080, "\\clip(648,225,1776,318)") {
+			t.Error("1080p Title clip not expanded by 3px")
+		}
+	})
+
+	// 640x360: clipPad = max(1, round(2*640/1280)) = 1
+	t.Run("360p clip expanded by 1", func(t *testing.T) {
+		layout360, _ := LayoutForSize(640, 360)
+		// Title: X=216 Y=76 W=376 H=29  -> clip(216, 75, 592, 106)
+		ass360 := BuildVisualizerASSWithMode(meta, 10.0, layout360, fonts, metrics, fg, 640, 360)
+		if !strings.Contains(ass360, "\\clip(216,75,592,106)") {
+			t.Error("360p Title clip not expanded by 1px")
+		}
+	})
+
+	// Scrolling title still uses expanded clip
+	t.Run("scrolling clip expanded", func(t *testing.T) {
+		longMeta := AudioMetadata{Title: "X" + strings.Repeat("x", 200), Artist: "A", Album: "Al"}
+		longMetrics := map[string]TextMetrics{
+			"title":  {Width: 1400, Height: 58},
+			"artist": {Width: 80, Height: 34},
+			"album":  {Width: 60, Height: 30},
+		}
+		assLong := BuildVisualizerASSWithMode(longMeta, 30.0, layout, fonts, longMetrics, fg, 1280, 720)
+		if !strings.Contains(assLong, "\\clip(432,150,1184,212)") {
+			t.Error("Scrolling Title clip not expanded by 2px")
+		}
+	})
+}
+
 func TestBuildVisualizerASS_TimeEvents(t *testing.T) {
 	meta := AudioMetadata{
 		Title:  "Song",
