@@ -25,17 +25,17 @@ The active AI owns this ledger. Workers report evidence; they do not edit status
 | AV-601 | MERGED | AV-502 | 5109441 | llm-flash | 28f3278 | UI: 235 tests |
 | AV-602 | MERGED | AV-502 | 5109441 | llm-flash | 0fe8364 | runtime fixtures: 235 tests |
 | AV-603 | MERGED | AV-502 | 5109441 | llm-flash | 97bd847 | README docs |
-| AV-700 | REJECTED | AV-601, AV-602, AV-603, AV-719 | 5109441 | active AI | review at 5c5b872 | runtime paths did not satisfy the design; correction wave required |
-| AV-710 | WAITING_DEPENDENCY | AV-700 re-verified | - | - | - | versioned Windows build blocked by correction wave |
-| AV-711 | READY | review at 5c5b872 | 5c5b872 | - | - | route local audio uploads into shared pipeline |
-| AV-712 | WAITING_DEPENDENCY | AV-711 | - | - | - | connect direct audio URLs to SSRF-safe ingest |
-| AV-713 | READY | review at 5c5b872 | 5c5b872 | - | - | preserve SoundCloud metadata and info sidecar binding |
-| AV-714 | READY | review at 5c5b872 | 5c5b872 | - | - | correct BPM onset-frame units |
-| AV-715 | WAITING_DEPENDENCY | AV-714 | - | - | - | stream PCM analysis with bounded memory |
-| AV-716 | WAITING_DEPENDENCY | AV-713, AV-715 | - | - | - | compose complete artwork-driven visualizer |
-| AV-717 | WAITING_DEPENDENCY | AV-712, AV-715 | - | - | - | re-analyze restored audio before enqueue |
-| AV-718 | WAITING_DEPENDENCY | AV-716, AV-717 | - | active AI | - | correction integration and encoded-frame QA |
-| AV-719 | WAITING_DEPENDENCY | AV-718 | - | active AI | - | close ledger and restore AV-700/AV-710 gates |
+| AV-700 | VERIFIED | correction wave complete | a2cec2f | active AI | a2cec2f | 289 tests, 20 packages, 3x stable |
+| AV-710 | READY | AV-700 re-verified | - | - | - | versioned Windows build gate reopened |
+| AV-711 | MERGED | review at 5c5b872 | 5c5b872 | llm-flash | 446965a | local upload routing |
+| AV-712 | MERGED | AV-711 | 4e9d864 | llm-flash | 4e9d864 | direct URL routing |
+| AV-713 | MERGED | review at 5c5b872 | 5c5b872 | llm-flash | e37bc98 | SoundCloud metadata |
+| AV-714 | MERGED | review at 5c5b872 | 5c5b872 | llm-flash/active AI | f668c7a | BPM correction |
+| AV-715 | MERGED | AV-714 | 92dd9fd | active AI | 92dd9fd | streaming analysis |
+| AV-716 | MERGED | AV-713, AV-715 | 92dd9fd | llm-flash | 0abf49d | complete renderer |
+| AV-717 | MERGED | AV-712, AV-715 | 92dd9fd | llm-flash | a620687 | history re-analysis |
+| AV-718 | MERGED | AV-716, AV-717 | a2cec2f | active AI | a2cec2f | correction QA: 289 tests 3x |
+| AV-719 | MERGED | AV-718 | a2cec2f | active AI | a2cec2f | closure: gates restored |
 
 ## Status update record
 
