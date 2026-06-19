@@ -48,6 +48,23 @@ func videoContentType(name string) string {
 	}
 }
 
+func soundCloudContentType(name string) string {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".mp3":
+		return "audio/mpeg"
+	case ".m4a", ".mp4":
+		return "audio/mp4"
+	case ".ogg", ".opus":
+		return "audio/ogg"
+	case ".wav":
+		return "audio/wav"
+	case ".flac":
+		return "audio/flac"
+	default:
+		return "application/octet-stream"
+	}
+}
+
 func isHLSSegmentName(name string) bool {
 	if !strings.HasPrefix(name, "current") || !strings.HasSuffix(name, ".ts") {
 		return false

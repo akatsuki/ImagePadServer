@@ -317,12 +317,21 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.clearPublication()
-		sourcePath, name, err := video.DownloadURL(req.URL, s.store.Dir())
+		media, err := video.DownloadMediaURL(req.URL, s.store.Dir())
 		if err != nil {
 			http.Error(w, videoURLDownloadError(err), http.StatusBadRequest)
 			return
 		}
-		state, err := s.processVideoFileAndPublish(r, sourcePath, name)
+		if media.Kind == "soundcloud" {
+			state, err := s.processSoundCloudFileAndPublish(r, media)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, state)
+			return
+		}
+		state, err := s.processVideoFileAndPublish(r, media.SourcePath, media.Name)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -374,12 +383,21 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		sourcePath, name, err := video.DownloadURL(req.URL, s.store.Dir())
+		media, err := video.DownloadMediaURL(req.URL, s.store.Dir())
 		if err != nil {
 			http.Error(w, videoURLDownloadError(err), http.StatusBadRequest)
 			return
 		}
-		state, err := s.processVideoFileAndQueue(r, sourcePath, name)
+		if media.Kind == "soundcloud" {
+			state, err := s.processSoundCloudFileAndQueue(r, media)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, state)
+			return
+		}
+		state, err := s.processVideoFileAndQueue(r, media.SourcePath, media.Name)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -531,6 +549,11 @@ func (s *Server) processVideoFileAndPublish(r *http.Request, sourcePath, name st
 	if stat, err := os.Stat(sourcePath); err == nil {
 		info.SizeBytes = stat.Size()
 	}
+	// Replacing the published video: discard the previous media's in-flight
+	// conversion so a preempted job cannot resume and resurface the old video.
+	if prev := s.store.Current(); prev != nil && prev.ID != "" {
+		video.CancelConversion(s.store.Dir(), prev.ID)
+	}
 	if err := s.store.SetCurrentInfo(info); err != nil {
 		return nil, fmt.Errorf("failed to save video")
 	}
@@ -651,6 +674,9 @@ func (s *Server) withClipboardResult(state map[string]interface{}) map[string]in
 }
 
 func (s *Server) clearPublication() {
+	if current := s.store.Current(); current != nil && current.ID != "" {
+		video.CancelConversion(s.store.Dir(), current.ID)
+	}
 	_ = s.store.Clear()
 }
 
@@ -912,7 +938,13 @@ func (s *Server) handleHistorySelect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if path, current, ok := s.store.CurrentPath(); ok && s.videoPlayerEnabled() {
-		if current.Kind == "video" {
+		if current.SourceKind == "soundcloud" {
+			artworkPath := ""
+			if current.Thumbnail != "" {
+				artworkPath = filepath.Join(s.store.Dir(), current.Thumbnail)
+			}
+			s.enqueueSoundCloudConversion(path, artworkPath, current.ID, current.OriginalName)
+		} else if current.Kind == "video" {
 			s.enqueueUploadedConversion(path, current.ID, current.OriginalName)
 		} else {
 			s.enqueueStillConversion(path, current.ID, current.OriginalName)
@@ -929,6 +961,14 @@ func (s *Server) enqueueHistoryItem(id string) error {
 	if item.Converted {
 		return s.store.SetCurrentFromHistory(id)
 	}
+	if item.SourceKind == "soundcloud" {
+		artworkPath := ""
+		if path, _, ok := s.store.HistoryThumbnailPath(id); ok {
+			artworkPath = path
+		}
+		s.enqueueSoundCloudConversion(path, artworkPath, item.ID, item.OriginalName)
+		return nil
+	}
 	if item.Kind == "video" {
 		s.enqueueUploadedConversion(path, item.ID, item.OriginalName)
 		return nil
@@ -944,6 +984,82 @@ func (s *Server) enqueueStillConversion(path, id, title string) {
 
 func (s *Server) enqueueUploadedConversion(path, id, title string) {
 	jobID := video.EnqueueUploadedVideoForID(path, s.store.Dir(), id, title, s.videoQualityPreset())
+	s.watchConversion(jobID, id)
+}
+
+func (s *Server) processSoundCloudFileAndPublish(r *http.Request, media video.DownloadedMedia) (map[string]interface{}, error) {
+	if _, err := video.EnsureFFmpeg(); err != nil {
+		return nil, err
+	}
+	thumbnail := ""
+	if media.ArtworkPath != "" {
+		thumbnail = s.createVideoThumbnail(media.ArtworkPath)
+	}
+	info := soundCloudCurrentInfo(media, "current-video"+filepath.Ext(media.SourcePath), thumbnail)
+	if stat, err := os.Stat(media.SourcePath); err == nil {
+		info.SizeBytes = stat.Size()
+	}
+	if prev := s.store.Current(); prev != nil && prev.ID != "" {
+		video.CancelConversion(s.store.Dir(), prev.ID)
+	}
+	if err := s.store.SetCurrentInfo(info); err != nil {
+		return nil, fmt.Errorf("failed to save media")
+	}
+	current := s.store.Current()
+	currentID := ""
+	if current != nil {
+		currentID = current.ID
+	}
+	artworkPath := media.ArtworkPath
+	if thumbnail != "" {
+		artworkPath = filepath.Join(s.store.Dir(), thumbnail)
+	}
+	s.enqueueSoundCloudConversion(media.SourcePath, artworkPath, currentID, media.Name)
+
+	state := s.state(r)
+	return s.withClipboardResult(state), nil
+}
+
+func (s *Server) processSoundCloudFileAndQueue(r *http.Request, media video.DownloadedMedia) (map[string]interface{}, error) {
+	if _, err := video.EnsureFFmpeg(); err != nil {
+		return nil, err
+	}
+	thumbnail := ""
+	if media.ArtworkPath != "" {
+		thumbnail = s.createVideoThumbnail(media.ArtworkPath)
+	}
+	info := soundCloudCurrentInfo(media, "queued-video"+filepath.Ext(media.SourcePath), thumbnail)
+	if stat, err := os.Stat(media.SourcePath); err == nil {
+		info.SizeBytes = stat.Size()
+	}
+	historyItem, err := s.store.AddHistory(media.SourcePath, info)
+	if err != nil {
+		return nil, fmt.Errorf("failed to add to history")
+	}
+	if path, _, ok := s.store.HistoryPath(historyItem.ID); ok {
+		artworkPath := media.ArtworkPath
+		if path, _, ok := s.store.HistoryThumbnailPath(historyItem.ID); ok {
+			artworkPath = path
+		}
+		s.enqueueSoundCloudConversion(path, artworkPath, historyItem.ID, historyItem.OriginalName)
+	}
+	return s.state(r), nil
+}
+
+func soundCloudCurrentInfo(media video.DownloadedMedia, publicName, thumbnail string) library.CurrentImage {
+	return library.CurrentImage{
+		Kind:         "video",
+		SourceKind:   "soundcloud",
+		FileName:     filepath.Base(media.SourcePath),
+		PublicName:   publicName,
+		ContentType:  soundCloudContentType(media.SourcePath),
+		OriginalName: media.Name,
+		Thumbnail:    thumbnail,
+	}
+}
+
+func (s *Server) enqueueSoundCloudConversion(audioPath, artworkPath, id, title string) {
+	jobID := video.EnqueueSoundCloudForID(audioPath, artworkPath, s.store.Dir(), id, title, s.videoQualityPreset(), 0)
 	s.watchConversion(jobID, id)
 }
 

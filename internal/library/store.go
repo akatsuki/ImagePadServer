@@ -16,6 +16,7 @@ import (
 type CurrentImage struct {
 	ID           string    `json:"id"`
 	Kind         string    `json:"kind"`
+	SourceKind   string    `json:"sourceKind,omitempty"`
 	FileName     string    `json:"fileName"`
 	PublicName   string    `json:"publicName"`
 	ContentType  string    `json:"contentType"`

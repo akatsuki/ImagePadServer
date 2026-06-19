@@ -85,6 +85,7 @@ type queueJob struct {
 	QueueItem
 	OutDir       string
 	SourcePath   string
+	ArtworkPath  string // for SoundCloud artwork
 	Mode         string
 	Preset       QualityPreset
 	Cancel       context.CancelFunc
@@ -385,6 +386,27 @@ func EnqueueUploadedVideoForID(sourcePath, outDir, id, title string, preset Qual
 	})
 }
 
+func EnqueueSoundCloudForID(audioPath, artworkPath, outDir, id, title string, preset QualityPreset, totalSeconds int) string {
+	return enqueueConversion(&queueJob{
+		QueueItem: QueueItem{
+			ID:        queueID(),
+			MediaID:   id,
+			Title:     fallbackTitle(title, "SoundCloud"),
+			Kind:      "soundcloud",
+			Status:    "pending",
+			Message:   "変換待ち",
+			Quality:   preset.Effective,
+			CreatedAt: time.Now(),
+		},
+		OutDir:       outDir,
+		SourcePath:   audioPath,
+		ArtworkPath:  artworkPath,
+		Mode:         "soundcloud",
+		Preset:       preset,
+		TotalSeconds: totalSeconds,
+	})
+}
+
 func QueueStatus(outDir string) []QueueItem {
 	state := queueFor(outDir)
 	state.mu.Lock()
@@ -545,6 +567,8 @@ func runQueueJob(job *queueJob) {
 	switch job.Mode {
 	case "still":
 		err = runStillHLS(ctx, job.OutDir, ffmpeg, job.SourcePath, job.MediaID, job.Preset)
+	case "soundcloud":
+		err = runSoundCloudHLS(ctx, job.OutDir, ffmpeg, job.SourcePath, job.ArtworkPath, job.MediaID, job.Preset)
 	default:
 		err = runUploadedHLS(ctx, job.OutDir, ffmpeg, job.SourcePath, job.MediaID, job.Preset)
 	}
@@ -742,7 +766,10 @@ func EnsureLatestYTDLP() (string, bool, error) {
 	return path, true, nil
 }
 
-func DownloadURL(rawURL, outDir string) (string, string, error) {
+// downloadVideoURL downloads a video from a URL using yt-dlp.
+// It handles regular (non-SoundCloud) URLs with the standard video format
+// selector and produces an MP4 file prefixed "yt-dlp-source".
+func downloadVideoURL(rawURL, outDir string) (string, string, error) {
 	exe, err := EnsureYTDLP()
 	if err != nil {
 		return "", "", err
@@ -767,10 +794,22 @@ func DownloadURL(rawURL, outDir string) (string, string, error) {
 	matches, _ := filepath.Glob(filepath.Join(outDir, "yt-dlp-source.*"))
 	for _, match := range matches {
 		if info, err := os.Stat(match); err == nil && !info.IsDir() && info.Size() > 0 {
-			return match, "yt-dlp-source" + filepath.Ext(match), nil
+			return match, "yt-dlp-source"+filepath.Ext(match), nil
 		}
 	}
 	return "", "", errors.New("yt-dlp did not produce a video file")
+}
+
+// DownloadURL downloads media from a URL and returns the source path and
+// display name. It is a compatibility wrapper around DownloadMediaURL.
+// For SoundCloud URLs, artwork is silently discarded. Use DownloadMediaURL
+// if you need the full DownloadedMedia result.
+func DownloadURL(rawURL, outDir string) (string, string, error) {
+	media, err := DownloadMediaURL(rawURL, outDir)
+	if err != nil {
+		return "", "", err
+	}
+	return media.SourcePath, media.Name, nil
 }
 
 func GenerateThumbnail(sourcePath, outPath string) error {
@@ -894,6 +933,42 @@ func RemoveGenerated(outDir string) {
 func CancelQueue(outDir string) {
 	cancelQueue(outDir)
 	stopActive(outDir)
+}
+
+// CancelConversion stops and discards any pending or running conversion job for
+// the given media id so it can never be resumed. Unlike preemption (which sends
+// a running job back to "pending" to be retried later), this is used when the
+// published media is being replaced: the old job must not come back and
+// regenerate stale HLS output after the new media has taken over.
+func CancelConversion(outDir, id string) {
+	if id == "" {
+		return
+	}
+	value, ok := queues.Load(outDir)
+	if !ok {
+		return
+	}
+	state, ok := value.(*queueState)
+	if !ok {
+		return
+	}
+	state.mu.Lock()
+	for _, job := range state.items {
+		if job == nil || job.MediaID != id {
+			continue
+		}
+		switch job.Status {
+		case "pending", "running":
+			job.Preempted = false
+			job.Status = "canceled"
+			job.Message = "差し替えのため中止しました"
+			job.FinishedAt = time.Now()
+			if job.Cancel != nil {
+				job.Cancel()
+			}
+		}
+	}
+	state.mu.Unlock()
 }
 
 func PlaylistName(id string) string {

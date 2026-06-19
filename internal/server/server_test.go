@@ -484,6 +484,24 @@ func TestVideoURLDownloadError(t *testing.T) {
 	}
 }
 
+func TestSoundCloudCurrentInfoUsesVideoPresentationAndSoundCloudSource(t *testing.T) {
+	media := video.DownloadedMedia{
+		SourcePath: "track.m4a",
+		Name:       "track.m4a",
+		Kind:       "soundcloud",
+	}
+	info := soundCloudCurrentInfo(media, "current-video.m4a", "thumb.jpg")
+	if info.Kind != "video" {
+		t.Fatalf("Kind = %q, want video so existing preview/history paths treat it as media", info.Kind)
+	}
+	if info.SourceKind != "soundcloud" {
+		t.Fatalf("SourceKind = %q, want soundcloud", info.SourceKind)
+	}
+	if info.Thumbnail != "thumb.jpg" {
+		t.Fatalf("Thumbnail = %q, want thumb.jpg", info.Thumbnail)
+	}
+}
+
 func signedRelayRequest(t *testing.T, clientID, clientSecret, nonce string) *http.Request {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "http://192.168.1.20:8080/api/obs/relay-config", nil)
