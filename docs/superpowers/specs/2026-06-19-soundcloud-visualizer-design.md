@@ -1,11 +1,11 @@
-# SoundCloud Visualizer Design Specification
+# Audio Visualizer and Media Ingest Design Specification
 
 Date: 2026-06-19  
 Status: Approved design, pending implementation plan
 
 ## 1. Purpose
 
-Replace the current simple SoundCloud artwork-and-waveform video with a deterministic 16:9 music visualizer. The result is rendered into the HLS video itself. It is not an interactive player UI.
+Replace the current simple SoundCloud artwork-and-waveform video with a deterministic 16:9 music visualizer shared by SoundCloud tracks, local audio files, and direct audio-file URLs. The result is rendered into the HLS video itself. It is not an interactive player UI.
 
 The visual direction is inspired by Apple Music and Apple Human Interface Guidelines: clear hierarchy, restrained decoration, consistent spacing, legible typography, and artwork-derived color. Do not copy Apple Music assets or its screen verbatim.
 
@@ -17,6 +17,7 @@ The visual direction is inspired by Apple Music and Apple Human Interface Guidel
 - Do not depend on browser Canvas, WebAudio, or client-side animation.
 - Do not silently use an operating-system fallback font.
 - Do not support non-16:9 output in this design.
+- Do not call SoundCloud, yt-dlp metadata lookup, or any other artwork-discovery service for local audio files or generic direct audio-file URLs.
 
 ## 3. Coordinate system and scaling
 
@@ -38,6 +39,7 @@ The renderer must receive or precompute:
 - `title`: non-empty track title.
 - `artist`: non-empty artist name.
 - `album`: album name; may be empty.
+- `source_name`: original local filename or remote filename preserved independently from temporary storage names.
 - `artwork`: optional square or rectangular image.
 - `duration_seconds`: finite number greater than zero.
 - `current_seconds`: value clamped to `0..duration_seconds` for each frame.
@@ -46,7 +48,105 @@ The renderer must receive or precompute:
 - `loudness_envelope`: precomputed whole-track loudness values normalized to `0..1`.
 - `audio_features`: BPM, integrated loudness in LUFS, low-frequency energy ratio, spectral centroid, and 64 whole-track frequency-band averages.
 
-Metadata acquisition and the choice of placeholder text for missing title or artist are upstream responsibilities. This renderer must not invent metadata.
+Resolve metadata according to section 4.4 before rendering. The renderer must not invent metadata beyond the explicit filename and SoundCloud-user fallbacks defined there.
+
+### 4.1 Supported audio formats
+
+Do not maintain a fixed extension allowlist for audio. A local file or downloaded direct-URL payload is a supported audio input when the bundled FFmpeg/ffprobe build can open it and reports at least one playable audio stream.
+
+Classify media using decoded stream information, not only file extension or browser-supplied MIME type:
+
+1. Preserve the existing image and camera-RAW detection path first.
+2. Probe every remaining uploaded file with ffprobe while video-player mode is enabled.
+3. Ignore video streams marked `attached_pic` when deciding whether a file is audio or video.
+4. If at least one non-`attached_pic` video stream exists, classify the file as video.
+5. Otherwise, if at least one audio stream exists, classify the file as audio.
+6. Otherwise, reject the file as unsupported media.
+
+This rule intentionally includes every audio container and codec recognized by the bundled FFmpeg build, including formats not known to the browser or operating system.
+
+### 4.2 Input-source kinds
+
+Use distinct source kinds:
+
+- `soundcloud`: a URL recognized as SoundCloud and downloaded through the SoundCloud-specific path.
+- `local_audio`: an audio file uploaded from local storage.
+- `remote_audio`: a direct HTTP or HTTPS audio-file URL that is not a SoundCloud page URL.
+- Existing image, RAW, uploaded-video, remote-video, and OBS kinds remain unchanged.
+
+After acquisition, `local_audio` and `remote_audio` must use the same metadata, artwork, visualizer, queue, history, publish, and HLS conversion path. `remote_audio` differs only in how the source bytes are obtained.
+
+### 4.3 Artwork-resolution priority
+
+Resolve artwork once, before visualizer rendering, using this exact order:
+
+1. Extract embedded artwork from the acquired audio file.
+2. If and only if `source_kind == soundcloud`, use artwork downloaded from the SoundCloud track page when embedded artwork was absent or invalid.
+3. Generate the audio-analysis fallback artwork when neither previous candidate is usable.
+
+For embedded artwork:
+
+- Prefer an image explicitly tagged as front cover.
+- If no front-cover tag exists, select the valid embedded image with the largest pixel area.
+- If pixel area ties, select the image with the largest byte size.
+- Ignore undecodable or zero-dimension embedded images and continue to the next candidate.
+- Use embedded art from ID3 APIC, FLAC Picture, MP4/M4A `covr`, Ogg-family metadata, or any equivalent attachment exposed by FFmpeg.
+
+Never perform SoundCloud artwork lookup for `local_audio` or `remote_audio`.
+
+### 4.4 Metadata-resolution priority
+
+Resolve title, artist, and album independently.
+
+For `local_audio` and `remote_audio`:
+
+1. Use non-empty embedded audio tags.
+2. If title is still empty, use the source filename without its final extension.
+3. If artist or album is still empty, leave that field empty and do not render its line.
+
+For `soundcloud`:
+
+1. Use non-empty embedded audio tags.
+2. For any field still empty, use the corresponding SoundCloud track metadata.
+3. If artist is still empty, use the SoundCloud uploader/user name.
+4. If album is still empty, use a SoundCloud album value only when the track exposes one; otherwise leave it empty.
+5. If title is still empty, use the downloaded source filename without its final extension.
+
+Do not write a generic `Unknown Artist` or `Unknown Album` string into the video.
+
+### 4.5 Upload UI and size limits
+
+When video-player mode is enabled:
+
+- Change the file-mode tab label from `画像/動画` to `画像/音声/動画`.
+- Change the section heading from `画像アップロード` to `メディアアップロード`.
+- Change drop-zone and global-drop hints to mention images, camera RAW, audio, and video.
+- Describe the URL field as a media URL and allow SoundCloud pages, direct audio files, and the existing image/video URL inputs.
+- Do not use a restrictive file-input `accept` allowlist. The server-side image decoder and ffprobe result are authoritative.
+- Keep publish, queue, history, cancellation, and HLS URL behavior consistent across local audio, remote audio, SoundCloud audio, and video.
+
+When video-player mode is disabled, preserve the existing image/RAW-only UI and behavior.
+
+Use one media-source limit for uploaded and remotely downloaded audio and video:
+
+- Maximum accepted bytes: `4,294,967,295` (`4 GiB - 1 byte`), matching the maximum single-file size representable on FAT32.
+- Reject a source before conversion when its known Content-Length exceeds the limit.
+- When length is unknown, stop streaming after the limit plus one byte and reject the source.
+- Apply the same limit to local upload, direct audio-file URL download, SoundCloud download, and video download.
+
+### 4.6 Direct audio-file URLs
+
+A non-SoundCloud HTTP or HTTPS URL may resolve to an audio file. Preserve the existing remote-URL security checks, redirect checks, timeouts, and private-network restrictions.
+
+1. Download the source to a unique temporary file without assuming audio from its extension or Content-Type.
+   Preserve the response `Content-Disposition` filename when valid; otherwise preserve the final URL-path basename as `source_name`.
+2. Enforce the `4,294,967,295`-byte limit while downloading.
+3. Probe the completed file with ffprobe.
+4. If it contains audio and no non-`attached_pic` video stream, classify it as `remote_audio`.
+5. Process it through the exact `local_audio` path.
+6. Extract embedded art and tags, but do not perform SoundCloud artwork or metadata lookup.
+7. If the URL resolves to video, preserve the existing remote-video path.
+8. If it resolves to neither supported image, audio, nor video, reject it.
 
 ## 5. Layer order
 
@@ -84,7 +184,9 @@ If `album` is empty, do not render the album line. Do not move the title, artist
 
 ## 7. Artwork-present state
 
-1. Crop the source artwork to a square from its center.
+Use the first valid artwork selected by section 4.3.
+
+1. Crop the resolved artwork to a square from its center.
 2. Render it at `(96, 152)` with size `288 x 288`.
 3. Use corner radius `24`.
 4. Do not apply color correction to the foreground artwork.
@@ -265,11 +367,15 @@ All metadata, spectrum, waveform, loudness graph, progress display, and time rul
 
 ## 15. Determinism and failure handling
 
-- The same source audio, metadata, artwork, output resolution, and timestamp must produce the same video frame.
+- The same source audio, source kind, resolved metadata, resolved artwork, output resolution, and timestamp must produce the same video frame.
 - Clamp all normalized audio values to `0..1`.
 - Clamp negative or non-finite current time to zero.
 - Treat missing or invalid duration as a rendering error; do not divide by zero.
-- If artwork decoding fails, use the artwork-missing state.
+- If one embedded artwork candidate fails to decode, continue through the deterministic artwork priority in section 4.3.
+- If every artwork candidate fails, use the artwork-missing state.
+- Never contact SoundCloud for `local_audio` or `remote_audio`, including after artwork extraction or metadata parsing fails.
+- Reject a media file when ffprobe cannot identify an image/RAW path, a playable audio stream, or a playable video stream.
+- Reject audio and video sources larger than `4,294,967,295` bytes before enqueueing conversion.
 - If palette audio analysis fails, use the balanced/default palette.
 - If whole-track loudness analysis fails, fail the visualizer render rather than drawing a misleading flat graph.
 - If the bundled font cannot be loaded, fail with an explicit font-loading error. Do not silently select another font.
@@ -290,6 +396,14 @@ All metadata, spectrum, waveform, loudness graph, progress display, and time rul
 12. The position display cannot be interacted with.
 13. Missing artwork produces a deterministic mood palette, a 64-line audio fingerprint, and a large centered `♪`.
 14. No renderer path depends on a browser-side visualizer.
+15. Local files and generic direct URLs are classified by ffprobe stream data instead of a fixed extension list.
+16. An audio file with an `attached_pic` stream and no real video stream is classified as audio.
+17. Embedded artwork wins over SoundCloud artwork for a SoundCloud-acquired track.
+18. Local and generic direct-URL audio never trigger SoundCloud artwork or metadata lookup.
+19. SoundCloud artist fallback uses the uploader/user name, and album is shown only when a real album value exists.
+20. The enabled file tab reads `画像/音声/動画`, while disabled mode preserves the image/RAW-only state.
+21. Audio and video inputs accept at most `4,294,967,295` bytes through every acquisition path.
+22. Direct audio-file URLs use the local-audio visualization path after secure download and probing.
 
 ## 17. Implementation boundary
 
@@ -299,5 +413,10 @@ This document defines appearance and observable behavior only. The implementatio
 - font bundling and license attribution;
 - whether overlays are generated as FFmpeg filters, pre-rendered frame assets, or a narrow helper;
 - cache keys for whole-track analysis and fallback artwork;
-- integration points with the existing SoundCloud HLS pipeline;
+- ffprobe-based image/audio/video classification and `attached_pic` handling;
+- embedded metadata and artwork extraction;
+- source-kind-aware artwork and metadata resolution;
+- secure direct-audio-URL acquisition and size enforcement;
+- replacement of the current uncommitted SoundCloud-only path with a shared audio HLS pipeline;
+- integration points with the existing SoundCloud, uploaded-media, history, queue, and HLS paths;
 - unit, golden-image, and encoded-video verification.
