@@ -106,7 +106,7 @@ func BuildVisualizerASSWithMode(metadata AudioMetadata, duration float64, layout
 		writeDialogue(&b, "0:00:00.00", assTimestamp(totalDuration),
 			"Title", fmt.Sprintf("%s\\pos(%d,%d)", clip, posX, posY), titleText)
 	} else {
-		buildScrollingDialogue(&b, totalDuration, "Title", titleText, float64(titleWidth), float64(viewportW), float64(viewportX), float64(viewportY), float64(viewportH), clipPad)
+		buildScrollingDialogue(&b, totalDuration, "Title", titleText, float64(titleWidth), float64(viewportW), float64(viewportX), float64(viewportY), float64(viewportH), clipPad, float64(width))
 	}
 
 	// Artist event
@@ -121,7 +121,7 @@ func BuildVisualizerASSWithMode(metadata AudioMetadata, duration float64, layout
 		writeDialogue(&b, "0:00:00.00", assTimestamp(totalDuration),
 			"Artist", fmt.Sprintf("%s\\pos(%d,%d)", clip, posX, posY), artistText)
 	} else {
-		buildScrollingDialogue(&b, totalDuration, "Artist", artistText, float64(artistWidth), float64(layout.Artist.W), float64(layout.Artist.X), float64(layout.Artist.Y), float64(layout.Artist.H), clipPad)
+		buildScrollingDialogue(&b, totalDuration, "Artist", artistText, float64(artistWidth), float64(layout.Artist.W), float64(layout.Artist.X), float64(layout.Artist.Y), float64(layout.Artist.H), clipPad, float64(width))
 	}
 
 	// Album event (only when non-empty)
@@ -137,7 +137,7 @@ func BuildVisualizerASSWithMode(metadata AudioMetadata, duration float64, layout
 			writeDialogue(&b, "0:00:00.00", assTimestamp(totalDuration),
 				"Album", fmt.Sprintf("%s\\pos(%d,%d)", clip, posX, posY), albumText)
 		} else {
-			buildScrollingDialogue(&b, totalDuration, "Album", albumText, float64(albumWidth), float64(layout.Album.W), float64(layout.Album.X), float64(layout.Album.Y), float64(layout.Album.H), clipPad)
+			buildScrollingDialogue(&b, totalDuration, "Album", albumText, float64(albumWidth), float64(layout.Album.W), float64(layout.Album.X), float64(layout.Album.Y), float64(layout.Album.H), clipPad, float64(width))
 		}
 	}
 
@@ -190,11 +190,32 @@ func escapeASSText(s string) string {
 	return s
 }
 
+// scrollCycle computes the overflow distance, hold duration, move duration,
+// and total cycle duration for scrolling metadata text.
+//
+// When text fits within the viewport (textWidth <= viewportWidth), all returned
+// values are zero — no scrolling is needed.
+//
+// When overflow exists, hold is always 3.0 seconds. The scroll speed is
+// 40 * outputWidth / 1280 (canonical pixels per second scaled to output
+// resolution). Move duration is overflow / speed. Total cycle is hold + move.
+func scrollCycle(textWidth, viewportWidth, outputWidth float64) (overflow, hold, move, total float64) {
+	if textWidth <= viewportWidth {
+		return 0, 0, 0, 0
+	}
+	overflow = textWidth - viewportWidth
+	speed := 40.0 * outputWidth / 1280.0
+	hold = 3.0
+	move = overflow / speed
+	total = hold + move
+	return
+}
+
 // buildScrollingDialogue adds ASS events for a scrolling text field.
-// clipPad is the vertical clip expansion (AV-821).
-func buildScrollingDialogue(b *strings.Builder, totalDuration float64, style, text string, textWidth, viewportW, viewportX, viewportY, viewportH float64, clipPad int) {
-	overflow := textWidth - viewportW
-	cycleDuration := 3.0 + overflow/40.0
+// clipPad is the vertical clip expansion (AV-821). outputWidth is the PlayResX
+// value used to scale the scroll speed (AV-822).
+func buildScrollingDialogue(b *strings.Builder, totalDuration float64, style, text string, textWidth, viewportW, viewportX, viewportY, viewportH float64, clipPad int, outputWidth float64) {
+	overflow, hold, _, cycleDuration := scrollCycle(textWidth, viewportW, outputWidth)
 
 	posY := viewportY + viewportH/2.0
 
@@ -202,7 +223,7 @@ func buildScrollingDialogue(b *strings.Builder, totalDuration float64, style, te
 	clipStr := fmt.Sprintf("\\clip(%d,%d,%d,%d)", int(viewportX), int(viewportY)-clipPad, int(viewportX+viewportW), int(viewportY+viewportH)+clipPad)
 
 	if cycleDuration <= 0 {
-		cycleDuration = 0.1
+		return
 	}
 
 	currentTime := 0.0
@@ -210,8 +231,8 @@ func buildScrollingDialogue(b *strings.Builder, totalDuration float64, style, te
 		cycleStart := currentTime
 		cycleEnd := currentTime + cycleDuration
 
-		// Pause phase (first 3 seconds)
-		pauseEnd := cycleStart + 3.0
+		// Pause phase
+		pauseEnd := cycleStart + hold
 		if pauseEnd > totalDuration {
 			pauseEnd = totalDuration
 		}

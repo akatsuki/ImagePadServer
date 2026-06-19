@@ -357,3 +357,87 @@ func TestBuildVisualizerASS_TimeEvents(t *testing.T) {
 		t.Fatal("expected time event for 0:04")
 	}
 }
+
+// TestASSScrollOverflowCycle verifies AV-822: scrollCycle computes
+// overflow, hold, move, and total from textWidth, viewportWidth, and
+// outputWidth.  hold is always 3.0 when overflow>0; speed is
+// 40*outputWidth/1280; move = overflow/speed; total = hold+move.
+// When text fits (textWidth <= viewportWidth), all returned values are zero.
+func TestASSScrollOverflowCycle(t *testing.T) {
+	t.Run("no overflow when text fits", func(t *testing.T) {
+		overflow, hold, move, total := scrollCycle(100, 200, 1280)
+		if overflow != 0 || hold != 0 || move != 0 || total != 0 {
+			t.Fatalf("all zero expected, got overflow=%v hold=%v move=%v total=%v", overflow, hold, move, total)
+		}
+	})
+	t.Run("exact fit is no overflow", func(t *testing.T) {
+		overflow, hold, move, total := scrollCycle(752, 752, 1280)
+		if overflow != 0 || hold != 0 || move != 0 || total != 0 {
+			t.Fatalf("all zero expected at exact fit, got %v %v %v %v", overflow, hold, move, total)
+		}
+	})
+	t.Run("basic overflow at 1280", func(t *testing.T) {
+		// overflow = 1000-752 = 248; hold = 3; speed = 40; move = 248/40 = 6.2; total = 9.2
+		overflow, hold, move, total := scrollCycle(1000, 752, 1280)
+		if overflow != 248 {
+			t.Errorf("overflow = %v, want 248", overflow)
+		}
+		if hold != 3.0 {
+			t.Errorf("hold = %v, want 3.0", hold)
+		}
+		if move != 6.2 {
+			t.Errorf("move = %v, want 6.2", move)
+		}
+		if total != 9.2 {
+			t.Errorf("total = %v, want 9.2", total)
+		}
+	})
+	t.Run("same cycle duration at 1920", func(t *testing.T) {
+		// At 1920: viewport=1128, text=1500; overflow=372; speed=60; move=6.2; total=9.2
+		overflow, hold, move, total := scrollCycle(1500, 1128, 1920)
+		if overflow != 372 {
+			t.Errorf("overflow = %v, want 372", overflow)
+		}
+		if hold != 3.0 {
+			t.Errorf("hold = %v, want 3.0", hold)
+		}
+		if move != 6.2 {
+			t.Errorf("move = %v, want 6.2", move)
+		}
+		if total != 9.2 {
+			t.Errorf("total = %v, want 9.2", total)
+		}
+	})
+	t.Run("same cycle duration at 640", func(t *testing.T) {
+		// At 640: viewport=376, text=500; overflow=124; speed=20; move=6.2; total=9.2
+		overflow, hold, move, total := scrollCycle(500, 376, 640)
+		if overflow != 124 {
+			t.Errorf("overflow = %v, want 124", overflow)
+		}
+		if hold != 3.0 {
+			t.Errorf("hold = %v, want 3.0", hold)
+		}
+		if move != 6.2 {
+			t.Errorf("move = %v, want 6.2", move)
+		}
+		if total != 9.2 {
+			t.Errorf("total = %v, want 9.2", total)
+		}
+	})
+	t.Run("zero viewport width does not panic", func(t *testing.T) {
+		overflow, hold, move, total := scrollCycle(100, 0, 1280)
+		// overflow=100, hold=3, speed=40, move=2.5, total=5.5
+		if overflow != 100 {
+			t.Errorf("overflow = %v, want 100", overflow)
+		}
+		if hold != 3.0 {
+			t.Errorf("hold = %v, want 3.0", hold)
+		}
+		if move != 2.5 {
+			t.Errorf("move = %v, want 2.5", move)
+		}
+		if total != 5.5 {
+			t.Errorf("total = %v, want 5.5", total)
+		}
+	})
+}
