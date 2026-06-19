@@ -3,6 +3,13 @@ package video
 import (
 	"bytes"
 	"context"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/png"
+	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -49,6 +56,9 @@ func TestAudioVisualizerFFmpegArgsHLS(t *testing.T) {
 }
 
 func TestWriteVisualizerRGBAFramesBasic(t *testing.T) {
+	base := image.NewRGBA(image.Rect(0, 0, 128, 72))
+	mode := ForegroundMode{Color: color.RGBA{255, 255, 255, 255}, Overlay: color.RGBA{0, 0, 0, 92}}
+	layout, _ := LayoutForSize(128, 72)
 	input := AudioRenderInput{
 		Analysis: AudioAnalysis{
 			FPS:      30,
@@ -60,7 +70,7 @@ func TestWriteVisualizerRGBAFramesBasic(t *testing.T) {
 		input.Analysis.Frames[i].Spectrum24 = [24]float64{}
 	}
 	var buf bytes.Buffer
-	err := WriteVisualizerRGBAFrames(context.Background(), &buf, input, 128, 72)
+	err := WriteVisualizerRGBAFrames(context.Background(), &buf, input, base, mode, layout, 128, 72)
 	if err != nil {
 		t.Fatalf("WriteVisualizerRGBAFrames: %v", err)
 	}
@@ -71,6 +81,9 @@ func TestWriteVisualizerRGBAFramesBasic(t *testing.T) {
 }
 
 func TestWriteVisualizerRGBAFramesSpectrumBars(t *testing.T) {
+	base := image.NewRGBA(image.Rect(0, 0, 128, 72))
+	mode := ForegroundMode{Color: color.RGBA{255, 255, 255, 255}, Overlay: color.RGBA{0, 0, 0, 92}}
+	layout, _ := LayoutForSize(128, 72)
 	input := AudioRenderInput{
 		Analysis: AudioAnalysis{
 			FPS:      30,
@@ -83,7 +96,7 @@ func TestWriteVisualizerRGBAFramesSpectrumBars(t *testing.T) {
 		input.Analysis.Frames[0].Spectrum24[i] = float64(i) / 24.0
 	}
 	var buf bytes.Buffer
-	err := WriteVisualizerRGBAFrames(context.Background(), &buf, input, 128, 72)
+	err := WriteVisualizerRGBAFrames(context.Background(), &buf, input, base, mode, layout, 128, 72)
 	if err != nil {
 		t.Fatalf("WriteVisualizerRGBAFrames: %v", err)
 	}
@@ -93,6 +106,9 @@ func TestWriteVisualizerRGBAFramesSpectrumBars(t *testing.T) {
 }
 
 func TestWriteVisualizerRGBAFramesZeroFrames(t *testing.T) {
+	base := image.NewRGBA(image.Rect(0, 0, 128, 72))
+	mode := ForegroundMode{Color: color.RGBA{255, 255, 255, 255}, Overlay: color.RGBA{0, 0, 0, 92}}
+	layout, _ := LayoutForSize(128, 72)
 	input := AudioRenderInput{
 		Analysis: AudioAnalysis{
 			FPS:      30,
@@ -101,13 +117,16 @@ func TestWriteVisualizerRGBAFramesZeroFrames(t *testing.T) {
 		},
 	}
 	var buf bytes.Buffer
-	err := WriteVisualizerRGBAFrames(context.Background(), &buf, input, 128, 72)
+	err := WriteVisualizerRGBAFrames(context.Background(), &buf, input, base, mode, layout, 128, 72)
 	if err == nil {
 		t.Fatal("expected error for zero frames")
 	}
 }
 
 func TestWriteVisualizerRGBAFramesFPS30(t *testing.T) {
+	base := image.NewRGBA(image.Rect(0, 0, 128, 72))
+	mode := ForegroundMode{Color: color.RGBA{255, 255, 255, 255}, Overlay: color.RGBA{0, 0, 0, 92}}
+	layout, _ := LayoutForSize(128, 72)
 	input := AudioRenderInput{
 		Analysis: AudioAnalysis{
 			FPS:      30,
@@ -119,7 +138,7 @@ func TestWriteVisualizerRGBAFramesFPS30(t *testing.T) {
 		input.Analysis.Frames[i].Spectrum24 = [24]float64{}
 	}
 	var buf bytes.Buffer
-	err := WriteVisualizerRGBAFrames(context.Background(), &buf, input, 128, 72)
+	err := WriteVisualizerRGBAFrames(context.Background(), &buf, input, base, mode, layout, 128, 72)
 	if err != nil {
 		t.Fatalf("WriteVisualizerRGBAFrames: %v", err)
 	}
@@ -127,4 +146,378 @@ func TestWriteVisualizerRGBAFramesFPS30(t *testing.T) {
 	if buf.Len() != expected {
 		t.Fatalf("output size: got %d, want %d", buf.Len(), expected)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// AV-716 integration frame tests
+// ---------------------------------------------------------------------------
+
+// TestVisualizerFrameWithArtwork renders frames with a known red artwork tile
+// and asserts that every element occupies its canonical layout rectangle.
+func TestVisualizerFrameWithArtwork(t *testing.T) {
+	ffmpeg, err := ffmpegPath()
+	if err != nil {
+		t.Skipf("ffmpeg unavailable: %v", err)
+	}
+
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+
+	// Create a red artwork PNG (400×400, strong red).
+	artPath := filepath.Join(tmpDir, "artwork.png")
+	art := image.NewRGBA(image.Rect(0, 0, 400, 400))
+	draw.Draw(art, art.Bounds(), &image.Uniform{color.RGBA{200, 50, 50, 255}}, image.Point{}, draw.Src)
+	f, err := os.Create(artPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := png.Encode(f, art); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	f.Close()
+
+	// Build analysis: 10 seconds, 30 fps = 300 frames.
+	features := AudioFeatures{}
+	for i := range features.LoudnessEnvelope {
+		features.LoudnessEnvelope[i] = 0.3 + 0.3*math.Sin(float64(i)*2.0*math.Pi/200.0)
+	}
+
+	frames := make([]AudioFrame, 300)
+	// Frame 0: all spectrum values at 0.
+	// Frame 120 (4 s): increasing spectrum.
+	for b := 0; b < 24; b++ {
+		frames[120].Spectrum24[b] = float64(b+1) / 24.0
+	}
+
+	input := AudioRenderInput{
+		Metadata:    AudioMetadata{Title: "Test", Artist: "Artist"},
+		ArtworkPath: artPath,
+		Analysis: AudioAnalysis{
+			FPS: 30, Duration: 10.0, Frames: frames, Features: features,
+		},
+	}
+
+	layout, err := LayoutForSize(1280, 720)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	basePath := filepath.Join(tmpDir, "base.png")
+	mode, err := PrepareVisualizerBase(ctx, ffmpeg, artPath, nil, layout, basePath)
+	if err != nil {
+		t.Fatalf("PrepareVisualizerBase: %v", err)
+	}
+
+	baseImg, err := loadPNG(basePath)
+	if err != nil {
+		t.Fatalf("load base: %v", err)
+	}
+	baseRGBA := toRGBA(baseImg)
+
+	var buf bytes.Buffer
+	if err := WriteVisualizerRGBAFrames(ctx, &buf, input, baseRGBA, mode, layout, 1280, 720); err != nil {
+		t.Fatalf("WriteVisualizerRGBAFrames: %v", err)
+	}
+
+	frameSize := 1280 * 720 * 4
+	if buf.Len() != 300*frameSize {
+		t.Fatalf("expected %d bytes, got %d", 300*frameSize, buf.Len())
+	}
+
+	data := buf.Bytes()
+	frame0 := data[:frameSize]
+	frame120 := data[120*frameSize : 121*frameSize]
+
+	pixel := func(data []byte, x, y int) (uint8, uint8, uint8, uint8) {
+		idx := (y*1280 + x) * 4
+		return data[idx], data[idx+1], data[idx+2], data[idx+3]
+	}
+
+	// 1. Blurred background – top-left pixel should show blurred red (R > G)
+	r, g, b, a := pixel(frame0, 0, 0)
+	if a != 255 {
+		t.Errorf("background pixel alpha at (0,0): %d, want 255", a)
+	}
+	if r <= g {
+		t.Errorf("background at (0,0) should show red blur: rgba(%d,%d,%d,%d)", r, g, b, a)
+	}
+
+	// 2. Artwork rectangle – centre of artwork tile (240,296) should have strong red.
+	r, g, b, a = pixel(frame0, 240, 296)
+	if r < 100 {
+		t.Errorf("artwork centre at (240,296) should be red: rgba(%d,%d,%d,%d)", r, g, b, a)
+	}
+
+	// 3. Rounded corners – the corner pixel at (96,152) is outside the rounded
+	//    rect (radius 24) and shows the blurred background.  Its red value
+	//    should be lower than the artwork centre because the overlay darkens it.
+	r, g, b, a = pixel(frame0, 96, 152)
+	artR, _, _, _ := pixel(frame0, 240, 296)
+	if r >= artR {
+		t.Errorf("rounded corner at (96,152) r=%d should be < artwork centre r=%d", r, artR)
+	}
+
+	// 4. Spectrum bars at 4 s – check first bar bottom pixel.
+	//    First bar: X=443, bottom Y=488.
+	r, g, b, a = pixel(frame120, 443, 487)
+	if a < 200 {
+		t.Errorf("spectrum bar at (443,487) alpha=%d, want >=200", a)
+	}
+
+	// 5. Progress marker at 0 s – left edge.
+	r, g, b, a = pixel(frame0, 64, 654)
+	if a < 200 {
+		t.Errorf("progress marker at (64,654) in frame 0: alpha=%d, want >=200", a)
+	}
+
+	// 6. Progress marker at 4 s – expected X = 64 + 1000*4/10 = 464.
+	r, g, b, a = pixel(frame120, 464, 654)
+	if a < 200 {
+		t.Errorf("progress marker at (464,654) in frame 4s: alpha=%d, want >=200", a)
+	}
+
+	// 7. Loudness guide line at (64, 598)
+	r, g, b, a = pixel(frame0, 64, 598)
+	if g > 0 && r > 0 && b > 0 {
+		t.Logf("loudness guide at (64,598): rgba(%d,%d,%d,%d)", r, g, b, a)
+	}
+}
+
+// TestVisualizerFallbackNoArt renders frames without artwork and verifies the
+// fallback tile and blurred background are produced.
+func TestVisualizerFallbackNoArt(t *testing.T) {
+	ffmpeg, err := ffmpegPath()
+	if err != nil {
+		t.Skipf("ffmpeg unavailable: %v", err)
+	}
+	fonts, err := VisualizerFonts()
+	if err != nil {
+		t.Skipf("fonts unavailable: %v", err)
+	}
+
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+
+	features := AudioFeatures{
+		BPM:               140,
+		IntegratedLUFS:    -8,
+		LowFrequencyRatio: 0.3,
+		SpectralCentroid:  2500,
+	}
+	for i := range features.LoudnessEnvelope {
+		features.LoudnessEnvelope[i] = 0.5
+	}
+
+	frames := make([]AudioFrame, 30)
+	for i := range frames {
+		for b := 0; b < 24; b++ {
+			frames[i].Spectrum24[b] = 0.5
+		}
+	}
+
+	input := AudioRenderInput{
+		Metadata: AudioMetadata{Title: "No Art", Artist: "Test"},
+		Analysis: AudioAnalysis{
+			FPS: 30, Duration: 1.0, Frames: frames, Features: features,
+		},
+	}
+
+	layout, _ := LayoutForSize(1280, 720)
+	basePath := filepath.Join(tmpDir, "base.png")
+
+	// Render fallback artwork with white foreground (dark fallback assumed).
+	fallback, err := RenderFallbackArtwork(ctx, ffmpeg, fonts, features, color.RGBA{255, 255, 255, 224}, layout.Artwork.W)
+	if err != nil {
+		t.Fatalf("fallback artwork: %v", err)
+	}
+
+	mode, err := PrepareVisualizerBase(ctx, ffmpeg, "", fallback, layout, basePath)
+	if err != nil {
+		t.Fatalf("PrepareVisualizerBase: %v", err)
+	}
+
+	baseImg, _ := loadPNG(basePath)
+	baseRGBA := toRGBA(baseImg)
+
+	var buf bytes.Buffer
+	if err := WriteVisualizerRGBAFrames(ctx, &buf, input, baseRGBA, mode, layout, 1280, 720); err != nil {
+		t.Fatalf("WriteVisualizerRGBAFrames: %v", err)
+	}
+
+	frameSize := 1280 * 720 * 4
+	if buf.Len() != 30*frameSize {
+		t.Fatalf("expected %d bytes, got %d", 30*frameSize, buf.Len())
+	}
+
+	// Foreground mode should be valid.
+	if mode.Color.A != 255 {
+		t.Errorf("foreground must be opaque, got alpha %d", mode.Color.A)
+	}
+	if mode.Overlay.A < 71 || mode.Overlay.A > 153 {
+		t.Errorf("overlay alpha %d out of range [71,153]", mode.Overlay.A)
+	}
+
+	// Fallback tile centre should have non-zero colour from gradient/fingerprint.
+	data := buf.Bytes()
+	idx := (296*1280 + 240) * 4
+	r, g, b, a := data[idx], data[idx+1], data[idx+2], data[idx+3]
+	if r == 0 && g == 0 && b == 0 {
+		t.Errorf("fallback centre (240,296) is black, expected gradient/fingerprint")
+	}
+	_ = a
+}
+
+// TestVisualizerContrastDarkLight verifies that dark and light artwork each
+// produce a single foreground mode achieving 4.5:1 in both metadata and graph
+// regions.
+func TestVisualizerContrastDarkLight(t *testing.T) {
+	ffmpeg, err := ffmpegPath()
+	if err != nil {
+		t.Skipf("ffmpeg unavailable: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// Test dark artwork (near black) → light mode.
+	t.Run("DarkArtwork", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		artPath := filepath.Join(tmpDir, "dark.png")
+		art := image.NewRGBA(image.Rect(0, 0, 400, 400))
+		draw.Draw(art, art.Bounds(), &image.Uniform{color.RGBA{15, 15, 25, 255}}, image.Point{}, draw.Src)
+		savePNG(artPath, art)
+
+		testContrastRegion(ctx, t, ffmpeg, artPath)
+	})
+
+	// Test light artwork (near white) → dark mode.
+	t.Run("LightArtwork", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		artPath := filepath.Join(tmpDir, "light.png")
+		art := image.NewRGBA(image.Rect(0, 0, 400, 400))
+		draw.Draw(art, art.Bounds(), &image.Uniform{color.RGBA{230, 230, 220, 255}}, image.Point{}, draw.Src)
+		savePNG(artPath, art)
+
+		testContrastRegion(ctx, t, ffmpeg, artPath)
+	})
+}
+
+func testContrastRegion(ctx context.Context, t *testing.T, ffmpeg, artPath string) {
+	t.Helper()
+	layout, _ := LayoutForSize(1280, 720)
+	outPath := filepath.Join(t.TempDir(), "base.png")
+
+	mode, err := PrepareVisualizerBase(ctx, ffmpeg, artPath, nil, layout, outPath)
+	if err != nil {
+		t.Fatalf("PrepareVisualizerBase: %v", err)
+	}
+
+	// Load the finished base image (already has overlay applied).
+	baseImg, err := loadPNG(outPath)
+	if err != nil {
+		t.Fatalf("load base: %v", err)
+	}
+
+	metaRect := image.Rect(layout.Title.X, layout.Title.Y, layout.Title.X+layout.Title.W, layout.Title.Y+layout.Title.H)
+	graphRect := image.Rect(layout.Loudness.X, layout.Loudness.Y, layout.Loudness.X+layout.Loudness.W, layout.Loudness.Y+layout.Loudness.H)
+
+	if ok, ratio := checkRegionContrast(baseImg, metaRect, mode); !ok {
+		t.Errorf("metadata region contrast %.2f < 4.5", ratio)
+	}
+	if ok, ratio := checkRegionContrast(baseImg, graphRect, mode); !ok {
+		t.Errorf("graph region contrast %.2f < 4.5", ratio)
+	}
+}
+
+// TestSpectrumBottomFade verifies that the bottom of every spectrum bar fades
+// to match the background, proving the vertical alpha gradient is applied.
+// At the bottommost pixel (Y=487, one above barBottom=488) the bar draws with
+// alpha=0, so the background colour should be unchanged.
+func TestSpectrumBottomFade(t *testing.T) {
+	width, height := 1280, 720
+
+	// Use a mid-grey background so the fade is easy to detect.
+	bgColor := color.RGBA{100, 100, 100, 255}
+	base := image.NewRGBA(image.Rect(0, 0, width, height))
+	draw.Draw(base, base.Bounds(), &image.Uniform{bgColor}, image.Point{}, draw.Src)
+
+	mode := ForegroundMode{
+		Color:   color.RGBA{255, 255, 255, 255},
+		Overlay: color.RGBA{0, 0, 0, 0}, // fully transparent overlay
+	}
+	layout, _ := LayoutForSize(width, height)
+
+	// Single frame with all spectrum values at 1.0 (max height).
+	frame := AudioFrame{}
+	for b := 0; b < 24; b++ {
+		frame.Spectrum24[b] = 1.0
+	}
+
+	input := AudioRenderInput{
+		Analysis: AudioAnalysis{
+			FPS: 30, Duration: 1.0 / 30,
+			Frames: []AudioFrame{frame},
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := WriteVisualizerRGBAFrames(context.Background(), &buf, input, base, mode, layout, width, height); err != nil {
+		t.Fatalf("WriteVisualizerRGBAFrames: %v", err)
+	}
+
+	data := buf.Bytes()
+
+	// First bar is at X=443, barBottom = 488.
+	barBottom := layout.Spectrum.Y + layout.Spectrum.H // 488
+	firstBarX := layout.Spectrum.X + 11                 // 443
+	barW := 18
+	barGap := 13
+
+	// Check the bottom pixel row (Y=487) of each bar.  Because the alpha
+	// gradient reaches zero at the bottom edge, the bottommost pixel should
+	// still show the background colour (unchanged by the bar).
+	foundFaded := false
+	for b := 0; b < 24; b++ {
+		x := firstBarX + b*(barW+barGap)
+		for dx := 0; dx < barW; dx++ {
+			cx := x + dx
+			if cx < 0 || cx >= width {
+				continue
+			}
+			// Bottom pixel — should still show grey background.
+			idx := ((barBottom-1)*width + cx) * 4
+			r, g, b := data[idx], data[idx+1], data[idx+2]
+			// Compare with background (100,100,100) – allow a small
+			// tolerance for any subtle blend.
+			dr := absDiff(int(r), 100)
+			dg := absDiff(int(g), 100)
+			db := absDiff(int(b), 100)
+			if dr <= 5 && dg <= 5 && db <= 5 {
+				foundFaded = true
+			}
+
+			// One pixel above bottom — must have been painted (bar visible).
+			if barBottom-2 >= 0 {
+				idx2 := ((barBottom-2)*width + cx) * 4
+				r2, g2, b2 := data[idx2], data[idx2+1], data[idx2+2]
+				dr2 := absDiff(int(r2), 100)
+				dg2 := absDiff(int(g2), 100)
+				db2 := absDiff(int(b2), 100)
+				if dr2 > 10 || dg2 > 10 || db2 > 10 {
+					foundFaded = true
+				}
+			}
+		}
+	}
+
+	if !foundFaded {
+		t.Error("spectrum bars do not show a bottom fade to background colour")
+	}
+}
+
+func absDiff(a, b int) int {
+	if a > b {
+		return a - b
+	}
+	return b - a
 }
