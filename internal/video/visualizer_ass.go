@@ -1,9 +1,15 @@
 package video
 
 import (
+	"context"
 	"fmt"
+	"image"
 	"image/color"
+	"image/png"
 	"math"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -15,9 +21,10 @@ const (
 // BuildVisualizerASS generates a complete ASS subtitle file for the audio
 // visualizer.  It produces [Script Info], [V4+ Styles], and [Events] sections.
 //
-// The styles use the exact font paths from fonts, and the events include
-// positioned/clipped text for title, artist, album, and per-second time text.
-func BuildVisualizerASS(metadata AudioMetadata, duration float64, layout VisualizerLayout, fonts FontSet, metrics map[string]TextMetrics) string {
+// The styles use the resolved ASSFamily names from the font files.  Font
+// resolution errors are returned rather than silently falling back to
+// filesystem paths (AV-824).
+func BuildVisualizerASS(metadata AudioMetadata, duration float64, layout VisualizerLayout, fonts FontSet, metrics map[string]TextMetrics) (string, error) {
 	return BuildVisualizerASSWithMode(metadata, duration, layout, fonts, metrics, ForegroundMode{Color: color.RGBA{255, 255, 255, 255}}, 1280, 720)
 }
 
@@ -28,10 +35,23 @@ func ASSClipPadding(width int) int {
 	return max(1, int(math.Round(2.0*float64(width)/1280.0)))
 }
 
-func BuildVisualizerASSWithMode(metadata AudioMetadata, duration float64, layout VisualizerLayout, fonts FontSet, metrics map[string]TextMetrics, mode ForegroundMode, width, height int) string {
+func BuildVisualizerASSWithMode(metadata AudioMetadata, duration float64, layout VisualizerLayout, fonts FontSet, metrics map[string]TextMetrics, mode ForegroundMode, width, height int) (string, error) {
 	var b strings.Builder
 
 	clipPad := ASSClipPadding(width)
+
+	// Resolve font identities for ASS family names (AV-824).
+	// Require resolved font faces; return an error when font files cannot be
+	// read or have invalid name tables. Never emit filesystem paths in ASS
+	// Fontname.
+	faces, err := ResolveVisualizerFontFaces(fonts)
+	if err != nil {
+		return "", fmt.Errorf("resolve font faces for ASS: %w", err)
+	}
+	titleFontName := faces.SemiBold600.ASSFamily
+	artistFontName := faces.Medium500.ASSFamily
+	albumFontName := faces.Regular400.ASSFamily
+	timeFontName := faces.Medium500.ASSFamily
 
 	// --- [Script Info] ---
 	b.WriteString("[Script Info]\n")
@@ -52,13 +72,13 @@ func BuildVisualizerASSWithMode(metadata AudioMetadata, duration float64, layout
 
 	primary := assForegroundColor(mode.Color, 0.88)
 	// Use alignment 4 (middle-left) for title, artist, album.
-	writeStyle(&b, "Title", fonts.SemiBold600, titleSize, 4, primary)
-	writeStyle(&b, "Artist", fonts.Medium500, artistSize, 4, primary)
+	writeStyle(&b, "Title", titleFontName, titleSize, 4, primary)
+	writeStyle(&b, "Artist", artistFontName, artistSize, 4, primary)
 	// Use alignment 5 (middle-center) for time text.
-	writeStyle(&b, "TimeText", fonts.Medium500, timeSize, 5, primary)
+	writeStyle(&b, "TimeText", timeFontName, timeSize, 5, primary)
 
 	if metadata.Album != "" {
-		writeStyle(&b, "Album", fonts.Regular400, albumSize, 4, primary)
+		writeStyle(&b, "Album", albumFontName, albumSize, 4, primary)
 	}
 	b.WriteString("\n")
 
@@ -141,7 +161,7 @@ func BuildVisualizerASSWithMode(metadata AudioMetadata, duration float64, layout
 		}
 	}
 
-	return b.String()
+	return b.String(), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -267,4 +287,134 @@ func buildScrollingDialogue(b *strings.Builder, totalDuration float64, style, te
 // given height, assuming 1.2x line height and vertical centering.
 func scaledFontSize(canonical, width int) int {
 	return max(1, int(math.Round(float64(canonical)*float64(width)/1280.0)))
+}
+
+// ---------------------------------------------------------------------------
+// MeasureASSEncodedWidth — libass-based text measurement (AV-824)
+// ---------------------------------------------------------------------------
+
+// MeasureASSEncodedWidth renders text through FFmpeg's ass filter (libass)
+// and returns the pixel width of the rendered text's bounding box.
+//
+// Unlike MeasureTextWithFFmpeg (which uses drawtext/FreeType), this function
+// measures width using the same libass rendering pipeline that encodes the
+// actual video.  On Windows, drawtext and libass can disagree by 22–100 px;
+// using libass for both measurement and encoding guarantees self-consistent
+// scroll-or-stationary decisions.
+//
+// The font is selected via a \fn{psName} override tag using the font's
+// PostScript name so that the exact weight variant is used.  fontDir is the
+// directory containing the font files (used as FFmpeg's fontsdir).
+func MeasureASSEncodedWidth(ctx context.Context, ffmpeg, psName, fontDir, text string, fontSize int) (int, error) {
+	tmpDir, err := os.MkdirTemp("", "imagepad-ass-width-*")
+	if err != nil {
+		return 0, fmt.Errorf("create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	assPath := filepath.Join(tmpDir, "measure.ass")
+	outPath := filepath.Join(tmpDir, "measure.png")
+
+	// Build a minimal ASS file. The base style uses a generic font name;
+	// the exact Noto variant is selected via \fn override.
+	var assContent strings.Builder
+	assContent.WriteString("[Script Info]\n")
+	assContent.WriteString("ScriptType: v4.00+\n")
+	assContent.WriteString("PlayResX: 2000\n")
+	assContent.WriteString("PlayResY: 200\n")
+	assContent.WriteString("ScaledBorderAndShadow: no\n")
+	assContent.WriteString("\n")
+	assContent.WriteString("[V4+ Styles]\n")
+	assContent.WriteString("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n")
+	// Alignment 7 = center-center. Primary=white, no outline/shadow.
+	assContent.WriteString(fmt.Sprintf("Style: Default,Arial,%d,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1\n", fontSize))
+	assContent.WriteString("\n")
+	assContent.WriteString("[Events]\n")
+	assContent.WriteString("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
+	// Use \fn to select the exact Noto font variant by PostScript name.
+	assContent.WriteString(fmt.Sprintf("Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{\\fn%s}%s\n", psName, escapeASSText(text)))
+
+	if err := os.WriteFile(assPath, []byte(assContent.String()), 0644); err != nil {
+		return 0, fmt.Errorf("write ass: %w", err)
+	}
+
+	// Build FFmpeg filter using the same escaping as the production pipeline.
+	escAss := escapeFilterPath(assPath)
+	escFontDir := escapeFilterPath(fontDir)
+
+	filter := fmt.Sprintf(
+		"color=c=black:s=2000x200:d=1,ass=filename='%s':fontsdir='%s'",
+		escAss, escFontDir,
+	)
+
+	args := []string{
+		"-v", "error",
+		"-filter_complex", filter,
+		"-frames:v", "1",
+		"-y", outPath,
+	}
+	cmd := exec.CommandContext(ctx, ffmpeg, args...)
+	hideWindow(cmd)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return 0, fmt.Errorf("ffmpeg ass render: %w\n%s", err, string(output))
+	}
+
+	f, err := os.Open(outPath)
+	if err != nil {
+		return 0, fmt.Errorf("open ass output: %w", err)
+	}
+	defer f.Close()
+
+	img, err := png.Decode(f)
+	if err != nil {
+		return 0, fmt.Errorf("decode ass PNG: %w", err)
+	}
+
+	// Scan for non-black pixels (white text on black background).
+	bounds := nonBlackBounds(img)
+	if bounds == nil {
+		return 0, fmt.Errorf("no text pixels found in ass rendered frame for %q", text)
+	}
+	return bounds.Dx(), nil
+}
+
+// nonBlackBounds returns the smallest rectangle containing all non-black
+// pixels in the image. A pixel is considered "non-black" if any of its R, G,
+// or B components exceeds a small threshold (to include antialiased edges).
+// Returns nil when the image is entirely black.
+func nonBlackBounds(img image.Image) *image.Rectangle {
+	const threshold uint32 = 128
+	bounds := img.Bounds()
+	minX, minY := bounds.Max.X, bounds.Max.Y
+	maxX, maxY := bounds.Min.X, bounds.Min.Y
+	hasPixel := false
+
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			r, g, b, _ := img.At(x, y).RGBA()
+			if r > threshold || g > threshold || b > threshold {
+				hasPixel = true
+				if x < minX {
+					minX = x
+				}
+				if y < minY {
+					minY = y
+				}
+				if x > maxX {
+					maxX = x
+				}
+				if y > maxY {
+					maxY = y
+				}
+			}
+		}
+	}
+
+	if !hasPixel {
+		return nil
+	}
+
+	r := image.Rect(minX, minY, maxX+1, maxY+1)
+	return &r
 }
