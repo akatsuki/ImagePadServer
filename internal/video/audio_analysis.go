@@ -223,7 +223,11 @@ func (a *streamAnalyzer) consumeSpectrumWindow(window []float64) {
 		weighted[i] = window[i] * 0.5 * (1 - math.Cos(2*math.Pi*float64(i)/float64(fftWindowSize-1)))
 	}
 	spectrum := a.fft.Coefficients(nil, weighted)
-	a.frames = append(a.frames, AudioFrame{Spectrum24: mapBands(spectrum)})
+	// Raw per-frame band magnitudes. Track-level normalization and attack/
+	// release smoothing are applied in Finish. fractionalLogBandEnergies
+	// weights partially overlapping FFT bins so narrow low-frequency bands
+	// (0, 1, 3) receive energy instead of collapsing to zero.
+	a.frames = append(a.frames, AudioFrame{Spectrum24: fractionalLogBandEnergies(spectrum, sampleRate)})
 	centroid, lowRatio := spectrumFeatures(spectrum, sampleRate)
 	a.centroidSum += centroid
 	a.lowRatioSum += lowRatio
@@ -280,7 +284,29 @@ func (a *streamAnalyzer) Finish() (AudioAnalysis, error) {
 		}
 	}
 	clampFeatures(&features)
-	return AudioAnalysis{FPS: 30, Duration: duration, Frames: smoothBands(a.frames), Features: features}, nil
+	return AudioAnalysis{FPS: 30, Duration: duration, Frames: finalizeSpectrumFrames(a.frames, 30), Features: features}, nil
+}
+
+// finalizeSpectrumFrames converts the raw per-frame band magnitudes collected
+// during analysis into display-ready frames: global track normalization
+// (normalizeSpectrumTrack) followed by attack/release motion smoothing
+// (applySpectrumMotion). This replaces the legacy per-frame mapBands +
+// smoothBands path so all 24 bands, including the narrow low-frequency ones,
+// animate.
+func finalizeSpectrumFrames(frames []AudioFrame, fps float64) []AudioFrame {
+	if len(frames) == 0 {
+		return frames
+	}
+	raw := make([][24]float64, len(frames))
+	for i, f := range frames {
+		raw[i] = f.Spectrum24
+	}
+	motion := applySpectrumMotion(normalizeSpectrumTrack(raw), fps)
+	out := make([]AudioFrame, len(motion))
+	for i := range motion {
+		out[i] = AudioFrame{Spectrum24: motion[i]}
+	}
+	return out
 }
 
 func spectrumFeatures(spectrum []complex128, rate int) (centroid, lowRatio float64) {

@@ -107,19 +107,16 @@ func WriteVisualizerRGBAFrames(ctx context.Context, dst io.Writer, input AudioRe
 	totalFrames := len(input.Analysis.Frames)
 	duration := input.Analysis.Duration
 
-	envelope := input.Analysis.Features.LoudnessEnvelope
-
 	// Cache the loudness layer (guide lines + detail curve + trend curve)
 	// once per render job instead of recomputing for every frame.
-	trend := SmoothLoudnessTrend(envelope, duration)
-	loudnessLayer := renderLoudnessLayer(envelope, trend, mode, layout, width, height)
+	loudnessLayer := buildLoudnessLayer(input.Analysis.Features, duration, mode, layout, width, height)
 
 	for fi, frame := range input.Analysis.Frames {
 		// Copy base image (background + artwork).
 		draw.Draw(canvas, canvas.Bounds(), base, image.Point{}, draw.Src)
 
-		// Spectrum bars.
-		drawSpectrum(canvas, frame.Spectrum24, mode, layout)
+		// Spectrum bars (fixed-height bottom fade, spec §5.5).
+		drawSpectrumFixedFade(canvas, frame.Spectrum24, mode, layout)
 
 		// Whole-track loudness envelope (cached — same for every frame).
 		draw.Draw(canvas, canvas.Bounds(), loudnessLayer, image.Point{}, draw.Over)
@@ -133,6 +130,17 @@ func WriteVisualizerRGBAFrames(ctx context.Context, dst io.Writer, input AudioRe
 		}
 	}
 	return nil
+}
+
+// buildLoudnessLayer produces the cached whole-track loudness graph. The stored
+// envelope holds absolute RMS values; normalizeRelativeLoudness rescales them
+// against the track's own peak so the graph fills the panel regardless of the
+// song's absolute level. Without this, quiet tracks pin every point and line to
+// the bottom edge.
+func buildLoudnessLayer(features AudioFeatures, duration float64, mode ForegroundMode, layout VisualizerLayout, width, height int) *image.RGBA {
+	envelope := normalizeRelativeLoudness(features.LoudnessEnvelope)
+	trend := SmoothLoudnessTrend(envelope, duration)
+	return renderLoudnessLayer(envelope, trend, mode, layout, width, height)
 }
 
 // ---------------------------------------------------------------------------

@@ -649,26 +649,23 @@ func TestLoudnessLayerRenderedOncePerJob(t *testing.T) {
 	data := buf.Bytes()
 
 	// ---- Trend-line opacity check ----
-	// At envelope=0.5 drawLoudness draws at Y=588 with lineWidth=2.
-	// With lineWidth=2 each sample draws two horizontal pixels.
-	// Adjacent samples overlap (i=0 draws 64-65, i=1 draws 65-66),
-	// so interior pixels get blended TWICE giving alpha ≈ 245.
-	// Only the very first pixel (64, 588) is blended ONCE → alpha=204.
-	// renderLoudnessLayer with 4× Lanczos produces alpha near 242
-	// even at the first pixel (the trend has radius 6 in 4× buffer).
+	// The constant envelope normalizes to the track's own peak (relative
+	// loudness), so the curve sits at the top of the panel rather than the
+	// middle. Locate the strongest painted pixel in the first column — that is
+	// the trend/detail curve (guide lines are far fainter at ~0.22 alpha) — and
+	// require its opacity to match the drawn trend line.
 	lr := layout.Loudness
-	graphBottom := lr.Y + lr.H // 628
-	expectY := graphBottom - int(math.Round(0.5*float64(lr.H))) // 588
-
-	// First pixel of the graph: X=64, which drawLoudness paints only once.
 	edgeX := lr.X
-	idxEdge := expectY*1280*4 + edgeX*4
-	a := data[idxEdge+3]
-
-	// renderLoudnessLayer produces alpha near 242 with trend + Lanczos.
-	// drawLoudness at 80% → alpha=204.
-	if a < 220 {
-		t.Errorf("loudness first pixel at (%d,%d) alpha=%d, expected >=220 (trend line)", edgeX, expectY, a)
+	maxA := byte(0)
+	peakY := lr.Y
+	for y := lr.Y; y < lr.Y+lr.H; y++ {
+		if v := data[y*1280*4+edgeX*4+3]; v > maxA {
+			maxA, peakY = v, y
+		}
+	}
+	idxEdge := peakY*1280*4 + edgeX*4
+	if maxA < 220 {
+		t.Errorf("strongest loudness pixel in first column at (%d,%d) alpha=%d, expected >=220 (trend line)", edgeX, peakY, maxA)
 	}
 
 	// ---- Cache invariant: loudness identical across all frames ----
