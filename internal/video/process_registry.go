@@ -217,6 +217,7 @@ func processCommandLine(pid int) (string, error) {
 	case "windows":
 		filter := fmt.Sprintf("ProcessId=%d", pid)
 		cmd := exec.Command("powershell", "-NoProfile", "-Command", "(Get-CimInstance Win32_Process -Filter '"+filter+"').CommandLine")
+		hideWindow(cmd)
 		out, err := cmd.Output()
 		return string(out), err
 	case "linux":
@@ -233,6 +234,7 @@ func processCommandLine(pid int) (string, error) {
 func killProcessTree(pid int) error {
 	if runtime.GOOS == "windows" {
 		cmd := exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F")
+		hideWindow(cmd)
 		if output, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("failed to stop stale ffmpeg pid %d: %w: %s", pid, err, trimOutput(output))
 		}

@@ -415,6 +415,7 @@ func RunAudioVisualizerHLS(ctx context.Context, outDir, ffmpeg string, input Aud
 	args := formatVisualizerOutputArgs(audioVisualizerFFmpegArgs(input.SourcePath, assPath, fontDir, id, preset, &mode), outDir)
 
 	cmd := exec.CommandContext(ctx, ffmpeg, args...)
+	hideWindow(cmd)
 	frameReader, frameWriter, err := os.Pipe()
 	if err != nil {
 		return fmt.Errorf("pipe: %w", err)

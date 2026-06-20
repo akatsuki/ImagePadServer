@@ -59,6 +59,7 @@ func AnalyzeAudio(ctx context.Context, ffmpeg, sourcePath string) (AudioAnalysis
 		"-ac", "2",
 		"-",
 	)
+	hideWindow(cmd)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -675,6 +676,7 @@ func extractLUFS(ctx context.Context, ffmpeg, sourcePath string) (float64, error
 		"-f", "null",
 		"NUL",
 	)
+	hideWindow(cmd)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {

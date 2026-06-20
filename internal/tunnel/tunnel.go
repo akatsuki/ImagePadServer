@@ -389,6 +389,7 @@ func writeExecutable(path string, r io.Reader) error {
 
 func validateExecutable(path string, args ...string) error {
 	cmd := exec.Command(path, args...)
+	hideWindow(cmd)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("installed executable validation failed: %w: %s", err, strings.TrimSpace(string(output)))
