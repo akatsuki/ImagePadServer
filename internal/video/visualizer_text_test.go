@@ -2,6 +2,9 @@ package video
 
 import (
 	"context"
+	"fmt"
+	"image"
+	"image/png"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -204,25 +207,26 @@ func TestASSWidthsConsistent(t *testing.T) {
 	type consistencyCase struct {
 		label    string
 		text     string
-		psName   string
+		fontName string
+		weight   int
 		fontSize int
 	}
 	consistencyCases := []consistencyCase{
-		{label: "Latin/title", text: "Hello World ABC", psName: psSemiBold, fontSize: 48},
-		{label: "Latin/artist", text: "Hello World ABC", psName: psMedium, fontSize: 28},
-		{label: "Japanese/title", text: "日本語のテキスト表示", psName: psSemiBold, fontSize: 48},
-		{label: "Japanese/artist", text: "日本語のテキスト表示", psName: psMedium, fontSize: 28},
-		{label: "Mixed/title", text: "Hello 世界 テスト ABC", psName: psSemiBold, fontSize: 48},
-		{label: "Mixed/artist", text: "Hello 世界 テスト ABC", psName: psMedium, fontSize: 28},
+		{label: "Latin/title", text: "Hello World ABC", fontName: faces.SemiBold600.ASSFamily, weight: 600, fontSize: 48},
+		{label: "Latin/artist", text: "Hello World ABC", fontName: faces.Medium500.ASSFamily, weight: 500, fontSize: 28},
+		{label: "Japanese/title", text: "日本語のテキスト表示", fontName: faces.SemiBold600.ASSFamily, weight: 600, fontSize: 48},
+		{label: "Japanese/artist", text: "日本語のテキスト表示", fontName: faces.Medium500.ASSFamily, weight: 500, fontSize: 28},
+		{label: "Mixed/title", text: "Hello 世界 テスト ABC", fontName: faces.SemiBold600.ASSFamily, weight: 600, fontSize: 48},
+		{label: "Mixed/artist", text: "Hello 世界 テスト ABC", fontName: faces.Medium500.ASSFamily, weight: 500, fontSize: 28},
 	}
 
 	for _, c := range consistencyCases {
 		t.Run("consistency/"+c.label, func(t *testing.T) {
-			w1, err := MeasureASSEncodedWidth(ctx, ffmpeg, c.psName, fontDir, c.text, c.fontSize)
+			w1, err := MeasureASSEncodedWidth(ctx, ffmpeg, c.fontName, c.weight, fontDir, c.text, c.fontSize)
 			if err != nil {
 				t.Fatalf("MeasureASSEncodedWidth #1: %v", err)
 			}
-			w2, err := MeasureASSEncodedWidth(ctx, ffmpeg, c.psName, fontDir, c.text, c.fontSize)
+			w2, err := MeasureASSEncodedWidth(ctx, ffmpeg, c.fontName, c.weight, fontDir, c.text, c.fontSize)
 			if err != nil {
 				t.Fatalf("MeasureASSEncodedWidth #2: %v", err)
 			}
@@ -238,11 +242,11 @@ func TestASSWidthsConsistent(t *testing.T) {
 	t.Run("longer-text-is-wider", func(t *testing.T) {
 		short := "A"
 		long := "AAAAA"
-		shortW, err := MeasureASSEncodedWidth(ctx, ffmpeg, psRegular, fontDir, short, 48)
+		shortW, err := MeasureASSEncodedWidth(ctx, ffmpeg, faces.Regular400.ASSFamily, 400, fontDir, short, 48)
 		if err != nil {
 			t.Fatalf("measure short: %v", err)
 		}
-		longW, err := MeasureASSEncodedWidth(ctx, ffmpeg, psRegular, fontDir, long, 48)
+		longW, err := MeasureASSEncodedWidth(ctx, ffmpeg, faces.Regular400.ASSFamily, 400, fontDir, long, 48)
 		if err != nil {
 			t.Fatalf("measure long: %v", err)
 		}
@@ -253,9 +257,171 @@ func TestASSWidthsConsistent(t *testing.T) {
 	})
 }
 
+func TestMeasureASSEncodedWidthDoesNotClipBeyond2000Pixels(t *testing.T) {
+	ffmpeg, err := ffmpegPath()
+	if err != nil {
+		t.Skipf("ffmpeg not available: %v", err)
+	}
+	if !hasLibass(t, ffmpeg) {
+		t.Skip("FFmpeg was not built with libass support")
+	}
+	fonts, err := VisualizerFonts()
+	if err != nil {
+		t.Skipf("Noto fonts not available: %v", err)
+	}
+	faces, err := ResolveVisualizerFontFaces(fonts)
+	if err != nil {
+		t.Fatal(err)
+	}
 
+	width, err := MeasureASSEncodedWidth(
+		context.Background(), ffmpeg, faces.SemiBold600.ASSFamily, 600,
+		filepath.Dir(fonts.Regular400), strings.Repeat("漢", 100), 48,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if width <= 2000 {
+		t.Fatalf("long ASS text width was clipped to %d; want > 2000", width)
+	}
+}
 
+func TestBuildVisualizerASSUsesExactFontWeights(t *testing.T) {
+	fonts, err := VisualizerFonts()
+	if err != nil {
+		t.Skipf("Noto fonts not available: %v", err)
+	}
+	faces, err := ResolveVisualizerFontFaces(fonts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	layout, err := LayoutForSize(1280, 720)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ass, err := BuildVisualizerASS(
+		AudioMetadata{Title: "Title", Artist: "Artist", Album: "Album"},
+		10, layout, fonts,
+		map[string]TextMetrics{"title": {Width: 100}, "artist": {Width: 100}, "album": {Width: 100}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wants := map[string]struct {
+		family string
+		size   string
+		weight string
+	}{
+		"Title":    {faces.SemiBold600.ASSFamily, "48", "600"},
+		"Artist":   {faces.Medium500.ASSFamily, "28", "500"},
+		"Album":    {faces.Regular400.ASSFamily, "24", "400"},
+		"TimeText": {faces.Medium500.ASSFamily, "22", "500"},
+	}
+	seen := map[string]bool{}
+	for _, line := range strings.Split(ass, "\n") {
+		if !strings.HasPrefix(line, "Style: ") {
+			continue
+		}
+		fields := strings.Split(strings.TrimPrefix(line, "Style: "), ",")
+		if len(fields) < 8 {
+			continue
+		}
+		want, ok := wants[fields[0]]
+		if !ok {
+			continue
+		}
+		seen[fields[0]] = true
+		if fields[1] != want.family || fields[2] != want.size || fields[7] != want.weight {
+			t.Errorf("%s style family/size/weight = %q/%q/%q, want %q/%q/%q", fields[0], fields[1], fields[2], fields[7], want.family, want.size, want.weight)
+		}
+	}
+	for name := range wants {
+		if !seen[name] {
+			t.Errorf("missing %s style", name)
+		}
+	}
+}
 
+func TestMeasuredAndEncodedTextWidthsDifferByAtMostOnePixel(t *testing.T) {
+	ffmpeg, err := ffmpegPath()
+	if err != nil {
+		t.Skipf("ffmpeg not available: %v", err)
+	}
+	if !hasLibass(t, ffmpeg) {
+		t.Skip("FFmpeg was not built with libass support")
+	}
+	fonts, err := VisualizerFonts()
+	if err != nil {
+		t.Skipf("Noto fonts not available: %v", err)
+	}
+	faces, err := ResolveVisualizerFontFaces(fonts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	layout, err := LayoutForSize(1280, 720)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const title = "Hello 世界 ABC"
+	measured, err := MeasureASSEncodedWidth(context.Background(), ffmpeg, faces.SemiBold600.ASSFamily, 600, filepath.Dir(fonts.Regular400), title, 48)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ass, err := BuildVisualizerASS(
+		AudioMetadata{Title: title}, 1, layout, fonts,
+		map[string]TextMetrics{"title": {Width: measured}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp := t.TempDir()
+	assPath := filepath.Join(tmp, "encoded.ass")
+	pngPath := filepath.Join(tmp, "encoded.png")
+	if err := os.WriteFile(assPath, []byte(ass), 0644); err != nil {
+		t.Fatal(err)
+	}
+	filter := fmt.Sprintf("color=c=black:s=1280x720:d=1,ass=filename='%s':fontsdir='%s'", escapeFilterPath(assPath), escapeFilterPath(filepath.Dir(fonts.Regular400)))
+	cmd := exec.Command(ffmpeg, "-v", "error", "-filter_complex", filter, "-frames:v", "1", "-y", pngPath)
+	hideWindow(cmd)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("render production ASS: %v\n%s", err, out)
+	}
+	f, err := os.Open(pngPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, err := png.Decode(f)
+	f.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rect := imageRect(layout.Title.X, layout.Title.Y, layout.Title.W, layout.Title.H).Intersect(img.Bounds())
+	minX, maxX := rect.Max.X, rect.Min.X-1
+	for y := rect.Min.Y; y < rect.Max.Y; y++ {
+		for x := rect.Min.X; x < rect.Max.X; x++ {
+			r, g, b, _ := img.At(x, y).RGBA()
+			if r > 128 || g > 128 || b > 128 {
+				if x < minX {
+					minX = x
+				}
+				if x > maxX {
+					maxX = x
+				}
+			}
+		}
+	}
+	if maxX < minX {
+		t.Fatal("production ASS title produced no visible pixels")
+	}
+	encoded := maxX - minX + 1
+	if diff := encoded - measured; diff < -1 || diff > 1 {
+		t.Fatalf("measured width %d and encoded width %d differ by more than one pixel", measured, encoded)
+	}
+}
+
+func imageRect(x, y, w, h int) image.Rectangle {
+	return image.Rect(x, y, x+w, y+h)
+}
 
 // hasLibass checks whether the given FFmpeg binary was built with the ass
 // (libass) filter.

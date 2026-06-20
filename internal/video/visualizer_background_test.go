@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"image/draw"
 	"image/png"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -303,6 +304,33 @@ func TestComplementaryForegroundBothRegions(t *testing.T) {
 	}
 }
 
+func TestFallbackWithOverlayChoosesHigherContrastAt60Percent(t *testing.T) {
+	bg := image.NewRGBA(image.Rect(0, 0, 32, 16))
+	draw.Draw(bg, bg.Bounds(), &image.Uniform{color.RGBA{R: 105, G: 115, B: 125, A: 255}}, image.Point{}, draw.Src)
+	metaRect := image.Rect(0, 0, 16, 16)
+	graphRect := image.Rect(16, 0, 32, 16)
+
+	white := color.RGBA{R: 255, G: 255, B: 255, A: 255}
+	black := color.RGBA{R: 0, G: 0, B: 0, A: 255}
+	whiteRatio := minRegionContrast(bg, metaRect, black, 0.60, srgbLuminance(white))
+	blackRatio := minRegionContrast(bg, metaRect, white, 0.60, srgbLuminance(black))
+	if whiteRatio == blackRatio {
+		t.Fatal("fixture must produce distinct 60 percent contrast ratios")
+	}
+
+	mode := fallbackWithOverlay(bg, metaRect, graphRect)
+	want := black
+	if whiteRatio > blackRatio {
+		want = white
+	}
+	if mode.Color != want {
+		t.Fatalf("fallback color = %#v, want higher-contrast %#v (white %.3f, black %.3f)", mode.Color, want, whiteRatio, blackRatio)
+	}
+	if mode.Overlay.A > uint8(math.Round(0.60*255)) {
+		t.Fatalf("overlay alpha %d exceeds 60 percent cap", mode.Overlay.A)
+	}
+}
+
 func TestComplementaryForegroundOverlayAchievesContrast(t *testing.T) {
 	// Mixed-luminance background: bright metadata region, dark graph region.
 	// After overlay, every pixel in both regions must achieve WCAG >= 4.5:1.
@@ -524,9 +552,12 @@ func TestPrepareVisualizerBaseMixedLuminance(t *testing.T) {
 	}
 	{
 		f, err := os.Create(artPath)
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		if err := png.Encode(f, artImg); err != nil {
-			f.Close(); t.Fatal(err)
+			f.Close()
+			t.Fatal(err)
 		}
 		f.Close()
 	}
@@ -546,10 +577,14 @@ func TestPrepareVisualizerBaseMixedLuminance(t *testing.T) {
 		t.Fatalf("output file not created: %v", err)
 	}
 	f, err := os.Open(outPath)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	_, err = png.Decode(f)
 	f.Close()
-	if err != nil { t.Fatalf("output is not a valid PNG: %v", err) }
+	if err != nil {
+		t.Fatalf("output is not a valid PNG: %v", err)
+	}
 
 	// ForegroundMode must have opaque colour and valid overlay.
 	if mode.Color.A != 255 {

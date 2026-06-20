@@ -72,13 +72,13 @@ func BuildVisualizerASSWithMode(metadata AudioMetadata, duration float64, layout
 
 	primary := assForegroundColor(mode.Color, 0.88)
 	// Use alignment 4 (middle-left) for title, artist, album.
-	writeStyle(&b, "Title", titleFontName, titleSize, 4, primary)
-	writeStyle(&b, "Artist", artistFontName, artistSize, 4, primary)
+	writeStyle(&b, "Title", titleFontName, titleSize, 600, 4, primary)
+	writeStyle(&b, "Artist", artistFontName, artistSize, 500, 4, primary)
 	// Use alignment 5 (middle-center) for time text.
-	writeStyle(&b, "TimeText", timeFontName, timeSize, 5, primary)
+	writeStyle(&b, "TimeText", timeFontName, timeSize, 500, 5, primary)
 
 	if metadata.Album != "" {
-		writeStyle(&b, "Album", albumFontName, albumSize, 4, primary)
+		writeStyle(&b, "Album", albumFontName, albumSize, 400, 4, primary)
 	}
 	b.WriteString("\n")
 
@@ -168,12 +168,12 @@ func BuildVisualizerASSWithMode(metadata AudioMetadata, duration float64, layout
 // ASS helpers
 // ---------------------------------------------------------------------------
 
-func writeStyle(b *strings.Builder, name, fontName string, fontSize, alignment int, primary string) {
+func writeStyle(b *strings.Builder, name, fontName string, fontSize, fontWeight, alignment int, primary string) {
 	if alignment == 0 {
 		alignment = 1 // left-aligned by default
 	}
-	b.WriteString(fmt.Sprintf("Style: %s,%s,%d,%s,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,%d,0,0,0,1\n",
-		name, fontName, fontSize, primary, alignment))
+	b.WriteString(fmt.Sprintf("Style: %s,%s,%d,%s,&H000000FF,&H00000000,&H00000000,%d,0,0,0,100,100,0,0,1,0,0,%d,0,0,0,1\n",
+		name, fontName, fontSize, primary, fontWeight, alignment))
 }
 
 func assForegroundColor(c color.RGBA, opacity float64) string {
@@ -302,10 +302,9 @@ func scaledFontSize(canonical, width int) int {
 // using libass for both measurement and encoding guarantees self-consistent
 // scroll-or-stationary decisions.
 //
-// The font is selected via a \fn{psName} override tag using the font's
-// PostScript name so that the exact weight variant is used.  fontDir is the
-// directory containing the font files (used as FFmpeg's fontsdir).
-func MeasureASSEncodedWidth(ctx context.Context, ffmpeg, psName, fontDir, text string, fontSize int) (int, error) {
+// fontName and fontWeight are the same ASS family and numeric weight used by
+// the production style. fontDir is the directory containing the font files.
+func MeasureASSEncodedWidth(ctx context.Context, ffmpeg, fontName string, fontWeight int, fontDir, text string, fontSize int) (int, error) {
 	tmpDir, err := os.MkdirTemp("", "imagepad-ass-width-*")
 	if err != nil {
 		return 0, fmt.Errorf("create temp dir: %w", err)
@@ -315,24 +314,31 @@ func MeasureASSEncodedWidth(ctx context.Context, ffmpeg, psName, fontDir, text s
 	assPath := filepath.Join(tmpDir, "measure.ass")
 	outPath := filepath.Join(tmpDir, "measure.png")
 
-	// Build a minimal ASS file. The base style uses a generic font name;
-	// the exact Noto variant is selected via \fn override.
+	const maxCanvasWidth = 32768
+	runeCount := len([]rune(text))
+	canvasWidth := max(256, runeCount*fontSize*2+fontSize*4)
+	if canvasWidth > maxCanvasWidth {
+		return 0, fmt.Errorf("ASS text measurement canvas width %d exceeds limit %d", canvasWidth, maxCanvasWidth)
+	}
+	canvasHeight := max(200, fontSize*4)
+
+	// Build a minimal ASS file using the exact production family and weight.
 	var assContent strings.Builder
 	assContent.WriteString("[Script Info]\n")
 	assContent.WriteString("ScriptType: v4.00+\n")
-	assContent.WriteString("PlayResX: 2000\n")
-	assContent.WriteString("PlayResY: 200\n")
+	assContent.WriteString("WrapStyle: 2\n")
+	assContent.WriteString(fmt.Sprintf("PlayResX: %d\n", canvasWidth))
+	assContent.WriteString(fmt.Sprintf("PlayResY: %d\n", canvasHeight))
 	assContent.WriteString("ScaledBorderAndShadow: no\n")
 	assContent.WriteString("\n")
 	assContent.WriteString("[V4+ Styles]\n")
 	assContent.WriteString("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n")
-	// Alignment 7 = center-center. Primary=white, no outline/shadow.
-	assContent.WriteString(fmt.Sprintf("Style: Default,Arial,%d,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1\n", fontSize))
+	// Alignment 7 = top-left. Primary=white, no outline/shadow.
+	assContent.WriteString(fmt.Sprintf("Style: Default,%s,%d,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,%d,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1\n", fontName, fontSize, fontWeight))
 	assContent.WriteString("\n")
 	assContent.WriteString("[Events]\n")
 	assContent.WriteString("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
-	// Use \fn to select the exact Noto font variant by PostScript name.
-	assContent.WriteString(fmt.Sprintf("Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{\\fn%s}%s\n", psName, escapeASSText(text)))
+	assContent.WriteString(fmt.Sprintf("Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{\\q2}%s\n", escapeASSText(text)))
 
 	if err := os.WriteFile(assPath, []byte(assContent.String()), 0644); err != nil {
 		return 0, fmt.Errorf("write ass: %w", err)
@@ -343,8 +349,8 @@ func MeasureASSEncodedWidth(ctx context.Context, ffmpeg, psName, fontDir, text s
 	escFontDir := escapeFilterPath(fontDir)
 
 	filter := fmt.Sprintf(
-		"color=c=black:s=2000x200:d=1,ass=filename='%s':fontsdir='%s'",
-		escAss, escFontDir,
+		"color=c=black:s=%dx%d:d=1,ass=filename='%s':fontsdir='%s'",
+		canvasWidth, canvasHeight, escAss, escFontDir,
 	)
 
 	args := []string{
@@ -375,6 +381,9 @@ func MeasureASSEncodedWidth(ctx context.Context, ffmpeg, psName, fontDir, text s
 	bounds := nonBlackBounds(img)
 	if bounds == nil {
 		return 0, fmt.Errorf("no text pixels found in ass rendered frame for %q", text)
+	}
+	if bounds.Max.X >= canvasWidth {
+		return 0, fmt.Errorf("ASS text measurement clipped at canvas width %d", canvasWidth)
 	}
 	return bounds.Dx(), nil
 }
