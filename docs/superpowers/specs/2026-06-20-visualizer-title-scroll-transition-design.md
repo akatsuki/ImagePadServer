@@ -28,7 +28,9 @@ For text wider than its viewport:
    the text therefore travels 80 pixels beyond the normal endpoint.
 6. The complete text end must pass visibly inside the viewport before reset.
 
-The cycle duration is `3.0 + overflow/scaledSpeed + 2.0` seconds.
+After movement and fade-out, keep the viewport empty for exactly 0.5 seconds.
+The cycle duration is therefore
+`3.0 + overflow/scaledSpeed + 2.0 + 0.5` seconds.
 
 ## Fade transition
 
@@ -36,8 +38,11 @@ The cycle duration is `3.0 + overflow/scaledSpeed + 2.0` seconds.
 - Do not stop movement while fading out.
 - Reset the text to its initial position only after it reaches full
   transparency.
-- Apply a 300 ms fade-in during the first 300 ms of the next initial hold.
-- Do not insert an empty event or additional blank interval between cycles.
+- Render no metadata event for exactly 500 ms after fade-out completes.
+- After the 500 ms blank interval, reset to the initial position and apply a
+  300 ms fade-in during the first 300 ms of the next initial hold.
+- The blank interval is intentional and must contain no outgoing or incoming
+  text event.
 - If a track ends during a phase, clamp the event to the media duration.
 
 ## Verification
@@ -46,7 +51,7 @@ The cycle duration is `3.0 + overflow/scaledSpeed + 2.0` seconds.
 - Assert that extra travel equals `scaledSpeed * 2.0`.
 - Assert that scrolling events contain `\fad(0,300)` and initial hold events
   contain `\fad(300,0)`.
-- Assert event times remain contiguous at the reset boundary.
+- Assert there is an exact 500 ms gap between the outgoing scroll event and
+  the next incoming hold event.
 - Render the reported China Advice title through FFmpeg/libass and verify it
   remains one line throughout hold, movement, fade-out, reset, and fade-in.
-
