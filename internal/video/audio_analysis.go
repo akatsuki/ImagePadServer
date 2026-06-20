@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 
 	"gonum.org/v1/gonum/dsp/fourier"
@@ -691,6 +693,56 @@ func extractLUFS(ctx context.Context, ffmpeg, sourcePath string) (float64, error
 		return 0, fmt.Errorf("parse LUFS: %w", err)
 	}
 	return val, nil
+}
+
+// LoudnormMeasurement holds the pass-1 values emitted by ffmpeg's loudnorm
+// filter with print_format=json. They feed an accurate linear pass-2.
+type LoudnormMeasurement struct {
+	InputI       float64
+	InputTP      float64
+	InputLRA     float64
+	InputThresh  float64
+	TargetOffset float64
+}
+
+// parseLoudnormJSON extracts the loudnorm measurement object from ffmpeg
+// stderr. The filter prints a single JSON object after a bracketed header.
+func parseLoudnormJSON(s string) (LoudnormMeasurement, error) {
+	start := strings.Index(s, "{")
+	end := strings.LastIndex(s, "}")
+	if start < 0 || end <= start {
+		return LoudnormMeasurement{}, fmt.Errorf("no loudnorm JSON object found")
+	}
+	var raw struct {
+		InputI       string `json:"input_i"`
+		InputTP      string `json:"input_tp"`
+		InputLRA     string `json:"input_lra"`
+		InputThresh  string `json:"input_thresh"`
+		TargetOffset string `json:"target_offset"`
+	}
+	if err := json.Unmarshal([]byte(s[start:end+1]), &raw); err != nil {
+		return LoudnormMeasurement{}, fmt.Errorf("parse loudnorm JSON: %w", err)
+	}
+	parse := func(v string) float64 { f, _ := strconv.ParseFloat(strings.TrimSpace(v), 64); return f }
+	return LoudnormMeasurement{
+		InputI:       parse(raw.InputI),
+		InputTP:      parse(raw.InputTP),
+		InputLRA:     parse(raw.InputLRA),
+		InputThresh:  parse(raw.InputThresh),
+		TargetOffset: parse(raw.TargetOffset),
+	}, nil
+}
+
+// loudnormFilter builds an accurate (linear) two-pass loudnorm filter string
+// targeting targetLUFS, using the pass-1 measurement. TP -1.0 dBTP and LRA 11
+// match common streaming presets.
+func loudnormFilter(m LoudnormMeasurement, targetLUFS float64) string {
+	return fmt.Sprintf(
+		"loudnorm=I=%.1f:TP=-1.0:LRA=11.0:"+
+			"measured_I=%g:measured_TP=%g:measured_LRA=%g:measured_thresh=%g:"+
+			"offset=%g:linear=true:print_format=summary",
+		targetLUFS, m.InputI, m.InputTP, m.InputLRA, m.InputThresh, m.TargetOffset,
+	)
 }
 
 func clampFeatures(f *AudioFeatures) {
