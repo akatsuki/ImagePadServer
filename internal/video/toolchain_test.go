@@ -157,7 +157,7 @@ func TestFFmpegArchiveInstallRequiresFFprobe(t *testing.T) {
 		t.Fatal(err)
 	}
 	zw := zip.NewWriter(z)
-	entry, err := zw.Create("bin/ffmpeg.exe")
+	entry, err := zw.Create("bin/" + executableName("ffmpeg"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,6 +174,27 @@ func TestFFmpegArchiveInstallRequiresFFprobe(t *testing.T) {
 	err = extractFFmpegZip(zipPath, target)
 	if err == nil || !strings.Contains(err.Error(), "ffprobe not found after FFmpeg installation") {
 		t.Fatalf("expected ffprobe-not-found error, got %v", err)
+	}
+}
+
+func TestDarwinToolDownloadURLIncludesRequestedBinary(t *testing.T) {
+	for _, arch := range []string{"amd64", "arm64"} {
+		for _, tool := range []string{"ffmpeg", "ffprobe"} {
+			got, err := darwinToolDownloadURL(arch, tool)
+			if err != nil {
+				t.Fatalf("darwinToolDownloadURL(%q, %q): %v", arch, tool, err)
+			}
+			wantSuffix := "/macos/" + arch + "/release/" + tool + ".zip"
+			if !strings.HasSuffix(got, wantSuffix) {
+				t.Errorf("URL %q does not end with %q", got, wantSuffix)
+			}
+		}
+	}
+	if _, err := darwinToolDownloadURL("386", "ffprobe"); err == nil {
+		t.Fatal("unsupported Darwin architecture should fail")
+	}
+	if _, err := darwinToolDownloadURL("arm64", "not-a-tool"); err == nil {
+		t.Fatal("unsupported Darwin tool should fail")
 	}
 }
 

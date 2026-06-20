@@ -361,10 +361,11 @@ func downloadYTDLPWithChecksum(checksum string) (string, error) {
 
 func downloadDarwinFFmpeg() (string, error) {
 	target := localFFmpegPath()
+	probeTarget := localFFprobePath()
 	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 		return "", fmt.Errorf("failed to prepare FFmpeg folder: %w", err)
 	}
-	rawURL, err := darwinFFmpegDownloadURL()
+	rawURL, err := darwinToolDownloadURL(runtime.GOARCH, "ffmpeg")
 	if err != nil {
 		return "", err
 	}
@@ -381,18 +382,42 @@ func downloadDarwinFFmpeg() (string, error) {
 		_ = os.Remove(target)
 		return "", err
 	}
+
+	probeURL, err := darwinToolDownloadURL(runtime.GOARCH, "ffprobe")
+	if err != nil {
+		_ = os.Remove(target)
+		return "", err
+	}
+	probeZipPath := filepath.Join(settings.Dir(), "bin", "ffprobe-macos.zip")
+	if err := downloadFileAllowMissingChecksum(probeZipPath, probeURL, 80<<20, ""); err != nil {
+		_ = os.Remove(target)
+		return "", fmt.Errorf("failed to download ffprobe: %w", err)
+	}
+	defer os.Remove(probeZipPath)
+	if err := extractNamedBinaryFromZip(probeZipPath, probeTarget, "ffprobe"); err != nil {
+		_ = os.Remove(target)
+		return "", fmt.Errorf("failed to install ffprobe: %w", err)
+	}
+	if err := validateExecutable(probeTarget, "-version"); err != nil {
+		_ = os.Remove(target)
+		_ = os.Remove(probeTarget)
+		return "", err
+	}
 	return target, nil
 }
 
 func darwinFFmpegDownloadURL() (string, error) {
-	switch runtime.GOARCH {
-	case "arm64":
-		return "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip", nil
-	case "amd64":
-		return "https://ffmpeg.martin-riedl.de/redirect/latest/macos/amd64/release/ffmpeg.zip", nil
-	default:
-		return "", fmt.Errorf("automatic FFmpeg install is not available for darwin/%s", runtime.GOARCH)
+	return darwinToolDownloadURL(runtime.GOARCH, "ffmpeg")
+}
+
+func darwinToolDownloadURL(arch, tool string) (string, error) {
+	if arch != "arm64" && arch != "amd64" {
+		return "", fmt.Errorf("automatic FFmpeg install is not available for darwin/%s", arch)
 	}
+	if tool != "ffmpeg" && tool != "ffprobe" {
+		return "", fmt.Errorf("unsupported Darwin FFmpeg tool %q", tool)
+	}
+	return fmt.Sprintf("https://ffmpeg.martin-riedl.de/redirect/latest/macos/%s/release/%s.zip", arch, tool), nil
 }
 
 func downloadDarwinYTDLP() (string, error) {

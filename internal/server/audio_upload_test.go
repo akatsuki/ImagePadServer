@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"testing"
 
 	"imagepadserver/internal/video"
@@ -30,6 +31,7 @@ func TestFindFFprobeDelegatesToVideoResolver(t *testing.T) {
 }
 
 func TestProcessAndPublishLocalAudioUsesSharedPipeline(t *testing.T) {
+	useSystemFFprobeOrSkip(t)
 	srv, mux := testServer(t, true)
 	defer srv.store.Reset()
 
@@ -89,6 +91,7 @@ func TestProcessAndPublishLocalAudioUsesSharedPipeline(t *testing.T) {
 }
 
 func TestProcessAndQueueLocalAudioUsesSharedPipeline(t *testing.T) {
+	useSystemFFprobeOrSkip(t)
 	srv, mux := testServer(t, true)
 	defer srv.store.Reset()
 
@@ -143,6 +146,17 @@ func TestProcessAndQueueLocalAudioUsesSharedPipeline(t *testing.T) {
 	if !found {
 		t.Fatal("queued local audio not found in history")
 	}
+}
+
+func useSystemFFprobeOrSkip(t *testing.T) {
+	t.Helper()
+	path, err := exec.LookPath("ffprobe")
+	if err != nil {
+		t.Skip("ffprobe is not installed on this test runner")
+	}
+	old := ensureFFprobePath
+	ensureFFprobePath = func() (string, error) { return path, nil }
+	t.Cleanup(func() { ensureFFprobePath = old })
 }
 
 func TestLocalAudioNeverUsesSoundCloudMetadata(t *testing.T) {
