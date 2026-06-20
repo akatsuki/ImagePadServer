@@ -7,7 +7,6 @@ import (
 	"mime"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	"imagepadserver/internal/video"
@@ -87,33 +86,11 @@ func (s *Server) acquireDownloadedSoundCloud(ctx context.Context, media video.Do
 	return soundCloudAcquiredFromProbe(media, probe, candidates), nil
 }
 
-// ffprobeExeName returns the platform-specific ffprobe executable name.
-func ffprobeExeName() string {
-	if runtime.GOOS == "windows" {
-		return "ffprobe.exe"
-	}
-	return "ffprobe"
-}
+var ensureFFprobePath = video.EnsureFFprobe
 
-// findFFprobe resolves the ffprobe binary path.  It checks the
-// IMAGEPAD_FFPROBE environment variable first, then the sibling directory
-// of the resolved ffmpeg binary (which is where extractFFmpegZip places it).
+// findFFprobe delegates to the shared self-healing toolchain resolver.
 func findFFprobe() (string, error) {
-	if p := os.Getenv("IMAGEPAD_FFPROBE"); p != "" {
-		if _, err := os.Stat(p); err == nil {
-			return p, nil
-		}
-		return "", fmt.Errorf("IMAGEPAD_FFPROBE does not exist: %s", p)
-	}
-	ffmpeg, err := video.EnsureFFmpeg()
-	if err != nil {
-		return "", err
-	}
-	sibling := filepath.Join(filepath.Dir(ffmpeg), ffprobeExeName())
-	if _, err := os.Stat(sibling); err == nil {
-		return sibling, nil
-	}
-	return "", fmt.Errorf("ffprobe not found after installing FFmpeg")
+	return ensureFFprobePath()
 }
 
 // acquireUploadedAudio saves a multipart audio upload to a temporary file,

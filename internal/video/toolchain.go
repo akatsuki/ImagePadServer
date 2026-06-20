@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"imagepadserver/internal/settings"
@@ -69,6 +70,78 @@ func ffprobePath() (string, error) {
 
 func localFFprobePath() string {
 	return filepath.Join(settings.Dir(), "bin", executableName("ffprobe"))
+}
+
+var (
+	ffmpegBundleMu             sync.Mutex
+	ffprobeBundleInstaller     = downloadFFmpeg
+	ffprobeExecutableValidator = func(path string) error {
+		return validateExecutable(path, "-version")
+	}
+)
+
+func usableFFprobePath() string {
+	candidates := make([]string, 0, 4)
+	if configured := strings.TrimSpace(os.Getenv("IMAGEPAD_FFPROBE")); configured != "" {
+		candidates = append(candidates, configured)
+	}
+	if ffmpeg, err := ffmpegPath(); err == nil {
+		candidates = append(candidates, filepath.Join(filepath.Dir(ffmpeg), executableName("ffprobe")))
+	}
+	candidates = append(candidates, localFFprobePath())
+	if path, err := exec.LookPath("ffprobe"); err == nil {
+		candidates = append(candidates, path)
+	}
+
+	seen := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		clean := filepath.Clean(candidate)
+		if _, ok := seen[clean]; ok {
+			continue
+		}
+		seen[clean] = struct{}{}
+		if !fileExists(clean) {
+			continue
+		}
+		if err := ffprobeExecutableValidator(clean); err == nil {
+			return clean
+		}
+	}
+	return ""
+}
+
+// EnsureFFprobe returns a validated ffprobe path. Missing and stale candidates
+// are repaired from the existing FFmpeg bundle instead of becoming an
+// immediate "ffprobe not found" error.
+func EnsureFFprobe() (string, error) {
+	if path := usableFFprobePath(); path != "" {
+		return path, nil
+	}
+
+	ffmpegBundleMu.Lock()
+	defer ffmpegBundleMu.Unlock()
+
+	// Another request may have completed installation while this one waited.
+	if path := usableFFprobePath(); path != "" {
+		return path, nil
+	}
+	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
+		return "", fmt.Errorf("ffprobe not found. %s You can also set IMAGEPAD_FFPROBE.", toolInstallHint("ffmpeg"))
+	}
+	if _, err := ffprobeBundleInstaller(); err != nil {
+		return "", fmt.Errorf("failed to acquire ffprobe: %w", err)
+	}
+	path := localFFprobePath()
+	if !fileExists(path) {
+		return "", fmt.Errorf("failed to acquire ffprobe: installer did not create %s", path)
+	}
+	if err := ffprobeExecutableValidator(path); err != nil {
+		return "", fmt.Errorf("failed to validate installed ffprobe: %w", err)
+	}
+	return path, nil
 }
 
 // verifyVisualizerFFmpeg runs ffmpeg -hide_banner -filters and checks that the
@@ -161,6 +234,11 @@ func EnsureFFmpeg() (string, error) {
 	}
 	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
 		return "", fmt.Errorf("FFmpeg not found. %s You can also set IMAGEPAD_FFMPEG.", toolInstallHint("ffmpeg"))
+	}
+	ffmpegBundleMu.Lock()
+	defer ffmpegBundleMu.Unlock()
+	if ffmpeg, err := ffmpegPath(); err == nil {
+		return ffmpeg, nil
 	}
 	return downloadFFmpeg()
 }

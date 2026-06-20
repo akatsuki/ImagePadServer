@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"errors"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,23 @@ import (
 
 	"imagepadserver/internal/video"
 )
+
+func TestFindFFprobeDelegatesToVideoResolver(t *testing.T) {
+	old := ensureFFprobePath
+	t.Cleanup(func() { ensureFFprobePath = old })
+
+	want := `C:\tools\ffprobe.exe`
+	ensureFFprobePath = func() (string, error) { return want, nil }
+	got, err := findFFprobe()
+	if err != nil || got != want {
+		t.Fatalf("findFFprobe() = %q, %v; want %q, nil", got, err, want)
+	}
+
+	ensureFFprobePath = func() (string, error) { return "", errors.New("repair failed") }
+	if _, err := findFFprobe(); err == nil || err.Error() != "repair failed" {
+		t.Fatalf("findFFprobe error = %v, want repair failed", err)
+	}
+}
 
 func TestProcessAndPublishLocalAudioUsesSharedPipeline(t *testing.T) {
 	srv, mux := testServer(t, true)

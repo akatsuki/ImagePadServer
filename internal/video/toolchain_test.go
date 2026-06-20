@@ -2,12 +2,126 @@ package video
 
 import (
 	"archive/zip"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
+
+func TestEnsureFFprobeRepairsStaleConfiguredPath(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	t.Setenv("IMAGEPAD_FFPROBE", filepath.Join(t.TempDir(), "missing-ffprobe"))
+	t.Setenv("IMAGEPAD_FFMPEG", "")
+	t.Setenv("PATH", "")
+
+	oldInstaller := ffprobeBundleInstaller
+	oldValidator := ffprobeExecutableValidator
+	t.Cleanup(func() {
+		ffprobeBundleInstaller = oldInstaller
+		ffprobeExecutableValidator = oldValidator
+	})
+
+	installCalls := 0
+	ffprobeBundleInstaller = func() (string, error) {
+		installCalls++
+		if err := os.MkdirAll(filepath.Dir(localFFprobePath()), 0755); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(localFFmpegPath(), []byte("ffmpeg"), 0755); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(localFFprobePath(), []byte("ffprobe"), 0755); err != nil {
+			return "", err
+		}
+		return localFFmpegPath(), nil
+	}
+	ffprobeExecutableValidator = func(path string) error {
+		if path != localFFprobePath() {
+			return errors.New("unexpected candidate")
+		}
+		return nil
+	}
+
+	got, err := EnsureFFprobe()
+	if err != nil {
+		t.Fatalf("EnsureFFprobe: %v", err)
+	}
+	if got != localFFprobePath() {
+		t.Fatalf("EnsureFFprobe() = %q, want %q", got, localFFprobePath())
+	}
+	if installCalls != 1 {
+		t.Fatalf("installer calls = %d, want 1", installCalls)
+	}
+}
+
+func TestEnsureFFprobeConcurrentRepairRunsInstallerOnce(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	t.Setenv("IMAGEPAD_FFPROBE", filepath.Join(t.TempDir(), "stale-ffprobe"))
+	t.Setenv("IMAGEPAD_FFMPEG", "")
+	t.Setenv("PATH", "")
+
+	oldInstaller := ffprobeBundleInstaller
+	oldValidator := ffprobeExecutableValidator
+	t.Cleanup(func() {
+		ffprobeBundleInstaller = oldInstaller
+		ffprobeExecutableValidator = oldValidator
+	})
+
+	var installCalls atomic.Int32
+	ffprobeBundleInstaller = func() (string, error) {
+		installCalls.Add(1)
+		time.Sleep(20 * time.Millisecond)
+		if err := os.MkdirAll(filepath.Dir(localFFprobePath()), 0755); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(localFFprobePath(), []byte("ffprobe"), 0755); err != nil {
+			return "", err
+		}
+		return localFFmpegPath(), nil
+	}
+	ffprobeExecutableValidator = func(path string) error {
+		if !fileExists(path) {
+			return errors.New("not installed")
+		}
+		return nil
+	}
+
+	const workers = 8
+	results := make(chan string, workers)
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			path, err := EnsureFFprobe()
+			results <- path
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(results)
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Errorf("EnsureFFprobe: %v", err)
+		}
+	}
+	for path := range results {
+		if path != localFFprobePath() {
+			t.Errorf("path = %q, want %q", path, localFFprobePath())
+		}
+	}
+	if got := installCalls.Load(); got != 1 {
+		t.Fatalf("installer calls = %d, want 1", got)
+	}
+}
 
 func TestFFprobePathUsesConfiguredPath(t *testing.T) {
 	dir := t.TempDir()
