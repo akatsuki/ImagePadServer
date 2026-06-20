@@ -12,8 +12,8 @@ func TestFractionalLogBands(t *testing.T) {
 	sampleRate := 48000
 
 	for b := 0; b < 24; b++ {
-		loFreq := 20.0 * math.Pow(1000.0, float64(b)/24.0)
-		hiFreq := 20.0 * math.Pow(1000.0, float64(b+1)/24.0)
+		loFreq := spectrumFMin * math.Pow(spectrumFMax/spectrumFMin, float64(b)/24.0)
+		hiFreq := spectrumFMin * math.Pow(spectrumFMax/spectrumFMin, float64(b+1)/24.0)
 		freq := math.Sqrt(loFreq * hiFreq)
 
 		window := make([]float64, fftSize)
@@ -32,6 +32,34 @@ func TestFractionalLogBands(t *testing.T) {
 			t.Errorf("band %d (%.1f-%.1f Hz, test freq %.1f Hz): expected finite positive energy, got %e",
 				b, loFreq, hiFreq, freq, energies[b])
 		}
+	}
+}
+
+func TestLowFrequencyResolution(t *testing.T) {
+	// A 45 Hz tone must concentrate in a single band. The 2048-point FFT
+	// (~23 Hz bins) smears it across several low bands; 8192 (~5.86 Hz)
+	// resolves it so the dominant band dwarfs its neighbours.
+	n := fftWindowSize
+	pcm := make([]float64, n)
+	for i := range pcm {
+		w := 0.5 * (1 - math.Cos(2*math.Pi*float64(i)/float64(n-1)))
+		pcm[i] = math.Sin(2*math.Pi*45*float64(i)/float64(sampleRate)) * w
+	}
+	coeff := fourier.NewFFT(n).Coefficients(nil, pcm)
+	bands := fractionalLogBandEnergies(coeff, sampleRate)
+
+	maxIdx := 0
+	for b := 1; b < 24; b++ {
+		if bands[b] > bands[maxIdx] {
+			maxIdx = b
+		}
+	}
+	if maxIdx == 0 || maxIdx == 23 {
+		t.Fatalf("45 Hz tone landed in edge band %d; unexpected layout", maxIdx)
+	}
+	if bands[maxIdx] <= 4*bands[maxIdx-1] || bands[maxIdx] <= 4*bands[maxIdx+1] {
+		t.Fatalf("45 Hz not concentrated: dominant[%d]=%.4g lo[%d]=%.4g hi[%d]=%.4g",
+			maxIdx, bands[maxIdx], maxIdx-1, bands[maxIdx-1], maxIdx+1, bands[maxIdx+1])
 	}
 }
 

@@ -24,7 +24,7 @@ type pcmAnalyzer interface {
 }
 
 const (
-	fftWindowSize   = 2048
+	fftWindowSize   = 8192
 	frameAdvance    = 1600
 	sampleRate      = 48000
 	envelopeSamples = 1000

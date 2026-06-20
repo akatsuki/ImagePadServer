@@ -5,8 +5,17 @@ import (
 	"sort"
 )
 
+// spectrumFMin / spectrumFMax bound the 24 log-spaced visualizer bands.
+// 30 Hz–16 kHz keeps every bar inside the range where real music has energy:
+// below 30 Hz is sub-bass rumble, above 16 kHz is largely inaudible air.
+const (
+	spectrumFMin = 30.0
+	spectrumFMax = 16000.0
+)
+
 // fractionalLogBandEnergies maps FFT coefficients into 24 logarithmic bands
-// spanning 20 Hz to 20 kHz using fractional bin overlap.
+// spanning spectrumFMin..spectrumFMax (30 Hz–16 kHz) using fractional bin
+// overlap.
 //
 // coeff is the output of an n-point real FFT (n even), so len(coeff) == n/2 + 1.
 // coeff[0] is the DC component and is excluded from all bands.
@@ -14,8 +23,8 @@ import (
 // bandwidth that falls within each band boundary.
 //
 // sampleRate must match the sample rate used to produce coeff.
-// For best results at 48 kHz, use an 8192-point FFT (coeff length 4097),
-// giving ~5.86 Hz bin spacing.
+// The analyzer uses an 8192-point FFT at 48 kHz (coeff length 4097),
+// giving ~5.86 Hz bin spacing so the lowest bands are resolved.
 func fractionalLogBandEnergies(coeff []complex128, sampleRate int) [24]float64 {
 	// Guard: reject any NaN or Inf coefficient — they would corrupt all bands.
 	for _, c := range coeff {
@@ -31,8 +40,8 @@ func fractionalLogBandEnergies(coeff []complex128, sampleRate int) [24]float64 {
 	binWidth := float64(sampleRate) / float64(nFFT)
 
 	for b := 0; b < 24; b++ {
-		loFreq := 20.0 * math.Pow(1000.0, float64(b)/24.0)
-		hiFreq := 20.0 * math.Pow(1000.0, float64(b+1)/24.0)
+		loFreq := spectrumFMin * math.Pow(spectrumFMax/spectrumFMin, float64(b)/24.0)
+		hiFreq := spectrumFMin * math.Pow(spectrumFMax/spectrumFMin, float64(b+1)/24.0)
 
 		var sum, totalWeight float64
 
