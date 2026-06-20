@@ -745,6 +745,25 @@ func loudnormFilter(m LoudnormMeasurement, targetLUFS float64) string {
 	)
 }
 
+// extractLoudnormMeasurement runs loudnorm pass 1 and returns the measured
+// values needed for an accurate linear pass 2.
+func extractLoudnormMeasurement(ctx context.Context, ffmpeg, sourcePath string) (LoudnormMeasurement, error) {
+	cmd := exec.CommandContext(ctx, ffmpeg,
+		"-v", "info",
+		"-i", sourcePath,
+		"-af", "loudnorm=I=-14:TP=-1.0:LRA=11.0:print_format=json",
+		"-f", "null",
+		"NUL",
+	)
+	hideWindow(cmd)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return LoudnormMeasurement{}, fmt.Errorf("loudnorm pass 1: %w\n%s", err, stderr.String())
+	}
+	return parseLoudnormJSON(stderr.String())
+}
+
 func clampFeatures(f *AudioFeatures) {
 	if f.BPM < 0 {
 		f.BPM = 0
