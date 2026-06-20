@@ -109,6 +109,11 @@ func WriteVisualizerRGBAFrames(ctx context.Context, dst io.Writer, input AudioRe
 
 	envelope := input.Analysis.Features.LoudnessEnvelope
 
+	// Cache the loudness layer (guide lines + detail curve + trend curve)
+	// once per render job instead of recomputing for every frame.
+	trend := SmoothLoudnessTrend(envelope, duration)
+	loudnessLayer := renderLoudnessLayer(envelope, trend, mode, layout, width, height)
+
 	for fi, frame := range input.Analysis.Frames {
 		// Copy base image (background + artwork).
 		draw.Draw(canvas, canvas.Bounds(), base, image.Point{}, draw.Src)
@@ -116,8 +121,8 @@ func WriteVisualizerRGBAFrames(ctx context.Context, dst io.Writer, input AudioRe
 		// Spectrum bars.
 		drawSpectrum(canvas, frame.Spectrum24, mode, layout)
 
-		// Whole-track loudness envelope.
-		drawLoudness(canvas, envelope, mode, layout)
+		// Whole-track loudness envelope (cached — same for every frame).
+		draw.Draw(canvas, canvas.Bounds(), loudnessLayer, image.Point{}, draw.Over)
 
 		// Decorative progress bar + position marker.
 		currentSeconds := float64(fi) / float64(totalFrames) * duration
