@@ -366,26 +366,45 @@ func RunAudioVisualizerHLS(ctx context.Context, outDir, ffmpeg string, input Aud
 	// Build ASS subtitle file.
 	assPath := filepath.Join(outDir, id+".ass")
 
+	// Resolve font faces for PostScript names used by ASS measurement (AV-824).
+	faces, err := ResolveVisualizerFontFaces(fonts)
+	if err != nil {
+		return fmt.Errorf("resolve font faces: %w", err)
+	}
+	fontDir := filepath.Dir(fonts.Regular400)
+
 	metrics := map[string]TextMetrics{}
 	titleSize := scaledFontSize(48, width)
 	artistSize := scaledFontSize(28, width)
 	albumSize := scaledFontSize(24, width)
-	titleMetrics, _ := MeasureTextWithFFmpeg(ctx, ffmpeg, fonts.SemiBold600, input.Metadata.Title, titleSize)
-	artistMetrics, _ := MeasureTextWithFFmpeg(ctx, ffmpeg, fonts.Medium500, input.Metadata.Artist, artistSize)
-	metrics["title"] = titleMetrics
-	metrics["artist"] = artistMetrics
+	titleW, err := MeasureASSEncodedWidth(ctx, ffmpeg, faces.SemiBold600.PostScriptName, fontDir, input.Metadata.Title, titleSize)
+	if err != nil {
+		return fmt.Errorf("measure title: %w", err)
+	}
+	metrics["title"] = TextMetrics{Width: titleW}
+	artistW, err := MeasureASSEncodedWidth(ctx, ffmpeg, faces.Medium500.PostScriptName, fontDir, input.Metadata.Artist, artistSize)
+	if err != nil {
+		return fmt.Errorf("measure artist: %w", err)
+	}
+	metrics["artist"] = TextMetrics{Width: artistW}
 	if input.Metadata.Album != "" {
-		albumMetrics, _ := MeasureTextWithFFmpeg(ctx, ffmpeg, fonts.Regular400, input.Metadata.Album, albumSize)
-		metrics["album"] = albumMetrics
+		albumW, err := MeasureASSEncodedWidth(ctx, ffmpeg, faces.Regular400.PostScriptName, fontDir, input.Metadata.Album, albumSize)
+		if err != nil {
+			return fmt.Errorf("measure album: %w", err)
+		}
+		metrics["album"] = TextMetrics{Width: albumW}
 	}
 
-	ass := BuildVisualizerASSWithMode(input.Metadata, input.Analysis.Duration, layout, fonts, metrics, mode, width, height)
+	ass, err := BuildVisualizerASSWithMode(input.Metadata, input.Analysis.Duration, layout, fonts, metrics, mode, width, height)
+	if err != nil {
+		return fmt.Errorf("build ass: %w", err)
+	}
 	if err := os.WriteFile(assPath, []byte(ass), 0644); err != nil {
 		return fmt.Errorf("write ass: %w", err)
 	}
 
 	// Build FFmpeg arguments.
-	args := formatVisualizerOutputArgs(audioVisualizerFFmpegArgs(input.SourcePath, assPath, filepath.Dir(fonts.Regular400), id, preset, &mode), outDir)
+	args := formatVisualizerOutputArgs(audioVisualizerFFmpegArgs(input.SourcePath, assPath, fontDir, id, preset, &mode), outDir)
 
 	cmd := exec.CommandContext(ctx, ffmpeg, args...)
 	frameReader, frameWriter, err := os.Pipe()

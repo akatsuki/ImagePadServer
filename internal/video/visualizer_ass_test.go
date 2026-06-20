@@ -1,18 +1,112 @@
 package video
 
 import (
+	"encoding/binary"
 	"image/color"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
+// writeTestOTF writes a minimal OTF file with a valid 'name' table containing
+// the given familyName (Name ID 1) and postScriptName (Name ID 6).  The file
+// is only valid enough for readOTFNameID to parse — it lacks required OTF
+// tables for actual rendering.
+func writeTestOTF(path, familyName, postScriptName string) error {
+	// UTF-16BE encode a string.
+	utf16be := func(s string) []byte {
+		var b []byte
+		for _, r := range s {
+			b = binary.BigEndian.AppendUint16(b, uint16(r))
+		}
+		return b
+	}
+
+	fam := utf16be(familyName)
+	ps := utf16be(postScriptName)
+
+	// Name table: header (6) + 2 records (24) + strings.
+	stringData := append([]byte{}, fam...)
+	stringData = append(stringData, ps...)
+
+	nameTableLen := 6 + 24 + len(stringData)
+
+	var buf []byte
+	// OTF header (sfVersion=0x00010000, numTables=1).
+	buf = binary.BigEndian.AppendUint32(buf, 0x00010000)
+	buf = binary.BigEndian.AppendUint16(buf, 1) // numTables
+	buf = binary.BigEndian.AppendUint16(buf, 0) // searchRange
+	buf = binary.BigEndian.AppendUint16(buf, 0) // entrySelector
+	buf = binary.BigEndian.AppendUint16(buf, 0) // rangeShift
+
+	nameOffset := uint32(12 + 16) // header + 1 directory entry
+	// Table directory: "name"
+	buf = append(buf, []byte("name")...)
+	buf = binary.BigEndian.AppendUint32(buf, 0) // checksum
+	buf = binary.BigEndian.AppendUint32(buf, nameOffset)
+	buf = binary.BigEndian.AppendUint32(buf, uint32(nameTableLen))
+
+	// Name table.
+	stringsOff := uint16(6 + 24) // header + 2 records
+	buf = binary.BigEndian.AppendUint16(buf, 0)  // format
+	buf = binary.BigEndian.AppendUint16(buf, 2)  // count
+	buf = binary.BigEndian.AppendUint16(buf, stringsOff)
+
+	// Record 1: Name ID 1 (family).
+	famOff := uint16(0)
+	buf = binary.BigEndian.AppendUint16(buf, 3)     // platformID = Windows
+	buf = binary.BigEndian.AppendUint16(buf, 1)     // encodingID
+	buf = binary.BigEndian.AppendUint16(buf, 0x0409) // languageID
+	buf = binary.BigEndian.AppendUint16(buf, 1)     // nameID = family
+	buf = binary.BigEndian.AppendUint16(buf, uint16(len(fam)))
+	buf = binary.BigEndian.AppendUint16(buf, famOff)
+
+	// Record 2: Name ID 6 (postscript).
+	psOff := uint16(len(fam))
+	buf = binary.BigEndian.AppendUint16(buf, 3)      // platformID = Windows
+	buf = binary.BigEndian.AppendUint16(buf, 1)      // encodingID
+	buf = binary.BigEndian.AppendUint16(buf, 0x0409)  // languageID
+	buf = binary.BigEndian.AppendUint16(buf, 6)      // nameID = postscript
+	buf = binary.BigEndian.AppendUint16(buf, uint16(len(ps)))
+	buf = binary.BigEndian.AppendUint16(buf, psOff)
+
+	// Strings.
+	buf = append(buf, stringData...)
+
+	return os.WriteFile(path, buf, 0644)
+}
+
+// writeTestFonts creates three minimal OTF font files in a temp directory and
+// returns a FontSet pointing to them.
+func writeTestFonts(t *testing.T) FontSet {
+	t.Helper()
+	dir := t.TempDir()
+	reg := filepath.Join(dir, "TestSans-Regular.otf")
+	med := filepath.Join(dir, "TestSans-Medium.otf")
+	sem := filepath.Join(dir, "TestSans-SemiBold.otf")
+	if err := writeTestOTF(reg, "TestSans", "TestSans-Regular"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeTestOTF(med, "TestSans", "TestSans-Medium"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeTestOTF(sem, "TestSans", "TestSans-SemiBold"); err != nil {
+		t.Fatal(err)
+	}
+	return FontSet{Regular400: reg, Medium500: med, SemiBold600: sem}
+}
+
 func TestBuildVisualizerASSUsesGlobalForegroundMode(t *testing.T) {
 	layout, _ := LayoutForSize(1280, 720)
-	fonts := FontSet{Regular400: "regular.otf", Medium500: "medium.otf", SemiBold600: "semibold.otf"}
+	fonts := writeTestFonts(t)
 	meta := AudioMetadata{Title: "Title", Artist: "Artist"}
 	metrics := map[string]TextMetrics{"title": {Width: 100}, "artist": {Width: 80}}
 	darkMode := ForegroundMode{Color: color.RGBA{0, 0, 0, 255}}
-	ass := BuildVisualizerASSWithMode(meta, 60, layout, fonts, metrics, darkMode, 1280, 720)
+	ass, err := BuildVisualizerASSWithMode(meta, 60, layout, fonts, metrics, darkMode, 1280, 720)
+	if err != nil {
+		t.Fatalf("BuildVisualizerASSWithMode: %v", err)
+	}
 	if !strings.Contains(ass, "&H1F000000") {
 		t.Fatalf("ASS does not use black at 88%% opacity:\n%s", ass)
 	}
@@ -23,11 +117,15 @@ func TestBuildVisualizerASSUsesGlobalForegroundMode(t *testing.T) {
 
 func TestBuildVisualizerASSUsesSpecifiedCanonicalFontSizes(t *testing.T) {
 	layout, _ := LayoutForSize(1280, 720)
-	fonts := FontSet{Regular400: "regular.otf", Medium500: "medium.otf", SemiBold600: "semibold.otf"}
+	fonts := writeTestFonts(t)
 	meta := AudioMetadata{Title: "Title", Artist: "Artist", Album: "Album"}
 	metrics := map[string]TextMetrics{"title": {Width: 100}, "artist": {Width: 80}, "album": {Width: 60}}
-	ass := BuildVisualizerASSWithMode(meta, 60, layout, fonts, metrics, ForegroundMode{Color: color.RGBA{255, 255, 255, 255}}, 1280, 720)
-	for _, want := range []string{"Style: Title,semibold.otf,48,", "Style: Artist,medium.otf,28,", "Style: Album,regular.otf,24,", "Style: TimeText,medium.otf,22,"} {
+	ass, err := BuildVisualizerASSWithMode(meta, 60, layout, fonts, metrics, ForegroundMode{Color: color.RGBA{255, 255, 255, 255}}, 1280, 720)
+	if err != nil {
+		t.Fatalf("BuildVisualizerASSWithMode: %v", err)
+	}
+	// TestSans is the family name for all three test fonts.
+	for _, want := range []string{"Style: Title,TestSans,48,", "Style: Artist,TestSans,28,", "Style: Album,TestSans,24,", "Style: TimeText,TestSans,22,"} {
 		if !strings.Contains(ass, want) {
 			t.Errorf("missing %q", want)
 		}
@@ -44,18 +142,17 @@ func TestBuildVisualizerASS_Basic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fonts := FontSet{
-		Regular400:  "C:\\fonts\\NotoSansCJKjp-Regular.otf",
-		Medium500:   "C:\\fonts\\NotoSansCJKjp-Medium.otf",
-		SemiBold600: "C:\\fonts\\NotoSansCJKjp-SemiBold.otf",
-	}
+	fonts := writeTestFonts(t)
 	metrics := map[string]TextMetrics{
 		"title":  {Width: 400, Height: 58},
 		"artist": {Width: 350, Height: 34},
 		"album":  {Width: 200, Height: 30},
 	}
 
-	ass := BuildVisualizerASS(meta, 60.0, layout, fonts, metrics)
+	ass, err := BuildVisualizerASS(meta, 60.0, layout, fonts, metrics)
+	if err != nil {
+		t.Fatalf("BuildVisualizerASS: %v", err)
+	}
 
 	// Check sections
 	if !strings.Contains(ass, "[Script Info]") {
@@ -90,15 +187,10 @@ func TestBuildVisualizerASS_Basic(t *testing.T) {
 		t.Fatal("missing TimeText style")
 	}
 
-	// Check font names in styles (full path-based)
-	if !strings.Contains(ass, fonts.SemiBold600) {
-		t.Fatal("Title style should reference SemiBold600 font")
-	}
-	if !strings.Contains(ass, fonts.Medium500) {
-		t.Fatal("Artist style should reference Medium500 font")
-	}
-	if !strings.Contains(ass, fonts.Regular400) {
-		t.Fatal("Album style should reference Regular400 font")
+	// Check font names in styles use resolved family name (TestSans),
+	// not filesystem paths.
+	if !strings.Contains(ass, "TestSans") {
+		t.Fatal("styles should reference resolved family name (TestSans)")
 	}
 
 	// Check time events exist for duration
@@ -129,17 +221,16 @@ func TestBuildVisualizerASS_NoAlbum(t *testing.T) {
 		Album:  "",
 	}
 	layout, _ := LayoutForSize(1280, 720)
-	fonts := FontSet{
-		Regular400:  "/fonts/Noto-Regular.otf",
-		Medium500:   "/fonts/Noto-Medium.otf",
-		SemiBold600: "/fonts/Noto-SemiBold.otf",
-	}
+	fonts := writeTestFonts(t)
 	metrics := map[string]TextMetrics{
 		"title":  {Width: 400, Height: 58},
 		"artist": {Width: 350, Height: 34},
 	}
 
-	ass := BuildVisualizerASS(meta, 10.0, layout, fonts, metrics)
+	ass, err := BuildVisualizerASS(meta, 10.0, layout, fonts, metrics)
+	if err != nil {
+		t.Fatalf("BuildVisualizerASS: %v", err)
+	}
 
 	if strings.Contains(ass, "Style: Album") {
 		t.Fatal("Album style should not exist when album is empty")
@@ -156,18 +247,17 @@ func TestBuildVisualizerASS_LongTitleScroll(t *testing.T) {
 		Album:  "Test Album",
 	}
 	layout, _ := LayoutForSize(1280, 720)
-	fonts := FontSet{
-		Regular400:  "/fonts/Noto-Regular.otf",
-		Medium500:   "/fonts/Noto-Medium.otf",
-		SemiBold600: "/fonts/Noto-SemiBold.otf",
-	}
+	fonts := writeTestFonts(t)
 	metrics := map[string]TextMetrics{
 		"title":  {Width: 1200, Height: 58},
 		"artist": {Width: 350, Height: 34},
 		"album":  {Width: 200, Height: 30},
 	}
 
-	ass := BuildVisualizerASS(meta, 30.0, layout, fonts, metrics)
+	ass, err := BuildVisualizerASS(meta, 30.0, layout, fonts, metrics)
+	if err != nil {
+		t.Fatalf("BuildVisualizerASS: %v", err)
+	}
 
 	// The title text should appear in \move commands (since it scrolls)
 	if strings.Contains(ass, "\\move") {
@@ -186,7 +276,7 @@ func TestBuildVisualizerASS_LongTitleScroll(t *testing.T) {
 //   - Clip rectangle expands vertically by clipPad = max(1, round(2*width/1280))
 func TestASSMiddleAlignmentAndClipPadding(t *testing.T) {
 	layout, _ := LayoutForSize(1280, 720)
-	fonts := FontSet{Regular400: "reg.otf", Medium500: "med.otf", SemiBold600: "semib.otf"}
+	fonts := writeTestFonts(t)
 	meta := AudioMetadata{Title: "T", Artist: "A", Album: "Al"}
 	metrics := map[string]TextMetrics{
 		"title":  {Width: 100, Height: 58},
@@ -195,7 +285,10 @@ func TestASSMiddleAlignmentAndClipPadding(t *testing.T) {
 	}
 	fg := ForegroundMode{Color: color.RGBA{255, 255, 255, 255}}
 
-	ass := BuildVisualizerASSWithMode(meta, 10.0, layout, fonts, metrics, fg, 1280, 720)
+	ass, buildErr := BuildVisualizerASSWithMode(meta, 10.0, layout, fonts, metrics, fg, 1280, 720)
+	if buildErr != nil {
+		t.Fatalf("BuildVisualizerASSWithMode: %v", buildErr)
+	}
 
 	// Extract a single Style line by name.
 	styleLine := func(name string) string {
@@ -285,7 +378,10 @@ func TestASSMiddleAlignmentAndClipPadding(t *testing.T) {
 	t.Run("1080p clip expanded by 3", func(t *testing.T) {
 		layout1080, _ := LayoutForSize(1920, 1080)
 		// Title: X=648 Y=228 W=1128 H=87  -> clip(648, 225, 1776, 318)
-		ass1080 := BuildVisualizerASSWithMode(meta, 10.0, layout1080, fonts, metrics, fg, 1920, 1080)
+		ass1080, err := BuildVisualizerASSWithMode(meta, 10.0, layout1080, fonts, metrics, fg, 1920, 1080)
+		if err != nil {
+			t.Fatalf("BuildVisualizerASSWithMode: %v", err)
+		}
 		if !strings.Contains(ass1080, "\\clip(648,225,1776,318)") {
 			t.Error("1080p Title clip not expanded by 3px")
 		}
@@ -295,7 +391,10 @@ func TestASSMiddleAlignmentAndClipPadding(t *testing.T) {
 	t.Run("360p clip expanded by 1", func(t *testing.T) {
 		layout360, _ := LayoutForSize(640, 360)
 		// Title: X=216 Y=76 W=376 H=29  -> clip(216, 75, 592, 106)
-		ass360 := BuildVisualizerASSWithMode(meta, 10.0, layout360, fonts, metrics, fg, 640, 360)
+		ass360, err := BuildVisualizerASSWithMode(meta, 10.0, layout360, fonts, metrics, fg, 640, 360)
+		if err != nil {
+			t.Fatalf("BuildVisualizerASSWithMode: %v", err)
+		}
 		if !strings.Contains(ass360, "\\clip(216,75,592,106)") {
 			t.Error("360p Title clip not expanded by 1px")
 		}
@@ -309,7 +408,10 @@ func TestASSMiddleAlignmentAndClipPadding(t *testing.T) {
 			"artist": {Width: 80, Height: 34},
 			"album":  {Width: 60, Height: 30},
 		}
-		assLong := BuildVisualizerASSWithMode(longMeta, 30.0, layout, fonts, longMetrics, fg, 1280, 720)
+		assLong, err := BuildVisualizerASSWithMode(longMeta, 30.0, layout, fonts, longMetrics, fg, 1280, 720)
+		if err != nil {
+			t.Fatalf("BuildVisualizerASSWithMode: %v", err)
+		}
 		if !strings.Contains(assLong, "\\clip(432,150,1184,212)") {
 			t.Error("Scrolling Title clip not expanded by 2px")
 		}
@@ -323,18 +425,17 @@ func TestBuildVisualizerASS_TimeEvents(t *testing.T) {
 		Album:  "Album",
 	}
 	layout, _ := LayoutForSize(1280, 720)
-	fonts := FontSet{
-		Regular400:  "/fonts/Noto-Regular.otf",
-		Medium500:   "/fonts/Noto-Medium.otf",
-		SemiBold600: "/fonts/Noto-SemiBold.otf",
-	}
+	fonts := writeTestFonts(t)
 	metrics := map[string]TextMetrics{
 		"title":  {Width: 200, Height: 58},
 		"artist": {Width: 200, Height: 34},
 		"album":  {Width: 200, Height: 30},
 	}
 
-	ass := BuildVisualizerASS(meta, 5.0, layout, fonts, metrics)
+	ass, err := BuildVisualizerASS(meta, 5.0, layout, fonts, metrics)
+	if err != nil {
+		t.Fatalf("BuildVisualizerASS: %v", err)
+	}
 
 	// We expect time events for seconds 0,1,2,3,4 (5 events)
 	lines := strings.Split(ass, "\n")

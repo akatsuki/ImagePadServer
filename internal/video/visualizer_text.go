@@ -9,11 +9,14 @@ import (
 )
 
 // VisualizerFontFace binds a font file path to its resolved ASS-compatible
-// family name.  The ASSFamily value is the font's Name ID 1 (Font Family)
-// parsed from the OTF name table, NOT a filesystem path.
+// family name and PostScript name.  The ASSFamily value is the font's Name ID 1
+// (Font Family) parsed from the OTF name table, NOT a filesystem path.  The
+// PostScriptName is the font's Name ID 6 and is used for precise weight
+// selection when measuring text widths via the ASS render pipeline (AV-824).
 type VisualizerFontFace struct {
-	FilePath  string
-	ASSFamily string
+	FilePath       string
+	ASSFamily      string
+	PostScriptName string
 }
 
 // VisualizerFontFaces holds one VisualizerFontFace for each weight.
@@ -54,7 +57,7 @@ func ResolveVisualizerFontFaces(fonts FontSet) (VisualizerFontFaces, error) {
 			return result, fmt.Errorf("resolve %s %s (postscript): %w", e.label, e.path, err)
 		}
 		weight := parsePostScriptWeight(psName)
-		face := VisualizerFontFace{FilePath: e.path, ASSFamily: family}
+		face := VisualizerFontFace{FilePath: e.path, ASSFamily: family, PostScriptName: psName}
 		switch weight {
 		case "Regular":
 			result.Regular400 = face
