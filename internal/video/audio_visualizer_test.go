@@ -598,6 +598,84 @@ func TestSpectrumBottomFade(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// AV-846: loudness layer cached once per render job
+// ---------------------------------------------------------------------------
+
+// TestLoudnessLayerRenderedOncePerJob verifies that the loudness graph is
+// rendered once per job (not per frame) and produces the trend line at 95%
+// opacity.  Before the fix, drawLoudness runs each frame at 80% opacity
+// without a trend line.
+func TestLoudnessLayerRenderedOncePerJob(t *testing.T) {
+	base := image.NewRGBA(image.Rect(0, 0, 1280, 720))
+	mode := ForegroundMode{Color: color.RGBA{255, 255, 255, 255}, Overlay: color.RGBA{0, 0, 0, 92}}
+	layout, err := LayoutForSize(1280, 720)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Constant envelope.
+	var features AudioFeatures
+	for i := range features.LoudnessEnvelope {
+		features.LoudnessEnvelope[i] = 0.5
+	}
+
+	frames := make([]AudioFrame, 30)
+	for i := range frames {
+		frames[i].Spectrum24 = [24]float64{}
+	}
+
+	input := AudioRenderInput{
+		Analysis: AudioAnalysis{
+			FPS: 30, Duration: 1.0, Frames: frames, Features: features,
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := WriteVisualizerRGBAFrames(context.Background(), &buf, input, base, mode, layout, 1280, 720); err != nil {
+		t.Fatalf("WriteVisualizerRGBAFrames: %v", err)
+	}
+
+	frameSize := 1280 * 720 * 4
+	if buf.Len() != 30*frameSize {
+		t.Fatalf("expected %d bytes, got %d", 30*frameSize, buf.Len())
+	}
+
+	data := buf.Bytes()
+
+	// ---- Trend-line opacity check ----
+	// At envelope=0.5 drawLoudness draws at Y=588 with lineWidth=2.
+	// With lineWidth=2 each sample draws two horizontal pixels.
+	// Adjacent samples overlap (i=0 draws 64-65, i=1 draws 65-66),
+	// so interior pixels get blended TWICE giving alpha ≈ 245.
+	// Only the very first pixel (64, 588) is blended ONCE → alpha=204.
+	// renderLoudnessLayer with 4× Lanczos produces alpha near 242
+	// even at the first pixel (the trend has radius 6 in 4× buffer).
+	lr := layout.Loudness
+	graphBottom := lr.Y + lr.H // 628
+	expectY := graphBottom - int(math.Round(0.5*float64(lr.H))) // 588
+
+	// First pixel of the graph: X=64, which drawLoudness paints only once.
+	edgeX := lr.X
+	idxEdge := expectY*1280*4 + edgeX*4
+	a := data[idxEdge+3]
+
+	// renderLoudnessLayer produces alpha near 242 with trend + Lanczos.
+	// drawLoudness at 80% → alpha=204.
+	if a < 220 {
+		t.Errorf("loudness first pixel at (%d,%d) alpha=%d, expected >=220 (trend line)", edgeX, expectY, a)
+	}
+
+	// ---- Cache invariant: loudness identical across all frames ----
+	for fi := 1; fi < 30; fi++ {
+		idx := fi*frameSize + idxEdge
+		if data[idxEdge] != data[idx] || data[idxEdge+1] != data[idx+1] || data[idxEdge+2] != data[idx+2] || data[idxEdge+3] != data[idx+3] {
+			t.Errorf("frame %d: loudness pixel differs from frame 0 (cache broken)", fi)
+			break
+		}
+	}
+}
+
 func absDiff(a, b int) int {
 	if a > b {
 		return a - b
