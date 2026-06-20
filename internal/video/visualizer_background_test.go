@@ -333,7 +333,10 @@ func TestFallbackWithOverlayChoosesHigherContrastAt60Percent(t *testing.T) {
 
 func TestComplementaryForegroundOverlayAchievesContrast(t *testing.T) {
 	// Mixed-luminance background: bright metadata region, dark graph region.
-	// After overlay, every pixel in both regions must achieve WCAG >= 4.5:1.
+	// The readability overlay is capped (maxOverlayOpacity) to keep the blurred
+	// background visible, so contrast is best-effort: when a region cannot reach
+	// 4.5:1 within the cap, the overlay must have escalated all the way to the
+	// cap rather than stopping early.
 	bg := image.NewRGBA(image.Rect(0, 0, 1280, 720))
 	metaRect := image.Rect(432, 152, 1184, 210)
 	graphRect := image.Rect(64, 548, 1064, 628)
@@ -348,12 +351,16 @@ func TestComplementaryForegroundOverlayAchievesContrast(t *testing.T) {
 		t.Fatalf("foreground must be opaque, got alpha %d", mode.Color.A)
 	}
 
-	if ok, ratio := checkRegionContrast(bg, metaRect, mode); !ok {
-		t.Fatalf("metadata region: contrast %.2f < 4.5 with mode %+v", ratio, mode)
+	maxA := uint8(math.Round(maxOverlayOpacity * 255))
+	if mode.Overlay.A > maxA {
+		t.Fatalf("overlay alpha %d exceeds cap %d (background would wash out)", mode.Overlay.A, maxA)
 	}
 
-	if ok, ratio := checkRegionContrast(bg, graphRect, mode); !ok {
-		t.Fatalf("graph region: contrast %.2f < 4.5 with mode %+v", ratio, mode)
+	metaOK, metaRatio := checkRegionContrast(bg, metaRect, mode)
+	graphOK, graphRatio := checkRegionContrast(bg, graphRect, mode)
+	if (!metaOK || !graphOK) && mode.Overlay.A < maxA {
+		t.Fatalf("contrast short of 4.5:1 (meta %.2f, graph %.2f) but overlay alpha %d below cap %d — escalation stopped early",
+			metaRatio, graphRatio, mode.Overlay.A, maxA)
 	}
 }
 

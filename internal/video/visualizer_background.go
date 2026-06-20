@@ -15,6 +15,14 @@ import (
 	xdraw "golang.org/x/image/draw"
 )
 
+// maxOverlayOpacity caps the readability-overlay opacity. The strong
+// background blur already flattens the artwork, so a heavy overlay washes it
+// out to a pale field and hides the thumbnail. Keeping the cap low preserves
+// the visible blurred background while the complementary foreground supplies
+// most of the contrast. Contrast may fall slightly below 4.5:1 on busy
+// backgrounds, which is an accepted trade-off for blur visibility.
+const maxOverlayOpacity = 0.35
+
 // srgbLinearizeLUT is a 256-entry lookup table for srgbLinearize(v/255.0).
 // It eliminates math.Pow calls in the hot path of regionContrastOK.
 var srgbLinearizeLUT [256]float64
@@ -82,7 +90,7 @@ func ComplementaryForeground(bg image.Image, metadataRect, graphRect image.Recta
 			overlayColor = color.RGBA{R: 255, G: 255, B: 255, A: 255}
 		}
 
-		for opacity := 0.0; opacity <= 0.60; opacity += 0.05 {
+		for opacity := 0.0; opacity <= maxOverlayOpacity; opacity += 0.05 {
 			roundedAlpha := uint8(math.Round(opacity * 255))
 			actualAlpha := float64(roundedAlpha) / 255.0
 
@@ -133,14 +141,14 @@ func fallbackWithOverlay(bg image.Image, metadataRect, graphRect image.Rectangle
 
 		// Always compute the minimum contrast ratio at 60 % opacity for
 		// selection (used when both black and white pass).
-		mr := minRegionContrast(bg, metadataRect, overlay, 0.60, fgLum)
-		gr := minRegionContrast(bg, graphRect, overlay, 0.60, fgLum)
+		mr := minRegionContrast(bg, metadataRect, overlay, maxOverlayOpacity, fgLum)
+		gr := minRegionContrast(bg, graphRect, overlay, maxOverlayOpacity, fgLum)
 		ratio60 := mr
 		if gr < mr {
 			ratio60 = gr
 		}
 
-		for opacity := 0.0; opacity <= 0.60; opacity += 0.05 {
+		for opacity := 0.0; opacity <= maxOverlayOpacity; opacity += 0.05 {
 			roundedAlpha := uint8(math.Round(opacity * 255))
 			actualAlpha := float64(roundedAlpha) / 255.0
 			if regionContrastOK(bg, metadataRect, overlay, actualAlpha, fgLum, 4.5) &&
@@ -175,7 +183,7 @@ func fallbackWithOverlay(bg image.Image, metadataRect, graphRect image.Rectangle
 	case aBlack.passed:
 		return aBlack.mode
 	default:
-		cappedA := uint8(math.Round(0.60 * 255))
+		cappedA := uint8(math.Round(maxOverlayOpacity * 255))
 		if aWhite.ratio60 >= aBlack.ratio60 {
 			return ForegroundMode{
 				Color:   white,
