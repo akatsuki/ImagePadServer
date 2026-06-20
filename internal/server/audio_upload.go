@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"mime"
 	"os"
 	"path/filepath"
@@ -11,6 +12,23 @@ import (
 
 	"imagepadserver/internal/video"
 )
+
+// normalizeMusicLoudness is the injectable seam that normalizes a music source
+// to -14 LUFS. Tests override it; production uses the two-pass ffmpeg loudnorm.
+var normalizeMusicLoudness = video.NormalizeMusicLoudness
+
+// applyMusicLoudness replaces the source with a -14 LUFS normalized FLAC so the
+// visualizer analyzes and renders the same loudness-anchored signal. On failure
+// it logs and returns the original audio unchanged (normalization is best-effort).
+func applyMusicLoudness(ctx context.Context, ffmpeg string, audio video.AcquiredAudio) video.AcquiredAudio {
+	normalized, err := normalizeMusicLoudness(ctx, ffmpeg, audio.SourcePath)
+	if err != nil {
+		log.Printf("music loudness normalization failed, using original source: %v", err)
+		return audio
+	}
+	audio.SourcePath = normalized
+	return audio
+}
 
 // isAudioUpload returns true when the uploaded file is likely audio based on
 // its Content-Type or filename extension.  Video and image uploads are handled
@@ -87,6 +105,44 @@ func (s *Server) acquireDownloadedSoundCloud(ctx context.Context, media video.Do
 }
 
 var ensureFFprobePath = video.EnsureFFprobe
+
+var musicURLAcquirer = func(ctx context.Context, s *Server, rawURL string) (video.AcquiredAudio, error) {
+	ytdlp, err := video.EnsureYTDLP()
+	if err != nil {
+		return video.AcquiredAudio{}, err
+	}
+	audio, err := video.DownloadMusic(ctx, ytdlp, rawURL, s.store.Dir())
+	if err != nil {
+		return video.AcquiredAudio{}, err
+	}
+	return s.acquireDownloadedMusic(ctx, audio)
+}
+
+func (s *Server) acquireDownloadedMusic(ctx context.Context, audio video.AcquiredAudio) (video.AcquiredAudio, error) {
+	ffprobe, err := findFFprobe()
+	if err != nil {
+		return video.AcquiredAudio{}, err
+	}
+	probe, err := video.ProbeMedia(ctx, ffprobe, audio.SourcePath)
+	if err != nil {
+		return video.AcquiredAudio{}, fmt.Errorf("probe downloaded music: %w", err)
+	}
+	if video.ClassifyMediaProbe(probe) != video.MediaAudio {
+		return video.AcquiredAudio{}, fmt.Errorf("music download is not playable audio")
+	}
+	ffmpeg, err := video.EnsureFFmpeg()
+	if err != nil {
+		return video.AcquiredAudio{}, err
+	}
+	candidates, _ := video.ExtractEmbeddedArtwork(ctx, ffmpeg, audio.SourcePath, s.store.Dir(), probe)
+	audio.Probe = probe
+	audio.EmbeddedMetadata = extractEmbeddedMetadata(probe)
+	audio.EmbeddedArtwork = candidates
+	// Extract artwork/metadata from the original download first, then swap in
+	// the -14 LUFS normalized source for analysis and rendering.
+	audio = applyMusicLoudness(ctx, ffmpeg, audio)
+	return audio, nil
+}
 
 // findFFprobe delegates to the shared self-healing toolchain resolver.
 func findFFprobe() (string, error) {
