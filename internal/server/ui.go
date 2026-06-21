@@ -842,6 +842,13 @@ const indexHTML = `<!doctype html>
               <span class="switch-slider"></span>
             </label>
           </div>
+          <div class="toggle-row" id="musicModeRow" hidden>
+            <div><strong>ミュージックモード</strong><span id="musicModeText">無効</span></div>
+            <label class="switch" title="YouTubeやニコニコ動画などを音声のみ取得してミュージックプレーヤーで再生">
+              <input id="musicModeToggle" type="checkbox">
+              <span class="switch-slider"></span>
+            </label>
+          </div>
         </div>
       </section>
       <div class="about">
@@ -927,6 +934,7 @@ const indexHTML = `<!doctype html>
             <button id="queueUploadButton" type="submit" class="secondary" name="uploadAction" value="queue">動画変換へ</button>
           </div>
           <div class="toast" id="toast"></div>
+          <div id="ingestPhase" class="ingest-phase" hidden></div>
           <div class="mobile-progress" id="mobileProgress">
             <div id="mobileProgressText">変換中</div>
             <div class="progress-track" aria-label="変換進捗">
@@ -999,6 +1007,7 @@ const indexHTML = `<!doctype html>
       history: [],
       videoQueue: [],
       videoPlayerEnabled: false,
+      musicModeEnabled: false,
       videoQuality: null,
       obs: null,
       pairing: null,
@@ -1034,6 +1043,9 @@ const indexHTML = `<!doctype html>
     const mobileProgressFill = document.getElementById('mobileProgressFill');
     const videoPlayerToggle = document.getElementById('videoPlayerToggle');
     const videoPlayerText = document.getElementById('videoPlayerText');
+    const musicModeRow = document.getElementById('musicModeRow');
+    const musicModeToggle = document.getElementById('musicModeToggle');
+    const musicModeText = document.getElementById('musicModeText');
     const updateText = document.getElementById('updateText');
     const qualityMode = document.getElementById('qualityMode');
     const qualityStatus = document.getElementById('qualityStatus');
@@ -1049,6 +1061,7 @@ const indexHTML = `<!doctype html>
     const pairingDetail = document.getElementById('pairingDetail');
     let uploadMode = 'file';
     let videoPlayerPending = false;
+    let musicModePending = false;
     let refreshTimer = 0;
     let refreshInFlight = false;
     let refreshPromise = null;
@@ -1136,6 +1149,7 @@ const indexHTML = `<!doctype html>
       state.obs = data.obs || null;
       state.pairing = data.pairing || null;
       state.videoPlayerEnabled = !!(data.videoPlayer && data.videoPlayer.enabled);
+      state.musicModeEnabled = !!(data.videoPlayer && data.videoPlayer.musicModeEnabled);
       document.getElementById('phoneURL').textContent = data.phoneURL;
       document.getElementById('phoneURLMobile').textContent = data.phoneURL;
       document.getElementById('shareURL').textContent = data.shareURL || '公開URLは未取得です';
@@ -1153,7 +1167,20 @@ const indexHTML = `<!doctype html>
       renderPreview(data, nextCurrentID);
       renderHistory(state.history, nextCurrentID);
       state.currentID = nextCurrentID;
-      scheduleRefresh((data.video && data.video.active) || (data.obs && data.obs.connected) ? 750 : 2000);
+
+      const ingest = data.ingest || {};
+      const ingestEl = document.getElementById('ingestPhase');
+      if (ingestEl) {
+        const labels = { downloading: 'ダウンロード中…', analyzing: '解析中…', processing: '処理中…' };
+        if (ingest.active && labels[ingest.phase]) {
+          ingestEl.textContent = labels[ingest.phase] + (ingest.title ? ' — ' + ingest.title : '');
+          ingestEl.hidden = false;
+        } else {
+          ingestEl.hidden = true;
+        }
+      }
+
+      scheduleRefresh((data.ingest && data.ingest.active) || (data.video && data.video.active) || (data.obs && data.obs.connected) ? 750 : 2000);
     }
 
     function resetOBSPreview() {
@@ -1511,11 +1538,17 @@ const indexHTML = `<!doctype html>
       if (!data) {
         videoPlayerToggle.checked = false;
         videoPlayerText.textContent = '確認できません';
+        musicModeRow.hidden = true;
+        musicModeToggle.checked = false;
         return;
       }
       videoPlayerToggle.checked = !!data.enabled;
       videoPlayerToggle.disabled = videoPlayerPending;
       videoPlayerText.textContent = data.enabled ? '有効 / 自動コピーはHLS優先' : '無効 / 自動コピーは画像URL';
+      musicModeRow.hidden = !data.enabled;
+      musicModeToggle.checked = !!data.musicModeEnabled;
+      musicModeToggle.disabled = musicModePending || !data.enabled;
+      musicModeText.textContent = data.musicModeEnabled ? '有効 / URLは音声のみ取得' : '無効 / URLは動画として取得';
       imageInput.accept = data.enabled ? '' : imageAccept;
       dropHint.textContent = data.enabled ? 'Drop image, audio, or video files here' : 'Drop image or RAW files here';
       dragDropOverlayHint.textContent = data.enabled ? '画像、RAW、音声、動画ファイルを選択します' : '画像またはRAWファイルを選択します';
@@ -2167,6 +2200,31 @@ const indexHTML = `<!doctype html>
       } finally {
         videoPlayerPending = false;
         videoPlayerToggle.disabled = false;
+      }
+    });
+    musicModeToggle.addEventListener('change', async () => {
+      const enabled = musicModeToggle.checked;
+      musicModePending = true;
+      musicModeToggle.disabled = true;
+      musicModeText.textContent = enabled ? '有効化中...' : '無効化中...';
+      try {
+        const res = await fetch('/api/music-mode', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled })
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        applyVideoPlayer(data);
+        await refreshState();
+        announceLocalChange();
+        toast.textContent = enabled ? 'ミュージックモードを有効にしました' : 'ミュージックモードを無効にしました';
+      } catch (error) {
+        await refreshState();
+        toast.textContent = error.message || 'ミュージックモードの切り替えに失敗しました';
+      } finally {
+        musicModePending = false;
+        musicModeToggle.disabled = !state.videoPlayerEnabled;
       }
     });
     function scheduleRefresh(delay) {
