@@ -182,6 +182,44 @@ func TestWriteVisualizerRGBAFramesBasic(t *testing.T) {
 	}
 }
 
+func TestWriteVisualizerRGBAFramesMatchesSequential(t *testing.T) {
+	const w, h = 128, 72
+	base := image.NewRGBA(image.Rect(0, 0, w, h))
+	for i := range base.Pix {
+		base.Pix[i] = byte(i * 7)
+	}
+	mode := ForegroundMode{PrimaryColor: color.RGBA{255, 255, 255, 255}, AccentColor: color.RGBA{200, 120, 60, 255}, Overlay: color.RGBA{0, 0, 0, 92}}
+	layout, _ := LayoutForSize(w, h)
+	const n = 50
+	input := AudioRenderInput{Analysis: AudioAnalysis{FPS: 30, Duration: 2.0, Frames: make([]AudioFrame, n)}}
+	for i := 0; i < n; i++ {
+		for b := 0; b < 24; b++ {
+			input.Analysis.Frames[i].Spectrum24[b] = float64((i*b)%24) / 24.0
+		}
+	}
+
+	// Sequential reference built from the shared per-frame renderer.
+	loud := buildLoudnessLayer(input.Analysis.Features, input.Analysis.Duration, mode, layout, w, h)
+	lr := nonTransparentBounds(loud)
+	canvas := image.NewRGBA(image.Rect(0, 0, w, h))
+	var ref bytes.Buffer
+	for fi := 0; fi < n; fi++ {
+		renderVisualizerFrame(canvas, base, loud, lr, input.Analysis.Frames[fi], fi, n, input.Analysis.Duration, mode, layout)
+		ref.Write(canvas.Pix)
+	}
+
+	var got bytes.Buffer
+	if err := WriteVisualizerRGBAFrames(context.Background(), &got, input, base, mode, layout, w, h); err != nil {
+		t.Fatalf("WriteVisualizerRGBAFrames: %v", err)
+	}
+	if got.Len() != n*w*h*4 {
+		t.Fatalf("output size: got %d, want %d", got.Len(), n*w*h*4)
+	}
+	if !bytes.Equal(got.Bytes(), ref.Bytes()) {
+		t.Fatal("parallel output differs from sequential reference (ordering/content bug)")
+	}
+}
+
 func TestWriteVisualizerRGBAFramesSpectrumBars(t *testing.T) {
 	base := image.NewRGBA(image.Rect(0, 0, 128, 72))
 	mode := ForegroundMode{PrimaryColor: color.RGBA{255, 255, 255, 255}, AccentColor: color.RGBA{255, 255, 255, 255}, Overlay: color.RGBA{0, 0, 0, 92}}

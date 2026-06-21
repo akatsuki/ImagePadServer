@@ -3,7 +3,6 @@ package video
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"fmt"
 	"image"
 	"image/color"
@@ -13,7 +12,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 )
 
 func AudioVisualizerFFmpegArgs(audioPath, assPath, fontDir, id string, preset QualityPreset) []string {
@@ -107,34 +108,171 @@ func WriteVisualizerRGBAFrames(ctx context.Context, dst io.Writer, input AudioRe
 		return fmt.Errorf("base image is nil")
 	}
 
-	frameW, frameH := width, height
-	canvas := image.NewRGBA(image.Rect(0, 0, frameW, frameH))
 	totalFrames := len(input.Analysis.Frames)
 	duration := input.Analysis.Duration
+	frameBytes := width * height * 4
 
 	// Cache the loudness layer (guide lines + detail curve + trend curve)
-	// once per render job instead of recomputing for every frame.
+	// once per render job instead of recomputing for every frame. Its content
+	// only covers part of the frame, so compositing is restricted to that
+	// bounding box instead of an expensive whole-frame alpha blend per frame.
 	loudnessLayer := buildLoudnessLayer(input.Analysis.Features, duration, mode, layout, width, height)
+	loudnessRect := nonTransparentBounds(loudnessLayer)
 
-	for fi, frame := range input.Analysis.Frames {
-		// Copy base image (background + artwork).
-		draw.Draw(canvas, canvas.Bounds(), base, image.Point{}, draw.Src)
+	// Frames are independent, so they are rendered concurrently across CPUs and
+	// written to the encoder in order. This keeps a fast (GPU) encoder fed
+	// instead of starving it behind a single-threaded producer.
+	workers := runtime.NumCPU()
+	if workers > 8 {
+		workers = 8
+	}
+	if workers > totalFrames {
+		workers = totalFrames
+	}
+	if workers < 1 {
+		workers = 1
+	}
 
-		// Spectrum bars (fixed-height bottom fade, spec §5.5).
-		drawSpectrumFixedFade(canvas, frame.Spectrum24, mode, layout)
+	// Bound how far producers may race ahead of the ordered writer via a
+	// sliding window. This caps memory (each in-flight frame holds one buffer)
+	// and provides backpressure without the buffer-pool starvation that can
+	// deadlock an ordered pipeline when one worker outruns the laggard holding
+	// the next index to write.
+	maxInFlight := workers*2 + 2
+	window := make(chan struct{}, maxInFlight)
 
-		// Whole-track loudness envelope (cached — same for every frame).
-		draw.Draw(canvas, canvas.Bounds(), loudnessLayer, image.Point{}, draw.Over)
+	type rendered struct {
+		idx int
+		buf []byte
+	}
+	jobs := make(chan int)
+	results := make(chan rendered, workers)
 
-		// Decorative progress bar + position marker.
-		currentSeconds := float64(fi) / float64(totalFrames) * duration
-		drawProgress(canvas, mode, layout, currentSeconds, duration)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
-		if err := binary.Write(dst, binary.LittleEndian, canvas.Pix); err != nil {
-			return fmt.Errorf("frame %d: %w", fi, err)
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			canvas := image.NewRGBA(image.Rect(0, 0, width, height))
+			for fi := range jobs {
+				renderVisualizerFrame(canvas, base, loudnessLayer, loudnessRect,
+					input.Analysis.Frames[fi], fi, totalFrames, duration, mode, layout)
+				buf := make([]byte, frameBytes)
+				copy(buf, canvas.Pix)
+				select {
+				case results <- rendered{fi, buf}:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+
+	// Feeder: take a window slot before dispatching each frame so producers
+	// cannot outrun the writer by more than maxInFlight frames.
+	go func() {
+		defer close(jobs)
+		for i := 0; i < totalFrames; i++ {
+			select {
+			case window <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+			select {
+			case jobs <- i:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// Ordered writer: emit frames to the encoder strictly in index order,
+	// releasing one window slot per written frame.
+	pending := make(map[int][]byte)
+	next := 0
+	var writeErr error
+	for r := range results {
+		pending[r.idx] = r.buf
+		for {
+			buf, ok := pending[next]
+			if !ok {
+				break
+			}
+			if writeErr == nil {
+				if _, err := dst.Write(buf); err != nil {
+					writeErr = err
+					cancel() // stop producers; keep draining their buffers
+				}
+			}
+			delete(pending, next)
+			<-window
+			next++
 		}
 	}
+
+	if writeErr != nil {
+		return fmt.Errorf("frame write: %w", writeErr)
+	}
+	if err := ctx.Err(); err != nil && next < totalFrames {
+		return err
+	}
 	return nil
+}
+
+// renderVisualizerFrame composites one frame into canvas: base image, spectrum
+// bars, the cached loudness layer (restricted to its bounding box), and the
+// progress marker. It only reads shared inputs, so it is safe to run on many
+// goroutines with a per-goroutine canvas.
+func renderVisualizerFrame(canvas, base, loudnessLayer *image.RGBA, loudnessRect image.Rectangle, frame AudioFrame, fi, totalFrames int, duration float64, mode ForegroundMode, layout VisualizerLayout) {
+	draw.Draw(canvas, canvas.Bounds(), base, image.Point{}, draw.Src)
+	drawSpectrumFixedFade(canvas, frame.Spectrum24, mode, layout)
+	if !loudnessRect.Empty() {
+		draw.Draw(canvas, loudnessRect, loudnessLayer, loudnessRect.Min, draw.Over)
+	}
+	currentSeconds := float64(fi) / float64(totalFrames) * duration
+	drawProgress(canvas, mode, layout, currentSeconds, duration)
+}
+
+// nonTransparentBounds returns the smallest rectangle covering every pixel of
+// img with a non-zero alpha. It returns the empty rectangle when img is fully
+// transparent.
+func nonTransparentBounds(img *image.RGBA) image.Rectangle {
+	b := img.Bounds()
+	minX, minY := b.Max.X, b.Max.Y
+	maxX, maxY := b.Min.X, b.Min.Y
+	found := false
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		row := img.Pix[(y-b.Min.Y)*img.Stride:]
+		for x := b.Min.X; x < b.Max.X; x++ {
+			if row[(x-b.Min.X)*4+3] != 0 {
+				found = true
+				if x < minX {
+					minX = x
+				}
+				if x >= maxX {
+					maxX = x + 1
+				}
+				if y < minY {
+					minY = y
+				}
+				if y >= maxY {
+					maxY = y + 1
+				}
+			}
+		}
+	}
+	if !found {
+		return image.Rectangle{}
+	}
+	return image.Rect(minX, minY, maxX, maxY)
 }
 
 // buildLoudnessLayer produces the cached whole-track loudness graph. The stored
