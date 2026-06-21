@@ -20,6 +20,8 @@ https://akatsuki.github.io/ImagePadServer/
 - 動画ファイルを FFmpeg で変換しながら HLS 配信する
 - 音声ファイルを FFmpeg で変換しながら HLS 配信する（対応形式は同梱の FFmpeg が認識するものすべて）
 - 動画サイト URL、音声の直接 URL、SoundCloud トラック URL を yt-dlp で取得して HLS として再配信する
+- ミュージックモードで音声を取り込み、波形・スペクトラム・ラウドネスの音声ビジュアライザー動画として配信する（曲ごとに -14 LUFS へ音量をそろえる）
+- 取り込みの進捗（ダウンロード中／解析中／変換中）を画面に表示する
 - 履歴から画像/音声/動画を再公開する
 - よく使う画像/音声/動画をお気に入りに残す
 - 画像/音声/動画の変換キューとサムネイルを表示する
@@ -35,7 +37,7 @@ https://akatsuki.github.io/ImagePadServer/
 Windows ではビルド済み exe を起動します。
 
 ```powershell
-.\dist\imagepadserver-v1.1.1.exe
+.\dist\1.3.0\release\win\imagepadserver-v1.3.0-windows-amd64.exe
 ```
 
 macOS / Linux では Go を入れたうえで、ソースから起動できます。
@@ -339,7 +341,7 @@ Windows PowerShell で exe ビルド:
 $env:CGO_ENABLED="0"
 $env:GOOS="windows"
 $env:GOARCH="amd64"
-go build -trimpath -ldflags "-H=windowsgui" -o dist\1.2.2\dev\dev1\win\imagepadserver-v1.2.2-dev1-windows-amd64.exe .\cmd\imagepadserver
+go build -trimpath -ldflags "-H=windowsgui" -o dist\1.3.0\release\win\imagepadserver-v1.3.0-windows-amd64.exe .\cmd\imagepadserver
 ```
 
 `scripts/build-release.sh` writes builds under `dist/<version>/release/<platform>/` for stable versions and `dist/<version>/dev/<devN>/<platform>/` for dev versions.
@@ -350,7 +352,7 @@ Dev tags such as `v1.2.2-dev1` are published as `dev-release` prereleases.
 
 ## バージョン
 
-- Version: `v1.1.1`
+- Version: `v1.3.0`
 - Author: Akat / 赤月さん
 - Copyright: Copyright (c) 2026 Akat / 赤月さん
 - License: MIT License
