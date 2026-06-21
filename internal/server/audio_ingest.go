@@ -75,7 +75,7 @@ func (s *Server) processAudioFileAndPublish(r *http.Request, acquired video.Acqu
 	if err != nil {
 		return nil, err
 	}
-	analysis, err := video.AnalyzeAudio(r.Context(), ffmpegPath, acquired.SourcePath)
+	analysis, err := video.AnalyzeAudioForKind(r.Context(), ffmpegPath, acquired.SourcePath, acquired.Kind)
 	if err != nil {
 		return nil, fmt.Errorf("analyze audio: %w", err)
 	}
@@ -121,7 +121,7 @@ func (s *Server) processAudioFileAndQueue(r *http.Request, acquired video.Acquir
 	if err != nil {
 		return nil, err
 	}
-	analysis, err := video.AnalyzeAudio(r.Context(), ffmpegPath2, acquired.SourcePath)
+	analysis, err := video.AnalyzeAudioForKind(r.Context(), ffmpegPath2, acquired.SourcePath, acquired.Kind)
 	if err != nil {
 		return nil, fmt.Errorf("analyze audio: %w", err)
 	}

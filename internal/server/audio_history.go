@@ -18,7 +18,8 @@ func (s *Server) audioRenderInputForStored(ctx context.Context, path string, ite
 		return video.AudioRenderInput{}, err
 	}
 
-	analysis, err := video.AnalyzeAudio(ctx, ffmpegPath, path)
+	kind := video.SourceKind(item.SourceKind)
+	analysis, err := video.AnalyzeAudioForKind(ctx, ffmpegPath, path, kind)
 	if err != nil {
 		return video.AudioRenderInput{}, fmt.Errorf("analyze audio: %w", err)
 	}
@@ -27,7 +28,6 @@ func (s *Server) audioRenderInputForStored(ctx context.Context, path string, ite
 		return video.AudioRenderInput{}, fmt.Errorf("no analysis frames to render")
 	}
 
-	kind := video.SourceKind(item.SourceKind)
 	meta := video.AudioMetadata{
 		Title:  item.Title,
 		Artist: item.Artist,

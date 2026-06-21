@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"mime"
 	"os"
 	"path/filepath"
@@ -12,23 +11,6 @@ import (
 
 	"imagepadserver/internal/video"
 )
-
-// normalizeMusicLoudness is the injectable seam that normalizes a music source
-// to -14 LUFS. Tests override it; production uses the two-pass ffmpeg loudnorm.
-var normalizeMusicLoudness = video.NormalizeMusicLoudness
-
-// applyMusicLoudness replaces the source with a -14 LUFS normalized FLAC so the
-// visualizer analyzes and renders the same loudness-anchored signal. On failure
-// it logs and returns the original audio unchanged (normalization is best-effort).
-func applyMusicLoudness(ctx context.Context, ffmpeg string, audio video.AcquiredAudio) video.AcquiredAudio {
-	normalized, err := normalizeMusicLoudness(ctx, ffmpeg, audio.SourcePath)
-	if err != nil {
-		log.Printf("music loudness normalization failed, using original source: %v", err)
-		return audio
-	}
-	audio.SourcePath = normalized
-	return audio
-}
 
 // isAudioUpload returns true when the uploaded file is likely audio based on
 // its Content-Type or filename extension.  Video and image uploads are handled
@@ -138,9 +120,8 @@ func (s *Server) acquireDownloadedMusic(ctx context.Context, audio video.Acquire
 	audio.Probe = probe
 	audio.EmbeddedMetadata = extractEmbeddedMetadata(probe)
 	audio.EmbeddedArtwork = candidates
-	// Extract artwork/metadata from the original download first, then swap in
-	// the -14 LUFS normalized source for analysis and rendering.
-	audio = applyMusicLoudness(ctx, ffmpeg, audio)
+	// Loudness is normalized inline during analysis and render (music sources
+	// get -14 LUFS loudnorm), so no separate normalization pass is needed here.
 	return audio, nil
 }
 

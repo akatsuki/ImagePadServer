@@ -130,7 +130,7 @@ func TestRunVideoEncodeDoesNotFallbackAfterCancellation(t *testing.T) {
 func TestVisualizerAndSoundCloudArgsUseInjectedEncoder(t *testing.T) {
 	preset := QualityPreset{Height: 720, VideoBitrate: "2500k", MaxRate: "3000k", BufferSize: "5000k", AudioBitrate: "128k", CRF: 27}
 	encoder := NewVideoEncoderProfile("h264_nvenc", EncoderStandard)
-	visualizer := strings.Join(audioVisualizerFFmpegArgsWithEncoder("audio.m4a", "vis.ass", ".", "id", preset, nil, encoder), " ")
+	visualizer := strings.Join(audioVisualizerFFmpegArgsWithEncoder("audio.m4a", "vis.ass", ".", "id", preset, nil, encoder, ""), " ")
 	soundcloud := strings.Join(soundCloudHLSArgsWithEncoder("audio.m4a", "art.png", "id", preset, encoder), " ")
 	for name, args := range map[string]string{"visualizer": visualizer, "soundcloud": soundcloud} {
 		if !strings.Contains(args, "-c:v h264_nvenc") || strings.Contains(args, "-c:v libx264") {

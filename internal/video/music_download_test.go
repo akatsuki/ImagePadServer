@@ -8,17 +8,6 @@ import (
 	"testing"
 )
 
-func TestNormalizeLoudnessArgs(t *testing.T) {
-	m := LoudnormMeasurement{InputI: -20, InputTP: -1.5, InputLRA: 6, InputThresh: -30, TargetOffset: 0.2}
-	args := normalizeLoudnessArgs("in.webm", "out.m4a", m, -14.0)
-	joined := strings.Join(args, " ")
-	for _, want := range []string{"-i in.webm", "-af loudnorm=I=-14.0", "-c:a aac", "-b:a 256k", "out.m4a"} {
-		if !strings.Contains(joined, want) {
-			t.Fatalf("missing %q in args: %s", want, joined)
-		}
-	}
-}
-
 func TestDownloadMusicUsesAudioOnlyAndChannelMetadata(t *testing.T) {
 	dir := t.TempDir()
 	oldRun := runDownloadCmd

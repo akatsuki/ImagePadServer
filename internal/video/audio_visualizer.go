@@ -22,10 +22,15 @@ func AudioVisualizerFFmpegArgs(audioPath, assPath, fontDir, id string, preset Qu
 }
 
 func audioVisualizerFFmpegArgs(audioPath, assPath, fontDir, id string, preset QualityPreset, mode *ForegroundMode) []string {
-	return audioVisualizerFFmpegArgsWithEncoder(audioPath, assPath, fontDir, id, preset, mode, CPUVideoEncoder(EncoderStandard))
+	return audioVisualizerFFmpegArgsWithEncoder(audioPath, assPath, fontDir, id, preset, mode, CPUVideoEncoder(EncoderStandard), "")
 }
 
-func audioVisualizerFFmpegArgsWithEncoder(audioPath, assPath, fontDir, id string, preset QualityPreset, mode *ForegroundMode, encoder VideoEncoderProfile) []string {
+// audioVisualizerFFmpegArgsWithEncoder builds the render command. audioFilter,
+// when non-empty, is applied to the audio input (e.g. loudnorm for music) so
+// both the burned-in waveform and the output audio reflect the normalized
+// signal; the audio is split after filtering to feed showwaves and the muxed
+// output from the same filtered stream.
+func audioVisualizerFFmpegArgsWithEncoder(audioPath, assPath, fontDir, id string, preset QualityPreset, mode *ForegroundMode, encoder VideoEncoderProfile, audioFilter string) []string {
 	height := preset.Height
 	if height <= 0 {
 		height = 720
@@ -42,6 +47,19 @@ func audioVisualizerFFmpegArgsWithEncoder(audioPath, assPath, fontDir, id string
 	if mode != nil {
 		waveColor = fmt.Sprintf("#%02X%02X%02X@0.55", mode.AccentColor.R, mode.AccentColor.G, mode.AccentColor.B)
 	}
+	// When an audio filter is set, run [1:a] through it once and split the
+	// result so the waveform and the muxed audio share the filtered stream.
+	wavesInput, audioMap, audioPrefix := "1:a", "1:a", ""
+	if audioFilter != "" {
+		audioPrefix = fmt.Sprintf("[1:a]%s,asplit=2[aud][wsrc];", audioFilter)
+		wavesInput, audioMap = "wsrc", "[aud]"
+	}
+	filterComplex := audioPrefix + fmt.Sprintf(
+		"[%s]showwaves=s=%dx%d:rate=30:mode=line:colors=%s[wave];[0:v]format=yuv420p[vis];[vis][wave]overlay=%d:%d[vid];[vid]ass=filename='%s':fontsdir='%s'[out]",
+		wavesInput, waveW, waveH, waveColor, waveX, waveY,
+		escapeFilterPath(assPath),
+		escapeFilterPath(fontDir),
+	)
 	args := []string{
 		"-v", "error",
 		"-f", "rawvideo",
@@ -50,15 +68,9 @@ func audioVisualizerFFmpegArgsWithEncoder(audioPath, assPath, fontDir, id string
 		"-r", "30",
 		"-i", "pipe:0",
 		"-i", audioPath,
-		"-filter_complex",
-		fmt.Sprintf(
-			"[1:a]showwaves=s=%dx%d:rate=30:mode=line:colors=%s[wave];[0:v]format=yuv420p[vis];[vis][wave]overlay=%d:%d[vid];[vid]ass=filename='%s':fontsdir='%s'[out]",
-			waveW, waveH, waveColor, waveX, waveY,
-			escapeFilterPath(assPath),
-			escapeFilterPath(fontDir),
-		),
+		"-filter_complex", filterComplex,
 		"-map", "[out]",
-		"-map", "1:a",
+		"-map", audioMap,
 	}
 	args = append(args, encoder.FFmpegArgs(preset, "medium")...)
 	args = append(args, staticContentEncodeOptions(encoder)...)
@@ -560,7 +572,7 @@ func RunAudioVisualizerHLS(ctx context.Context, outDir, ffmpeg string, input Aud
 
 	selected := SelectVideoEncoder(ctx, ffmpeg, EncoderStandard)
 	attempt := func(encoder VideoEncoderProfile) error {
-		args := formatVisualizerOutputArgs(audioVisualizerFFmpegArgsWithEncoder(input.SourcePath, assPath, fontDir, id, preset, &mode, encoder), outDir)
+		args := formatVisualizerOutputArgs(audioVisualizerFFmpegArgsWithEncoder(input.SourcePath, assPath, fontDir, id, preset, &mode, encoder, audioLoudnormFilter(input.Kind)), outDir)
 		cmd := exec.CommandContext(ctx, ffmpeg, args...)
 		hideWindow(cmd)
 		frameReader, frameWriter, pipeErr := os.Pipe()

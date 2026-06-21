@@ -65,17 +65,52 @@ func TestAudioVisualizerFFmpegArgsUsesValidHLSOptions(t *testing.T) {
 	}
 }
 
+func TestAudioLoudnormFilterByKind(t *testing.T) {
+	if got := audioLoudnormFilter(SourceMusic); got != musicLoudnormFilter {
+		t.Errorf("music: got %q, want %q", got, musicLoudnormFilter)
+	}
+	if got := audioLoudnormFilter(SourceLocalAudio); got != "" {
+		t.Errorf("non-music: got %q, want empty", got)
+	}
+}
+
+func TestAudioVisualizerArgsInlineLoudnorm(t *testing.T) {
+	preset := QualityPreset{Height: 720, CRF: 27, AudioBitrate: "128k"}
+	enc := CPUVideoEncoder(EncoderStandard)
+
+	// With a filter (music): audio is filtered then split; output maps the
+	// filtered audio, and showwaves reads the split copy.
+	music := strings.Join(audioVisualizerFFmpegArgsWithEncoder("a.m4a", "s.ass", "/f", "id", preset, nil, enc, musicLoudnormFilter), " ")
+	for _, want := range []string{"[1:a]loudnorm=", "asplit=2[aud][wsrc]", "[wsrc]showwaves", "-map [aud]"} {
+		if !strings.Contains(music, want) {
+			t.Errorf("music render args missing %q: %s", want, music)
+		}
+	}
+	if strings.Contains(music, "-map 1:a") {
+		t.Errorf("music render must map the filtered audio, not 1:a: %s", music)
+	}
+
+	// Without a filter (non-music): unchanged behaviour.
+	plain := strings.Join(audioVisualizerFFmpegArgsWithEncoder("a.m4a", "s.ass", "/f", "id", preset, nil, enc, ""), " ")
+	if !strings.Contains(plain, "[1:a]showwaves") || !strings.Contains(plain, "-map 1:a") {
+		t.Errorf("non-music render args changed unexpectedly: %s", plain)
+	}
+	if strings.Contains(plain, "loudnorm") {
+		t.Errorf("non-music render must not apply loudnorm: %s", plain)
+	}
+}
+
 func TestAudioVisualizerFFmpegArgsCompressionSettings(t *testing.T) {
 	preset := QualityPreset{Height: 720, CRF: 27, VideoBitrate: "2500k", MaxRate: "3000k", BufferSize: "5000k", AudioBitrate: "128k"}
 	// Software (libx264): animation tune, no scene-cut keyframes, long GOP, 4s segments.
-	sw := strings.Join(audioVisualizerFFmpegArgsWithEncoder("a.m4a", "s.ass", "/f", "id", preset, nil, CPUVideoEncoder(EncoderStandard)), " ")
+	sw := strings.Join(audioVisualizerFFmpegArgsWithEncoder("a.m4a", "s.ass", "/f", "id", preset, nil, CPUVideoEncoder(EncoderStandard), ""), " ")
 	for _, want := range []string{"-tune animation", "-sc_threshold 0", "-g 120", "-keyint_min 120", "-hls_time 4"} {
 		if !strings.Contains(sw, want) {
 			t.Errorf("software visualizer args missing %q: %s", want, sw)
 		}
 	}
 	// Hardware: long GOP + 4s segments, but not the libx264-only private flags.
-	hw := strings.Join(audioVisualizerFFmpegArgsWithEncoder("a.m4a", "s.ass", "/f", "id", preset, nil, NewVideoEncoderProfile("h264_nvenc", EncoderStandard)), " ")
+	hw := strings.Join(audioVisualizerFFmpegArgsWithEncoder("a.m4a", "s.ass", "/f", "id", preset, nil, NewVideoEncoderProfile("h264_nvenc", EncoderStandard), ""), " ")
 	if !strings.Contains(hw, "-g 120") || !strings.Contains(hw, "-hls_time 4") {
 		t.Errorf("hardware visualizer missing GOP/segment settings: %s", hw)
 	}

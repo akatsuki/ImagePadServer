@@ -5,37 +5,6 @@ import (
 	"testing"
 )
 
-func TestParseLoudnormJSON(t *testing.T) {
-	out := `[Parsed_loudnorm_0 @ 0x55]
-{
-	"input_i" : "-18.40",
-	"input_tp" : "-2.10",
-	"input_lra" : "7.30",
-	"input_thresh" : "-28.60",
-	"target_offset" : "0.50"
-}
-`
-	m, err := parseLoudnormJSON(out)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if m.InputI != -18.40 || m.InputTP != -2.10 || m.InputLRA != 7.30 ||
-		m.InputThresh != -28.60 || m.TargetOffset != 0.50 {
-		t.Fatalf("unexpected measurement: %+v", m)
-	}
-}
-
-func TestLoudnormFilterString(t *testing.T) {
-	m := LoudnormMeasurement{InputI: -18.4, InputTP: -2.1, InputLRA: 7.3, InputThresh: -28.6, TargetOffset: 0.5}
-	got := loudnormFilter(m, -14.0)
-	want := "loudnorm=I=-14.0:TP=-1.0:LRA=11.0:" +
-		"measured_I=-18.4:measured_TP=-2.1:measured_LRA=7.3:measured_thresh=-28.6:" +
-		"offset=0.5:linear=true:print_format=summary"
-	if got != want {
-		t.Fatalf("loudnorm filter mismatch:\n got %q\nwant %q", got, want)
-	}
-}
-
 func TestSelectMoodPaletteHighEnergy(t *testing.T) {
 	start, end := SelectMoodPalette(AudioFeatures{BPM: 120})
 	if start != "#FF4500" || end != "#8B0000" {

@@ -1,12 +1,10 @@
 package video
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -104,43 +102,6 @@ func DownloadMusic(ctx context.Context, ytdlp, rawURL, outDir string) (AcquiredA
 		SoundCloudArtworkPath:     artworkPath,
 		SoundCloudInformationPath: infoPath,
 	}, nil
-}
-
-// normalizeLoudnessArgs builds the pass-2 ffmpeg arguments that apply an
-// accurate loudnorm to src and write a compressed AAC intermediate at dst.
-// AAC (not lossless FLAC) keeps the intermediate small: a 90-minute track is
-// ~170 MB at 256k instead of ~850 MB as 24-bit FLAC, and it is only an
-// intermediate before the final AAC encode.
-func normalizeLoudnessArgs(src, dst string, m LoudnormMeasurement, targetLUFS float64) []string {
-	return []string{
-		"-v", "error",
-		"-i", src,
-		"-af", loudnormFilter(m, targetLUFS),
-		"-ar", "48000",
-		"-ac", "2",
-		"-c:a", "aac",
-		"-b:a", "256k",
-		"-y", dst,
-	}
-}
-
-// NormalizeMusicLoudness produces a -14 LUFS FLAC next to src and returns its
-// path. Pass 1 measures via extractLoudnormMeasurement; pass 2 applies it so
-// both analysis and render consume the same loudness-anchored signal.
-func NormalizeMusicLoudness(ctx context.Context, ffmpeg, src string) (string, error) {
-	m, err := extractLoudnormMeasurement(ctx, ffmpeg, src)
-	if err != nil {
-		return "", fmt.Errorf("measure loudness: %w", err)
-	}
-	dst := strings.TrimSuffix(src, filepath.Ext(src)) + ".norm.m4a"
-	cmd := exec.CommandContext(ctx, ffmpeg, normalizeLoudnessArgs(src, dst, m, -14.0)...)
-	hideWindow(cmd)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("apply loudnorm: %w\n%s", err, stderr.String())
-	}
-	return dst, nil
 }
 
 func firstExistingGlob(patterns ...string) string {

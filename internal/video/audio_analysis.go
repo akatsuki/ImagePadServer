@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,7 +11,6 @@ import (
 	"os/exec"
 	"regexp"
 	"strconv"
-	"strings"
 	"sync"
 
 	"gonum.org/v1/gonum/dsp/fourier"
@@ -49,18 +47,44 @@ func SelectMoodPalette(features AudioFeatures) (startHex, endHex string) {
 	}
 }
 
+// musicLoudnormFilter is the single-pass EBU R128 loudnorm applied inline to
+// music-mode sources during both analysis and render, so every track is
+// analyzed and played back at the same -14 LUFS anchor without a separate
+// normalization pass or intermediate file.
+const musicLoudnormFilter = "loudnorm=I=-14.0:TP=-1.0:LRA=11.0"
+
+// audioLoudnormFilter returns the inline loudnorm filter for music sources, or
+// an empty string for sources that should not be loudness-normalized.
+func audioLoudnormFilter(kind SourceKind) string {
+	if kind == SourceMusic {
+		return musicLoudnormFilter
+	}
+	return ""
+}
+
+// AnalyzeAudio analyzes a source with no audio filtering.
 func AnalyzeAudio(ctx context.Context, ffmpeg, sourcePath string) (AudioAnalysis, error) {
+	return AnalyzeAudioForKind(ctx, ffmpeg, sourcePath, "")
+}
+
+// AnalyzeAudioForKind analyzes a source, applying the kind's inline audio
+// filter (e.g. loudnorm for music) so the spectrum reflects the same signal
+// that will be rendered.
+func AnalyzeAudioForKind(ctx context.Context, ffmpeg, sourcePath string, kind SourceKind) (AudioAnalysis, error) {
 	az := newStreamAnalyzer()
 
-	cmd := exec.CommandContext(ctx, ffmpeg,
-		"-v", "error",
-		"-i", sourcePath,
+	args := []string{"-v", "error", "-i", sourcePath}
+	if filter := audioLoudnormFilter(kind); filter != "" {
+		args = append(args, "-af", filter)
+	}
+	args = append(args,
 		"-f", "s16le",
 		"-acodec", "pcm_s16le",
 		"-ar", fmt.Sprintf("%d", sampleRate),
 		"-ac", "2",
 		"-",
 	)
+	cmd := exec.CommandContext(ctx, ffmpeg, args...)
 	hideWindow(cmd)
 
 	stdout, err := cmd.StdoutPipe()
@@ -693,75 +717,6 @@ func extractLUFS(ctx context.Context, ffmpeg, sourcePath string) (float64, error
 		return 0, fmt.Errorf("parse LUFS: %w", err)
 	}
 	return val, nil
-}
-
-// LoudnormMeasurement holds the pass-1 values emitted by ffmpeg's loudnorm
-// filter with print_format=json. They feed an accurate linear pass-2.
-type LoudnormMeasurement struct {
-	InputI       float64
-	InputTP      float64
-	InputLRA     float64
-	InputThresh  float64
-	TargetOffset float64
-}
-
-// parseLoudnormJSON extracts the loudnorm measurement object from ffmpeg
-// stderr. The filter prints a single JSON object after a bracketed header.
-func parseLoudnormJSON(s string) (LoudnormMeasurement, error) {
-	start := strings.Index(s, "{")
-	end := strings.LastIndex(s, "}")
-	if start < 0 || end <= start {
-		return LoudnormMeasurement{}, fmt.Errorf("no loudnorm JSON object found")
-	}
-	var raw struct {
-		InputI       string `json:"input_i"`
-		InputTP      string `json:"input_tp"`
-		InputLRA     string `json:"input_lra"`
-		InputThresh  string `json:"input_thresh"`
-		TargetOffset string `json:"target_offset"`
-	}
-	if err := json.Unmarshal([]byte(s[start:end+1]), &raw); err != nil {
-		return LoudnormMeasurement{}, fmt.Errorf("parse loudnorm JSON: %w", err)
-	}
-	parse := func(v string) float64 { f, _ := strconv.ParseFloat(strings.TrimSpace(v), 64); return f }
-	return LoudnormMeasurement{
-		InputI:       parse(raw.InputI),
-		InputTP:      parse(raw.InputTP),
-		InputLRA:     parse(raw.InputLRA),
-		InputThresh:  parse(raw.InputThresh),
-		TargetOffset: parse(raw.TargetOffset),
-	}, nil
-}
-
-// loudnormFilter builds an accurate (linear) two-pass loudnorm filter string
-// targeting targetLUFS, using the pass-1 measurement. TP -1.0 dBTP and LRA 11
-// match common streaming presets.
-func loudnormFilter(m LoudnormMeasurement, targetLUFS float64) string {
-	return fmt.Sprintf(
-		"loudnorm=I=%.1f:TP=-1.0:LRA=11.0:"+
-			"measured_I=%g:measured_TP=%g:measured_LRA=%g:measured_thresh=%g:"+
-			"offset=%g:linear=true:print_format=summary",
-		targetLUFS, m.InputI, m.InputTP, m.InputLRA, m.InputThresh, m.TargetOffset,
-	)
-}
-
-// extractLoudnormMeasurement runs loudnorm pass 1 and returns the measured
-// values needed for an accurate linear pass 2.
-func extractLoudnormMeasurement(ctx context.Context, ffmpeg, sourcePath string) (LoudnormMeasurement, error) {
-	cmd := exec.CommandContext(ctx, ffmpeg,
-		"-v", "info",
-		"-i", sourcePath,
-		"-af", "loudnorm=I=-14:TP=-1.0:LRA=11.0:print_format=json",
-		"-f", "null",
-		"NUL",
-	)
-	hideWindow(cmd)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return LoudnormMeasurement{}, fmt.Errorf("loudnorm pass 1: %w\n%s", err, stderr.String())
-	}
-	return parseLoudnormJSON(stderr.String())
 }
 
 func clampFeatures(f *AudioFeatures) {

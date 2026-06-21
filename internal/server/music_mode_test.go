@@ -13,30 +13,6 @@ import (
 	"imagepadserver/internal/video"
 )
 
-func TestApplyMusicLoudnessSwapsSourcePath(t *testing.T) {
-	old := normalizeMusicLoudness
-	defer func() { normalizeMusicLoudness = old }()
-	normalizeMusicLoudness = func(_ context.Context, _, src string) (string, error) {
-		return src + ".norm.flac", nil
-	}
-	got := applyMusicLoudness(context.Background(), "ffmpeg", video.AcquiredAudio{SourcePath: "in.webm"})
-	if got.SourcePath != "in.webm.norm.flac" {
-		t.Fatalf("SourcePath = %q, want normalized intermediate", got.SourcePath)
-	}
-}
-
-func TestApplyMusicLoudnessFallsBackOnError(t *testing.T) {
-	old := normalizeMusicLoudness
-	defer func() { normalizeMusicLoudness = old }()
-	normalizeMusicLoudness = func(_ context.Context, _, src string) (string, error) {
-		return "", errors.New("boom")
-	}
-	got := applyMusicLoudness(context.Background(), "ffmpeg", video.AcquiredAudio{SourcePath: "in.webm"})
-	if got.SourcePath != "in.webm" {
-		t.Fatalf("SourcePath = %q, want original source on normalization error", got.SourcePath)
-	}
-}
-
 func TestMusicModeCannotEnableWithoutVideoPlayer(t *testing.T) {
 	_, mux := testServer(t, false)
 	req := httptest.NewRequest(http.MethodPost, "/api/music-mode", strings.NewReader(`{"enabled":true}`))
