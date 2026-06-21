@@ -28,6 +28,8 @@ jobs:
             echo "tag $GITHUB_REF_NAME does not match internal/about version $version" >&2
             exit 1
           fi
+      - name: Install ffmpeg
+        run: brew install ffmpeg
       - run: go test ./...
       - run: sh ./scripts/build-release.sh
       - name: Publish dev GitHub Release
