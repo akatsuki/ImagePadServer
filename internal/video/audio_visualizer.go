@@ -21,6 +21,10 @@ func AudioVisualizerFFmpegArgs(audioPath, assPath, fontDir, id string, preset Qu
 }
 
 func audioVisualizerFFmpegArgs(audioPath, assPath, fontDir, id string, preset QualityPreset, mode *ForegroundMode) []string {
+	return audioVisualizerFFmpegArgsWithEncoder(audioPath, assPath, fontDir, id, preset, mode, CPUVideoEncoder(EncoderStandard))
+}
+
+func audioVisualizerFFmpegArgsWithEncoder(audioPath, assPath, fontDir, id string, preset QualityPreset, mode *ForegroundMode, encoder VideoEncoderProfile) []string {
 	height := preset.Height
 	if height <= 0 {
 		height = 720
@@ -35,9 +39,9 @@ func audioVisualizerFFmpegArgs(audioPath, assPath, fontDir, id string, preset Qu
 	waveY := int(math.Round(320 * float64(height) / 720))
 	waveColor := "#FFFFFF@0.55"
 	if mode != nil {
-		waveColor = fmt.Sprintf("#%02X%02X%02X@0.55", mode.Color.R, mode.Color.G, mode.Color.B)
+		waveColor = fmt.Sprintf("#%02X%02X%02X@0.55", mode.AccentColor.R, mode.AccentColor.G, mode.AccentColor.B)
 	}
-	return []string{
+	args := []string{
 		"-v", "error",
 		"-f", "rawvideo",
 		"-pix_fmt", "rgba",
@@ -54,22 +58,33 @@ func audioVisualizerFFmpegArgs(audioPath, assPath, fontDir, id string, preset Qu
 		),
 		"-map", "[out]",
 		"-map", "1:a",
-		"-c:v", "libx264",
-		"-preset", "medium",
-		"-crf", fmt.Sprintf("%d", preset.CRF),
+	}
+	args = append(args, encoder.FFmpegArgs(preset, "medium")...)
+	if !encoder.Hardware {
+		// The visualizer is flat-colored animated graphics over a static
+		// background. The animation tune and disabled scene-cut detection
+		// (both libx264-private) shrink it markedly. These options are not
+		// valid for the GPU encoders, so they are software-only.
+		args = append(args, "-tune", "animation", "-sc_threshold", "0")
+	}
+	// Long GOP aligned to the 4s segment so the large static background is
+	// re-encoded once per segment instead of every 2s. Generic options, safe
+	// for both software and hardware encoders.
+	args = append(args, "-g", "120", "-keyint_min", "120")
+	return append(args,
 		"-c:a", "aac",
 		"-b:a", preset.AudioBitrate,
 		"-ar", "48000",
 		"-ac", "2",
 		"-pix_fmt", "yuv420p",
 		"-f", "hls",
-		"-hls_time", "2",
+		"-hls_time", "4",
 		"-hls_list_size", "0",
 		"-hls_playlist_type", "event",
-		"-hls_segment_filename", "%s/" + segmentPattern(id),
+		"-hls_segment_filename", "%s/"+segmentPattern(id),
 		"-hls_flags", "independent_segments",
-		"%s/" + playlistName(id),
-	}
+		"%s/"+playlistName(id),
+	)
 }
 
 func escapeFilterPath(p string) string {
@@ -163,7 +178,7 @@ func drawSpectrum(canvas *image.RGBA, spectrum [24]float64, mode ForegroundMode,
 	}
 
 	maxAlpha := uint8(math.Round(0.82 * 255.0))
-	barColor := mode.Color
+	barColor := mode.AccentColor
 	barColor.A = maxAlpha
 
 	for b := 0; b < 24 && b < len(spectrum); b++ {
@@ -217,7 +232,7 @@ func drawSpectrum(canvas *image.RGBA, spectrum [24]float64, mode ForegroundMode,
 // drawLoudness draws four guide lines and the 1000-sample loudness curve.
 func drawLoudness(canvas *image.RGBA, envelope [1000]float64, mode ForegroundMode, layout VisualizerLayout) {
 	// Guide lines (four evenly-spaced horizontal lines).
-	guideColor := mode.Color
+	guideColor := mode.AccentColor
 	guideColor.A = uint8(math.Round(0.22 * 255.0))
 
 	guideOffsets := []float64{6.0 / 80.0, 28.0 / 80.0, 50.0 / 80.0, 72.0 / 80.0}
@@ -231,7 +246,7 @@ func drawLoudness(canvas *image.RGBA, envelope [1000]float64, mode ForegroundMod
 	}
 
 	// Loudness curve.
-	lineColor := mode.Color
+	lineColor := mode.AccentColor
 	lineColor.A = uint8(math.Round(0.80 * 255.0))
 
 	graphBottom := layout.Loudness.Y + layout.Loudness.H
@@ -268,10 +283,10 @@ func drawLoudness(canvas *image.RGBA, envelope [1000]float64, mode ForegroundMod
 
 // drawProgress draws the progress track rectangle and circular position marker.
 func drawProgress(canvas *image.RGBA, mode ForegroundMode, layout VisualizerLayout, currentSeconds, duration float64) {
-	trackColor := mode.Color
+	trackColor := mode.AccentColor
 	trackColor.A = uint8(math.Round(0.35 * 255.0))
 
-	markerColor := mode.Color
+	markerColor := mode.AccentColor
 	markerColor.A = uint8(math.Round(0.88 * 255.0))
 
 	// Track as a rounded pill rectangle.
@@ -352,14 +367,18 @@ func RunAudioVisualizerHLS(ctx context.Context, outDir, ffmpeg string, input Aud
 	basePath := filepath.Join(outDir, id+"-base.png")
 
 	var fallback *image.RGBA
+	var fallbackRenderer func(color.RGBA) (*image.RGBA, error)
 	if input.ArtworkPath == "" {
 		fallback, err = RenderFallbackArtwork(ctx, ffmpeg, fonts, input.Analysis.Features, color.RGBA{255, 255, 255, 224}, layout.Artwork.W)
 		if err != nil {
 			return fmt.Errorf("fallback artwork: %w", err)
 		}
+		fallbackRenderer = func(accent color.RGBA) (*image.RGBA, error) {
+			return RenderFallbackArtwork(ctx, ffmpeg, fonts, input.Analysis.Features, accent, layout.Artwork.W)
+		}
 	}
 
-	mode, err := PrepareVisualizerBase(ctx, ffmpeg, input.ArtworkPath, fallback, layout, basePath)
+	mode, err := prepareVisualizerBase(ctx, ffmpeg, input.ArtworkPath, fallback, fallbackRenderer, layout, basePath)
 	if err != nil {
 		return fmt.Errorf("prepare base: %w", err)
 	}
@@ -411,34 +430,38 @@ func RunAudioVisualizerHLS(ctx context.Context, outDir, ffmpeg string, input Aud
 		return fmt.Errorf("write ass: %w", err)
 	}
 
-	// Build FFmpeg arguments.
-	args := formatVisualizerOutputArgs(audioVisualizerFFmpegArgs(input.SourcePath, assPath, fontDir, id, preset, &mode), outDir)
+	selected := SelectVideoEncoder(ctx, ffmpeg, EncoderStandard)
+	attempt := func(encoder VideoEncoderProfile) error {
+		args := formatVisualizerOutputArgs(audioVisualizerFFmpegArgsWithEncoder(input.SourcePath, assPath, fontDir, id, preset, &mode, encoder), outDir)
+		cmd := exec.CommandContext(ctx, ffmpeg, args...)
+		hideWindow(cmd)
+		frameReader, frameWriter, pipeErr := os.Pipe()
+		if pipeErr != nil {
+			return fmt.Errorf("pipe: %w", pipeErr)
+		}
+		defer frameReader.Close()
+		cmd.Stdin = frameReader
 
-	cmd := exec.CommandContext(ctx, ffmpeg, args...)
-	hideWindow(cmd)
-	frameReader, frameWriter, err := os.Pipe()
-	if err != nil {
-		return fmt.Errorf("pipe: %w", err)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		frameErrCh := make(chan error, 1)
+		go func() {
+			defer frameWriter.Close()
+			frameErrCh <- WriteVisualizerRGBAFrames(ctx, frameWriter, input, baseRGBA, mode, layout, width, height)
+		}()
+
+		runErr := cmd.Run()
+		if runErr != nil {
+			_ = frameWriter.Close()
+		}
+		frameErr := <-frameErrCh
+		if runErr != nil {
+			return fmt.Errorf("ffmpeg %s: %w\n%s", encoder.Name, runErr, stderr.String())
+		}
+		if frameErr != nil {
+			return fmt.Errorf("frame writer: %w", frameErr)
+		}
+		return nil
 	}
-	cmd.Stdin = frameReader
-
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	frameErrCh := make(chan error, 1)
-	go func() {
-		defer frameWriter.Close()
-		frameErrCh <- WriteVisualizerRGBAFrames(ctx, frameWriter, input, baseRGBA, mode, layout, width, height)
-	}()
-
-	if err := cmd.Run(); err != nil {
-		frameWriter.Close()
-		return fmt.Errorf("ffmpeg: %w\n%s", err, stderr.String())
-	}
-
-	if err := <-frameErrCh; err != nil {
-		return fmt.Errorf("frame writer: %w", err)
-	}
-
-	return nil
+	return runVideoEncodeWithFallback(ctx, selected, func() { removeHLSForID(outDir, id) }, attempt)
 }

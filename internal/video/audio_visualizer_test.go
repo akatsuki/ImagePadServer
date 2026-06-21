@@ -65,6 +65,25 @@ func TestAudioVisualizerFFmpegArgsUsesValidHLSOptions(t *testing.T) {
 	}
 }
 
+func TestAudioVisualizerFFmpegArgsCompressionSettings(t *testing.T) {
+	preset := QualityPreset{Height: 720, CRF: 27, VideoBitrate: "2500k", MaxRate: "3000k", BufferSize: "5000k", AudioBitrate: "128k"}
+	// Software (libx264): animation tune, no scene-cut keyframes, long GOP, 4s segments.
+	sw := strings.Join(audioVisualizerFFmpegArgsWithEncoder("a.m4a", "s.ass", "/f", "id", preset, nil, CPUVideoEncoder(EncoderStandard)), " ")
+	for _, want := range []string{"-tune animation", "-sc_threshold 0", "-g 120", "-keyint_min 120", "-hls_time 4"} {
+		if !strings.Contains(sw, want) {
+			t.Errorf("software visualizer args missing %q: %s", want, sw)
+		}
+	}
+	// Hardware: long GOP + 4s segments, but not the libx264-only private flags.
+	hw := strings.Join(audioVisualizerFFmpegArgsWithEncoder("a.m4a", "s.ass", "/f", "id", preset, nil, NewVideoEncoderProfile("h264_nvenc", EncoderStandard)), " ")
+	if !strings.Contains(hw, "-g 120") || !strings.Contains(hw, "-hls_time 4") {
+		t.Errorf("hardware visualizer missing GOP/segment settings: %s", hw)
+	}
+	if strings.Contains(hw, "-sc_threshold") || strings.Contains(hw, "-tune animation") {
+		t.Errorf("hardware visualizer must not use libx264-only flags: %s", hw)
+	}
+}
+
 func TestAudioVisualizerFFmpegArgsUsesPresetResolution(t *testing.T) {
 	preset := ResolveQuality("1080", 0)
 	args := AudioVisualizerFFmpegArgs("song.m4a", "text.ass", "fonts", "id", preset)
@@ -106,7 +125,7 @@ func TestWriteVisualizerFramesDoesNotTintBaseArtwork(t *testing.T) {
 	artX, artY := layout.Artwork.X+layout.Artwork.W/2, layout.Artwork.Y+layout.Artwork.H/2
 	base.SetRGBA(artX, artY, color.RGBA{R: 240, G: 20, B: 10, A: 255})
 	input := AudioRenderInput{Analysis: AudioAnalysis{FPS: 30, Duration: 1, Frames: []AudioFrame{{}}}}
-	mode := ForegroundMode{Color: color.RGBA{255, 255, 255, 255}, Overlay: color.RGBA{0, 0, 0, 200}}
+	mode := ForegroundMode{PrimaryColor: color.RGBA{255, 255, 255, 255}, AccentColor: color.RGBA{255, 255, 255, 255}, Overlay: color.RGBA{0, 0, 0, 200}}
 	var buf bytes.Buffer
 	if err := WriteVisualizerRGBAFrames(context.Background(), &buf, input, base, mode, layout, 128, 72); err != nil {
 		t.Fatal(err)
@@ -124,7 +143,7 @@ func TestDrawLoudnessScalesThousandSamplesIntoLayoutWidth(t *testing.T) {
 	for i := range envelope {
 		envelope[i] = 0.5
 	}
-	mode := ForegroundMode{Color: color.RGBA{255, 255, 255, 255}}
+	mode := ForegroundMode{AccentColor: color.RGBA{255, 255, 255, 255}}
 	drawLoudness(canvas, envelope, mode, layout)
 	y := layout.Loudness.Y + layout.Loudness.H/2
 	left := canvas.RGBAAt(layout.Loudness.X, y)
@@ -140,7 +159,7 @@ func TestDrawLoudnessScalesThousandSamplesIntoLayoutWidth(t *testing.T) {
 
 func TestWriteVisualizerRGBAFramesBasic(t *testing.T) {
 	base := image.NewRGBA(image.Rect(0, 0, 128, 72))
-	mode := ForegroundMode{Color: color.RGBA{255, 255, 255, 255}, Overlay: color.RGBA{0, 0, 0, 92}}
+	mode := ForegroundMode{PrimaryColor: color.RGBA{255, 255, 255, 255}, AccentColor: color.RGBA{255, 255, 255, 255}, Overlay: color.RGBA{0, 0, 0, 92}}
 	layout, _ := LayoutForSize(128, 72)
 	input := AudioRenderInput{
 		Analysis: AudioAnalysis{
@@ -165,7 +184,7 @@ func TestWriteVisualizerRGBAFramesBasic(t *testing.T) {
 
 func TestWriteVisualizerRGBAFramesSpectrumBars(t *testing.T) {
 	base := image.NewRGBA(image.Rect(0, 0, 128, 72))
-	mode := ForegroundMode{Color: color.RGBA{255, 255, 255, 255}, Overlay: color.RGBA{0, 0, 0, 92}}
+	mode := ForegroundMode{PrimaryColor: color.RGBA{255, 255, 255, 255}, AccentColor: color.RGBA{255, 255, 255, 255}, Overlay: color.RGBA{0, 0, 0, 92}}
 	layout, _ := LayoutForSize(128, 72)
 	input := AudioRenderInput{
 		Analysis: AudioAnalysis{
@@ -190,7 +209,7 @@ func TestWriteVisualizerRGBAFramesSpectrumBars(t *testing.T) {
 
 func TestWriteVisualizerRGBAFramesZeroFrames(t *testing.T) {
 	base := image.NewRGBA(image.Rect(0, 0, 128, 72))
-	mode := ForegroundMode{Color: color.RGBA{255, 255, 255, 255}, Overlay: color.RGBA{0, 0, 0, 92}}
+	mode := ForegroundMode{PrimaryColor: color.RGBA{255, 255, 255, 255}, AccentColor: color.RGBA{255, 255, 255, 255}, Overlay: color.RGBA{0, 0, 0, 92}}
 	layout, _ := LayoutForSize(128, 72)
 	input := AudioRenderInput{
 		Analysis: AudioAnalysis{
@@ -208,7 +227,7 @@ func TestWriteVisualizerRGBAFramesZeroFrames(t *testing.T) {
 
 func TestWriteVisualizerRGBAFramesFPS30(t *testing.T) {
 	base := image.NewRGBA(image.Rect(0, 0, 128, 72))
-	mode := ForegroundMode{Color: color.RGBA{255, 255, 255, 255}, Overlay: color.RGBA{0, 0, 0, 92}}
+	mode := ForegroundMode{PrimaryColor: color.RGBA{255, 255, 255, 255}, AccentColor: color.RGBA{255, 255, 255, 255}, Overlay: color.RGBA{0, 0, 0, 92}}
 	layout, _ := LayoutForSize(128, 72)
 	input := AudioRenderInput{
 		Analysis: AudioAnalysis{
@@ -437,8 +456,8 @@ func TestVisualizerFallbackNoArt(t *testing.T) {
 
 	// Foreground mode should be valid.  Overlay may be 0 (no overlay needed)
 	// up to 255 (100 %).
-	if mode.Color.A != 255 {
-		t.Errorf("foreground must be opaque, got alpha %d", mode.Color.A)
+	if mode.PrimaryColor.A != 255 || mode.AccentColor.A != 255 {
+		t.Errorf("foregrounds must be opaque, got primary=%d accent=%d", mode.PrimaryColor.A, mode.AccentColor.A)
 	}
 	if mode.Overlay.A > 255 {
 		t.Errorf("overlay alpha %d > 255 (max)", mode.Overlay.A)
@@ -509,10 +528,10 @@ func testContrastRegion(ctx context.Context, t *testing.T, ffmpeg, artPath strin
 
 	// baseImg already has the overlay baked in (applied by
 	// PrepareVisualizerBase).  Use direct contrast check without re-applying.
-	if ok, ratio := checkDirectContrast(baseImg, metaRect, mode.Color); !ok {
+	if ok, ratio := checkDirectContrast(baseImg, metaRect, mode.PrimaryColor); !ok {
 		t.Errorf("metadata region contrast %.2f < 4.5", ratio)
 	}
-	if ok, ratio := checkDirectContrast(baseImg, graphRect, mode.Color); !ok {
+	if ok, ratio := checkDirectContrast(baseImg, graphRect, mode.AccentColor); !ok {
 		t.Errorf("graph region contrast %.2f < 4.5", ratio)
 	}
 }
@@ -530,8 +549,8 @@ func TestSpectrumBottomFade(t *testing.T) {
 	draw.Draw(base, base.Bounds(), &image.Uniform{bgColor}, image.Point{}, draw.Src)
 
 	mode := ForegroundMode{
-		Color:   color.RGBA{255, 255, 255, 255},
-		Overlay: color.RGBA{0, 0, 0, 0}, // fully transparent overlay
+		AccentColor: color.RGBA{255, 255, 255, 255},
+		Overlay:     color.RGBA{0, 0, 0, 0}, // fully transparent overlay
 	}
 	layout, _ := LayoutForSize(width, height)
 
@@ -613,7 +632,7 @@ func TestSpectrumBottomFade(t *testing.T) {
 // without a trend line.
 func TestLoudnessLayerRenderedOncePerJob(t *testing.T) {
 	base := image.NewRGBA(image.Rect(0, 0, 1280, 720))
-	mode := ForegroundMode{Color: color.RGBA{255, 255, 255, 255}, Overlay: color.RGBA{0, 0, 0, 92}}
+	mode := ForegroundMode{PrimaryColor: color.RGBA{255, 255, 255, 255}, AccentColor: color.RGBA{255, 255, 255, 255}, Overlay: color.RGBA{0, 0, 0, 92}}
 	layout, err := LayoutForSize(1280, 720)
 	if err != nil {
 		t.Fatal(err)
