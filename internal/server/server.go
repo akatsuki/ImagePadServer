@@ -1121,6 +1121,11 @@ func (s *Server) handleHistoryQueue(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "video player support is disabled", http.StatusBadRequest)
 		return
 	}
+	if !s.tryBeginIngest(ingestAnalyzing, req.ID) {
+		http.Error(w, "別の取り込み処理が進行中です", http.StatusConflict)
+		return
+	}
+	defer s.clearIngest()
 	if err := s.enqueueHistoryItem(req.ID); err != nil {
 		http.Error(w, "history item not found", http.StatusNotFound)
 		return
@@ -1150,6 +1155,11 @@ func (s *Server) handleHistorySelect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if path, current, ok := s.store.CurrentPath(); ok && s.videoPlayerEnabled() {
+		if !s.tryBeginIngest(ingestAnalyzing, current.ID) {
+			http.Error(w, "別の取り込み処理が進行中です", http.StatusConflict)
+			return
+		}
+		defer s.clearIngest()
 		if current.SourceKind == "soundcloud" || current.SourceKind == "local_audio" || current.SourceKind == "remote_audio" {
 			input, err := s.audioRenderInputForStored(r.Context(), path, *current)
 			if err != nil {

@@ -456,6 +456,15 @@ const indexHTML = `<!doctype html>
       padding: 0;
       font-size: 15px;
     }
+    .link-input-row {
+      display: flex;
+      gap: 8px;
+      align-items: stretch;
+    }
+    .link-input-row input[type="url"] {
+      flex: 1;
+      min-width: 0;
+    }
     .wing-tabs {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -885,7 +894,10 @@ const indexHTML = `<!doctype html>
             </div>
           </div>
           <div class="upload-panel" id="linkUploadPanel">
-            <input id="imageURLInput" name="imageURL" type="url" inputmode="url" placeholder="https://example.com/image.webp">
+            <div class="link-input-row">
+              <input id="imageURLInput" name="imageURL" type="url" inputmode="url" placeholder="https://example.com/image.webp">
+              <button type="button" id="pasteURLButton" class="icon-button" title="クリップボードから貼り付け" aria-label="クリップボードから貼り付け">📋</button>
+            </div>
           </div>
           <div class="upload-panel" id="obsUploadPanel">
             <div class="obs-grid">
@@ -1028,6 +1040,7 @@ const indexHTML = `<!doctype html>
     const dragDropOverlay = document.getElementById('dragDropOverlay');
     const dragDropOverlayHint = document.getElementById('dragDropOverlayHint');
     const imageURLInput = document.getElementById('imageURLInput');
+    const pasteURLButton = document.getElementById('pasteURLButton');
     const fileModeButton = document.getElementById('fileModeButton');
     const linkModeButton = document.getElementById('linkModeButton');
     const obsModeButton = document.getElementById('obsModeButton');
@@ -1881,6 +1894,20 @@ const indexHTML = `<!doctype html>
       }
     }
 
+    if (pasteURLButton) {
+      pasteURLButton.addEventListener('click', async () => {
+        try {
+          const text = (await navigator.clipboard.readText()).trim();
+          if (text) {
+            imageURLInput.value = text;
+          }
+        } catch (error) {
+          toast.textContent = 'クリップボードの読み取りに失敗しました';
+        }
+        imageURLInput.focus();
+      });
+    }
+
     clearButton.addEventListener('click', async () => {
       const obsEnd = uploadMode === 'obs';
       clearButton.disabled = true;
@@ -1944,7 +1971,11 @@ const indexHTML = `<!doctype html>
       }
     }
 
+    let historyActionInFlight = false;
+
     async function queueHistory(id) {
+      if (historyActionInFlight) return;
+      historyActionInFlight = true;
       toast.textContent = '動画変換に追加中...';
       try {
         const res = await fetch('/api/history/queue', {
@@ -1960,10 +1991,14 @@ const indexHTML = `<!doctype html>
         toast.textContent = '動画変換に追加しました';
       } catch (error) {
         toast.textContent = error.message || '動画変換への追加に失敗しました';
+      } finally {
+        historyActionInFlight = false;
       }
     }
 
     async function selectHistory(id) {
+      if (historyActionInFlight) return;
+      historyActionInFlight = true;
       toast.textContent = '履歴から復元中...';
       try {
         const res = await fetch('/api/history/select', {
@@ -1978,6 +2013,8 @@ const indexHTML = `<!doctype html>
         toast.textContent = data.clipboardCopied ? '履歴から公開し、URLをPCにコピーしました' : '履歴から復元しました';
       } catch (error) {
         toast.textContent = error.message || '履歴の復元に失敗しました';
+      } finally {
+        historyActionInFlight = false;
       }
     }
 
