@@ -100,44 +100,56 @@ func AnalyzeAudioForKind(ctx context.Context, ffmpeg, sourcePath string, kind So
 		return AudioAnalysis{}, fmt.Errorf("ffmpeg start: %w", err)
 	}
 
-	readBuf := make([]byte, 65536)
-	halfBuf := make([]byte, 0)
-	done := make(chan error, 1)
+	done := make(chan error, 2)
+	chunks := make(chan []byte, 8)
 
+	// Reader: drain ffmpeg stdout as fast as it decodes, decoupled from
+	// processing, so ffmpeg decode and Go analysis overlap instead of
+	// ping-ponging (each was otherwise capped at ~1 core, alternating).
 	go func() {
 		defer stdout.Close()
+		defer close(chunks)
 		for {
-			n, rerr := stdout.Read(readBuf)
+			buf := make([]byte, 65536)
+			n, rerr := stdout.Read(buf)
 			if n > 0 {
-				data := append(halfBuf, readBuf[:n]...)
-				halfBuf = nil
-				remainder := len(data) % 2
-				samples := len(data) / 2
-				if samples > 0 {
-					end := len(data) - remainder
-					_ = end
-					pcm := make([]int16, samples)
-					for i := 0; i < samples; i++ {
-						pcm[i] = int16(binary.LittleEndian.Uint16(data[i*2:]))
-					}
-					if err := az.ConsumeStereo(pcm); err != nil {
-						done <- err
-						return
-					}
-				}
-				if remainder > 0 {
-					halfBuf = append(halfBuf, data[len(data)-1])
-				}
+				chunks <- buf[:n]
 			}
 			if rerr == io.EOF {
-				break
+				return
 			}
 			if rerr != nil {
 				done <- fmt.Errorf("read: %w", rerr)
 				return
 			}
 		}
+	}()
 
+	// Processor: decode s16le little-endian and feed the analyzer.
+	go func() {
+		var halfBuf []byte
+		for chunk := range chunks {
+			data := chunk
+			if len(halfBuf) > 0 {
+				data = append(halfBuf, chunk...)
+				halfBuf = nil
+			}
+			remainder := len(data) % 2
+			samples := len(data) / 2
+			if samples > 0 {
+				pcm := make([]int16, samples)
+				for i := 0; i < samples; i++ {
+					pcm[i] = int16(binary.LittleEndian.Uint16(data[i*2:]))
+				}
+				if err := az.ConsumeStereo(pcm); err != nil {
+					done <- err
+					return
+				}
+			}
+			if remainder > 0 {
+				halfBuf = append(halfBuf, data[len(data)-1])
+			}
+		}
 		if len(halfBuf) > 0 {
 			done <- ErrIncompleteSample
 			return
