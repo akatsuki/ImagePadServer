@@ -69,6 +69,9 @@ func DownloadMusic(ctx context.Context, ytdlp, rawURL, outDir string) (AcquiredA
 		"--max-filesize", strconv.FormatInt(MaxMediaSourceBytes, 10),
 		"-f", "bestaudio/best",
 		"-x",
+		// Download DASH/HLS fragments in parallel to work around per-connection
+		// throttling (notably YouTube), which dominates long-track download time.
+		"--concurrent-fragments", "4",
 		"--write-thumbnail",
 		"--write-info-json",
 		"--print-to-file", "after_move:filepath", manifestPath,
@@ -104,7 +107,10 @@ func DownloadMusic(ctx context.Context, ytdlp, rawURL, outDir string) (AcquiredA
 }
 
 // normalizeLoudnessArgs builds the pass-2 ffmpeg arguments that apply an
-// accurate loudnorm to src and write a lossless FLAC intermediate at dst.
+// accurate loudnorm to src and write a compressed AAC intermediate at dst.
+// AAC (not lossless FLAC) keeps the intermediate small: a 90-minute track is
+// ~170 MB at 256k instead of ~850 MB as 24-bit FLAC, and it is only an
+// intermediate before the final AAC encode.
 func normalizeLoudnessArgs(src, dst string, m LoudnormMeasurement, targetLUFS float64) []string {
 	return []string{
 		"-v", "error",
@@ -112,7 +118,8 @@ func normalizeLoudnessArgs(src, dst string, m LoudnormMeasurement, targetLUFS fl
 		"-af", loudnormFilter(m, targetLUFS),
 		"-ar", "48000",
 		"-ac", "2",
-		"-c:a", "flac",
+		"-c:a", "aac",
+		"-b:a", "256k",
 		"-y", dst,
 	}
 }
@@ -125,7 +132,7 @@ func NormalizeMusicLoudness(ctx context.Context, ffmpeg, src string) (string, er
 	if err != nil {
 		return "", fmt.Errorf("measure loudness: %w", err)
 	}
-	dst := strings.TrimSuffix(src, filepath.Ext(src)) + ".norm.flac"
+	dst := strings.TrimSuffix(src, filepath.Ext(src)) + ".norm.m4a"
 	cmd := exec.CommandContext(ctx, ffmpeg, normalizeLoudnessArgs(src, dst, m, -14.0)...)
 	hideWindow(cmd)
 	var stderr bytes.Buffer

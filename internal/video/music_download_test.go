@@ -10,9 +10,9 @@ import (
 
 func TestNormalizeLoudnessArgs(t *testing.T) {
 	m := LoudnormMeasurement{InputI: -20, InputTP: -1.5, InputLRA: 6, InputThresh: -30, TargetOffset: 0.2}
-	args := normalizeLoudnessArgs("in.webm", "out.flac", m, -14.0)
+	args := normalizeLoudnessArgs("in.webm", "out.m4a", m, -14.0)
 	joined := strings.Join(args, " ")
-	for _, want := range []string{"-i in.webm", "-af loudnorm=I=-14.0", "-c:a flac", "out.flac"} {
+	for _, want := range []string{"-i in.webm", "-af loudnorm=I=-14.0", "-c:a aac", "-b:a 256k", "out.m4a"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing %q in args: %s", want, joined)
 		}
@@ -55,7 +55,7 @@ func TestDownloadMusicUsesAudioOnlyAndChannelMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(gotArgs, " ")
-	for _, required := range []string{"--no-playlist", "--max-filesize", "--write-thumbnail", "--write-info-json", "-f bestaudio/best", "-x"} {
+	for _, required := range []string{"--no-playlist", "--max-filesize", "--write-thumbnail", "--write-info-json", "-f bestaudio/best", "-x", "--concurrent-fragments 4"} {
 		if !strings.Contains(joined, required) {
 			t.Fatalf("yt-dlp args %q do not contain %q", joined, required)
 		}
