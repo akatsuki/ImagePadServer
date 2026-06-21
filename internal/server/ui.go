@@ -419,6 +419,16 @@ const indexHTML = `<!doctype html>
       background: var(--accent);
       transition: width .25s ease;
     }
+    .progress-fill.indeterminate {
+      width: 35%;
+      min-width: 35%;
+      transition: none;
+      animation: indetSweep 1.2s ease-in-out infinite;
+    }
+    @keyframes indetSweep {
+      0%   { transform: translateX(-115%); }
+      100% { transform: translateX(330%); }
+    }
     .progress-detail {
       color: var(--muted);
       font-size: 12px;
@@ -946,7 +956,6 @@ const indexHTML = `<!doctype html>
             <button id="queueUploadButton" type="submit" class="secondary" name="uploadAction" value="queue">動画変換へ</button>
           </div>
           <div class="toast" id="toast"></div>
-          <div id="ingestPhase" class="ingest-phase" hidden></div>
           <div class="mobile-progress" id="mobileProgress">
             <div id="mobileProgressText">変換中</div>
             <div class="progress-track" aria-label="変換進捗">
@@ -1168,7 +1177,7 @@ const indexHTML = `<!doctype html>
       document.getElementById('shareURL').textContent = data.shareURL || '公開URLは未取得です';
       document.getElementById('shareURLLabel').textContent = data.shareURLLabel || 'URL';
       document.getElementById('videoStatus').textContent = videoText(data.video);
-      updateMobileProgress(data.video);
+      updateMobileProgress(data);
       applyQuality(data.videoQuality);
       applyVideoPlayer(data.videoPlayer);
       applyOBS(data.obs);
@@ -1180,18 +1189,6 @@ const indexHTML = `<!doctype html>
       renderPreview(data, nextCurrentID);
       renderHistory(state.history, nextCurrentID);
       state.currentID = nextCurrentID;
-
-      const ingest = data.ingest || {};
-      const ingestEl = document.getElementById('ingestPhase');
-      if (ingestEl) {
-        const labels = { downloading: 'ダウンロード中…', analyzing: '解析中…', processing: '処理中…' };
-        if (ingest.active && labels[ingest.phase]) {
-          ingestEl.textContent = labels[ingest.phase] + (ingest.title ? ' — ' + ingest.title : '');
-          ingestEl.hidden = false;
-        } else {
-          ingestEl.hidden = true;
-        }
-      }
 
       scheduleRefresh((data.ingest && data.ingest.active) || (data.video && data.video.active) || (data.obs && data.obs.connected) ? 750 : 2000);
     }
@@ -1247,6 +1244,25 @@ const indexHTML = `<!doctype html>
         if (state.previewMode !== 'empty') {
           preview.innerHTML = '<div class="empty">まだ画像が選択されていません</div>';
           state.previewMode = 'empty';
+        }
+        return;
+      }
+      const ingestLabel = data.ingest && data.ingest.active ? ingestPhaseLabel(data.ingest.phase) : '';
+      if (ingestLabel) {
+        // Rebuild only when the phase changes so the indeterminate sweep
+        // animation isn't restarted on every poll.
+        const mode = 'ingest:' + data.ingest.phase;
+        if (state.previewMode !== mode) {
+          const title = data.ingest.title ? escapeHTML(data.ingest.title) : '';
+          preview.innerHTML =
+            '<div class="progress-preview">' +
+              '<div>' + escapeHTML(ingestLabel) + '</div>' +
+              '<div class="progress-track" aria-label="処理状況">' +
+                '<div class="progress-fill indeterminate"></div>' +
+              '</div>' +
+              (title ? '<div class="progress-detail">' + title + '</div>' : '') +
+            '</div>';
+          state.previewMode = mode;
         }
         return;
       }
@@ -1481,13 +1497,30 @@ const indexHTML = `<!doctype html>
       return parts.join(' / ');
     }
 
-    function updateMobileProgress(video) {
+    function ingestPhaseLabel(phase) {
+      return { downloading: 'ダウンロード中…', analyzing: '解析中…', processing: '処理中…' }[phase] || '';
+    }
+
+    function updateMobileProgress(data) {
+      const ingest = data && data.ingest;
+      const label = ingest && ingest.active ? ingestPhaseLabel(ingest.phase) : '';
+      if (label) {
+        // Pre-render phases: show the phase with an indeterminate (no %) bar.
+        mobileProgress.classList.add('open');
+        mobileProgressText.textContent = label + (ingest.title ? ' — ' + ingest.title : '');
+        mobileProgressFill.classList.add('indeterminate');
+        mobileProgressFill.style.width = '';
+        return;
+      }
+      const video = data && data.video;
       if (!video || !video.active) {
         mobileProgress.classList.remove('open');
+        mobileProgressFill.classList.remove('indeterminate');
         return;
       }
       const percent = Math.max(0, Math.min(99, Number(video.progressPercent || 0)));
       mobileProgress.classList.add('open');
+      mobileProgressFill.classList.remove('indeterminate');
       mobileProgressText.textContent = video.progressText || video.message || '変換中';
       mobileProgressFill.style.width = Math.max(6, percent) + '%';
     }
