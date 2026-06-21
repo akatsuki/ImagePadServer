@@ -60,17 +60,7 @@ func audioVisualizerFFmpegArgsWithEncoder(audioPath, assPath, fontDir, id string
 		"-map", "1:a",
 	}
 	args = append(args, encoder.FFmpegArgs(preset, "medium")...)
-	if !encoder.Hardware {
-		// The visualizer is flat-colored animated graphics over a static
-		// background. The animation tune and disabled scene-cut detection
-		// (both libx264-private) shrink it markedly. These options are not
-		// valid for the GPU encoders, so they are software-only.
-		args = append(args, "-tune", "animation", "-sc_threshold", "0")
-	}
-	// Long GOP aligned to the 4s segment so the large static background is
-	// re-encoded once per segment instead of every 2s. Generic options, safe
-	// for both software and hardware encoders.
-	args = append(args, "-g", "120", "-keyint_min", "120")
+	args = append(args, staticContentEncodeOptions(encoder)...)
 	return append(args,
 		"-c:a", "aac",
 		"-b:a", preset.AudioBitrate,

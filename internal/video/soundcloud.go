@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 )
 
@@ -56,8 +55,6 @@ func isSoundCloudURL(rawURL string) bool {
 		return false
 	}
 }
-
-
 
 // DownloadMediaURL downloads media from rawURL. For SoundCloud URLs it
 // downloads audio + thumbnail using yt-dlp via DownloadSoundCloud. For
@@ -212,6 +209,10 @@ func generateSoundCloudFallbackArtwork(path string, width, height int) error {
 // a SoundCloud audio track + artwork into an HLS video with waveform overlay.
 // It is a pure function and does NOT invoke ffmpeg.
 func soundCloudHLSArgs(audioPath, artworkPath, id string, preset QualityPreset) []string {
+	return soundCloudHLSArgsWithEncoder(audioPath, artworkPath, id, preset, CPUVideoEncoder(EncoderStandard))
+}
+
+func soundCloudHLSArgsWithEncoder(audioPath, artworkPath, id string, preset QualityPreset, encoder VideoEncoderProfile) []string {
 	height := preset.Height
 	if height <= 0 {
 		height = 720
@@ -237,17 +238,21 @@ func soundCloudHLSArgs(audioPath, artworkPath, id string, preset QualityPreset) 
 		waveWidth, height, waveWidth, height, waveWidth, waveHeight, waveWidth, height,
 	)
 
-	return []string{
+	args := []string{
 		"-y",
 		"-i", artworkPath,
 		"-i", audioPath,
-		"-c:v", "libx264",
-		"-preset", "veryfast",
-		"-crf", strconv.Itoa(preset.CRF),
-		"-b:v", preset.VideoBitrate,
-		"-maxrate", preset.MaxRate,
-		"-bufsize", preset.BufferSize,
-		"-pix_fmt", "yuv420p",
+	}
+	args = append(args, encoder.FFmpegArgs(preset, "veryfast")...)
+	if !encoder.Hardware {
+		args = append(args,
+			"-b:v", preset.VideoBitrate,
+			"-maxrate", preset.MaxRate,
+			"-bufsize", preset.BufferSize,
+		)
+	}
+	args = append(args, staticContentEncodeOptions(encoder)...)
+	return append(args,
 		"-filter_complex", filterComplex,
 		"-map", "[out]",
 		"-map", "[audio]",
@@ -257,13 +262,13 @@ func soundCloudHLSArgs(audioPath, artworkPath, id string, preset QualityPreset) 
 		"-ar", "48000",
 		"-shortest",
 		"-f", "hls",
-		"-hls_time", "2",
+		"-hls_time", "4",
 		"-hls_list_size", "0",
 		"-hls_playlist_type", "event",
 		"-hls_flags", "independent_segments",
 		"-hls_segment_filename", segmentPattern(id),
 		playlistName(id),
-	}
+	)
 }
 
 // resolveSoundCloudArtwork returns the artwork path to use for HLS generation.
@@ -291,5 +296,8 @@ func runSoundCloudHLS(ctx context.Context, outDir, ffmpeg, audioPath, artworkPat
 	if canRemove {
 		defer os.Remove(actualArtwork)
 	}
-	return runInDirContext(ctx, outDir, ffmpeg, soundCloudHLSArgs(audioPath, actualArtwork, id, preset)...)
+	selected := SelectVideoEncoder(ctx, ffmpeg, EncoderStandard)
+	return runVideoEncodeWithFallback(ctx, selected, func() { removeHLSForID(outDir, id) }, func(encoder VideoEncoderProfile) error {
+		return runInDirContext(ctx, outDir, ffmpeg, soundCloudHLSArgsWithEncoder(audioPath, actualArtwork, id, preset, encoder)...)
+	})
 }

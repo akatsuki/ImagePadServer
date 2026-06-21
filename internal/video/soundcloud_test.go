@@ -176,6 +176,25 @@ func TestSoundCloudHLSArgs_ContainsRequired(t *testing.T) {
 	}
 }
 
+func TestSoundCloudHLSArgs_CompressionSettings(t *testing.T) {
+	// SoundCloud renders the same static-image + waveform content as the
+	// visualizer, so it shares the static-content compression options.
+	preset := QualityPreset{Height: 720, CRF: 27, VideoBitrate: "2500k", MaxRate: "3000k", BufferSize: "5000k", AudioBitrate: "128k"}
+	sw := strings.Join(soundCloudHLSArgsWithEncoder("a.m4a", "art.png", "id", preset, CPUVideoEncoder(EncoderStandard)), " ")
+	for _, want := range []string{"-tune animation", "-sc_threshold 0", "-g 120", "-keyint_min 120", "-hls_time 4"} {
+		if !strings.Contains(sw, want) {
+			t.Errorf("software soundcloud args missing %q: %s", want, sw)
+		}
+	}
+	hw := strings.Join(soundCloudHLSArgsWithEncoder("a.m4a", "art.png", "id", preset, NewVideoEncoderProfile("h264_nvenc", EncoderStandard)), " ")
+	if !strings.Contains(hw, "-g 120") || !strings.Contains(hw, "-hls_time 4") {
+		t.Errorf("hardware soundcloud missing GOP/segment settings: %s", hw)
+	}
+	if strings.Contains(hw, "-sc_threshold") || strings.Contains(hw, "-tune animation") {
+		t.Errorf("hardware soundcloud must not use libx264-only flags: %s", hw)
+	}
+}
+
 func TestSoundCloudHLSArgs_PresetReflected(t *testing.T) {
 	preset := QualityPreset{
 		Height:       720,

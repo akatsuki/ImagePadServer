@@ -249,6 +249,21 @@ func (p VideoEncoderProfile) FFmpegArgs(preset QualityPreset, softwarePreset str
 	return append(args, "-pix_fmt", "yuv420p")
 }
 
+// staticContentEncodeOptions returns extra encoder options for largely-static
+// video (the audio visualizer and the SoundCloud artwork+waveform render):
+// a long GOP aligned to the 4s HLS segment so the big static background is
+// re-encoded once per segment, plus — for libx264 only — the animation tune
+// and disabled scene-cut detection. The GOP options are generic; the libx264
+// private options are not valid for the GPU encoders, so they are software-only.
+// Place the result after encoder.FFmpegArgs(...).
+func staticContentEncodeOptions(encoder VideoEncoderProfile) []string {
+	var a []string
+	if !encoder.Hardware {
+		a = append(a, "-tune", "animation", "-sc_threshold", "0")
+	}
+	return append(a, "-g", "120", "-keyint_min", "120")
+}
+
 // hardwareTargetBitrate returns target-bitrate rate control, used for
 // low-latency streaming and for videotoolbox (which lacks a reliable
 // constant-quality mode). Empty preset fields are omitted.
