@@ -115,10 +115,10 @@ func AnalyzeAudioForKind(ctx context.Context, ffmpeg, sourcePath string, kind So
 				samples := len(data) / 2
 				if samples > 0 {
 					end := len(data) - remainder
+					_ = end
 					pcm := make([]int16, samples)
-					if err := binary.Read(bytes.NewReader(data[:end]), binary.LittleEndian, &pcm); err != nil {
-						done <- fmt.Errorf("read pcm: %w", err)
-						return
+					for i := 0; i < samples; i++ {
+						pcm[i] = int16(binary.LittleEndian.Uint16(data[i*2:]))
 					}
 					if err := az.ConsumeStereo(pcm); err != nil {
 						done <- err
