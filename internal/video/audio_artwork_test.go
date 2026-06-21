@@ -270,7 +270,7 @@ func mustWriteFakeFFmpegValid(t *testing.T, dir string) string {
 	} else {
 		path = filepath.Join(dir, "ffmpeg_test")
 		script = "#!/bin/sh\n" +
-			"outPath=\"${@: -1}\"\n" +
+			"for outPath in \"$@\"; do :; done\n" +
 			"[ -n \"$outPath\" ] || exit 1\n" +
 			"echo '" + pngBase64 + "' | base64 -d > \"$outPath\" 2>/dev/null\n"
 	}
@@ -302,7 +302,7 @@ func mustWriteFakeFFmpegCorrupt(t *testing.T, dir string) string {
 	} else {
 		path = filepath.Join(dir, "ffmpeg_corrupt")
 		script = "#!/bin/sh\n" +
-			"outPath=\"${@: -1}\"\n" +
+			"for outPath in \"$@\"; do :; done\n" +
 			"[ -n \"$outPath\" ] || exit 1\n" +
 			"echo \"notanimage\" > \"$outPath\"\n"
 	}

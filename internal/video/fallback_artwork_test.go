@@ -8,6 +8,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -135,6 +136,11 @@ func TestRenderFallbackArtworkIsDeterministic(t *testing.T) {
 }
 
 func TestRenderFallbackArtworkGolden(t *testing.T) {
+	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
+		// Golden is an exact-byte PNG from FFmpeg drawtext, which varies by
+		// freetype/ffmpeg build; pin verification to the shipping platforms.
+		t.Skip("ffmpeg-rendered golden is build-sensitive; skip on non-shipping OS")
+	}
 	testFFmpeg := func(t *testing.T) string {
 		t.Helper()
 		path, err := ffmpegPath()

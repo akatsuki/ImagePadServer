@@ -14,6 +14,9 @@ import (
 )
 
 func TestEnsureFFprobeRepairsStaleConfiguredPath(t *testing.T) {
+	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
+		t.Skip("ffprobe bundle auto-install is only wired for windows/darwin")
+	}
 	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
 	t.Setenv("IMAGEPAD_FFPROBE", filepath.Join(t.TempDir(), "missing-ffprobe"))
 	t.Setenv("IMAGEPAD_FFMPEG", "")
@@ -60,6 +63,9 @@ func TestEnsureFFprobeRepairsStaleConfiguredPath(t *testing.T) {
 }
 
 func TestEnsureFFprobeConcurrentRepairRunsInstallerOnce(t *testing.T) {
+	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
+		t.Skip("ffprobe bundle auto-install is only wired for windows/darwin")
+	}
 	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
 	t.Setenv("IMAGEPAD_FFPROBE", filepath.Join(t.TempDir(), "stale-ffprobe"))
 	t.Setenv("IMAGEPAD_FFMPEG", "")
