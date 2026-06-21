@@ -322,7 +322,10 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 		}
 		s.clearPublication()
 
-		s.setIngest(ingestDownloading, req.URL)
+		if !s.tryBeginIngest(ingestDownloading, req.URL) {
+			http.Error(w, "別の取り込み処理が進行中です", http.StatusConflict)
+			return
+		}
 		defer s.clearIngest()
 
 		// Preserve SoundCloud-page detection (uses yt-dlp).
@@ -477,7 +480,10 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		s.setIngest(ingestDownloading, req.URL)
+		if !s.tryBeginIngest(ingestDownloading, req.URL) {
+			http.Error(w, "別の取り込み処理が進行中です", http.StatusConflict)
+			return
+		}
 		defer s.clearIngest()
 
 		// Preserve SoundCloud-page detection (uses yt-dlp).

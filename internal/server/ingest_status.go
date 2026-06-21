@@ -18,6 +18,22 @@ type ingestStatus struct {
 	title  string
 }
 
+// tryBeginIngest atomically claims the single ingest slot. It returns false if
+// an ingest is already in progress, so callers can reject concurrent/duplicate
+// requests (preventing the runaway re-processing loop) instead of piling work
+// up. The holder must call clearIngest when done (via defer).
+func (s *Server) tryBeginIngest(phase, title string) bool {
+	s.ingest.mu.Lock()
+	defer s.ingest.mu.Unlock()
+	if s.ingest.active {
+		return false
+	}
+	s.ingest.active = true
+	s.ingest.phase = phase
+	s.ingest.title = title
+	return true
+}
+
 func (s *Server) setIngest(phase, title string) {
 	s.ingest.mu.Lock()
 	s.ingest.active = true
