@@ -257,11 +257,24 @@ func (p VideoEncoderProfile) FFmpegArgs(preset QualityPreset, softwarePreset str
 // private options are not valid for the GPU encoders, so they are software-only.
 // Place the result after encoder.FFmpegArgs(...).
 func staticContentEncodeOptions(encoder VideoEncoderProfile) []string {
-	var a []string
+	// Long GOP aligned to the 4s segment is generic and safe everywhere.
+	a := []string{"-g", "120", "-keyint_min", "120"}
 	if !encoder.Hardware {
-		a = append(a, "-tune", "animation", "-sc_threshold", "0")
+		// libx264: flat-content tune + no scene-cut keyframes.
+		return append(a, "-tune", "animation", "-sc_threshold", "0")
 	}
-	return append(a, "-g", "120", "-keyint_min", "120")
+	// GPU encoders have no content-type tune (NVENC's tune is hq/ll/ull and hq
+	// is already the default), but they expose equivalent static-content knobs:
+	// look-ahead, scene-cut keyframes disabled, and B-frames.
+	switch encoder.Name {
+	case "h264_nvenc":
+		// -no-scenecut is the NVENC analog of libx264 -sc_threshold 0; it only
+		// applies when look-ahead is enabled.
+		a = append(a, "-rc-lookahead", "20", "-no-scenecut", "1", "-bf", "3")
+	case "h264_amf":
+		a = append(a, "-bf", "3")
+	}
+	return a
 }
 
 // hardwareTargetBitrate returns target-bitrate rate control, used for

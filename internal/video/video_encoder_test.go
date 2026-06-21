@@ -155,6 +155,28 @@ func TestStillAndUploadedArgsUseInjectedEncoder(t *testing.T) {
 	}
 }
 
+func TestStaticContentEncodeOptions(t *testing.T) {
+	cases := map[string][]string{
+		"libx264":    {"-tune animation", "-sc_threshold 0", "-g 120", "-keyint_min 120"},
+		"h264_nvenc": {"-g 120", "-keyint_min 120", "-rc-lookahead 20", "-no-scenecut 1", "-bf 3"},
+		"h264_amf":   {"-g 120", "-keyint_min 120", "-bf 3"},
+		"h264_qsv":   {"-g 120", "-keyint_min 120"},
+	}
+	for name, wants := range cases {
+		joined := strings.Join(staticContentEncodeOptions(NewVideoEncoderProfile(name, EncoderStandard)), " ")
+		for _, w := range wants {
+			if !strings.Contains(joined, w) {
+				t.Errorf("%s static options missing %q: %s", name, w, joined)
+			}
+		}
+	}
+	// GPU encoders must never receive the libx264-private flags.
+	nv := strings.Join(staticContentEncodeOptions(NewVideoEncoderProfile("h264_nvenc", EncoderStandard)), " ")
+	if strings.Contains(nv, "-sc_threshold") || strings.Contains(nv, "-tune animation") {
+		t.Errorf("nvenc must not use libx264-only flags: %s", nv)
+	}
+}
+
 func TestStandardHardwareUsesConstantQualityNotTargetBitrate(t *testing.T) {
 	// Regression: GPU standard encodes must use constant quality (capped), not
 	// a target bitrate, so highly compressible visualizer video stays small
