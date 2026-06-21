@@ -30,6 +30,43 @@ func feedAnalyzerChunks(t *testing.T, a *streamAnalyzer, pcm []int16) {
 	}
 }
 
+// TestParallelAnalysisDeterministic verifies the parallel spectrum pipeline
+// produces identical, correctly-ordered output across runs (catches ordering
+// or data-race nondeterminism in the worker pool).
+func TestParallelAnalysisDeterministic(t *testing.T) {
+	pcm := stereoTone(3, 0.8)
+
+	run := func() AudioAnalysis {
+		a := newStreamAnalyzer()
+		feedAnalyzerChunks(t, a, pcm)
+		res, err := a.Finish()
+		if err != nil {
+			t.Fatalf("Finish: %v", err)
+		}
+		return res
+	}
+
+	a1 := run()
+	a2 := run()
+
+	if len(a1.Frames) == 0 {
+		t.Fatal("no frames produced")
+	}
+	if len(a1.Frames) != len(a2.Frames) {
+		t.Fatalf("frame count differs: %d vs %d", len(a1.Frames), len(a2.Frames))
+	}
+	for i := range a1.Frames {
+		if a1.Frames[i].Spectrum24 != a2.Frames[i].Spectrum24 {
+			t.Fatalf("frame %d differs between runs (nondeterministic ordering/race)", i)
+		}
+	}
+	if a1.Features.SpectralCentroid != a2.Features.SpectralCentroid ||
+		a1.Features.LowFrequencyRatio != a2.Features.LowFrequencyRatio ||
+		a1.Features.Fingerprint64 != a2.Features.Fingerprint64 {
+		t.Fatal("track-level features differ between runs")
+	}
+}
+
 func frameEnergy(frame AudioFrame) float64 {
 	var total float64
 	for _, value := range frame.Spectrum24 {

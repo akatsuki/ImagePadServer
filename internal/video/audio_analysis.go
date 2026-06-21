@@ -10,6 +10,7 @@ import (
 	"math"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"strconv"
 	"sync"
 
@@ -176,10 +177,22 @@ func AnalyzeAudioForKind(ctx context.Context, ffmpeg, sourcePath string, kind So
 	return analysis, nil
 }
 
+type spectrumJob struct {
+	idx    int
+	window []float64
+}
+
+type spectrumResult struct {
+	idx      int
+	spectrum [24]float64
+	centroid float64
+	lowRatio float64
+	bands64  []float64
+}
+
 type streamAnalyzer struct {
 	pcm               []float64
 	totalMonoSamples  int64
-	fft               *fourier.FFT
 	frames            []AudioFrame
 	monoBuf           []float64
 	onsetFlux         []float64
@@ -195,17 +208,87 @@ type streamAnalyzer struct {
 	lowRatioSum       float64
 	spectralFrames    int
 	mu                sync.Mutex
+
+	// Parallel spectrum pipeline. Per-window FFT work is the dominant analysis
+	// cost; windows are independent, so they are dispatched to a worker pool
+	// (each worker owns its fourier.FFT, which is not concurrency-safe) and
+	// gathered by a single collector goroutine. Results carry a frame index so
+	// out-of-order completion is fine, and the per-track sums are
+	// order-independent. The collector never blocks, so the pipeline cannot
+	// deadlock.
+	dispatched   int
+	jobs         chan spectrumJob
+	results      chan spectrumResult
+	workersWG    sync.WaitGroup
+	collectorWG  sync.WaitGroup
+	frameResults map[int]spectrumResult
 }
 
 func newStreamAnalyzer() *streamAnalyzer {
-	return &streamAnalyzer{
+	a := &streamAnalyzer{
 		pcm:            make([]float64, 0, fftWindowSize+frameAdvance),
-		fft:            fourier.NewFFT(fftWindowSize),
 		frames:         make([]AudioFrame, 0, 3000),
 		monoBuf:        make([]float64, 0, onsetHopSamples),
 		onsetFlux:      make([]float64, 0, 6000),
 		loudnessBlocks: make([]float64, 0, 6000),
+		frameResults:   make(map[int]spectrumResult),
 	}
+	workers := runtime.NumCPU()
+	if workers > 8 {
+		workers = 8
+	}
+	if workers < 1 {
+		workers = 1
+	}
+	a.jobs = make(chan spectrumJob, workers*2)
+	a.results = make(chan spectrumResult, workers*2)
+	for w := 0; w < workers; w++ {
+		a.workersWG.Add(1)
+		go a.spectrumWorker()
+	}
+	a.collectorWG.Add(1)
+	go a.collector()
+	return a
+}
+
+// spectrumWorker computes the windowed FFT and band features for each job.
+func (a *streamAnalyzer) spectrumWorker() {
+	defer a.workersWG.Done()
+	fft := fourier.NewFFT(fftWindowSize)
+	weighted := make([]float64, fftWindowSize)
+	for job := range a.jobs {
+		for i, v := range job.window {
+			weighted[i] = v * 0.5 * (1 - math.Cos(2*math.Pi*float64(i)/float64(fftWindowSize-1)))
+		}
+		spectrum := fft.Coefficients(nil, weighted)
+		centroid, lowRatio := spectrumFeatures(spectrum, sampleRate)
+		a.results <- spectrumResult{
+			idx:      job.idx,
+			spectrum: fractionalLogBandEnergies(spectrum, sampleRate),
+			centroid: centroid,
+			lowRatio: lowRatio,
+			bands64:  mapLogBands(spectrum, 64),
+		}
+	}
+}
+
+// collector gathers worker results into the frame map keyed by index. Summation
+// is deferred to Finish so it happens in deterministic index order (float
+// addition is not associative), which also reproduces the sequential result.
+func (a *streamAnalyzer) collector() {
+	defer a.collectorWG.Done()
+	for r := range a.results {
+		a.frameResults[r.idx] = r
+	}
+}
+
+// drainPipeline closes the job queue and waits for workers and the collector to
+// finish. Safe to call exactly once, from Finish.
+func (a *streamAnalyzer) drainPipeline() {
+	close(a.jobs)
+	a.workersWG.Wait()
+	close(a.results)
+	a.collectorWG.Wait()
 }
 
 func (a *streamAnalyzer) ConsumeStereo(samples []int16) error {
@@ -244,26 +327,15 @@ func (a *streamAnalyzer) ConsumeStereo(samples []int16) error {
 	return nil
 }
 
+// consumeSpectrumWindow dispatches one FFT window (copied, since the backing
+// pcm buffer is reused) to the worker pool. The actual FFT/band work happens on
+// a worker; results are gathered by the collector. Blocking on a full job queue
+// provides backpressure that bounds in-flight memory.
 func (a *streamAnalyzer) consumeSpectrumWindow(window []float64) {
-	weighted := make([]float64, fftWindowSize)
-	for i := range weighted {
-		weighted[i] = window[i] * 0.5 * (1 - math.Cos(2*math.Pi*float64(i)/float64(fftWindowSize-1)))
-	}
-	spectrum := a.fft.Coefficients(nil, weighted)
-	// Raw per-frame band magnitudes. Track-level normalization and attack/
-	// release smoothing are applied in Finish. fractionalLogBandEnergies
-	// weights partially overlapping FFT bins so narrow low-frequency bands
-	// (0, 1, 3) receive energy instead of collapsing to zero.
-	a.frames = append(a.frames, AudioFrame{Spectrum24: fractionalLogBandEnergies(spectrum, sampleRate)})
-	centroid, lowRatio := spectrumFeatures(spectrum, sampleRate)
-	a.centroidSum += centroid
-	a.lowRatioSum += lowRatio
-	a.spectralFrames++
-	bands64 := mapLogBands(spectrum, 64)
-	for i := range a.fingerprintSum {
-		a.fingerprintSum[i] += bands64[i]
-	}
-	a.fingerprintFrames++
+	buf := make([]float64, fftWindowSize)
+	copy(buf, window)
+	a.jobs <- spectrumJob{idx: a.dispatched, window: buf}
+	a.dispatched++
 }
 
 func (a *streamAnalyzer) Finish() (AudioAnalysis, error) {
@@ -271,13 +343,14 @@ func (a *streamAnalyzer) Finish() (AudioAnalysis, error) {
 	defer a.mu.Unlock()
 	duration := float64(a.totalMonoSamples) / sampleRate
 	if duration <= 0 {
+		a.drainPipeline()
 		return AudioAnalysis{}, fmt.Errorf("zero duration")
 	}
 	if a.loudnessCount > 0 {
 		a.loudnessBlocks = append(a.loudnessBlocks, math.Sqrt(a.loudnessSumSq/float64(a.loudnessCount)))
 	}
 	expectedFrames := int(math.Ceil(duration * 30))
-	for len(a.frames) < expectedFrames {
+	for a.dispatched < expectedFrames {
 		window := make([]float64, fftWindowSize)
 		copy(window, a.pcm)
 		a.consumeSpectrumWindow(window)
@@ -286,6 +359,23 @@ func (a *streamAnalyzer) Finish() (AudioAnalysis, error) {
 		} else {
 			a.pcm = nil
 		}
+	}
+
+	// All windows dispatched: drain the pool, then assemble frames and the
+	// per-track sums in index order (deterministic, matches the sequential
+	// version exactly since float addition is order-dependent).
+	a.drainPipeline()
+	a.frames = make([]AudioFrame, a.dispatched)
+	for i := 0; i < a.dispatched; i++ {
+		r := a.frameResults[i]
+		a.frames[i] = AudioFrame{Spectrum24: r.spectrum}
+		a.centroidSum += r.centroid
+		a.lowRatioSum += r.lowRatio
+		a.spectralFrames++
+		for j := range a.fingerprintSum {
+			a.fingerprintSum[j] += r.bands64[j]
+		}
+		a.fingerprintFrames++
 	}
 	if len(a.frames) > expectedFrames {
 		a.frames = a.frames[:expectedFrames]
