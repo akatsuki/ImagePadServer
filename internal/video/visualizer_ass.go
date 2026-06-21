@@ -59,6 +59,7 @@ func BuildVisualizerASSWithMode(metadata AudioMetadata, duration float64, layout
 	b.WriteString(fmt.Sprintf("PlayResX: %d\n", width))
 	b.WriteString(fmt.Sprintf("PlayResY: %d\n", height))
 	b.WriteString("ScaledBorderAndShadow: yes\n")
+	b.WriteString("WrapStyle: 2\n")
 	b.WriteString("\n")
 
 	// --- [V4+ Styles] ---
@@ -70,7 +71,7 @@ func BuildVisualizerASSWithMode(metadata AudioMetadata, duration float64, layout
 	albumSize := scaledFontSize(24, width)
 	timeSize := scaledFontSize(22, width)
 
-	primary := assForegroundColor(mode.Color, 0.88)
+	primary := assForegroundColor(mode.PrimaryColor, 0.88)
 	// Use alignment 4 (middle-left) for title, artist, album.
 	writeStyle(&b, "Title", titleFontName, titleSize, 600, 4, primary)
 	writeStyle(&b, "Artist", artistFontName, artistSize, 500, 4, primary)
@@ -124,7 +125,7 @@ func BuildVisualizerASSWithMode(metadata AudioMetadata, duration float64, layout
 		posY := viewportY + viewportH/2
 		clip := fmt.Sprintf("\\clip(%d,%d,%d,%d)", viewportX, viewportY-clipPad, viewportX+viewportW, viewportY+viewportH+clipPad)
 		writeDialogue(&b, "0:00:00.00", assTimestamp(totalDuration),
-			"Title", fmt.Sprintf("%s\\pos(%d,%d)", clip, posX, posY), titleText)
+			"Title", fmt.Sprintf("%s\\q2\\pos(%d,%d)", clip, posX, posY), titleText)
 	} else {
 		buildScrollingDialogue(&b, totalDuration, "Title", titleText, float64(titleWidth), float64(viewportW), float64(viewportX), float64(viewportY), float64(viewportH), clipPad, float64(width))
 	}
@@ -210,7 +211,13 @@ func escapeASSText(s string) string {
 	return s
 }
 
-// scrollCycle computes the overflow distance, hold duration, move duration,
+const (
+	scrollExtraMoveSeconds = 2.0
+	scrollBlankSeconds     = 0.5
+	scrollFadeMilliseconds = 300
+)
+
+// scrollCycle computes the overflow distance, hold duration, extended move duration,
 // and total cycle duration for scrolling metadata text.
 //
 // When text fits within the viewport (textWidth <= viewportWidth), all returned
@@ -218,7 +225,8 @@ func escapeASSText(s string) string {
 //
 // When overflow exists, hold is always 3.0 seconds. The scroll speed is
 // 40 * outputWidth / 1280 (canonical pixels per second scaled to output
-// resolution). Move duration is overflow / speed. Total cycle is hold + move.
+// resolution). Movement continues for two extra seconds at the same speed, then
+// the viewport stays blank for 500 ms before the next cycle.
 func scrollCycle(textWidth, viewportWidth, outputWidth float64) (overflow, hold, move, total float64) {
 	if textWidth <= viewportWidth {
 		return 0, 0, 0, 0
@@ -226,8 +234,8 @@ func scrollCycle(textWidth, viewportWidth, outputWidth float64) (overflow, hold,
 	overflow = textWidth - viewportWidth
 	speed := 40.0 * outputWidth / 1280.0
 	hold = 3.0
-	move = overflow / speed
-	total = hold + move
+	move = overflow/speed + scrollExtraMoveSeconds
+	total = hold + move + scrollBlankSeconds
 	return
 }
 
@@ -235,7 +243,8 @@ func scrollCycle(textWidth, viewportWidth, outputWidth float64) (overflow, hold,
 // clipPad is the vertical clip expansion (AV-821). outputWidth is the PlayResX
 // value used to scale the scroll speed (AV-822).
 func buildScrollingDialogue(b *strings.Builder, totalDuration float64, style, text string, textWidth, viewportW, viewportX, viewportY, viewportH float64, clipPad int, outputWidth float64) {
-	overflow, hold, _, cycleDuration := scrollCycle(textWidth, viewportW, outputWidth)
+	overflow, hold, moveDuration, cycleDuration := scrollCycle(textWidth, viewportW, outputWidth)
+	scaledSpeed := 40.0 * outputWidth / 1280.0
 
 	posY := viewportY + viewportH/2.0
 
@@ -258,7 +267,7 @@ func buildScrollingDialogue(b *strings.Builder, totalDuration float64, style, te
 		}
 
 		pausePosX := int(viewportX)
-		override := fmt.Sprintf("%s\\pos(%d,%d)", clipStr, pausePosX, int(posY))
+		override := fmt.Sprintf("%s\\q2\\fad(%d,0)\\pos(%d,%d)", clipStr, scrollFadeMilliseconds, pausePosX, int(posY))
 		writeDialogue(b, assTimestamp(cycleStart), assTimestamp(pauseEnd), style, override, text)
 
 		if pauseEnd >= totalDuration {
@@ -267,16 +276,16 @@ func buildScrollingDialogue(b *strings.Builder, totalDuration float64, style, te
 
 		// Scroll phase
 		scrollStart := pauseEnd
-		scrollEnd := cycleStart + cycleDuration
+		scrollEnd := scrollStart + moveDuration
 		if scrollEnd > totalDuration {
 			scrollEnd = totalDuration
 		}
 
 		// Use \move for smooth scrolling
 		startX := int(viewportX)
-		endX := int(viewportX - overflow)
+		endX := int(math.Round(viewportX - overflow - scaledSpeed*scrollExtraMoveSeconds))
 
-		moveOverride := fmt.Sprintf("%s\\move(%d,%d,%d,%d)", clipStr, startX, int(posY), endX, int(posY))
+		moveOverride := fmt.Sprintf("%s\\q2\\fad(0,%d)\\move(%d,%d,%d,%d)", clipStr, scrollFadeMilliseconds, startX, int(posY), endX, int(posY))
 		writeDialogue(b, assTimestamp(scrollStart), assTimestamp(scrollEnd), style, moveOverride, text)
 
 		currentTime = cycleEnd

@@ -13,6 +13,7 @@ import (
 type Settings struct {
 	SteamVRExplicitlyDisabled bool          `json:"steamvrExplicitlyDisabled"`
 	VideoPlayerEnabled        bool          `json:"videoPlayerEnabled"`
+	MusicModeEnabled          bool          `json:"musicModeEnabled"`
 	VideoQualityMode          string        `json:"videoQualityMode,omitempty"`
 	NetworkMbps               int           `json:"networkMbps,omitempty"`
 	NetworkUploadMbps         int           `json:"networkUploadMbps,omitempty"`

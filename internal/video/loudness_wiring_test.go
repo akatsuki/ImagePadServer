@@ -40,7 +40,7 @@ func TestLoudnessLayerUsesRelativeNormalization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mode := ForegroundMode{Color: color.RGBA{R: 255, G: 255, B: 255, A: 255}}
+	mode := ForegroundMode{AccentColor: color.RGBA{R: 255, G: 255, B: 255, A: 255}}
 	env := quietPeakedEnvelope()
 	lr := layout.Loudness
 

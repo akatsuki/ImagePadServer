@@ -50,8 +50,8 @@ func TestSpectrumFixedBottomFade(t *testing.T) {
 	draw.Draw(base, base.Bounds(), &image.Uniform{bgColor}, image.Point{}, draw.Src)
 
 	mode := ForegroundMode{
-		Color:   color.RGBA{255, 255, 255, 255},
-		Overlay: color.RGBA{0, 0, 0, 0}, // transparent overlay
+		AccentColor: color.RGBA{255, 255, 255, 255},
+		Overlay:     color.RGBA{0, 0, 0, 0}, // transparent overlay
 	}
 	layout, _ := LayoutForSize(width, height)
 
@@ -65,7 +65,7 @@ func TestSpectrumFixedBottomFade(t *testing.T) {
 
 	input := AudioRenderInput{
 		Analysis: AudioAnalysis{
-			FPS:     30,
+			FPS:      30,
 			Duration: 1.0 / 30,
 			Frames:   []AudioFrame{frame},
 		},
@@ -190,8 +190,8 @@ func TestSpectrumDirectRender(t *testing.T) {
 		draw.Draw(canvas, canvas.Bounds(), &image.Uniform{color.RGBA{0, 0, 0, 255}}, image.Point{}, draw.Src)
 
 		mode := ForegroundMode{
-			Color:   color.RGBA{255, 255, 255, 255},
-			Overlay: color.RGBA{0, 0, 0, 0},
+			AccentColor: color.RGBA{255, 255, 255, 255},
+			Overlay:     color.RGBA{0, 0, 0, 0},
 		}
 		layout, err := LayoutForSize(width, height)
 		if err != nil {
@@ -209,7 +209,7 @@ func TestSpectrumDirectRender(t *testing.T) {
 		firstBarX := layout.Spectrum.X + 11                // 443
 		barW := 18
 		barGap := 13
-		fadePx := SpectrumFadeHeight(width) // 10
+		fadePx := SpectrumFadeHeight(width)         // 10
 		maxAlpha := uint8(math.Round(0.82 * 255.0)) // 209
 
 		// Use bar index 1 (first tall bar).
@@ -241,8 +241,8 @@ func TestSpectrumDirectRender(t *testing.T) {
 		draw.Draw(canvas, canvas.Bounds(), &image.Uniform{color.RGBA{0, 0, 0, 255}}, image.Point{}, draw.Src)
 
 		mode := ForegroundMode{
-			Color:   color.RGBA{255, 255, 255, 255},
-			Overlay: color.RGBA{0, 0, 0, 0},
+			AccentColor: color.RGBA{255, 255, 255, 255},
+			Overlay:     color.RGBA{0, 0, 0, 0},
 		}
 		layout, err := LayoutForSize(width, height)
 		if err != nil {
@@ -300,8 +300,8 @@ func TestSpectrumDirectRender(t *testing.T) {
 
 		// Must not panic.
 		drawSpectrumFixedFade(canvas, spectrum, ForegroundMode{
-			Color:   color.RGBA{255, 255, 255, 255},
-			Overlay: color.RGBA{0, 0, 0, 0},
+			AccentColor: color.RGBA{255, 255, 255, 255},
+			Overlay:     color.RGBA{0, 0, 0, 0},
 		}, layout)
 
 		// Bottom bar pixel must have R = 0 (bar alpha = 0 → bg unchanged).

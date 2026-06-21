@@ -25,7 +25,7 @@ import (
 // Parameters:
 //   - envelope: 1000 normalized relative-loudness samples (values 0…1).
 //   - trend:    1000 smoothed trend samples (e.g. from SmoothLoudnessTrend).
-//   - mode:     ForegroundMode whose Color is applied to all elements.
+//   - mode:     ForegroundMode whose AccentColor is applied to all elements.
 //   - layout:   pre-scaled VisualizerLayout containing the Loudness rectangle.
 //   - width, height: output frame dimensions in pixels.
 func renderLoudnessLayer(
@@ -52,14 +52,17 @@ func renderLoudnessLayer(
 	// -----------------------------------------------------------------------
 	// Element colours
 	// -----------------------------------------------------------------------
-	guideCol := mode.Color
+	guideCol := mode.AccentColor
 	guideCol.A = uint8(math.Round(0.22 * 255))
+	guideCol = premultiplyRGBA(guideCol)
 
-	detailCol := mode.Color
+	detailCol := mode.AccentColor
 	detailCol.A = uint8(math.Round(0.80 * 255))
+	detailCol = premultiplyRGBA(detailCol)
 
-	trendCol := mode.Color
+	trendCol := mode.AccentColor
 	trendCol.A = uint8(math.Round(0.95 * 255))
+	trendCol = premultiplyRGBA(trendCol)
 
 	// -----------------------------------------------------------------------
 	// Line widths at 4× (sub-pixel circle radii)
@@ -130,6 +133,18 @@ func renderLoudnessLayer(
 	draw.Draw(out, dstRect, down, image.Point{}, draw.Over)
 
 	return out
+}
+
+// premultiplyRGBA converts straight-alpha channel values into the
+// alpha-premultiplied representation required by image.RGBA and draw.Over.
+func premultiplyRGBA(c color.RGBA) color.RGBA {
+	a := uint16(c.A)
+	return color.RGBA{
+		R: uint8((uint16(c.R)*a + 127) / 255),
+		G: uint8((uint16(c.G)*a + 127) / 255),
+		B: uint8((uint16(c.B)*a + 127) / 255),
+		A: c.A,
+	}
 }
 
 // ---------------------------------------------------------------------------

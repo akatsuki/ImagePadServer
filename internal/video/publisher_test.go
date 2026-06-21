@@ -1,10 +1,42 @@
 package video
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestApplyQueueProgressUsesActualPlaylistDurations(t *testing.T) {
+	outDir := t.TempDir()
+	id := "progress-media"
+	playlist := "#EXTM3U\n#EXT-X-TARGETDURATION:9\n" +
+		"#EXTINF:8.333333,\nsegment-0.ts\n" +
+		"#EXTINF:8.333333,\nsegment-1.ts\n"
+	if err := os.WriteFile(filepath.Join(outDir, playlistName(id)), []byte(playlist), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{
+		"current-" + safeID(id) + "-100-0.ts",
+		"current-" + safeID(id) + "-100-1.ts",
+	} {
+		if err := os.WriteFile(filepath.Join(outDir, name), []byte("segment"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	job := &queueJob{QueueItem: QueueItem{MediaID: id}, OutDir: outDir, TotalSeconds: 60}
+	item := QueueItem{}
+	applyQueueProgressLocked(job, &item)
+
+	if item.ProgressPercent != 28 {
+		t.Fatalf("ProgressPercent = %d, want 28 from 16.67 / 60 seconds", item.ProgressPercent)
+	}
+	if item.ProgressText != "28% (17 / 60 sec)" {
+		t.Fatalf("ProgressText = %q, want actual EXTINF duration", item.ProgressText)
+	}
+}
 
 // TestCancelConversionDiscardsPreemptedJob verifies that replacing the published
 // media stops the old conversion permanently: a running-but-preempted job for the

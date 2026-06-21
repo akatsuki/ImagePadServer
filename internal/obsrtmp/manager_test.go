@@ -37,6 +37,25 @@ func TestFFmpegArgsUseLowLatencyHLS(t *testing.T) {
 	}
 }
 
+func TestFFmpegArgsUseInjectedHardwareEncoder(t *testing.T) {
+	manager := newTestManager(t, "low")
+	profile := video.NewVideoEncoderProfile("h264_nvenc", video.EncoderLowLatency)
+	args := manager.ffmpegArgsWithEncoder("media123", "recording.mp4", video.ResolveQuality("720", 0), profile)
+
+	if !containsSubsequence(args, []string{"-c:v", "h264_nvenc"}) {
+		t.Fatalf("expected injected NVENC encoder: %s", strings.Join(args, " "))
+	}
+	if got := valueAfter(args, "-preset"); got != "p1" {
+		t.Fatalf("preset = %q, want p1: %s", got, strings.Join(args, " "))
+	}
+	if got := valueAfter(args, "-tune"); got != "ull" {
+		t.Fatalf("tune = %q, want ull: %s", got, strings.Join(args, " "))
+	}
+	if slices.Contains(args, "libx264") {
+		t.Fatalf("hardware args must not include libx264: %s", strings.Join(args, " "))
+	}
+}
+
 func TestFFmpegArgsUseAutoLatencyProfile(t *testing.T) {
 	manager := newTestManager(t, "auto")
 	args := manager.ffmpegArgs("media123", "recording.mp4", video.ResolveQuality("720", 0))

@@ -36,6 +36,18 @@ The active AI owns this ledger. Workers report evidence; they do not edit status
 | AV-717 | MERGED | AV-712, AV-715 | 92dd9fd | llm-flash | a620687 | history re-analysis |
 | AV-718 | MERGED | AV-716, AV-717 | a2cec2f | active AI | a2cec2f | correction QA: 289 tests 3x |
 | AV-719 | MERGED | AV-718 | a2cec2f | active AI | a2cec2f | closure: gates restored |
+| AV-801 | SUPERSEDED | leaf plan | bab353e | - | - | parent epic; dispatch AV-821 and AV-822 |
+| AV-802 | SUPERSEDED | leaf plan | bab353e | - | - | parent epic; dispatch AV-823 and AV-824 |
+| AV-803 | SUPERSEDED | leaf plan | bab353e | - | - | parent epic; dispatch AV-831 through AV-833 |
+| AV-804 | SUPERSEDED | leaf plan | bab353e | - | - | parent epic; dispatch AV-834 and AV-835 |
+| AV-805 | SUPERSEDED | leaf plan | bab353e | - | - | parent epic; dispatch AV-841 |
+| AV-806 | SUPERSEDED | leaf plan | bab353e | - | - | parent epic; dispatch AV-842 |
+| AV-807 | SUPERSEDED | leaf plan | bab353e | - | - | parent epic; dispatch AV-843 and AV-844 |
+| AV-808 | SUPERSEDED | leaf plan | bab353e | - | - | parent epic; dispatch AV-845 and AV-846 |
+| AV-809 | SUPERSEDED | leaf plan | bab353e | - | - | parent epic; dispatch AV-851 and AV-852 |
+| AV-810 | SUPERSEDED | leaf plan | bab353e | - | - | parent epic; dispatch AV-853 through AV-855 |
+| AV-811 | SUPERSEDED | leaf plan | bab353e | - | - | parent epic; dispatch AV-861 and AV-862 |
+| AV-812 | SUPERSEDED | leaf plan | bab353e | - | - | parent epic; dispatch AV-871 through AV-875 |
 
 ## Status update record
 

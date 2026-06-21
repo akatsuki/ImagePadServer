@@ -48,17 +48,17 @@ func writeTestOTF(path, familyName, postScriptName string) error {
 	buf = binary.BigEndian.AppendUint32(buf, uint32(nameTableLen))
 
 	// Name table.
-	stringsOff := uint16(6 + 24) // header + 2 records
-	buf = binary.BigEndian.AppendUint16(buf, 0)  // format
-	buf = binary.BigEndian.AppendUint16(buf, 2)  // count
+	stringsOff := uint16(6 + 24)                // header + 2 records
+	buf = binary.BigEndian.AppendUint16(buf, 0) // format
+	buf = binary.BigEndian.AppendUint16(buf, 2) // count
 	buf = binary.BigEndian.AppendUint16(buf, stringsOff)
 
 	// Record 1: Name ID 1 (family).
 	famOff := uint16(0)
-	buf = binary.BigEndian.AppendUint16(buf, 3)     // platformID = Windows
-	buf = binary.BigEndian.AppendUint16(buf, 1)     // encodingID
+	buf = binary.BigEndian.AppendUint16(buf, 3)      // platformID = Windows
+	buf = binary.BigEndian.AppendUint16(buf, 1)      // encodingID
 	buf = binary.BigEndian.AppendUint16(buf, 0x0409) // languageID
-	buf = binary.BigEndian.AppendUint16(buf, 1)     // nameID = family
+	buf = binary.BigEndian.AppendUint16(buf, 1)      // nameID = family
 	buf = binary.BigEndian.AppendUint16(buf, uint16(len(fam)))
 	buf = binary.BigEndian.AppendUint16(buf, famOff)
 
@@ -66,7 +66,7 @@ func writeTestOTF(path, familyName, postScriptName string) error {
 	psOff := uint16(len(fam))
 	buf = binary.BigEndian.AppendUint16(buf, 3)      // platformID = Windows
 	buf = binary.BigEndian.AppendUint16(buf, 1)      // encodingID
-	buf = binary.BigEndian.AppendUint16(buf, 0x0409)  // languageID
+	buf = binary.BigEndian.AppendUint16(buf, 0x0409) // languageID
 	buf = binary.BigEndian.AppendUint16(buf, 6)      // nameID = postscript
 	buf = binary.BigEndian.AppendUint16(buf, uint16(len(ps)))
 	buf = binary.BigEndian.AppendUint16(buf, psOff)
@@ -102,7 +102,11 @@ func TestBuildVisualizerASSUsesGlobalForegroundMode(t *testing.T) {
 	fonts := writeTestFonts(t)
 	meta := AudioMetadata{Title: "Title", Artist: "Artist"}
 	metrics := map[string]TextMetrics{"title": {Width: 100}, "artist": {Width: 80}}
-	darkMode := ForegroundMode{Color: color.RGBA{0, 0, 0, 255}}
+	darkMode := ForegroundMode{
+		PrimaryColor: color.RGBA{0, 0, 0, 255},
+		AccentColor:  color.RGBA{0, 200, 0, 255},
+		Color:        color.RGBA{200, 0, 200, 255},
+	}
 	ass, err := BuildVisualizerASSWithMode(meta, 60, layout, fonts, metrics, darkMode, 1280, 720)
 	if err != nil {
 		t.Fatalf("BuildVisualizerASSWithMode: %v", err)
@@ -120,7 +124,7 @@ func TestBuildVisualizerASSUsesSpecifiedCanonicalFontSizes(t *testing.T) {
 	fonts := writeTestFonts(t)
 	meta := AudioMetadata{Title: "Title", Artist: "Artist", Album: "Album"}
 	metrics := map[string]TextMetrics{"title": {Width: 100}, "artist": {Width: 80}, "album": {Width: 60}}
-	ass, err := BuildVisualizerASSWithMode(meta, 60, layout, fonts, metrics, ForegroundMode{Color: color.RGBA{255, 255, 255, 255}}, 1280, 720)
+	ass, err := BuildVisualizerASSWithMode(meta, 60, layout, fonts, metrics, ForegroundMode{PrimaryColor: color.RGBA{255, 255, 255, 255}}, 1280, 720)
 	if err != nil {
 		t.Fatalf("BuildVisualizerASSWithMode: %v", err)
 	}
@@ -270,6 +274,31 @@ func TestBuildVisualizerASS_LongTitleScroll(t *testing.T) {
 	}
 }
 
+func TestBuildVisualizerASS_TitleIsForcedToSingleLine(t *testing.T) {
+	layout, _ := LayoutForSize(1280, 720)
+	fonts := writeTestFonts(t)
+	title := "相対性理論 - チャイナアドバイス (covered By Toccoyaki Feat. Somunia) (cexiria Bootleg)"
+	meta := AudioMetadata{Title: title, Artist: "cexiria"}
+	metrics := map[string]TextMetrics{
+		"title":  {Width: 1800, Height: 58},
+		"artist": {Width: 120, Height: 34},
+	}
+	mode := ForegroundMode{PrimaryColor: color.RGBA{R: 255, G: 255, B: 255, A: 255}}
+
+	ass, err := BuildVisualizerASSWithMode(meta, 30, layout, fonts, metrics, mode, 1280, 720)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(ass, "WrapStyle: 2") {
+		t.Fatal("ASS script does not disable automatic word wrapping")
+	}
+	for _, line := range strings.Split(ass, "\n") {
+		if strings.HasPrefix(line, "Dialogue:") && strings.Contains(line, title) && !strings.Contains(line, "\\q2") {
+			t.Fatalf("title dialogue is missing explicit no-wrap override: %s", line)
+		}
+	}
+}
+
 // TestASSMiddleAlignmentAndClipPadding verifies AV-821:
 //   - Title/Artist/Album use ASS alignment 4 (middle-left)
 //   - TimeText uses ASS alignment 5 (middle-center)
@@ -283,7 +312,7 @@ func TestASSMiddleAlignmentAndClipPadding(t *testing.T) {
 		"artist": {Width: 80, Height: 34},
 		"album":  {Width: 60, Height: 30},
 	}
-	fg := ForegroundMode{Color: color.RGBA{255, 255, 255, 255}}
+	fg := ForegroundMode{PrimaryColor: color.RGBA{255, 255, 255, 255}}
 
 	ass, buildErr := BuildVisualizerASSWithMode(meta, 10.0, layout, fonts, metrics, fg, 1280, 720)
 	if buildErr != nil {
@@ -462,7 +491,7 @@ func TestBuildVisualizerASS_TimeEvents(t *testing.T) {
 // TestASSScrollOverflowCycle verifies AV-822: scrollCycle computes
 // overflow, hold, move, and total from textWidth, viewportWidth, and
 // outputWidth.  hold is always 3.0 when overflow>0; speed is
-// 40*outputWidth/1280; move = overflow/speed; total = hold+move.
+// 40*outputWidth/1280; move = overflow/speed+2; total = hold+move+0.5.
 // When text fits (textWidth <= viewportWidth), all returned values are zero.
 func TestASSScrollOverflowCycle(t *testing.T) {
 	t.Run("no overflow when text fits", func(t *testing.T) {
@@ -478,7 +507,7 @@ func TestASSScrollOverflowCycle(t *testing.T) {
 		}
 	})
 	t.Run("basic overflow at 1280", func(t *testing.T) {
-		// overflow = 1000-752 = 248; hold = 3; speed = 40; move = 248/40 = 6.2; total = 9.2
+		// overflow = 248; base move = 6.2; extended move = 8.2; total = 11.7
 		overflow, hold, move, total := scrollCycle(1000, 752, 1280)
 		if overflow != 248 {
 			t.Errorf("overflow = %v, want 248", overflow)
@@ -486,15 +515,15 @@ func TestASSScrollOverflowCycle(t *testing.T) {
 		if hold != 3.0 {
 			t.Errorf("hold = %v, want 3.0", hold)
 		}
-		if move != 6.2 {
-			t.Errorf("move = %v, want 6.2", move)
+		if move != 8.2 {
+			t.Errorf("move = %v, want 8.2", move)
 		}
-		if total != 9.2 {
-			t.Errorf("total = %v, want 9.2", total)
+		if total != 11.7 {
+			t.Errorf("total = %v, want 11.7", total)
 		}
 	})
 	t.Run("same cycle duration at 1920", func(t *testing.T) {
-		// At 1920: viewport=1128, text=1500; overflow=372; speed=60; move=6.2; total=9.2
+		// At 1920: overflow=372; speed=60; extended move=8.2; total=11.7
 		overflow, hold, move, total := scrollCycle(1500, 1128, 1920)
 		if overflow != 372 {
 			t.Errorf("overflow = %v, want 372", overflow)
@@ -502,15 +531,15 @@ func TestASSScrollOverflowCycle(t *testing.T) {
 		if hold != 3.0 {
 			t.Errorf("hold = %v, want 3.0", hold)
 		}
-		if move != 6.2 {
-			t.Errorf("move = %v, want 6.2", move)
+		if move != 8.2 {
+			t.Errorf("move = %v, want 8.2", move)
 		}
-		if total != 9.2 {
-			t.Errorf("total = %v, want 9.2", total)
+		if total != 11.7 {
+			t.Errorf("total = %v, want 11.7", total)
 		}
 	})
 	t.Run("same cycle duration at 640", func(t *testing.T) {
-		// At 640: viewport=376, text=500; overflow=124; speed=20; move=6.2; total=9.2
+		// At 640: overflow=124; speed=20; extended move=8.2; total=11.7
 		overflow, hold, move, total := scrollCycle(500, 376, 640)
 		if overflow != 124 {
 			t.Errorf("overflow = %v, want 124", overflow)
@@ -518,27 +547,47 @@ func TestASSScrollOverflowCycle(t *testing.T) {
 		if hold != 3.0 {
 			t.Errorf("hold = %v, want 3.0", hold)
 		}
-		if move != 6.2 {
-			t.Errorf("move = %v, want 6.2", move)
+		if move != 8.2 {
+			t.Errorf("move = %v, want 8.2", move)
 		}
-		if total != 9.2 {
-			t.Errorf("total = %v, want 9.2", total)
+		if total != 11.7 {
+			t.Errorf("total = %v, want 11.7", total)
 		}
 	})
 	t.Run("zero viewport width does not panic", func(t *testing.T) {
 		overflow, hold, move, total := scrollCycle(100, 0, 1280)
-		// overflow=100, hold=3, speed=40, move=2.5, total=5.5
+		// overflow=100, hold=3, speed=40, extended move=4.5, total=8.0
 		if overflow != 100 {
 			t.Errorf("overflow = %v, want 100", overflow)
 		}
 		if hold != 3.0 {
 			t.Errorf("hold = %v, want 3.0", hold)
 		}
-		if move != 2.5 {
-			t.Errorf("move = %v, want 2.5", move)
+		if move != 4.5 {
+			t.Errorf("move = %v, want 4.5", move)
 		}
-		if total != 5.5 {
-			t.Errorf("total = %v, want 5.5", total)
+		if total != 8.0 {
+			t.Errorf("total = %v, want 8.0", total)
 		}
 	})
+}
+
+func TestScrollingDialogueExtendedFadeCycle(t *testing.T) {
+	var b strings.Builder
+	buildScrollingDialogue(&b, 25, "Title", "LONG TITLE", 1000, 752, 432, 152, 58, 2, 1280)
+	ass := b.String()
+
+	wants := []string{
+		"Dialogue: 0,0:00:00.00,0:00:03.00,Title,,0,0,0,,{\\clip(432,150,1184,212)\\q2\\fad(300,0)\\pos(432,181)}LONG TITLE",
+		"Dialogue: 0,0:00:03.00,0:00:11.20,Title,,0,0,0,,{\\clip(432,150,1184,212)\\q2\\fad(0,300)\\move(432,181,104,181)}LONG TITLE",
+		"Dialogue: 0,0:00:11.70,0:00:14.70,Title,,0,0,0,,{\\clip(432,150,1184,212)\\q2\\fad(300,0)\\pos(432,181)}LONG TITLE",
+	}
+	for _, want := range wants {
+		if !strings.Contains(ass, want) {
+			t.Errorf("missing event:\n%s\nASS:\n%s", want, ass)
+		}
+	}
+	if strings.Contains(ass, "0:00:11.20,0:00:11.70") {
+		t.Fatal("blank interval unexpectedly contains a dialogue event")
+	}
 }

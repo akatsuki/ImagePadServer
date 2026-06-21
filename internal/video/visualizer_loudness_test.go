@@ -14,7 +14,7 @@ func TestLoudnessLayerPixels(t *testing.T) {
 	}
 	trend = SmoothLoudnessTrend(env, 240)
 
-	mode := ForegroundMode{Color: color.RGBA{R: 255, G: 255, B: 255, A: 255}}
+	mode := ForegroundMode{AccentColor: color.RGBA{R: 255, G: 255, B: 255, A: 255}}
 
 	t.Run("720p returns correct full-frame dimensions", func(t *testing.T) {
 		layout, err := LayoutForSize(1280, 720)
@@ -49,6 +49,24 @@ func TestLoudnessLayerPixels(t *testing.T) {
 		}
 		if !found {
 			t.Fatal("expected non-transparent pixels inside loudness graph area")
+		}
+	})
+
+	t.Run("layer stores premultiplied RGBA pixels", func(t *testing.T) {
+		layout, err := LayoutForSize(1280, 720)
+		if err != nil {
+			t.Fatal(err)
+		}
+		colored := ForegroundMode{AccentColor: color.RGBA{R: 255, G: 48, B: 24, A: 255}}
+		layer := renderLoudnessLayer(env, trend, colored, layout, 1280, 720)
+		lr := layout.Loudness
+		for y := lr.Y; y < lr.Y+lr.H; y++ {
+			for x := lr.X; x < lr.X+lr.W; x++ {
+				p := layer.RGBAAt(x, y)
+				if p.R > p.A || p.G > p.A || p.B > p.A {
+					t.Fatalf("pixel (%d,%d) is not premultiplied: %+v", x, y, p)
+				}
+			}
 		}
 	})
 
@@ -159,7 +177,10 @@ func TestLoudnessLayerPixels(t *testing.T) {
 	// trend line using linear interpolation between rows for sub-pixel precision.
 	subPixelFWHM := func(t *testing.T, layer *image.RGBA, lr Rect, midX int) float64 {
 		t.Helper()
-		type aRow struct{ y int; a uint32 }
+		type aRow struct {
+			y int
+			a uint32
+		}
 		var rows []aRow
 		for y := lr.Y; y < lr.Y+lr.H; y++ {
 			_, _, _, a := layer.At(midX, y).RGBA()

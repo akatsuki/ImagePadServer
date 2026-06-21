@@ -51,7 +51,7 @@ func drawSpectrumFixedFade(canvas *image.RGBA, spectrum [24]float64, mode Foregr
 	}
 
 	maxAlpha := uint8(math.Round(0.82 * 255.0))
-	barColor := mode.Color
+	barColor := mode.AccentColor
 	barColor.A = maxAlpha
 
 	// Fixed fade height (spec section 5.5).

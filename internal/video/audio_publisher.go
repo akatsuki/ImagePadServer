@@ -1,6 +1,9 @@
 package video
 
-import "time"
+import (
+	"math"
+	"time"
+)
 
 // EnqueueAudioForID enqueues a generic audio visualizer job. The input's
 // SourceKind (soundcloud, local_audio, remote_audio) is preserved inside the
@@ -21,7 +24,14 @@ func EnqueueAudioForID(input AudioRenderInput, outDir, id, title string, preset 
 		SourcePath:   input.SourcePath,
 		Mode:         "audio",
 		Preset:       preset,
-		TotalSeconds: int(input.Analysis.Duration),
+		TotalSeconds: audioTotalSeconds(input.Analysis.Duration),
 		Audio:        &input,
 	})
+}
+
+func audioTotalSeconds(duration float64) int {
+	if duration <= 0 || math.IsNaN(duration) || math.IsInf(duration, 0) {
+		return 0
+	}
+	return int(math.Ceil(duration))
 }

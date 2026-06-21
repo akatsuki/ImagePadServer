@@ -5,6 +5,24 @@ import (
 	"time"
 )
 
+func TestAudioTotalSecondsRoundsUpPartialSeconds(t *testing.T) {
+	tests := []struct {
+		duration float64
+		want     int
+	}{
+		{-1, 0},
+		{0, 0},
+		{0.1, 1},
+		{60, 60},
+		{60.01, 61},
+	}
+	for _, tc := range tests {
+		if got := audioTotalSeconds(tc.duration); got != tc.want {
+			t.Errorf("audioTotalSeconds(%v) = %d, want %d", tc.duration, got, tc.want)
+		}
+	}
+}
+
 func TestEnqueueAudioForID_CreatesAudioJob(t *testing.T) {
 	outDir := t.TempDir()
 	preset := ResolveQuality("720", 0)

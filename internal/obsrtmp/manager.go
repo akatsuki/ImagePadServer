@@ -113,19 +113,21 @@ type Session struct {
 }
 
 type Status struct {
-	Enabled       bool           `json:"enabled"`
-	Listening     bool           `json:"listening"`
-	Connected     bool           `json:"connected"`
-	ServerAddress string         `json:"serverAddress"`
-	StreamKey     string         `json:"streamKey"`
-	Port          int            `json:"port"`
-	MediaID       string         `json:"mediaID,omitempty"`
-	PreviewURL    string         `json:"previewURL,omitempty"`
-	Publishing    bool           `json:"publishing"`
-	Latency       LatencyProfile `json:"latency"`
-	Message       string         `json:"message"`
-	StartedAt     time.Time      `json:"startedAt,omitempty"`
-	FinishedAt    time.Time      `json:"finishedAt,omitempty"`
+	Enabled        bool           `json:"enabled"`
+	Listening      bool           `json:"listening"`
+	Connected      bool           `json:"connected"`
+	ServerAddress  string         `json:"serverAddress"`
+	StreamKey      string         `json:"streamKey"`
+	Port           int            `json:"port"`
+	MediaID        string         `json:"mediaID,omitempty"`
+	PreviewURL     string         `json:"previewURL,omitempty"`
+	Publishing     bool           `json:"publishing"`
+	Latency        LatencyProfile `json:"latency"`
+	Message        string         `json:"message"`
+	StartedAt      time.Time      `json:"startedAt,omitempty"`
+	FinishedAt     time.Time      `json:"finishedAt,omitempty"`
+	EncoderName    string         `json:"encoderName,omitempty"`
+	HardwareEncode bool           `json:"hardwareEncode"`
 }
 
 func New(outDir, host string, port int, key string, preset func() video.QualityPreset, latency func() LatencyProfile, cb Callbacks) *Manager {
@@ -305,6 +307,18 @@ func (m *Manager) runOne(parent context.Context) error {
 	if err != nil {
 		return err
 	}
+	selected := video.VideoEncoderProfile{Name: "copy", Purpose: video.EncoderLowLatency}
+	if m.currentLatency().Reencode {
+		selected = video.SelectVideoEncoder(parent, ffmpeg, video.EncoderLowLatency)
+	}
+	err = m.runOneWithEncoder(parent, ffmpeg, selected)
+	if err == nil || !selected.Hardware || parent.Err() != nil {
+		return err
+	}
+	return m.runOneWithEncoder(parent, ffmpeg, video.CPUVideoEncoder(video.EncoderLowLatency))
+}
+
+func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encoder video.VideoEncoderProfile) error {
 	if err := os.MkdirAll(m.outDir, 0700); err != nil {
 		return err
 	}
@@ -334,7 +348,7 @@ func (m *Manager) runOne(parent context.Context) error {
 	video.BeginExternalHLS(m.outDir, id, preset, cancel, done)
 	defer video.EndExternalHLS(m.outDir, done)
 
-	args := m.ffmpegArgs(id, recording, preset)
+	args := m.ffmpegArgsWithEncoder(id, recording, preset, encoder)
 	cmd := exec.Command(ffmpeg, args...)
 	cmd.Dir = m.outDir
 	hideWindow(cmd)
@@ -371,6 +385,8 @@ func (m *Manager) runOne(parent context.Context) error {
 		status.Connected = false
 		status.MediaID = ""
 		status.Message = "OBS RTMP receiver is waiting for a stream."
+		status.EncoderName = encoder.Name
+		status.HardwareEncode = encoder.Hardware
 	})
 
 	started, waitErr := m.waitForStart(ctx, session, errCh)
@@ -378,7 +394,7 @@ func (m *Manager) runOne(parent context.Context) error {
 		cancel()
 		return waitErr
 	}
-	err = <-errCh
+	processErr := <-errCh
 	cancel()
 
 	if started {
@@ -405,8 +421,8 @@ func (m *Manager) runOne(parent context.Context) error {
 	if parent.Err() != nil {
 		return nil
 	}
-	if err != nil {
-		return fmt.Errorf("OBS RTMP receiver stopped: %w", err)
+	if processErr != nil {
+		return fmt.Errorf("OBS RTMP receiver stopped: %w", processErr)
 	}
 	return nil
 }
@@ -447,6 +463,10 @@ func (m *Manager) waitForStart(ctx context.Context, session Session, errCh <-cha
 }
 
 func (m *Manager) ffmpegArgs(id, recording string, preset video.QualityPreset) []string {
+	return m.ffmpegArgsWithEncoder(id, recording, preset, video.CPUVideoEncoder(video.EncoderLowLatency))
+}
+
+func (m *Manager) ffmpegArgsWithEncoder(id, recording string, preset video.QualityPreset, encoder video.VideoEncoderProfile) []string {
 	inputURL := fmt.Sprintf("rtmp://0.0.0.0:%d/live/%s", m.port, m.key)
 	latency := m.currentLatency()
 	args := []string{
@@ -486,17 +506,24 @@ func (m *Manager) ffmpegArgs(id, recording string, preset video.QualityPreset) [
 		"-map", "0:a:0?",
 		"-vf", scaleFilter,
 		"-r", latency.FrameRate,
-		"-c:v", "libx264",
-		"-preset", "ultrafast",
-		"-tune", "zerolatency",
-		"-pix_fmt", "yuv420p",
+	)
+	encoderPreset := preset
+	encoderPreset.BufferSize = preset.VideoBitrate
+	args = append(args, encoder.FFmpegArgs(encoderPreset, "ultrafast")...)
+	args = append(args,
 		"-g", latency.GOPFrames,
 		"-keyint_min", latency.GOPFrames,
 		"-sc_threshold", "0",
 		"-force_key_frames", "expr:gte(t,n_forced*"+latency.SegmentSeconds+")",
-		"-b:v", preset.VideoBitrate,
-		"-maxrate", preset.MaxRate,
-		"-bufsize", preset.VideoBitrate,
+	)
+	if !encoder.Hardware {
+		args = append(args,
+			"-b:v", preset.VideoBitrate,
+			"-maxrate", preset.MaxRate,
+			"-bufsize", preset.VideoBitrate,
+		)
+	}
+	args = append(args,
 		"-c:a", "aac",
 		"-b:a", preset.AudioBitrate,
 		"-ar", "48000",

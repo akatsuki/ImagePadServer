@@ -8,5 +8,8 @@
 *.log
 *.tmp
 *.exe
+*.exe~
 *.app/
 coverage.out
+/outputs/
+youtube_cookies.txt

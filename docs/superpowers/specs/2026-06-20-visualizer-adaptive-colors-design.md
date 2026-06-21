@@ -108,14 +108,25 @@ If neither reaches 4.5:1 within the cap, keep the cap and choose the pair with
 the higher worst-region contrast. Do not increase the overlay beyond 35
 percent.
 
+After selecting the minimum overlay required by `PrimaryColor`, attempt accent
+selection. If no chromatic accent passes, increase the selected overlay in the
+same five-percentage-point increments and retry, stopping at the first opacity
+where both color roles pass. The overlay color and primary color do not change.
+If no accent passes at 35 percent, keep the primary selection and use
+`PrimaryColor` as the accent.
+
 ## 7. Accent lightness selection
 
 Keep the hue selected from the light-blur artwork analysis. Search OKLCH
-lightness from 0.01 through 0.99 in deterministic 0.01 increments. For each
-lightness, reduce chroma from its initial value toward zero in 0.005 increments
-until the candidate is inside the sRGB gamut. Test the unclamped linear-sRGB
-components for gamut membership; do not accept a candidate merely because its
-converted 8-bit channels were clipped.
+lightness from 0.20 through 0.90 in deterministic 0.01 increments. This avoids
+nominally chromatic candidates that are visually indistinguishable from black
+or white. For each
+lightness, reduce chroma from its initial value in 0.005 increments until the
+candidate is inside the sRGB gamut. When the source accent chroma is at least
+0.04, do not reduce display chroma below 0.04; otherwise use the source chroma
+as the lower bound. Test the unclamped linear-sRGB components for gamut
+membership; do not accept a candidate merely because its converted 8-bit
+channels were clipped.
 
 Evaluate every candidate against the same final background produced by the
 selected primary overlay. A candidate passes only if it reaches 4.5:1 in every

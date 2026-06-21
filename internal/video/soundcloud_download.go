@@ -48,8 +48,8 @@ func DownloadSoundCloud(ctx context.Context, ytdlp, rawURL, outDir string) (Acqu
 		"--write-info-json",
 		"--print-to-file", "after_move:filepath", manifestPath,
 		"-o", outputTemplate,
-		rawURL,
 	}
+	args = append(args, rawURL)
 
 	if err := runDownloadCmd(ytdlp, args...); err != nil {
 		return AcquiredAudio{}, fmt.Errorf("yt-dlp download failed: %w", err)

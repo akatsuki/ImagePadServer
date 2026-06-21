@@ -178,55 +178,14 @@ func PublishStillImageForID(imagePath, outDir, id string, preset QualityPreset) 
 	}
 
 	removeGenerated(outDir)
-
-	mp4Err := run(ffmpeg,
-		"-y",
-		"-loop", "1",
-		"-t", ClipDuration,
-		"-i", imagePath,
-		"-f", "lavfi",
-		"-t", ClipDuration,
-		"-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
-		"-c:v", "libx264",
-		"-preset", "veryfast",
-		"-crf", strconv.Itoa(preset.CRF),
-		"-pix_fmt", "yuv420p",
-		"-vf", "fps="+FrameRate+",scale=w='min(1920,iw)':h='min("+strconv.Itoa(preset.Height)+",ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,pad=ceil(iw/2)*2:ceil(ih/2)*2",
-		"-r", FrameRate,
-		"-c:a", "aac",
-		"-b:a", "64k",
-		"-shortest",
-		"-movflags", "+faststart",
-		filepath.Join(outDir, MP4File),
-	)
-
-	hlsErr := runInDir(outDir, ffmpeg,
-		"-y",
-		"-loop", "1",
-		"-t", ClipDuration,
-		"-i", imagePath,
-		"-f", "lavfi",
-		"-t", ClipDuration,
-		"-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
-		"-c:v", "libx264",
-		"-preset", "veryfast",
-		"-crf", strconv.Itoa(preset.CRF),
-		"-pix_fmt", "yuv420p",
-		"-vf", "fps="+FrameRate+",scale=w='min(1920,iw)':h='min("+strconv.Itoa(preset.Height)+",ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,pad=ceil(iw/2)*2:ceil(ih/2)*2",
-		"-r", FrameRate,
-		"-g", "20",
-		"-keyint_min", "20",
-		"-sc_threshold", "0",
-		"-c:a", "aac",
-		"-b:a", "64k",
-		"-shortest",
-		"-f", "hls",
-		"-hls_time", "2",
-		"-hls_list_size", "0",
-		"-hls_playlist_type", "vod",
-		"-hls_segment_filename", segmentPattern(id),
-		playlistName(id),
-	)
+	selected := SelectVideoEncoder(context.Background(), ffmpeg, EncoderStandard)
+	mp4Path := filepath.Join(outDir, MP4File)
+	mp4Err := runVideoEncodeWithFallback(context.Background(), selected, func() { _ = os.Remove(mp4Path) }, func(encoder VideoEncoderProfile) error {
+		return run(ffmpeg, stillMP4ArgsWithEncoder(imagePath, mp4Path, preset, encoder)...)
+	})
+	hlsErr := runVideoEncodeWithFallback(context.Background(), selected, func() { removeHLSForID(outDir, id) }, func(encoder VideoEncoderProfile) error {
+		return runInDir(outDir, ffmpeg, stillHLSArgsWithEncoderType(imagePath, id, preset, encoder, "vod")...)
+	})
 
 	result := Result{
 		MP4: fileExists(filepath.Join(outDir, MP4File)),
@@ -242,6 +201,68 @@ func PublishStillImageForID(imagePath, outDir, id string, preset QualityPreset) 
 		result.Message = fmt.Sprintf("FFmpeg failed. MP4: %v, HLS: %v", errorText(mp4Err), errorText(hlsErr))
 	}
 	return result
+}
+
+func stillMP4ArgsWithEncoder(imagePath, outputPath string, preset QualityPreset, encoder VideoEncoderProfile) []string {
+	args := []string{
+		"-y",
+		"-loop", "1",
+		"-t", ClipDuration,
+		"-i", imagePath,
+		"-f", "lavfi",
+		"-t", ClipDuration,
+		"-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+	}
+	args = append(args, encoder.FFmpegArgs(preset, "veryfast")...)
+	if !encoder.Hardware {
+		args = append(args,
+			"-b:v", preset.VideoBitrate,
+			"-maxrate", preset.MaxRate,
+			"-bufsize", preset.BufferSize,
+		)
+	}
+	return append(args,
+		"-vf", "fps="+FrameRate+",scale=w='min(1920,iw)':h='min("+strconv.Itoa(preset.Height)+",ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,pad=ceil(iw/2)*2:ceil(ih/2)*2",
+		"-r", FrameRate,
+		"-c:a", "aac",
+		"-b:a", "64k",
+		"-shortest",
+		"-movflags", "+faststart",
+		outputPath,
+	)
+}
+
+func stillHLSArgsWithEncoder(imagePath, id string, preset QualityPreset, encoder VideoEncoderProfile) []string {
+	return stillHLSArgsWithEncoderType(imagePath, id, preset, encoder, "event")
+}
+
+func stillHLSArgsWithEncoderType(imagePath, id string, preset QualityPreset, encoder VideoEncoderProfile, playlistType string) []string {
+	args := []string{
+		"-y",
+		"-loop", "1",
+		"-t", ClipDuration,
+		"-i", imagePath,
+		"-f", "lavfi",
+		"-t", ClipDuration,
+		"-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+	}
+	args = append(args, encoder.FFmpegArgs(preset, "veryfast")...)
+	return append(args,
+		"-vf", "fps="+FrameRate+",scale=w='min(1920,iw)':h='min("+strconv.Itoa(preset.Height)+",ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,pad=ceil(iw/2)*2:ceil(ih/2)*2",
+		"-r", FrameRate,
+		"-g", "20",
+		"-keyint_min", "20",
+		"-sc_threshold", "0",
+		"-c:a", "aac",
+		"-b:a", "64k",
+		"-shortest",
+		"-f", "hls",
+		"-hls_time", "2",
+		"-hls_list_size", "0",
+		"-hls_playlist_type", playlistType,
+		"-hls_segment_filename", segmentPattern(id),
+		playlistName(id),
+	)
 }
 
 func PublishStillImageAsyncForID(imagePath, outDir, id string, preset QualityPreset) {
@@ -306,20 +327,13 @@ func applyProgress(outDir string, result *Result) {
 		}
 		return
 	}
-	count := hlsSegmentCount(outDir)
+	id := ""
 	if job.QueueJob != nil {
-		count = hlsSegmentCountForID(outDir, job.QueueJob.MediaID)
+		id = job.QueueJob.MediaID
 	}
-	seconds := count * 2
-	percent := int(math.Round(float64(seconds) / float64(job.TotalSeconds) * 100))
-	if percent < 0 {
-		percent = 0
-	}
-	if percent > 99 {
-		percent = 99
-	}
-	if seconds > job.TotalSeconds {
-		seconds = job.TotalSeconds
+	percent, seconds, ok := hlsProgress(outDir, id, job.TotalSeconds)
+	if !ok {
+		return
 	}
 	result.ProgressPercent = percent
 	result.ProgressText = fmt.Sprintf("%d%% (%d / %d sec)", percent, seconds, job.TotalSeconds)
@@ -429,6 +443,18 @@ func GeneratedFiles(outDir, id string) []string {
 		files = append(files, mp4)
 	}
 	return files
+}
+
+func removeHLSForID(outDir, id string) {
+	_ = os.Remove(filepath.Join(outDir, playlistName(id)))
+	pattern := filepath.Join(outDir, "current*.ts")
+	if id != "" {
+		pattern = filepath.Join(outDir, "current-"+safeID(id)+"-*.ts")
+	}
+	matches, _ := filepath.Glob(pattern)
+	for _, match := range matches {
+		_ = os.Remove(match)
+	}
 }
 
 func enqueueConversion(job *queueJob) string {
@@ -593,50 +619,29 @@ func finishQueueJob(job *queueJob, status, message string) {
 }
 
 func runStillHLS(ctx context.Context, outDir, ffmpeg, imagePath, id string, preset QualityPreset) error {
-	return runInDirContext(ctx, outDir, ffmpeg,
-		"-y",
-		"-loop", "1",
-		"-t", ClipDuration,
-		"-i", imagePath,
-		"-f", "lavfi",
-		"-t", ClipDuration,
-		"-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
-		"-c:v", "libx264",
-		"-preset", "veryfast",
-		"-crf", strconv.Itoa(preset.CRF),
-		"-pix_fmt", "yuv420p",
-		"-vf", "fps="+FrameRate+",scale=w='min(1920,iw)':h='min("+strconv.Itoa(preset.Height)+",ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,pad=ceil(iw/2)*2:ceil(ih/2)*2",
-		"-r", FrameRate,
-		"-g", "20",
-		"-keyint_min", "20",
-		"-sc_threshold", "0",
-		"-c:a", "aac",
-		"-b:a", "64k",
-		"-shortest",
-		"-f", "hls",
-		"-hls_time", "2",
-		"-hls_list_size", "0",
-		"-hls_playlist_type", "event",
-		"-hls_flags", "independent_segments",
-		"-hls_segment_filename", segmentPattern(id),
-		playlistName(id),
-	)
+	selected := SelectVideoEncoder(ctx, ffmpeg, EncoderStandard)
+	return runVideoEncodeWithFallback(ctx, selected, func() { removeHLSForID(outDir, id) }, func(encoder VideoEncoderProfile) error {
+		return runInDirContext(ctx, outDir, ffmpeg, stillHLSArgsWithEncoder(imagePath, id, preset, encoder)...)
+	})
 }
 
 func runUploadedHLS(ctx context.Context, outDir, ffmpeg, sourcePath, id string, preset QualityPreset) error {
-	return runInDirContext(ctx, outDir, ffmpeg,
+	selected := SelectVideoEncoder(ctx, ffmpeg, EncoderStandard)
+	return runVideoEncodeWithFallback(ctx, selected, func() { removeHLSForID(outDir, id) }, func(encoder VideoEncoderProfile) error {
+		return runInDirContext(ctx, outDir, ffmpeg, uploadedHLSArgsWithEncoder(sourcePath, id, preset, encoder)...)
+	})
+}
+
+func uploadedHLSArgsWithEncoder(sourcePath, id string, preset QualityPreset, encoder VideoEncoderProfile) []string {
+	args := []string{
 		"-y",
 		"-re",
 		"-i", sourcePath,
 		"-map", "0:v:0",
 		"-map", "0:a:0?",
-		"-c:v", "libx264",
-		"-preset", "veryfast",
-		"-crf", strconv.Itoa(preset.CRF),
-		"-b:v", preset.VideoBitrate,
-		"-maxrate", preset.MaxRate,
-		"-bufsize", preset.BufferSize,
-		"-pix_fmt", "yuv420p",
+	}
+	args = append(args, encoder.FFmpegArgs(preset, "veryfast")...)
+	return append(args,
 		"-vf", "scale=w='min(1920,iw)':h='min("+strconv.Itoa(preset.Height)+",ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
 		"-g", "60",
 		"-keyint_min", "60",
@@ -663,19 +668,60 @@ func applyQueueProgressLocked(job *queueJob, item *QueueItem) {
 		}
 		return
 	}
-	seconds := hlsSegmentCountForID(job.OutDir, job.MediaID) * 2
-	percent := int(math.Round(float64(seconds) / float64(job.TotalSeconds) * 100))
+	percent, seconds, ok := hlsProgress(job.OutDir, job.MediaID, job.TotalSeconds)
+	if !ok {
+		return
+	}
+	item.ProgressPercent = percent
+	item.ProgressText = fmt.Sprintf("%d%% (%d / %d sec)", percent, seconds, job.TotalSeconds)
+}
+
+func hlsProgress(outDir, id string, totalSeconds int) (percent, completedSeconds int, ok bool) {
+	if totalSeconds <= 0 {
+		return 0, 0, false
+	}
+	completed, ok := hlsCompletedDurationForID(outDir, id)
+	if !ok {
+		return 0, 0, false
+	}
+	percent = int(math.Round(completed / float64(totalSeconds) * 100))
 	if percent < 0 {
 		percent = 0
 	}
 	if percent > 99 {
 		percent = 99
 	}
-	if seconds > job.TotalSeconds {
-		seconds = job.TotalSeconds
+	if completed > float64(totalSeconds) {
+		completed = float64(totalSeconds)
 	}
-	item.ProgressPercent = percent
-	item.ProgressText = fmt.Sprintf("%d%% (%d / %d sec)", percent, seconds, job.TotalSeconds)
+	completedSeconds = int(math.Round(completed))
+	return percent, completedSeconds, true
+}
+
+func hlsCompletedDurationForID(outDir, id string) (float64, bool) {
+	data, err := os.ReadFile(filepath.Join(outDir, playlistName(id)))
+	if err != nil {
+		return 0, false
+	}
+	var total float64
+	found := false
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "#EXTINF:") {
+			continue
+		}
+		value := strings.TrimPrefix(line, "#EXTINF:")
+		if comma := strings.IndexByte(value, ','); comma >= 0 {
+			value = value[:comma]
+		}
+		seconds, parseErr := strconv.ParseFloat(strings.TrimSpace(value), 64)
+		if parseErr != nil || seconds < 0 || math.IsNaN(seconds) || math.IsInf(seconds, 0) {
+			continue
+		}
+		total += seconds
+		found = true
+	}
+	return total, found
 }
 
 func cancelQueue(outDir string) {
@@ -706,8 +752,6 @@ func cancelQueue(outDir string) {
 	state.mu.Unlock()
 }
 
-
-
 // downloadVideoURL downloads a video from a URL using yt-dlp.
 // It handles regular (non-SoundCloud) URLs with the standard video format
 // selector and produces an MP4 file prefixed "yt-dlp-source".
@@ -728,15 +772,15 @@ func downloadVideoURL(rawURL, outDir string) (string, string, error) {
 		"-f", "bv*[height<=1080]+ba/b[height<=1080]/best[height<=1080]/best",
 		"--merge-output-format", "mp4",
 		"-o", target,
-		rawURL,
 	}
-	if err := run(exe, args...); err != nil {
+	args = append(args, rawURL)
+	if err := runDownloadCmd(exe, args...); err != nil {
 		return "", "", err
 	}
 	matches, _ := filepath.Glob(filepath.Join(outDir, "yt-dlp-source.*"))
 	for _, match := range matches {
 		if info, err := os.Stat(match); err == nil && !info.IsDir() && info.Size() > 0 {
-			return match, "yt-dlp-source"+filepath.Ext(match), nil
+			return match, "yt-dlp-source" + filepath.Ext(match), nil
 		}
 	}
 	return "", "", errors.New("yt-dlp did not produce a video file")
@@ -999,14 +1043,6 @@ func ActiveQuality(outDir string) (QualityPreset, bool) {
 	}
 	return QualityPreset{}, false
 }
-
-
-
-
-
-
-
-
 
 func stopActive(outDir string) {
 	active, ok := activeHLS.Load(outDir)

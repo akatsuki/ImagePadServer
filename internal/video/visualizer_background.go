@@ -236,8 +236,163 @@ func averageColorForRegions(img image.Image, rects ...image.Rectangle) color.RGB
 // colour (including its final alpha) that the renderer applies for the entire
 // frame.
 type ForegroundMode struct {
-	Color   color.RGBA
-	Overlay color.RGBA
+	PrimaryColor color.RGBA
+	AccentColor  color.RGBA
+	Overlay      color.RGBA
+
+	// Color is retained during the renderer migration and mirrors AccentColor.
+	// New code must use the explicit role fields.
+	Color color.RGBA
+}
+
+// AdaptiveForeground selects a monochrome primary foreground and an
+// artwork-derived accent. Both are validated against the same capped
+// readability overlay, so hue comes from the artwork while legibility remains
+// tied to the pixels that are actually displayed.
+func AdaptiveForeground(background, accentSource image.Image, primaryRects, accentRects []image.Rectangle) ForegroundMode {
+	primary, overlay := selectPrimaryAndOverlay(background, primaryRects)
+	mode := ForegroundMode{PrimaryColor: primary, AccentColor: primary, Overlay: overlay, Color: primary}
+
+	accent, ok := artworkAccent(accentSource)
+	if !ok {
+		return mode
+	}
+	if selected, ok := selectAccentColor(background, accentRects, overlay, primary, accent); ok {
+		mode.AccentColor = selected
+		mode.Color = selected
+		return mode
+	}
+
+	startStep := int(math.Round((float64(overlay.A) / 255) / 0.05))
+	maxStep := int(math.Round(maxOverlayOpacity / 0.05))
+	for step := startStep + 1; step <= maxStep; step++ {
+		candidateOverlay := overlay
+		candidateOverlay.A = uint8(math.Round(float64(step) * 0.05 * 255))
+		if !allRegionsContrast(background, primaryRects, candidateOverlay, primary, 4.5) {
+			continue
+		}
+		selected, found := selectAccentColor(background, accentRects, candidateOverlay, primary, accent)
+		if found {
+			mode.Overlay = candidateOverlay
+			mode.AccentColor = selected
+			mode.Color = selected
+			return mode
+		}
+	}
+	return mode
+}
+
+func selectAccentColor(background image.Image, accentRects []image.Rectangle, overlay, primary color.RGBA, accent OKLCH) (color.RGBA, bool) {
+	targetL := 0.0
+	if primary.R == 255 {
+		targetL = 1.0
+	}
+	bestDiff := math.MaxFloat64
+	bestChroma := -1.0
+	var best color.RGBA
+	found := false
+
+	for li := int(math.Round(artworkAccentMinLightness * 100)); li <= int(math.Round(artworkAccentMaxLightness*100)); li++ {
+		l := float64(li) / 100
+		minDisplayChroma := math.Min(accent.C, artworkAccentMinDisplayChroma)
+		for c := accent.C; c >= minDisplayChroma-1e-9; c -= 0.005 {
+			if c < 0 {
+				c = 0
+			}
+			candidate := OKLCH{L: l, C: c, H: accent.H}
+			if !oklchInSRGB(candidate) {
+				continue
+			}
+			rgba := OKLCHToSRGB(candidate)
+			if !allRegionsContrast(background, accentRects, overlay, rgba, 4.5) {
+				break
+			}
+			diff := math.Abs(l - targetL)
+			if !found || diff < bestDiff-1e-9 || (math.Abs(diff-bestDiff) <= 1e-9 && c > bestChroma) {
+				best = rgba
+				bestDiff = diff
+				bestChroma = c
+				found = true
+			}
+			break
+		}
+	}
+
+	if found {
+		return best, true
+	}
+	return color.RGBA{}, false
+}
+
+func selectPrimaryAndOverlay(background image.Image, rects []image.Rectangle) (color.RGBA, color.RGBA) {
+	white := color.RGBA{R: 255, G: 255, B: 255, A: 255}
+	black := color.RGBA{R: 0, G: 0, B: 0, A: 255}
+	type choice struct {
+		fg      color.RGBA
+		overlay color.RGBA
+		opacity float64
+		worst   float64
+		passed  bool
+	}
+
+	evaluate := func(fg, overlayBase color.RGBA) choice {
+		cappedOverlay := overlayBase
+		cappedOverlay.A = uint8(math.Round(maxOverlayOpacity * 255))
+		result := choice{fg: fg, overlay: cappedOverlay, opacity: maxOverlayOpacity}
+		for step := 0; step <= int(math.Round(maxOverlayOpacity/0.05)); step++ {
+			opacity := float64(step) * 0.05
+			overlay := overlayBase
+			overlay.A = uint8(math.Round(opacity * 255))
+			if allRegionsContrast(background, rects, overlay, fg, 4.5) {
+				result.overlay = overlay
+				result.opacity = opacity
+				result.passed = true
+				break
+			}
+		}
+		result.worst = worstRegionsContrast(background, rects, result.overlay, fg)
+		return result
+	}
+
+	light := evaluate(white, color.RGBA{R: 0, G: 0, B: 0, A: 255})
+	dark := evaluate(black, color.RGBA{R: 255, G: 255, B: 255, A: 255})
+
+	selected := light
+	switch {
+	case light.passed && dark.passed:
+		if dark.opacity < light.opacity || (math.Abs(dark.opacity-light.opacity) < 1e-9 && dark.worst > light.worst) {
+			selected = dark
+		}
+	case dark.passed:
+		selected = dark
+	case !light.passed && dark.worst > light.worst:
+		selected = dark
+	}
+	return selected.fg, selected.overlay
+}
+
+func allRegionsContrast(background image.Image, rects []image.Rectangle, overlay, fg color.RGBA, ratio float64) bool {
+	fgLum := srgbLuminance(fg)
+	alpha := float64(overlay.A) / 255
+	for _, rect := range rects {
+		if !regionContrastOK(background, rect, overlay, alpha, fgLum, ratio) {
+			return false
+		}
+	}
+	return true
+}
+
+func worstRegionsContrast(background image.Image, rects []image.Rectangle, overlay, fg color.RGBA) float64 {
+	worst := math.MaxFloat64
+	alpha := float64(overlay.A) / 255
+	fgLum := srgbLuminance(fg)
+	for _, rect := range rects {
+		ratio := minRegionContrast(background, rect, overlay, alpha, fgLum)
+		if ratio < worst {
+			worst = ratio
+		}
+	}
+	return worst
 }
 
 // ---------------------------------------------------------------------------
@@ -499,6 +654,10 @@ func srgbLuminance8(r, g, b float64) float64 {
 //     with its shadow.
 //  4. The result is saved to outPath and the selected ForegroundMode returned.
 func PrepareVisualizerBase(ctx context.Context, ffmpeg, artworkPath string, fallback *image.RGBA, layout VisualizerLayout, outPath string) (ForegroundMode, error) {
+	return prepareVisualizerBase(ctx, ffmpeg, artworkPath, fallback, nil, layout, outPath)
+}
+
+func prepareVisualizerBase(ctx context.Context, ffmpeg, artworkPath string, fallback *image.RGBA, fallbackRenderer func(color.RGBA) (*image.RGBA, error), layout VisualizerLayout, outPath string) (ForegroundMode, error) {
 	// Derive canvas dimensions from the layout.
 	canvasW := int(math.Round(float64(layout.Artwork.W) * 1280.0 / 288.0))
 	canvasH := int(math.Round(float64(layout.Artwork.H) * 720.0 / 288.0))
@@ -551,9 +710,36 @@ func PrepareVisualizerBase(ctx context.Context, ffmpeg, artworkPath string, fall
 		return ForegroundMode{}, fmt.Errorf("load blurred background: %w", err)
 	}
 	bgRGBA := toRGBA(bg)
-	metaRect := image.Rect(layout.Title.X, layout.Title.Y, layout.Title.X+layout.Title.W, layout.Title.Y+layout.Title.H)
-	graphRect := image.Rect(layout.Loudness.X, layout.Loudness.Y, layout.Loudness.X+layout.Loudness.W, layout.Loudness.Y+layout.Loudness.H)
-	mode := ComplementaryForeground(bgRGBA, metaRect, graphRect)
+
+	var fgSrc image.Image
+	if artworkPath != "" {
+		fgSrc, err = loadAnyPNG(artworkPath)
+		if err != nil {
+			return ForegroundMode{}, fmt.Errorf("load artwork: %w", err)
+		}
+	} else {
+		fgSrc = fallback
+	}
+	accentSource := scaleCover(fgSrc, canvasW, canvasH)
+	primaryRects := []image.Rectangle{
+		layoutImageRect(layout.Title),
+		layoutImageRect(layout.Artist),
+		layoutImageRect(layout.Album),
+		layoutImageRect(layout.Time),
+	}
+	accentRects := []image.Rectangle{
+		layoutImageRect(layout.Spectrum),
+		layoutImageRect(layout.Loudness),
+		layoutImageRect(layout.Progress),
+		layoutImageRect(layout.Time),
+	}
+	mode := AdaptiveForeground(bgRGBA, accentSource, primaryRects, accentRects)
+	if artworkPath == "" {
+		fgSrc, err = finalizeFallbackSource(fallback, mode, fallbackRenderer)
+		if err != nil {
+			return ForegroundMode{}, fmt.Errorf("finalize fallback artwork: %w", err)
+		}
+	}
 	// The readability overlay belongs to the background layer. Applying it
 	// before the shadow and artwork keeps the foreground cover color-accurate.
 	//
@@ -575,16 +761,6 @@ func PrepareVisualizerBase(ctx context.Context, ffmpeg, artworkPath string, fall
 		layout.Artwork.X, layout.Artwork.Y,
 		layout.Artwork.X+layout.Artwork.W, layout.Artwork.Y+layout.Artwork.H,
 	)
-
-	var fgSrc image.Image
-	if artworkPath != "" {
-		fgSrc, err = loadAnyPNG(artworkPath)
-		if err != nil {
-			return ForegroundMode{}, fmt.Errorf("load artwork: %w", err)
-		}
-	} else {
-		fgSrc = fallback
-	}
 
 	fgScaled := scaleCover(fgSrc, artRect.Dx(), artRect.Dy())
 
@@ -608,6 +784,17 @@ func PrepareVisualizerBase(ctx context.Context, ffmpeg, artworkPath string, fall
 	}
 
 	return mode, nil
+}
+
+func finalizeFallbackSource(initial *image.RGBA, mode ForegroundMode, renderer func(color.RGBA) (*image.RGBA, error)) (*image.RGBA, error) {
+	if renderer == nil {
+		return initial, nil
+	}
+	return renderer(mode.AccentColor)
+}
+
+func layoutImageRect(r Rect) image.Rectangle {
+	return image.Rect(r.X, r.Y, r.X+r.W, r.Y+r.H)
 }
 
 // ---------------------------------------------------------------------------

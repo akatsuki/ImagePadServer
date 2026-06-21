@@ -153,7 +153,7 @@ func ResolveAudioMetadata(kind SourceKind, sourceName string, embedded, soundClo
 	result := AudioMetadata{}
 
 	switch kind {
-	case SourceSoundCloud:
+	case SourceSoundCloud, SourceMusic:
 		result.Title = norm.Title
 		result.Artist = norm.Artist
 		result.Album = norm.Album

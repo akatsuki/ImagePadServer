@@ -18,7 +18,7 @@ func barFadeHeight(t *testing.T, barIndex int, val float64) int {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mode := ForegroundMode{Color: color.RGBA{255, 255, 255, 255}}
+	mode := ForegroundMode{AccentColor: color.RGBA{255, 255, 255, 255}}
 
 	var frame AudioFrame
 	frame.Spectrum24[barIndex] = val

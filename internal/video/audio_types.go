@@ -5,8 +5,9 @@ const MaxMediaSourceBytes int64 = 1<<32 - 1
 type SourceKind string
 
 const (
-	SourceSoundCloud SourceKind = "soundcloud"
-	SourceLocalAudio SourceKind = "local_audio"
+	SourceSoundCloud  SourceKind = "soundcloud"
+	SourceMusic       SourceKind = "music"
+	SourceLocalAudio  SourceKind = "local_audio"
 	SourceRemoteAudio SourceKind = "remote_audio"
 )
 

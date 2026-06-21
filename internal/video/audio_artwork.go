@@ -136,7 +136,7 @@ func SelectArtwork(embedded []ArtworkCandidate, soundCloudPath string, kind Sour
 		return best.Path, nil
 	}
 
-	if kind == SourceSoundCloud && soundCloudPath != "" {
+	if (kind == SourceSoundCloud || kind == SourceMusic) && soundCloudPath != "" {
 		return soundCloudPath, nil
 	}
 
