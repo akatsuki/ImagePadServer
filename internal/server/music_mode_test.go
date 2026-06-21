@@ -13,6 +13,45 @@ import (
 	"imagepadserver/internal/video"
 )
 
+func TestUploadURLReportsDownloadingPhase(t *testing.T) {
+	_, mux := testServer(t, true)
+	if err := settings.Update(func(s *settings.Settings) error {
+		s.MusicModeEnabled = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	oldMusic := musicURLAcquirer
+	defer func() { musicURLAcquirer = oldMusic }()
+	release := make(chan struct{})
+	reached := make(chan struct{})
+	musicURLAcquirer = func(context.Context, *Server, string) (video.AcquiredAudio, error) {
+		close(reached)
+		<-release
+		return video.AcquiredAudio{}, errors.New("stop here")
+	}
+
+	go func() {
+		req := httptest.NewRequest(http.MethodPost, "/api/upload-url", strings.NewReader(`{"url":"https://www.youtube.com/watch?v=test"}`))
+		adminJSON(t, mux, req)
+	}()
+
+	<-reached
+	stateReq := httptest.NewRequest(http.MethodGet, "/api/state", nil)
+	rec := adminJSON(t, mux, stateReq)
+	close(release)
+
+	var st map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &st); err != nil {
+		t.Fatal(err)
+	}
+	ingest, _ := st["ingest"].(map[string]interface{})
+	if ingest == nil || ingest["active"] != true || ingest["phase"] != "downloading" {
+		t.Fatalf("ingest phase = %#v, want downloading/active", ingest)
+	}
+}
+
 func TestMusicModeCannotEnableWithoutVideoPlayer(t *testing.T) {
 	_, mux := testServer(t, false)
 	req := httptest.NewRequest(http.MethodPost, "/api/music-mode", strings.NewReader(`{"enabled":true}`))

@@ -322,6 +322,9 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 		}
 		s.clearPublication()
 
+		s.setIngest(ingestDownloading, req.URL)
+		defer s.clearIngest()
+
 		// Preserve SoundCloud-page detection (uses yt-dlp).
 		if isSoundCloudURL(req.URL) {
 			media, err := video.DownloadMediaURL(req.URL, s.store.Dir())
@@ -473,6 +476,9 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+
+		s.setIngest(ingestDownloading, req.URL)
+		defer s.clearIngest()
 
 		// Preserve SoundCloud-page detection (uses yt-dlp).
 		if isSoundCloudURL(req.URL) {
