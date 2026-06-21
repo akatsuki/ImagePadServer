@@ -65,6 +65,48 @@ func TestAudioVisualizerFFmpegArgsUsesValidHLSOptions(t *testing.T) {
 	}
 }
 
+func TestRGBAToYUV420pLimitedRange(t *testing.T) {
+	w, h := 2, 2
+	fill := func(r, g, b byte) []byte {
+		pix := make([]byte, w*h*4)
+		for i := 0; i < w*h; i++ {
+			pix[i*4], pix[i*4+1], pix[i*4+2], pix[i*4+3] = r, g, b, 255
+		}
+		return pix
+	}
+	dst := make([]byte, w*h*3/2)
+
+	rgbaToYUV420p(fill(255, 255, 255), w, h, dst) // white -> Y~235, U/V~128
+	for i := 0; i < 4; i++ {
+		if dst[i] < 234 || dst[i] > 236 {
+			t.Errorf("white Y[%d]=%d, want ~235 (limited range)", i, dst[i])
+		}
+	}
+	if dst[4] < 127 || dst[4] > 129 || dst[5] < 127 || dst[5] > 129 {
+		t.Errorf("white chroma U=%d V=%d, want ~128", dst[4], dst[5])
+	}
+
+	rgbaToYUV420p(fill(0, 0, 0), w, h, dst) // black -> Y~16
+	if dst[0] < 15 || dst[0] > 17 {
+		t.Errorf("black Y=%d, want ~16 (limited range)", dst[0])
+	}
+}
+
+func TestWriteVisualizerFramesYUVSize(t *testing.T) {
+	base := image.NewRGBA(image.Rect(0, 0, 128, 72))
+	mode := ForegroundMode{PrimaryColor: color.RGBA{255, 255, 255, 255}, AccentColor: color.RGBA{255, 255, 255, 255}, Overlay: color.RGBA{0, 0, 0, 92}}
+	layout, _ := LayoutForSize(128, 72)
+	input := AudioRenderInput{Analysis: AudioAnalysis{FPS: 30, Duration: 1.0, Frames: make([]AudioFrame, 10)}}
+	var buf bytes.Buffer
+	if err := writeVisualizerFrames(context.Background(), &buf, input, base, mode, layout, 128, 72, true); err != nil {
+		t.Fatalf("writeVisualizerFrames(yuv): %v", err)
+	}
+	want := 10 * 128 * 72 * 3 / 2
+	if buf.Len() != want {
+		t.Fatalf("yuv420p output size: got %d, want %d", buf.Len(), want)
+	}
+}
+
 func TestAudioLoudnormFilterByKind(t *testing.T) {
 	if got := audioLoudnormFilter(SourceMusic); got != musicLoudnormFilter {
 		t.Errorf("music: got %q, want %q", got, musicLoudnormFilter)

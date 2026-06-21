@@ -54,8 +54,11 @@ func audioVisualizerFFmpegArgsWithEncoder(audioPath, assPath, fontDir, id string
 		audioPrefix = fmt.Sprintf("[1:a]%s,asplit=2[aud][wsrc];", audioFilter)
 		wavesInput, audioMap = "wsrc", "[aud]"
 	}
+	// The piped frames are already yuv420p (converted on the render workers), so
+	// the encoder skips a whole-frame CPU color conversion and the pipe carries
+	// ~2.6x less data than rgba.
 	filterComplex := audioPrefix + fmt.Sprintf(
-		"[%s]showwaves=s=%dx%d:rate=30:mode=line:colors=%s[wave];[0:v]format=yuv420p[vis];[vis][wave]overlay=%d:%d[vid];[vid]ass=filename='%s':fontsdir='%s'[out]",
+		"[%s]showwaves=s=%dx%d:rate=30:mode=line:colors=%s[wave];[0:v][wave]overlay=%d:%d[vid];[vid]ass=filename='%s':fontsdir='%s'[out]",
 		wavesInput, waveW, waveH, waveColor, waveX, waveY,
 		escapeFilterPath(assPath),
 		escapeFilterPath(fontDir),
@@ -63,7 +66,7 @@ func audioVisualizerFFmpegArgsWithEncoder(audioPath, assPath, fontDir, id string
 	args := []string{
 		"-v", "error",
 		"-f", "rawvideo",
-		"-pix_fmt", "rgba",
+		"-pix_fmt", "yuv420p",
 		"-s", fmt.Sprintf("%dx%d", width, height),
 		"-r", "30",
 		"-i", "pipe:0",
@@ -90,6 +93,54 @@ func audioVisualizerFFmpegArgsWithEncoder(audioPath, assPath, fontDir, id string
 	)
 }
 
+func clampByte(v float64) byte {
+	if v <= 0 {
+		return 0
+	}
+	if v >= 255 {
+		return 255
+	}
+	return byte(v + 0.5)
+}
+
+// rgbaToYUV420p converts a packed RGBA frame (canvas.Pix, width*height*4 bytes)
+// into planar yuv420p / I420 (width*height*3/2 bytes) using BT.709 limited
+// range — the standard matrix for HD H.264, matching what ffmpeg's format
+// filter produced — so the output is visually identical, just computed here on
+// the render workers instead of single-threaded inside ffmpeg. width and height
+// must be even.
+func rgbaToYUV420p(pix []byte, width, height int, dst []byte) {
+	ySize := width * height
+	cw, ch := width/2, height/2
+	uOff, vOff := ySize, ySize+cw*ch
+	for y := 0; y < height; y++ {
+		in := y * width * 4
+		out := y * width
+		for x := 0; x < width; x++ {
+			i := in + x*4
+			r, g, b := float64(pix[i]), float64(pix[i+1]), float64(pix[i+2])
+			dst[out+x] = clampByte(16 + 0.18258588*r + 0.61423059*g + 0.06200706*b)
+		}
+	}
+	for cy := 0; cy < ch; cy++ {
+		for cx := 0; cx < cw; cx++ {
+			x0, y0 := cx*2, cy*2
+			var rs, gs, bs float64
+			for dy := 0; dy < 2; dy++ {
+				for dx := 0; dx < 2; dx++ {
+					i := ((y0+dy)*width + (x0 + dx)) * 4
+					rs += float64(pix[i])
+					gs += float64(pix[i+1])
+					bs += float64(pix[i+2])
+				}
+			}
+			r, g, b := rs/4, gs/4, bs/4
+			dst[uOff+cy*cw+cx] = clampByte(128 - 0.10064373*r - 0.33857195*g + 0.43921569*b)
+			dst[vOff+cy*cw+cx] = clampByte(128 + 0.43921569*r - 0.39894216*g - 0.04027352*b)
+		}
+	}
+}
+
 func escapeFilterPath(p string) string {
 	p = strings.ReplaceAll(p, "\\", "/")
 	p = strings.ReplaceAll(p, ":", "\\:")
@@ -109,10 +160,19 @@ func formatVisualizerOutputArgs(args []string, outDir string) []string {
 }
 
 // WriteVisualizerRGBAFrames renders each analysis frame as a raw RGBA image
-// and writes it to dst.  Each frame starts from the pre-rendered base image
-// (blurred background + artwork tile + overlay) and adds dynamic elements:
-// spectrum bars, loudness envelope, and progress indicator.
+// and writes it to dst. Retained for tests and pixel inspection; production
+// uses the yuv420p path via writeVisualizerFrames.
 func WriteVisualizerRGBAFrames(ctx context.Context, dst io.Writer, input AudioRenderInput, base *image.RGBA, mode ForegroundMode, layout VisualizerLayout, width, height int) error {
+	return writeVisualizerFrames(ctx, dst, input, base, mode, layout, width, height, false)
+}
+
+// writeVisualizerFrames renders each analysis frame from the pre-rendered base
+// image (blurred background + artwork tile + overlay) plus dynamic elements
+// (spectrum bars, loudness envelope, progress indicator). When yuv is true it
+// emits yuv420p (1.5 B/px) instead of rgba (4 B/px), which more than halves the
+// pipe traffic to ffmpeg and lets the encoder skip a whole-frame CPU color
+// conversion; the conversion runs on the otherwise-idle render workers.
+func writeVisualizerFrames(ctx context.Context, dst io.Writer, input AudioRenderInput, base *image.RGBA, mode ForegroundMode, layout VisualizerLayout, width, height int, yuv bool) error {
 	if len(input.Analysis.Frames) == 0 {
 		return fmt.Errorf("no analysis frames to render")
 	}
@@ -123,6 +183,9 @@ func WriteVisualizerRGBAFrames(ctx context.Context, dst io.Writer, input AudioRe
 	totalFrames := len(input.Analysis.Frames)
 	duration := input.Analysis.Duration
 	frameBytes := width * height * 4
+	if yuv {
+		frameBytes = width * height * 3 / 2
+	}
 
 	// Cache the loudness layer (guide lines + detail curve + trend curve)
 	// once per render job instead of recomputing for every frame. Its content
@@ -173,7 +236,11 @@ func WriteVisualizerRGBAFrames(ctx context.Context, dst io.Writer, input AudioRe
 				renderVisualizerFrame(canvas, base, loudnessLayer, loudnessRect,
 					input.Analysis.Frames[fi], fi, totalFrames, duration, mode, layout)
 				buf := make([]byte, frameBytes)
-				copy(buf, canvas.Pix)
+				if yuv {
+					rgbaToYUV420p(canvas.Pix, width, height, buf)
+				} else {
+					copy(buf, canvas.Pix)
+				}
 				select {
 				case results <- rendered{fi, buf}:
 				case <-ctx.Done():
@@ -587,7 +654,7 @@ func RunAudioVisualizerHLS(ctx context.Context, outDir, ffmpeg string, input Aud
 		frameErrCh := make(chan error, 1)
 		go func() {
 			defer frameWriter.Close()
-			frameErrCh <- WriteVisualizerRGBAFrames(ctx, frameWriter, input, baseRGBA, mode, layout, width, height)
+			frameErrCh <- writeVisualizerFrames(ctx, frameWriter, input, baseRGBA, mode, layout, width, height, true)
 		}()
 
 		runErr := cmd.Run()
