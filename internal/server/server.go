@@ -39,6 +39,8 @@ const (
 	maxVideoUploadBytes = 2 << 30 // matches yt-dlp --max-filesize 2G
 )
 
+var pageMediaDownloader = video.DownloadMediaURL
+
 type Server struct {
 	cfg   config.Config
 	store *library.Store
@@ -56,6 +58,7 @@ type Server struct {
 	obs             *obsrtmp.Manager
 	pairings        map[string]pairingRequest
 	relayNonces     map[string]time.Time
+	ingest          ingestStatus
 }
 
 func New(cfg config.Config, store *library.Store, imageURLBase string) *Server {
@@ -118,6 +121,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	// SteamVR integration is frozen indefinitely. Keep internal/steamvr as an
 	// archived asset, but do not expose its management API.
 	mux.HandleFunc("/api/video-player", s.admin(s.handleVideoPlayer))
+	mux.HandleFunc("/api/music-mode", s.admin(s.handleMusicMode))
 	mux.HandleFunc("/api/ffmpeg", s.admin(s.handleFFmpeg))
 	mux.HandleFunc("/api/video-quality", s.admin(s.handleVideoQuality))
 	mux.HandleFunc("/api/network-check", s.admin(s.handleNetworkCheck))
@@ -341,6 +345,38 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		if s.musicModeEnabled() {
+			acquired, err := musicURLAcquirer(r.Context(), s, req.URL)
+			if err != nil {
+				http.Error(w, videoURLDownloadError(err), http.StatusBadRequest)
+				return
+			}
+			state, err := s.processAudioFileAndPublish(r, acquired)
+			if err != nil {
+				os.Remove(acquired.SourcePath)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, state)
+			return
+		}
+
+		if isYTDLPPageURL(req.URL) {
+			media, err := pageMediaDownloader(req.URL, s.store.Dir())
+			if err != nil {
+				http.Error(w, videoURLDownloadError(err), http.StatusBadRequest)
+				return
+			}
+			state, err := s.processVideoFileAndPublish(r, media.SourcePath, media.Name)
+			if err != nil {
+				os.Remove(media.SourcePath)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, state)
+			return
+		}
+
 		// Direct files use the bounded SSRF-safe downloader. Redirects are
 		// revalidated and the completed bytes are classified by ffprobe.
 		media, err := s.downloadDirectMedia(r.Context(), req.URL)
@@ -454,6 +490,38 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 			state, err := s.processAudioFileAndQueue(r, acquired)
 			if err != nil {
 				os.Remove(acquired.SourcePath)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, state)
+			return
+		}
+
+		if s.musicModeEnabled() {
+			acquired, err := musicURLAcquirer(r.Context(), s, req.URL)
+			if err != nil {
+				http.Error(w, videoURLDownloadError(err), http.StatusBadRequest)
+				return
+			}
+			state, err := s.processAudioFileAndQueue(r, acquired)
+			if err != nil {
+				os.Remove(acquired.SourcePath)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, state)
+			return
+		}
+
+		if isYTDLPPageURL(req.URL) {
+			media, err := pageMediaDownloader(req.URL, s.store.Dir())
+			if err != nil {
+				http.Error(w, videoURLDownloadError(err), http.StatusBadRequest)
+				return
+			}
+			state, err := s.processVideoFileAndQueue(r, media.SourcePath, media.Name)
+			if err != nil {
+				os.Remove(media.SourcePath)
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
@@ -1327,6 +1395,9 @@ func (s *Server) handleVideoPlayer(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := settings.Update(func(appSettings *settings.Settings) error {
 			appSettings.VideoPlayerEnabled = req.Enabled
+			if !req.Enabled {
+				appSettings.MusicModeEnabled = false
+			}
 			return nil
 		}); err != nil {
 			http.Error(w, "failed to save settings", http.StatusInternalServerError)
@@ -1342,6 +1413,49 @@ func (s *Server) handleVideoPlayer(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func (s *Server) handleMusicMode(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, s.videoPlayerState())
+	case http.MethodPost:
+		var req struct {
+			Enabled bool `json:"enabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid music mode request", http.StatusBadRequest)
+			return
+		}
+		if req.Enabled && !s.videoPlayerEnabled() {
+			http.Error(w, "music mode requires video player support", http.StatusConflict)
+			return
+		}
+		if err := settings.Update(func(appSettings *settings.Settings) error {
+			appSettings.MusicModeEnabled = req.Enabled && appSettings.VideoPlayerEnabled
+			return nil
+		}); err != nil {
+			http.Error(w, "failed to save settings", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, s.videoPlayerState())
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func isYTDLPPageURL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	for _, domain := range []string{"youtube.com", "youtu.be", "nicovideo.jp", "nico.ms"} {
+		if host == domain || strings.HasSuffix(host, "."+domain) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleFFmpeg(w http.ResponseWriter, r *http.Request) {
@@ -1800,6 +1914,7 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 		"obs":             s.obsState(),
 		"pairing":         s.pairingState(),
 		"videoQueue":      s.videoQueueState(),
+		"ingest":          s.ingestState(),
 		"current":         s.store.Current(),
 		"history":         s.historyState(),
 		"remoteAddr":      r.RemoteAddr,
@@ -1834,6 +1949,7 @@ func (s *Server) stateWithMedia(r *http.Request, upnpResult upnp.Result, tunnelS
 		"obs":             s.obsState(),
 		"pairing":         s.pairingState(),
 		"videoQueue":      s.videoQueueState(),
+		"ingest":          s.ingestState(),
 		"current":         s.store.Current(),
 		"history":         s.historyState(),
 		"remoteAddr":      r.RemoteAddr,
@@ -1910,6 +2026,14 @@ func (s *Server) videoPlayerEnabled() bool {
 	return appSettings.VideoPlayerEnabled
 }
 
+func (s *Server) musicModeEnabled() bool {
+	appSettings, err := settings.Load()
+	if err != nil {
+		return false
+	}
+	return appSettings.VideoPlayerEnabled && appSettings.MusicModeEnabled
+}
+
 func (s *Server) videoPlayerState() map[string]interface{} {
 	return s.videoPlayerStateForID("")
 }
@@ -1920,11 +2044,16 @@ func (s *Server) videoPlayerStateForID(id string) map[string]interface{} {
 	if !enabled {
 		status = video.Result{Message: "VRChat video player support is disabled."}
 	}
-	return map[string]interface{}{
-		"enabled": enabled,
-		"status":  status,
-		"quality": s.videoQualityPreset(),
+	state := map[string]interface{}{
+		"enabled":          enabled,
+		"musicModeEnabled": enabled && s.musicModeEnabled(),
+		"status":           status,
+		"quality":          s.videoQualityPreset(),
 	}
+	if encoder, ok := video.CurrentVideoEncoder(); ok {
+		state["encoder"] = encoder
+	}
+	return state
 }
 
 func (s *Server) videoPlayerEmptyState() map[string]interface{} {
@@ -1934,9 +2063,10 @@ func (s *Server) videoPlayerEmptyState() map[string]interface{} {
 		status = video.Result{Message: "VRChat video player support is disabled."}
 	}
 	return map[string]interface{}{
-		"enabled": enabled,
-		"status":  status,
-		"quality": s.videoQualityPreset(),
+		"enabled":          enabled,
+		"musicModeEnabled": enabled && s.musicModeEnabled(),
+		"status":           status,
+		"quality":          s.videoQualityPreset(),
 	}
 }
 
