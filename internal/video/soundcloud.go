@@ -56,14 +56,30 @@ func isSoundCloudURL(rawURL string) bool {
 	}
 }
 
-// IsPageMediaURL reports whether rawURL is a media page URL (YouTube,
-// SoundCloud, etc.) that requires yt-dlp to fetch and cannot be retrieved with
-// a plain HTTP GET. The server uses this to skip the direct-download fallback
-// for such URLs: a plain GET on a YouTube /watch or SoundCloud page only
-// returns HTML, which ffprobe rejects as "Invalid data found", masking the real
-// yt-dlp error.
+// isTwitterURL reports whether rawURL points at X/Twitter.
+func isTwitterURL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	for _, d := range []string{"x.com", "twitter.com"} {
+		if host == d || strings.HasSuffix(host, "."+d) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsPageMediaURL reports whether rawURL is a media page URL (YouTube, Twitter/X,
+// SoundCloud) that requires yt-dlp to fetch and cannot be retrieved with a
+// plain HTTP GET. The server uses this to skip the direct-download fallback
+// for such URLs: a plain GET on a YouTube /watch, Twitter /status, or
+// SoundCloud page only returns HTML, which ffprobe rejects as "Invalid data
+// found", masking the real yt-dlp error. Unknown hosts are left to the
+// fallback so direct media links without an extension still work.
 func IsPageMediaURL(rawURL string) bool {
-	return isYouTubeURL(rawURL) || isSoundCloudURL(rawURL)
+	return isYouTubeURL(rawURL) || isTwitterURL(rawURL) || isSoundCloudURL(rawURL)
 }
 
 // DownloadMediaURL downloads media from rawURL. For SoundCloud URLs it

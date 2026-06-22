@@ -422,10 +422,11 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Page URLs (YouTube, SoundCloud, ...) only return HTML to a plain GET;
-		// skip the direct-download fallback and surface the yt-dlp error so the
-		// real cause (e.g. "Requested format is not available") is not masked by
-		// a misleading ffprobe "Invalid data found" on the saved HTML.
+		// Page URLs (YouTube, Twitter/X, SoundCloud) only return HTML to a
+		// plain GET; skip the direct-download fallback and surface the yt-dlp
+		// error so the real cause (e.g. Twitter "Bad guest token", YouTube
+		// "Requested format is not available") is not masked by a misleading
+		// ffprobe "Invalid data found" on the saved HTML.
 		if video.IsPageMediaURL(req.URL) {
 			http.Error(w, videoURLDownloadError(ytdlpErr), http.StatusBadRequest)
 			return
@@ -587,10 +588,10 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Page URLs (YouTube, SoundCloud, ...) only return HTML to a plain GET;
-		// skip the direct-download fallback and surface the yt-dlp error so the
-		// real cause is not masked by a misleading ffprobe "Invalid data found"
-		// on the saved HTML.
+		// Page URLs (YouTube, Twitter/X, SoundCloud) only return HTML to a
+		// plain GET; skip the direct-download fallback and surface the yt-dlp
+		// error so the real cause is not masked by a misleading ffprobe
+		// "Invalid data found" on the saved HTML.
 		if video.IsPageMediaURL(req.URL) {
 			http.Error(w, videoURLDownloadError(ytdlpErr), http.StatusBadRequest)
 			return

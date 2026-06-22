@@ -145,8 +145,8 @@ func TestVideoModeTriesYTDLPThenDirect(t *testing.T) {
 
 	t.Run("yt-dlp failure falls back to direct for non-page URLs", func(t *testing.T) {
 		for _, rawURL := range []string{
-			"https://x.com/u/status/1/video/1",
 			"https://example.com/clip.mp4",
+			"https://example.com/song",
 		} {
 			t.Run(rawURL, func(t *testing.T) {
 				_, mux := testServer(t, true)
@@ -183,14 +183,16 @@ func TestVideoModeTriesYTDLPThenDirect(t *testing.T) {
 	})
 
 	t.Run("yt-dlp failure skips direct for page URLs", func(t *testing.T) {
-		// YouTube page URLs only return HTML to a plain GET; the direct
-		// fallback must be skipped so the real yt-dlp error is surfaced
-		// instead of a misleading ffprobe "Invalid data found" on saved HTML.
-		// (SoundCloud is handled by an earlier branch and never reaches this
-		// fallback site.)
+		// Page URLs (YouTube, Twitter/X, SoundCloud) only return HTML to a
+		// plain GET; the direct fallback must be skipped so the real yt-dlp
+		// error is surfaced instead of a misleading ffprobe "Invalid data
+		// found" on saved HTML. (SoundCloud is handled by an earlier branch
+		// and never reaches this fallback site.)
 		for _, rawURL := range []string{
 			"https://www.youtube.com/watch?v=test",
 			"https://youtu.be/abc123",
+			"https://x.com/u/status/1/video/1",
+			"https://twitter.com/u/status/1",
 		} {
 			t.Run(rawURL, func(t *testing.T) {
 				_, mux := testServer(t, true)
