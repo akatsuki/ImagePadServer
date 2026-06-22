@@ -42,7 +42,7 @@ jobs:
           prerelease: true
           fail_on_unmatched_files: true
           files: |
-            dist/**/win/*.exe
+            dist/**/win/*.zip
             dist/**/linux/imagepadserver-*
             dist/**/mac/imagepadserver-*-macos-universal.zip
       - name: Publish stable GitHub Release
@@ -55,6 +55,6 @@ jobs:
           prerelease: false
           fail_on_unmatched_files: true
           files: |
-            dist/**/win/*.exe
+            dist/**/win/*.zip
             dist/**/linux/imagepadserver-*
             dist/**/mac/imagepadserver-*-macos-universal.zip

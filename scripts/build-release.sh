@@ -54,6 +54,18 @@ build_one() {
   CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath -ldflags "$ldflags" -o "$out" "$ROOT_DIR/cmd/imagepadserver"
 }
 
+pack_windows_zip() {
+  goarch="$1"
+  exe="$WIN_DIR/${APP_NAME}-${VERSION}-windows-${goarch}.exe"
+  archive="$WIN_DIR/${APP_NAME}-${VERSION}-windows-${goarch}.zip"
+  if [ ! -f "$exe" ]; then
+    return
+  fi
+  echo "packing $archive"
+  rm -f "$archive"
+  zip -q -j -X "$archive" "$exe"
+}
+
 build_macos_app() {
   goarch="$1"
   app_dir="$MAC_DIR/ImagePadServer-$goarch.app"
@@ -120,6 +132,7 @@ build_macos_universal_app() {
 }
 
 build_one windows amd64 .exe
+pack_windows_zip amd64
 if [ "$(uname -s)" = "Darwin" ]; then
   build_macos_app amd64
   build_macos_app arm64
