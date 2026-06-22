@@ -61,11 +61,12 @@ func TestCleanupOldToolVersions(t *testing.T) {
 	}
 
 	cur := about.Version
-	mk(filepath.Join(cur, "ffmpeg.exe"), "cur")      // current version - keep
-	mk(filepath.Join("v0.0.1", "ffmpeg.exe"), "old") // old version - remove
-	mk(filepath.Join("misc", "note.txt"), "x")       // non-version dir - keep
-	mk("ffmpeg.exe", "flat")                         // legacy flat, versioned exists - remove
-	mk("cloudflared.exe", "cf")                      // unrelated flat tool - keep
+	mk(filepath.Join(cur, "ffmpeg.exe"), "cur")        // current version - keep
+	mk(filepath.Join("v0.0.1", "ffmpeg.exe"), "old")   // older version - remove
+	mk(filepath.Join("v9.9.9", "ffmpeg.exe"), "newer") // higher version - keep
+	mk(filepath.Join("misc", "note.txt"), "x")         // non-version dir - keep
+	mk("ffmpeg.exe", "flat")                           // legacy flat, versioned exists - remove
+	mk("cloudflared.exe", "cf")                        // unrelated flat tool - keep
 
 	CleanupOldToolVersions()
 
@@ -75,6 +76,9 @@ func TestCleanupOldToolVersions(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "v0.0.1")); !os.IsNotExist(err) {
 		t.Errorf("old version dir should be removed, stat err = %v", err)
 	}
+	if _, err := os.Stat(filepath.Join(root, "v9.9.9", "ffmpeg.exe")); err != nil {
+		t.Errorf("higher version dir should be kept: %v", err)
+	}
 	if _, err := os.Stat(filepath.Join(root, "misc", "note.txt")); err != nil {
 		t.Errorf("non-version dir should be kept: %v", err)
 	}
@@ -83,6 +87,86 @@ func TestCleanupOldToolVersions(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "cloudflared.exe")); err != nil {
 		t.Errorf("unrelated flat tool should be kept: %v", err)
+	}
+}
+
+func TestCompareAppVersions(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want int
+	}{
+		{"v1.4.1", "v1.4.1", 0},
+		{"v1.4.0", "v1.4.1", -1},
+		{"v1.4.2", "v1.4.1", 1},
+		{"v1.5.0", "v1.4.9", 1},
+		{"v2.0.0", "v1.9.9", 1},
+		{"v1.4.1-dev1", "v1.4.1", -1}, // pre-release < release
+		{"v1.4.1", "v1.4.1-dev1", 1},
+		{"v1.4.1-dev2", "v1.4.1-dev1", 1},
+	}
+	for _, c := range cases {
+		if got := compareAppVersions(c.a, c.b); got != c.want {
+			t.Errorf("compareAppVersions(%q,%q) = %d, want %d", c.a, c.b, got, c.want)
+		}
+	}
+}
+
+func TestHigherVersionFFmpegUsedInPlace(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("IMAGEPAD_DATA_DIR", dir)
+	t.Setenv("IMAGEPAD_FFMPEG", "")
+	root := filepath.Join(dir, "bin")
+
+	// No current-version dir, but a higher version has ffmpeg installed.
+	higher := filepath.Join(root, "v9.9.9")
+	if err := os.MkdirAll(higher, 0755); err != nil {
+		t.Fatal(err)
+	}
+	higherFF := filepath.Join(higher, executableName("ffmpeg"))
+	if err := os.WriteFile(higherFF, []byte("ff"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ffmpegPath()
+	if err != nil {
+		t.Fatalf("ffmpegPath() error: %v", err)
+	}
+	if got != higherFF {
+		t.Errorf("ffmpegPath() = %q, want higher-version path %q", got, higherFF)
+	}
+}
+
+func TestMigrateDoesNotUseHigherVersion(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("IMAGEPAD_DATA_DIR", dir)
+	root := filepath.Join(dir, "bin")
+
+	// Only a HIGHER version dir holds the tools.
+	higher := filepath.Join(root, "v9.9.9")
+	if err := os.MkdirAll(higher, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for _, base := range []string{"ffmpeg", "ffprobe"} {
+		if err := os.WriteFile(filepath.Join(higher, executableName(base)), []byte(base), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dstDir := filepath.Join(root, about.Version)
+	if err := os.MkdirAll(dstDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	oldReports := ffmpegReportsVersion
+	oldValidate := validateToolExecutable
+	t.Cleanup(func() {
+		ffmpegReportsVersion = oldReports
+		validateToolExecutable = oldValidate
+	})
+	ffmpegReportsVersion = func(path, want string) bool { return true }
+	validateToolExecutable = func(path string, args ...string) error { return nil }
+
+	if migrateFFmpegToolsInto(dstDir) {
+		t.Fatal("migrated from a higher version; higher versions must be used in place, not copied down")
 	}
 }
 
