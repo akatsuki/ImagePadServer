@@ -72,9 +72,15 @@ func BuildVisualizerASSWithMode(metadata AudioMetadata, duration float64, layout
 	timeSize := scaledFontSize(22, width)
 
 	primary := assForegroundColor(mode.PrimaryColor, 0.88)
-	// Use alignment 4 (middle-left) for title, artist, album.
-	writeStyle(&b, "Title", titleFontName, titleSize, 600, 4, primary)
-	writeStyle(&b, "Artist", artistFontName, artistSize, 500, 4, primary)
+	// Use alignment 4 (middle-left) for title, artist, album. Title and artist
+	// styles are only emitted when their text is present; an empty field is
+	// skipped entirely (matching album) so it is never measured or rendered.
+	if metadata.Title != "" {
+		writeStyle(&b, "Title", titleFontName, titleSize, 600, 4, primary)
+	}
+	if metadata.Artist != "" {
+		writeStyle(&b, "Artist", artistFontName, artistSize, 500, 4, primary)
+	}
 	// Use alignment 5 (middle-center) for time text.
 	writeStyle(&b, "TimeText", timeFontName, timeSize, 500, 5, primary)
 
@@ -118,31 +124,35 @@ func BuildVisualizerASSWithMode(metadata AudioMetadata, duration float64, layout
 	viewportY := layout.Title.Y
 	viewportH := layout.Title.H
 
-	titleText := escapeASSText(metadata.Title)
-	if titleWidth <= viewportW {
-		// Stationary, left-aligned
-		posX := viewportX
-		posY := viewportY + viewportH/2
-		clip := fmt.Sprintf("\\clip(%d,%d,%d,%d)", viewportX, viewportY-clipPad, viewportX+viewportW, viewportY+viewportH+clipPad)
-		writeDialogue(&b, "0:00:00.00", assTimestamp(totalDuration),
-			"Title", fmt.Sprintf("%s\\q2\\pos(%d,%d)", clip, posX, posY), titleText)
-	} else {
-		buildScrollingDialogue(&b, totalDuration, "Title", titleText, float64(titleWidth), float64(viewportW), float64(viewportX), float64(viewportY), float64(viewportH), clipPad, float64(width))
+	if metadata.Title != "" {
+		titleText := escapeASSText(metadata.Title)
+		if titleWidth <= viewportW {
+			// Stationary, left-aligned
+			posX := viewportX
+			posY := viewportY + viewportH/2
+			clip := fmt.Sprintf("\\clip(%d,%d,%d,%d)", viewportX, viewportY-clipPad, viewportX+viewportW, viewportY+viewportH+clipPad)
+			writeDialogue(&b, "0:00:00.00", assTimestamp(totalDuration),
+				"Title", fmt.Sprintf("%s\\q2\\pos(%d,%d)", clip, posX, posY), titleText)
+		} else {
+			buildScrollingDialogue(&b, totalDuration, "Title", titleText, float64(titleWidth), float64(viewportW), float64(viewportX), float64(viewportY), float64(viewportH), clipPad, float64(width))
+		}
 	}
 
-	// Artist event
-	artistMetrics := metrics["artist"]
-	artistWidth := artistMetrics.Width
-	artistText := escapeASSText(metadata.Artist)
+	// Artist event (only when non-empty)
+	if metadata.Artist != "" {
+		artistMetrics := metrics["artist"]
+		artistWidth := artistMetrics.Width
+		artistText := escapeASSText(metadata.Artist)
 
-	if artistWidth <= layout.Artist.W {
-		posX := layout.Artist.X
-		posY := layout.Artist.Y + layout.Artist.H/2
-		clip := fmt.Sprintf("\\clip(%d,%d,%d,%d)", layout.Artist.X, layout.Artist.Y-clipPad, layout.Artist.X+layout.Artist.W, layout.Artist.Y+layout.Artist.H+clipPad)
-		writeDialogue(&b, "0:00:00.00", assTimestamp(totalDuration),
-			"Artist", fmt.Sprintf("%s\\pos(%d,%d)", clip, posX, posY), artistText)
-	} else {
-		buildScrollingDialogue(&b, totalDuration, "Artist", artistText, float64(artistWidth), float64(layout.Artist.W), float64(layout.Artist.X), float64(layout.Artist.Y), float64(layout.Artist.H), clipPad, float64(width))
+		if artistWidth <= layout.Artist.W {
+			posX := layout.Artist.X
+			posY := layout.Artist.Y + layout.Artist.H/2
+			clip := fmt.Sprintf("\\clip(%d,%d,%d,%d)", layout.Artist.X, layout.Artist.Y-clipPad, layout.Artist.X+layout.Artist.W, layout.Artist.Y+layout.Artist.H+clipPad)
+			writeDialogue(&b, "0:00:00.00", assTimestamp(totalDuration),
+				"Artist", fmt.Sprintf("%s\\pos(%d,%d)", clip, posX, posY), artistText)
+		} else {
+			buildScrollingDialogue(&b, totalDuration, "Artist", artistText, float64(artistWidth), float64(layout.Artist.W), float64(layout.Artist.X), float64(layout.Artist.Y), float64(layout.Artist.H), clipPad, float64(width))
+		}
 	}
 
 	// Album event (only when non-empty)

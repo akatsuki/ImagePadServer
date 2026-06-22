@@ -611,16 +611,24 @@ func RunAudioVisualizerHLS(ctx context.Context, outDir, ffmpeg string, input Aud
 	titleSize := scaledFontSize(48, width)
 	artistSize := scaledFontSize(28, width)
 	albumSize := scaledFontSize(24, width)
-	titleW, err := MeasureASSEncodedWidth(ctx, ffmpeg, faces.SemiBold600.ASSFamily, 600, fontDir, input.Metadata.Title, titleSize)
-	if err != nil {
-		return fmt.Errorf("measure title: %w", err)
+	// Only measure fields that carry text. Measuring an empty string renders a
+	// blank frame and fails with "no text pixels found", so empty title/artist
+	// (e.g. a local file with no metadata tags) is skipped here exactly as the
+	// album field already is.
+	if input.Metadata.Title != "" {
+		titleW, err := MeasureASSEncodedWidth(ctx, ffmpeg, faces.SemiBold600.ASSFamily, 600, fontDir, input.Metadata.Title, titleSize)
+		if err != nil {
+			return fmt.Errorf("measure title: %w", err)
+		}
+		metrics["title"] = TextMetrics{Width: titleW}
 	}
-	metrics["title"] = TextMetrics{Width: titleW}
-	artistW, err := MeasureASSEncodedWidth(ctx, ffmpeg, faces.Medium500.ASSFamily, 500, fontDir, input.Metadata.Artist, artistSize)
-	if err != nil {
-		return fmt.Errorf("measure artist: %w", err)
+	if input.Metadata.Artist != "" {
+		artistW, err := MeasureASSEncodedWidth(ctx, ffmpeg, faces.Medium500.ASSFamily, 500, fontDir, input.Metadata.Artist, artistSize)
+		if err != nil {
+			return fmt.Errorf("measure artist: %w", err)
+		}
+		metrics["artist"] = TextMetrics{Width: artistW}
 	}
-	metrics["artist"] = TextMetrics{Width: artistW}
 	if input.Metadata.Album != "" {
 		albumW, err := MeasureASSEncodedWidth(ctx, ffmpeg, faces.Regular400.ASSFamily, 400, fontDir, input.Metadata.Album, albumSize)
 		if err != nil {

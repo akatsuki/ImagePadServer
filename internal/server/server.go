@@ -612,6 +612,14 @@ func (s *Server) processAndPublish(r *http.Request, reader io.Reader, name, cont
 	}
 
 	if s.videoPlayerEnabled() && (isAudioUpload(name, contentType) || shouldProbeUploadedMedia(name, contentType)) {
+		// Local uploads have no download step, so they never pass through the
+		// tryBeginIngest/clearIngest pair in the URL handlers. Own the ingest
+		// lifecycle here: surface progress while probing/analyzing and always
+		// release the slot on return so the UI advances from the indeterminate
+		// sweep to the conversion progress bar instead of stalling, and so later
+		// ingests aren't rejected as "already in progress".
+		s.setIngest(ingestProcessing, name)
+		defer s.clearIngest()
 		acquired, err := s.acquireUploadedAudio(r.Context(), reader, name)
 		if err != nil {
 			return nil, err
@@ -658,6 +666,10 @@ func (s *Server) processAndQueue(r *http.Request, reader io.Reader, name, conten
 	}
 
 	if isAudioUpload(name, contentType) || shouldProbeUploadedMedia(name, contentType) {
+		// See processAndPublish: own the ingest lifecycle for the local-upload
+		// path so the status is always released on return.
+		s.setIngest(ingestProcessing, name)
+		defer s.clearIngest()
 		acquired, err := s.acquireUploadedAudio(r.Context(), reader, name)
 		if err != nil {
 			return nil, err

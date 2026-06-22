@@ -297,6 +297,81 @@ func TestWriteVisualizerRGBAFramesMatchesSequential(t *testing.T) {
 	}
 }
 
+// writeMinimalWAV writes a ~1s 48kHz stereo PCM WAV with no metadata tags,
+// mirroring the kind of file a user drops in with only (or no) a title.
+func writeMinimalWAV(t *testing.T, path string) {
+	t.Helper()
+	const samples = 48000 // 1 second, stereo 16-bit
+	var pcm []byte
+	for i := 0; i < samples; i++ {
+		s := int16((i % 200) * 100)
+		pcm = append(pcm, byte(s), byte(s>>8), byte(s), byte(s>>8))
+	}
+	dataLen := len(pcm)
+	fileLen := 36 + dataLen
+	header := []byte{
+		0x52, 0x49, 0x46, 0x46,
+		byte(fileLen), byte(fileLen >> 8), byte(fileLen >> 16), byte(fileLen >> 24),
+		0x57, 0x41, 0x56, 0x45,
+		0x66, 0x6D, 0x74, 0x20,
+		0x10, 0x00, 0x00, 0x00,
+		0x01, 0x00, 0x02, 0x00,
+		0x80, 0xBB, 0x00, 0x00,
+		0x00, 0xEE, 0x02, 0x00,
+		0x04, 0x00, 0x10, 0x00,
+		0x64, 0x61, 0x74, 0x61,
+		byte(dataLen), byte(dataLen >> 8), byte(dataLen >> 16), byte(dataLen >> 24),
+	}
+	if err := os.WriteFile(path, append(header, pcm...), 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestRunAudioVisualizerHLS_TitleOnlyNoArtwork is the end-to-end guard for a
+// bare local file: a title but no artist, no album, and no embedded artwork.
+// Before the empty-field guards this failed during rendering with
+// "measure artist: no text pixels found in ass rendered frame for """.
+func TestRunAudioVisualizerHLS_TitleOnlyNoArtwork(t *testing.T) {
+	ffmpeg, err := ffmpegPath()
+	if err != nil {
+		t.Skipf("ffmpeg unavailable: %v", err)
+	}
+	if _, err := VisualizerFonts(); err != nil {
+		t.Skipf("fonts unavailable: %v", err)
+	}
+
+	dir := t.TempDir()
+	wav := filepath.Join(dir, "title-only.wav")
+	writeMinimalWAV(t, wav)
+
+	ctx := context.Background()
+	analysis, err := AnalyzeAudio(ctx, ffmpeg, wav)
+	if err != nil {
+		t.Fatalf("AnalyzeAudio: %v", err)
+	}
+
+	input := AudioRenderInput{
+		SourcePath:  wav,
+		Kind:        SourceLocalAudio,
+		Metadata:    AudioMetadata{Title: "Title Only"}, // no artist, no album
+		ArtworkPath: "",                                 // no embedded artwork -> fallback tile
+		Analysis:    analysis,
+	}
+	preset := QualityPreset{Height: 720, CRF: 27, VideoBitrate: "2500k", MaxRate: "3000k", BufferSize: "5000k", AudioBitrate: "128k"}
+
+	hlsDir := filepath.Join(dir, "hls")
+	if err := os.MkdirAll(hlsDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := RunAudioVisualizerHLS(ctx, hlsDir, ffmpeg, input, "title-only-test", preset); err != nil {
+		t.Fatalf("RunAudioVisualizerHLS with title-only/no-artwork failed: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(hlsDir, playlistName("title-only-test"))); err != nil {
+		t.Fatalf("HLS playlist not produced: %v", err)
+	}
+}
+
 func TestWriteVisualizerRGBAFramesSpectrumBars(t *testing.T) {
 	base := image.NewRGBA(image.Rect(0, 0, 128, 72))
 	mode := ForegroundMode{PrimaryColor: color.RGBA{255, 255, 255, 255}, AccentColor: color.RGBA{255, 255, 255, 255}, Overlay: color.RGBA{0, 0, 0, 92}}
