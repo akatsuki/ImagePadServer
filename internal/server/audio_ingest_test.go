@@ -281,6 +281,57 @@ func TestProcessAudioFileAndPublish_SoundCloudGUNPEIFallback(t *testing.T) {
 	}
 }
 
+// TestProcessAndPublishLocalAudioClearsIngest guards the local-file upload
+// path: after a local audio file is published, the shared ingest status must
+// return to inactive. A leak here strands the UI on the indeterminate
+// "解析中…" sweep (never transitioning to the conversion progress bar) and
+// causes every later ingest to be rejected with 409 "別の取り込み処理が進行中です".
+func TestProcessAndPublishLocalAudioClearsIngest(t *testing.T) {
+	srv, _ := testServer(t, true)
+	defer srv.store.Reset()
+
+	audioPath := writeTestWAV(t, t.TempDir(), "ingest-clear.wav")
+	f, err := os.Open(audioPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	req := httptest.NewRequest("GET", "/", nil)
+	opts := optionsFromValues(func(string) string { return "" })
+	if _, err := srv.processAndPublish(req, f, "ingest-clear.wav", "audio/wav", opts); err != nil {
+		t.Fatal(err)
+	}
+
+	if active := srv.ingestState()["active"]; active != false {
+		t.Fatalf("ingest still active after local audio publish: %#v", srv.ingestState())
+	}
+}
+
+// TestProcessAndQueueLocalAudioClearsIngest is the queue-path counterpart of
+// TestProcessAndPublishLocalAudioClearsIngest.
+func TestProcessAndQueueLocalAudioClearsIngest(t *testing.T) {
+	srv, _ := testServer(t, true)
+	defer srv.store.Reset()
+
+	audioPath := writeTestWAV(t, t.TempDir(), "ingest-clear-queue.wav")
+	f, err := os.Open(audioPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	req := httptest.NewRequest("GET", "/", nil)
+	opts := optionsFromValues(func(string) string { return "" })
+	if _, err := srv.processAndQueue(req, f, "ingest-clear-queue.wav", "audio/wav", opts); err != nil {
+		t.Fatal(err)
+	}
+
+	if active := srv.ingestState()["active"]; active != false {
+		t.Fatalf("ingest still active after local audio queue: %#v", srv.ingestState())
+	}
+}
+
 func TestProcessAudioFileAndPublish_TitleFallsBackToFilename(t *testing.T) {
 	srv, _ := testServer(t, true)
 	defer srv.store.Reset()

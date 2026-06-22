@@ -244,6 +244,36 @@ func TestBuildVisualizerASS_NoAlbum(t *testing.T) {
 	}
 }
 
+func TestBuildVisualizerASS_NoArtist(t *testing.T) {
+	// A track with no artist tag (e.g. a local file lacking metadata) must not
+	// emit an Artist style or dialogue event. Rendering an empty artist string
+	// otherwise drives MeasureASSEncodedWidth into "no text pixels found",
+	// failing the whole conversion.
+	meta := AudioMetadata{
+		Title:  "Test Title",
+		Artist: "",
+		Album:  "Test Album",
+	}
+	layout, _ := LayoutForSize(1280, 720)
+	fonts := writeTestFonts(t)
+	metrics := map[string]TextMetrics{
+		"title": {Width: 400, Height: 58},
+		"album": {Width: 200, Height: 30},
+	}
+
+	ass, err := BuildVisualizerASS(meta, 10.0, layout, fonts, metrics)
+	if err != nil {
+		t.Fatalf("BuildVisualizerASS: %v", err)
+	}
+
+	if strings.Contains(ass, "Style: Artist") {
+		t.Fatal("Artist style should not exist when artist is empty")
+	}
+	if strings.Contains(ass, ",Artist,") {
+		t.Fatal("Artist should not have dialogue events when artist is empty")
+	}
+}
+
 func TestBuildVisualizerASS_LongTitleScroll(t *testing.T) {
 	meta := AudioMetadata{
 		Title:  "A very long title that should definitely scroll because it exceeds the viewport width",
