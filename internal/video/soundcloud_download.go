@@ -3,6 +3,7 @@ package video
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -13,6 +14,81 @@ import (
 // runDownloadCmd is the function used to execute yt-dlp.
 // It can be overridden by tests to avoid calling the real tool.
 var runDownloadCmd = run
+
+// ffmpegLocationArgs returns yt-dlp's --ffmpeg-location flag pointing at the
+// bundled ffmpeg/ffprobe directory, so yt-dlp postprocessing (audio extraction
+// with -x and DASH/HLS muxing) works even when ffmpeg is not on PATH — which is
+// the normal case here because the tools are bundled, not installed system-wide.
+// Returns nil when no bundled ffmpeg resolves, letting yt-dlp fall back to PATH.
+func ffmpegLocationArgs() []string {
+	p, err := ffmpegPath()
+	if err != nil {
+		return nil
+	}
+	return []string{"--ffmpeg-location", filepath.Dir(p)}
+}
+
+// youtubeImpersonateTargets is the ordered list of curl_cffi browser targets to
+// try for YouTube. Generic aliases (no version) auto-resolve to the latest
+// supported fingerprint, so they survive yt-dlp/curl_cffi upgrades. Safari is
+// first because it is the combination VRChat uses successfully; chrome and
+// firefox are robust fallbacks. (edge is intentionally omitted — curl_cffi only
+// ships stale edge99/edge101 fingerprints.)
+var youtubeImpersonateTargets = []string{"safari", "chrome", "firefox"}
+
+// isYouTubeURL reports whether rawURL points at YouTube.
+func isYouTubeURL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	for _, d := range []string{"youtube.com", "youtu.be", "youtube-nocookie.com"} {
+		if host == d || strings.HasSuffix(host, "."+d) {
+			return true
+		}
+	}
+	return false
+}
+
+// ytdlpDownloadAttempts returns the ordered sets of extra yt-dlp args to try for
+// rawURL. For YouTube it forces the web player client and impersonates a browser
+// (the default android_vr client returns formats that 403 on download); each
+// target is a separate attempt, so the caller stops at the first success. Other
+// sites get a single attempt with no extra args to avoid impersonation side
+// effects on their extractors.
+func ytdlpDownloadAttempts(rawURL string) [][]string {
+	if !isYouTubeURL(rawURL) {
+		return [][]string{nil}
+	}
+	sets := make([][]string, 0, len(youtubeImpersonateTargets))
+	for _, target := range youtubeImpersonateTargets {
+		sets = append(sets, []string{
+			"--impersonate", target,
+			"--extractor-args", "youtube:player_client=web",
+		})
+	}
+	return sets
+}
+
+// runYTDLPDownload runs yt-dlp for rawURL, retrying YouTube downloads across the
+// browser impersonation targets until one succeeds. baseArgs must not include
+// the URL (it is appended last). Non-YouTube URLs run exactly once.
+func runYTDLPDownload(exe, rawURL string, baseArgs []string) error {
+	var lastErr error
+	for _, extra := range ytdlpDownloadAttempts(rawURL) {
+		args := make([]string, 0, len(baseArgs)+len(extra)+1)
+		args = append(args, baseArgs...)
+		args = append(args, extra...)
+		args = append(args, rawURL)
+		if err := runDownloadCmd(exe, args...); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+	}
+	return lastErr
+}
 
 // DownloadSoundCloud downloads a SoundCloud track using yt-dlp and returns
 // an AcquiredAudio with the manifest-selected audio, thumbnail, info JSON
@@ -49,6 +125,7 @@ func DownloadSoundCloud(ctx context.Context, ytdlp, rawURL, outDir string) (Acqu
 		"--print-to-file", "after_move:filepath", manifestPath,
 		"-o", outputTemplate,
 	}
+	args = append(args, ffmpegLocationArgs()...)
 	args = append(args, rawURL)
 
 	if err := runDownloadCmd(ytdlp, args...); err != nil {

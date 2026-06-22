@@ -773,8 +773,8 @@ func downloadVideoURL(rawURL, outDir string) (string, string, error) {
 		"--merge-output-format", "mp4",
 		"-o", target,
 	}
-	args = append(args, rawURL)
-	if err := runDownloadCmd(exe, args...); err != nil {
+	args = append(args, ffmpegLocationArgs()...)
+	if err := runYTDLPDownload(exe, rawURL, args); err != nil {
 		return "", "", err
 	}
 	matches, _ := filepath.Glob(filepath.Join(outDir, "yt-dlp-source.*"))

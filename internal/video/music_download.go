@@ -75,8 +75,8 @@ func DownloadMusic(ctx context.Context, ytdlp, rawURL, outDir string) (AcquiredA
 		"--print-to-file", "after_move:filepath", manifestPath,
 		"-o", outputTemplate,
 	}
-	args = append(args, rawURL)
-	if err := runDownloadCmd(ytdlp, args...); err != nil {
+	args = append(args, ffmpegLocationArgs()...)
+	if err := runYTDLPDownload(ytdlp, rawURL, args); err != nil {
 		return AcquiredAudio{}, fmt.Errorf("yt-dlp audio download failed: %w", err)
 	}
 	sourcePath, err := ReadSinglePathManifest(manifestPath, outDir)

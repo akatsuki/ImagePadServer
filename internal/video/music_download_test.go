@@ -66,6 +66,53 @@ func TestDownloadMusicUsesAudioOnlyAndChannelMetadata(t *testing.T) {
 	}
 }
 
+func TestDownloadMusicPassesFFmpegLocation(t *testing.T) {
+	dir := t.TempDir()
+	// Point ffmpegPath() at a resolvable bundled ffmpeg so its directory is
+	// handed to yt-dlp via --ffmpeg-location (fixes "ffprobe and ffmpeg not
+	// found" postprocessing failures when ffmpeg is not on PATH).
+	ffDir := t.TempDir()
+	ffmpeg := filepath.Join(ffDir, executableName("ffmpeg"))
+	if err := os.WriteFile(ffmpeg, []byte("ff"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("IMAGEPAD_FFMPEG", ffmpeg)
+
+	oldRun := runDownloadCmd
+	defer func() { runDownloadCmd = oldRun }()
+	var gotArgs []string
+	runDownloadCmd = func(_ string, args ...string) error {
+		gotArgs = append([]string(nil), args...)
+		var outputTemplate, manifestPath string
+		for i := 0; i < len(args)-1; i++ {
+			switch args[i] {
+			case "-o":
+				outputTemplate = args[i+1]
+			case "--print-to-file":
+				manifestPath = args[i+2]
+			}
+		}
+		base := strings.TrimSuffix(outputTemplate, ".%(ext)s")
+		if err := os.WriteFile(base+".m4a", []byte("audio"), 0600); err != nil {
+			return err
+		}
+		return os.WriteFile(manifestPath, []byte(base+".m4a\n"), 0600)
+	}
+
+	if _, err := DownloadMusic(context.Background(), "yt-dlp", "https://x.com/u/status/1/video/1", dir); err != nil {
+		t.Fatal(err)
+	}
+	loc := ""
+	for i := 0; i < len(gotArgs)-1; i++ {
+		if gotArgs[i] == "--ffmpeg-location" {
+			loc = gotArgs[i+1]
+		}
+	}
+	if loc != ffDir {
+		t.Fatalf("--ffmpeg-location = %q, want %q", loc, ffDir)
+	}
+}
+
 func TestParseMusicInfoJSONFallsBackToChannelForArtist(t *testing.T) {
 	meta, err := ParseMusicInfoJSON([]byte(`{"title":"Track","channel":"Only Channel"}`))
 	if err != nil {
