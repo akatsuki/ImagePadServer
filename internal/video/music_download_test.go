@@ -128,3 +128,61 @@ func TestParseMusicInfoJSONFallsBackToChannelForArtist(t *testing.T) {
 		t.Fatalf("Artist = %q, want channel fallback", meta.Artist)
 	}
 }
+
+// TestDownloadVideoURLUsesTitleFromInfoJSON verifies the video-download path
+// surfaces yt-dlp's video title as the display name so history/favorites show
+// a meaningful title instead of the generic "yt-dlp-source.mp4".
+func TestDownloadVideoURLUsesTitleFromInfoJSON(t *testing.T) {
+	dir := t.TempDir()
+	oldRun := runDownloadCmd
+	defer func() { runDownloadCmd = oldRun }()
+	runDownloadCmd = func(_ string, args ...string) error {
+		var target string
+		for i := 0; i < len(args)-1; i++ {
+			if args[i] == "-o" {
+				target = args[i+1]
+			}
+		}
+		base := strings.TrimSuffix(target, ".%(ext)s")
+		if err := os.WriteFile(base+".mp4", []byte("video"), 0600); err != nil {
+			return err
+		}
+		return os.WriteFile(base+".info.json", []byte(`{"title":"My Cool Video","uploader":"Someone"}`), 0600)
+	}
+	path, name, err := downloadVideoURL("https://example.com/clip", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != "My Cool Video" {
+		t.Fatalf("name = %q, want title from info JSON", name)
+	}
+	if !strings.HasSuffix(path, ".mp4") {
+		t.Fatalf("sourcePath = %q, want .mp4", path)
+	}
+}
+
+// TestDownloadVideoURLFallsBackToFileNameWithoutTitle verifies that when yt-dlp
+// does not write an info JSON (or the title is empty), the display name falls
+// back to the generic yt-dlp-source filename so history still shows something.
+func TestDownloadVideoURLFallsBackToFileNameWithoutTitle(t *testing.T) {
+	dir := t.TempDir()
+	oldRun := runDownloadCmd
+	defer func() { runDownloadCmd = oldRun }()
+	runDownloadCmd = func(_ string, args ...string) error {
+		var target string
+		for i := 0; i < len(args)-1; i++ {
+			if args[i] == "-o" {
+				target = args[i+1]
+			}
+		}
+		base := strings.TrimSuffix(target, ".%(ext)s")
+		return os.WriteFile(base+".mp4", []byte("video"), 0600)
+	}
+	_, name, err := downloadVideoURL("https://example.com/clip", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != "yt-dlp-source.mp4" {
+		t.Fatalf("name = %q, want yt-dlp-source.mp4 fallback", name)
+	}
+}

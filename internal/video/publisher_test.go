@@ -244,3 +244,39 @@ func TestEnqueueSoundCloudForID_TimestampsAndZeroTotalSeconds(t *testing.T) {
 		t.Errorf("TotalSeconds = %d, want 0", found.TotalSeconds)
 	}
 }
+
+// TestEnqueueUploadedVideoForID_PropagatesTotalSeconds verifies the uploaded-
+// video queue job carries the source duration so the queue status can surface
+// a segment-based "X% (N / M sec)" progress like music mode, instead of only a
+// raw segment count.
+func TestEnqueueUploadedVideoForID_PropagatesTotalSeconds(t *testing.T) {
+	outDir := t.TempDir()
+	preset := ResolveQuality("720", 0)
+
+	jobID := EnqueueUploadedVideoForID("source.mp4", outDir, "dur-media", "Duration", preset, 240)
+	t.Cleanup(func() {
+		CancelQueue(outDir)
+		queues.Delete(outDir)
+	})
+
+	state := queueFor(outDir)
+	state.mu.Lock()
+	var found *queueJob
+	for _, job := range state.items {
+		if job.ID == jobID {
+			found = job
+			break
+		}
+	}
+	state.mu.Unlock()
+
+	if found == nil {
+		t.Fatal("uploaded-video job not found")
+	}
+	if found.TotalSeconds != 240 {
+		t.Fatalf("TotalSeconds = %d, want 240 so segment-based %% progress is shown", found.TotalSeconds)
+	}
+	if found.Mode != "uploaded" {
+		t.Fatalf("Mode = %q, want uploaded", found.Mode)
+	}
+}

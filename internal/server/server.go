@@ -1274,8 +1274,32 @@ func (s *Server) enqueueStillConversion(path, id, title string) {
 }
 
 func (s *Server) enqueueUploadedConversion(path, id, title string) {
-	jobID := video.EnqueueUploadedVideoForID(path, s.store.Dir(), id, title, s.videoQualityPreset())
+	jobID := video.EnqueueUploadedVideoForID(path, s.store.Dir(), id, title, s.videoQualityPreset(), s.probeVideoDuration(path))
 	s.watchConversion(jobID, id)
+}
+
+// probeVideoDuration returns the source video's duration in whole seconds via
+// ffprobe, rounding partial seconds up so the segment-based progress percentage
+// (completed / total) never reports >100% mid-conversion. Returns 0 when the
+// duration cannot be determined, in which case the queue falls back to a raw
+// segment count instead of a percentage.
+func (s *Server) probeVideoDuration(path string) int {
+	ffprobe, err := findFFprobe()
+	if err != nil {
+		return 0
+	}
+	probe, err := video.ProbeMedia(context.Background(), ffprobe, path)
+	if err != nil {
+		return 0
+	}
+	if probe.Duration <= 0 {
+		return 0
+	}
+	secs := int(probe.Duration)
+	if float64(secs) < probe.Duration {
+		secs++
+	}
+	return secs
 }
 
 func (s *Server) processSoundCloudFileAndPublish(r *http.Request, media video.DownloadedMedia) (map[string]interface{}, error) {

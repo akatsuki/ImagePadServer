@@ -344,7 +344,7 @@ func PublishUploadedVideoAsync(sourcePath, outDir string, preset QualityPreset) 
 }
 
 func PublishUploadedVideoAsyncForID(sourcePath, outDir, id string, preset QualityPreset) {
-	EnqueueUploadedVideoForID(sourcePath, outDir, id, filepath.Base(sourcePath), preset)
+	EnqueueUploadedVideoForID(sourcePath, outDir, id, filepath.Base(sourcePath), preset, 0)
 }
 
 func EnqueueStillImageForID(imagePath, outDir, id, title string, preset QualityPreset) string {
@@ -367,7 +367,11 @@ func EnqueueStillImageForID(imagePath, outDir, id, title string, preset QualityP
 	})
 }
 
-func EnqueueUploadedVideoForID(sourcePath, outDir, id, title string, preset QualityPreset) string {
+// EnqueueUploadedVideoForID queues an HLS conversion for an uploaded video.
+// totalSeconds is the source video's duration in seconds (from ffprobe); when
+// it is known the queue status surfaces a segment-based "X% (N / M sec)"
+// progress like music mode, instead of only a raw segment count.
+func EnqueueUploadedVideoForID(sourcePath, outDir, id, title string, preset QualityPreset, totalSeconds int) string {
 	return enqueueConversion(&queueJob{
 		QueueItem: QueueItem{
 			ID:        queueID(),
@@ -379,10 +383,11 @@ func EnqueueUploadedVideoForID(sourcePath, outDir, id, title string, preset Qual
 			Quality:   preset.Effective,
 			CreatedAt: time.Now(),
 		},
-		OutDir:     outDir,
-		SourcePath: sourcePath,
-		Mode:       "uploaded",
-		Preset:     preset,
+		OutDir:       outDir,
+		SourcePath:   sourcePath,
+		Mode:         "uploaded",
+		Preset:       preset,
+		TotalSeconds: totalSeconds,
 	})
 }
 
@@ -754,7 +759,10 @@ func cancelQueue(outDir string) {
 
 // downloadVideoURL downloads a video from a URL using yt-dlp.
 // It handles regular (non-SoundCloud) URLs with the standard video format
-// selector and produces an MP4 file prefixed "yt-dlp-source".
+// selector and produces an MP4 file prefixed "yt-dlp-source". The returned
+// name is the video's title (from yt-dlp's info JSON) so history/favorites
+// show a meaningful title instead of the generic "yt-dlp-source.mp4"; it
+// falls back to the file name when the title is unavailable.
 func downloadVideoURL(rawURL, outDir string) (string, string, error) {
 	exe, err := EnsureYTDLP()
 	if err != nil {
@@ -765,25 +773,41 @@ func downloadVideoURL(rawURL, outDir string) (string, string, error) {
 	}
 	removeYTDLPFiles(outDir)
 	target := filepath.Join(outDir, "yt-dlp-source.%(ext)s")
+	infoPath := filepath.Join(outDir, "yt-dlp-source.info.json")
 	args := []string{
 		"--no-playlist",
 		"--no-warnings",
 		"--max-filesize", "2G",
 		"-f", "bv*[height<=1080]+ba/b[height<=1080]/best[height<=1080]/best",
 		"--merge-output-format", "mp4",
+		"--write-info-json",
 		"-o", target,
 	}
 	args = append(args, ffmpegLocationArgs()...)
 	if err := runYTDLPDownload(exe, rawURL, args); err != nil {
 		return "", "", err
 	}
+	sourcePath := ""
 	matches, _ := filepath.Glob(filepath.Join(outDir, "yt-dlp-source.*"))
 	for _, match := range matches {
+		if filepath.Ext(match) == ".json" {
+			continue
+		}
 		if info, err := os.Stat(match); err == nil && !info.IsDir() && info.Size() > 0 {
-			return match, "yt-dlp-source" + filepath.Ext(match), nil
+			sourcePath = match
+			break
 		}
 	}
-	return "", "", errors.New("yt-dlp did not produce a video file")
+	if sourcePath == "" {
+		return "", "", errors.New("yt-dlp did not produce a video file")
+	}
+	name := "yt-dlp-source" + filepath.Ext(sourcePath)
+	if data, readErr := os.ReadFile(infoPath); readErr == nil {
+		if meta, parseErr := ParseMusicInfoJSON(data); parseErr == nil && strings.TrimSpace(meta.Title) != "" {
+			name = meta.Title
+		}
+	}
+	return sourcePath, name, nil
 }
 
 // DownloadURL downloads media from a URL and returns the source path and
