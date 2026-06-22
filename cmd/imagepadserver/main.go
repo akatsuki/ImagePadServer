@@ -19,6 +19,14 @@ func main() {
 		return
 	}
 
+	if len(os.Args) > 1 && os.Args[1] == "reset-data" {
+		if err := app.ResetData(os.Args[2:], os.Stdout); err != nil {
+			log.Println(err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if err := app.Run(); err != nil {
 		log.Println(err)
 		os.Exit(1)
