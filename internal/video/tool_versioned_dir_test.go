@@ -1,6 +1,7 @@
 package video
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -167,6 +168,46 @@ func TestMigrateDoesNotUseHigherVersion(t *testing.T) {
 
 	if migrateFFmpegToolsInto(dstDir) {
 		t.Fatal("migrated from a higher version; higher versions must be used in place, not copied down")
+	}
+}
+
+func TestMigrateFallsBackWhenCopyLocked(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("IMAGEPAD_DATA_DIR", dir)
+	root := filepath.Join(dir, "bin")
+
+	srcDir := filepath.Join(root, "v0.0.1")
+	if err := os.MkdirAll(srcDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for _, base := range []string{"ffmpeg", "ffprobe"} {
+		if err := os.WriteFile(filepath.Join(srcDir, executableName(base)), []byte(base), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dstDir := filepath.Join(root, about.Version)
+	if err := os.MkdirAll(dstDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	oldReports := ffmpegReportsVersion
+	oldValidate := validateToolExecutable
+	oldCopy := copyFileTo
+	t.Cleanup(func() {
+		ffmpegReportsVersion = oldReports
+		validateToolExecutable = oldValidate
+		copyFileTo = oldCopy
+	})
+	// Source is a valid pinned build, but every copy is blocked (locked dest).
+	ffmpegReportsVersion = func(path, want string) bool { return want == ffmpegPinnedVersion }
+	validateToolExecutable = func(path string, args ...string) error { return nil }
+	copyFileTo = func(dst, src string) error { return errors.New("locked") }
+
+	if migrateFFmpegToolsInto(dstDir) {
+		t.Fatal("migration reported success despite copy failure; caller must re-download instead")
+	}
+	if fileExists(filepath.Join(dstDir, executableName("ffmpeg"))) {
+		t.Fatal("partial ffmpeg left behind after a failed copy")
 	}
 }
 

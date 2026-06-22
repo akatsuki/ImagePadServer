@@ -380,6 +380,8 @@ func downloadFFmpeg() (string, error) {
 	// Avoid re-downloading on every app update: if a previous version's bundle
 	// (or the legacy flat layout) already holds working ffmpeg + ffprobe, copy
 	// them into this version's directory instead of fetching ~100 MB again.
+	// If migration cannot complete — including when a copy is blocked by a lock —
+	// it returns false and we fall through to a fresh download below.
 	if migrateFFmpegToolsInto(filepath.Dir(target)) {
 		installDone()
 		return target, nil
@@ -907,10 +909,18 @@ func migrateFFmpegToolsInto(dstDir string) bool {
 		if validateToolExecutable(fp, "-version") != nil {
 			continue
 		}
-		if err := copyFileTo(filepath.Join(dstDir, ffName), ff); err != nil {
+		// If a copy cannot complete (e.g. a locked file), drop any partial
+		// result and move on; exhausting all candidates returns false so the
+		// caller falls back to a fresh download.
+		ffDst := filepath.Join(dstDir, ffName)
+		fpDst := filepath.Join(dstDir, fpName)
+		if err := copyFileTo(ffDst, ff); err != nil {
+			_ = os.Remove(ffDst)
 			continue
 		}
-		if err := copyFileTo(filepath.Join(dstDir, fpName), fp); err != nil {
+		if err := copyFileTo(fpDst, fp); err != nil {
+			_ = os.Remove(ffDst)
+			_ = os.Remove(fpDst)
 			continue
 		}
 		return true
@@ -931,8 +941,10 @@ var ffmpegReportsVersion = func(path, want string) bool {
 }
 
 // copyFileTo copies src to dst via a temp file and atomic rename, preserving an
-// executable mode.
-func copyFileTo(dst, src string) error {
+// executable mode. It is a var so tests can stub it (e.g. to simulate a locked
+// destination). When it fails during migration the caller falls back to a fresh
+// download.
+var copyFileTo = func(dst, src string) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
