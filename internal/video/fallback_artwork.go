@@ -13,10 +13,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-
-	"golang.org/x/image/font"
-	"golang.org/x/image/font/opentype"
-	"golang.org/x/image/math/fixed"
 )
 
 // Palette holds two RGBA colors for a gradient fill.
@@ -377,39 +373,21 @@ func renderGlyphWithFFmpeg(ctx context.Context, ffmpeg string, fonts FontSet, fg
 }
 
 func renderGlyphWithGo(fonts FontSet, fg color.RGBA, size int) (*image.RGBA, error) {
-	data, err := os.ReadFile(fonts.SemiBold600)
-	if err != nil {
-		return nil, fmt.Errorf("read font: %w", err)
-	}
-	tt, err := opentype.Parse(data)
-	if err != nil {
-		return nil, fmt.Errorf("parse font: %w", err)
-	}
-	face, err := opentype.NewFace(tt, &opentype.FaceOptions{
-		Size:    float64(size) * 0.58,
-		DPI:     72,
-		Hinting: font.HintingFull,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("create font face: %w", err)
-	}
-	defer face.Close()
-
 	dst := image.NewRGBA(image.Rect(0, 0, size, size))
-	drawer := font.Drawer{
-		Dst:  dst,
-		Src:  image.NewUniform(color.RGBA{R: fg.R, G: fg.G, B: fg.B, A: 224}),
-		Face: face,
-	}
-	const glyph = "♪"
-	advance := drawer.MeasureString(glyph)
-	metrics := face.Metrics()
-	textWidth := advance.Round()
-	textHeight := (metrics.Ascent + metrics.Descent).Round()
-	x := (size - textWidth) / 2
-	y := (size+textHeight)/2 - metrics.Descent.Round()
-	drawer.Dot = fixed.P(x, y)
-	drawer.DrawString(glyph)
+	note := color.RGBA{R: fg.R, G: fg.G, B: fg.B, A: 224}
+	armX := size * 58 / 100
+	armY := size * 28 / 100
+	stemX := size * 42 / 100
+	stemTop := size * 22 / 100
+	stemBottom := size * 68 / 100
+	head1X := size * 38 / 100
+	head1Y := size * 72 / 100
+	head2X := size * 56 / 100
+	head2Y := size * 64 / 100
+	drawRoundCappedLine(dst, float64(stemX), float64(stemTop), float64(stemX), float64(stemBottom), note, max(3, size/28))
+	drawRoundCappedLine(dst, float64(stemX), float64(stemTop), float64(armX), float64(armY), note, max(3, size/28))
+	drawFilledCircle(dst, head1X, head1Y, max(6, size/9), note)
+	drawFilledCircle(dst, head2X, head2Y, max(6, size/9), note)
 	return dst, nil
 }
 
@@ -421,4 +399,24 @@ func isMissingDrawtextError(err error) bool {
 	return strings.Contains(s, "No such filter: 'drawtext'") ||
 		strings.Contains(s, "No such filter: drawtext") ||
 		strings.Contains(s, "Filter not found")
+}
+
+func drawFilledCircle(img *image.RGBA, cx, cy, radius int, c color.RGBA) {
+	r2 := radius * radius
+	for y := cy - radius; y <= cy+radius; y++ {
+		for x := cx - radius; x <= cx+radius; x++ {
+			dx := x - cx
+			dy := y - cy
+			if dx*dx+dy*dy <= r2 {
+				blendPixel(img, x, y, c)
+			}
+		}
+	}
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
