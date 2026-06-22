@@ -226,6 +226,10 @@ func ytdlpPath() (string, error) {
 	if local := localYTDLPPath(); fileExists(local) {
 		return local, nil
 	}
+	// Run a newer app version's yt-dlp in place rather than copying it down.
+	if higher := higherVersionToolPath("yt-dlp"); higher != "" {
+		return higher, nil
+	}
 	return "", fmt.Errorf("yt-dlp not found in bundle. %s You can also set IMAGEPAD_YTDLP.", toolInstallHint("yt-dlp"))
 }
 
@@ -248,7 +252,7 @@ func localFFmpegPath() string {
 }
 
 func localYTDLPPath() string {
-	return filepath.Join(binDir(), executableName("yt-dlp"))
+	return filepath.Join(toolVersionDir(), executableName("yt-dlp"))
 }
 
 func ytdlpAssetName() string {
@@ -450,6 +454,13 @@ func downloadYTDLPWithChecksum(checksum string) (string, error) {
 		return "", fmt.Errorf("failed to prepare yt-dlp folder: %w", err)
 	}
 
+	// Reuse an existing yt-dlp from an older version dir (or the legacy flat
+	// layout) instead of re-downloading — but only when it already matches the
+	// wanted checksum, so the "update to latest" path still fetches a new build.
+	if migrateYTDLPInto(filepath.Dir(target), strings.TrimSpace(checksum)) {
+		return target, nil
+	}
+
 	installBegin("yt-dlp")
 	envChecksum := strings.TrimSpace(checksum)
 	if envChecksum == "" {
@@ -634,8 +645,7 @@ func downloadFile(path, rawURL string, maxBytes int64, expectedSHA256 string) er
 		_ = os.Remove(tempPath)
 		return err
 	}
-	_ = os.Remove(path)
-	return os.Rename(tempPath, path)
+	return replaceFile(path, tempPath)
 }
 
 func downloadFileAllowMissingChecksum(path, rawURL string, maxBytes int64, expectedSHA256 string) error {
@@ -683,8 +693,7 @@ func downloadFileAllowMissingChecksum(path, rawURL string, maxBytes int64, expec
 			return err
 		}
 	}
-	_ = os.Remove(path)
-	return os.Rename(tempPath, path)
+	return replaceFile(path, tempPath)
 }
 
 func downloadExecutable(path, rawURL string, maxBytes int64, expectedSHA256 string) error {
@@ -928,6 +937,49 @@ func migrateFFmpegToolsInto(dstDir string) bool {
 	return false
 }
 
+// migrateYTDLPInto copies an existing yt-dlp from an older version dir (or the
+// legacy flat layout) into dstDir to avoid a re-download. When wantSHA is set
+// the candidate must match it (so the update-to-latest path is not satisfied by
+// a stale build); otherwise any binary that passes --version is accepted.
+// Higher versions are never copied down — they are run in place by ytdlpPath.
+func migrateYTDLPInto(dstDir, wantSHA string) bool {
+	exe := executableName("yt-dlp")
+	root := binDir()
+
+	candidates := []string{root}
+	if entries, err := os.ReadDir(root); err == nil {
+		for _, e := range entries {
+			if e.IsDir() && looksLikeVersionDir(e.Name()) && compareAppVersions(e.Name(), about.Version) < 0 {
+				candidates = append(candidates, filepath.Join(root, e.Name()))
+			}
+		}
+	}
+
+	for _, dir := range candidates {
+		if filepath.Clean(dir) == filepath.Clean(dstDir) {
+			continue
+		}
+		src := filepath.Join(dir, exe)
+		if !fileExists(src) {
+			continue
+		}
+		if wantSHA != "" {
+			if verifySHA256(src, wantSHA) != nil {
+				continue
+			}
+		} else if validateToolExecutable(src, "--version") != nil {
+			continue
+		}
+		dst := filepath.Join(dstDir, exe)
+		if err := copyFileTo(dst, src); err != nil {
+			_ = os.Remove(dst)
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 // ffmpegReportsVersion runs "<path> -version" and reports whether the output
 // identifies the wanted FFmpeg version. It is a var so tests can stub it.
 var ffmpegReportsVersion = func(path, want string) bool {
@@ -985,7 +1037,7 @@ func CleanupOldToolVersions() {
 			_ = os.RemoveAll(filepath.Join(root, e.Name()))
 		}
 	}
-	for _, base := range []string{"ffmpeg", "ffprobe"} {
+	for _, base := range []string{"ffmpeg", "ffprobe", "yt-dlp"} {
 		flat := filepath.Join(root, executableName(base))
 		versioned := filepath.Join(root, current, executableName(base))
 		if fileExists(flat) && fileExists(versioned) {
@@ -1005,11 +1057,19 @@ func looksLikeVersionDir(name string) bool {
 // ffmpeg binary, or "" if none. Such a bundle is run in place rather than
 // copied down.
 func higherVersionFFmpegPath() string {
+	return higherVersionToolPath("ffmpeg")
+}
+
+// higherVersionToolPath returns the path to the named tool inside the highest
+// app-version directory newer than the running version that contains it, or ""
+// if none. Such a binary is run in place rather than copied down.
+func higherVersionToolPath(base string) string {
 	root := binDir()
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return ""
 	}
+	exe := executableName(base)
 	bestName := ""
 	for _, e := range entries {
 		if !e.IsDir() || !looksLikeVersionDir(e.Name()) {
@@ -1018,7 +1078,7 @@ func higherVersionFFmpegPath() string {
 		if compareAppVersions(e.Name(), about.Version) <= 0 {
 			continue
 		}
-		if !fileExists(filepath.Join(root, e.Name(), executableName("ffmpeg"))) {
+		if !fileExists(filepath.Join(root, e.Name(), exe)) {
 			continue
 		}
 		if bestName == "" || compareAppVersions(e.Name(), bestName) > 0 {
@@ -1028,7 +1088,7 @@ func higherVersionFFmpegPath() string {
 	if bestName == "" {
 		return ""
 	}
-	return filepath.Join(root, bestName, executableName("ffmpeg"))
+	return filepath.Join(root, bestName, exe)
 }
 
 // compareAppVersions compares two app version strings like "v1.4.2" or

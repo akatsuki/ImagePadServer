@@ -1,6 +1,8 @@
 package video
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -21,9 +23,9 @@ func TestLocalToolPathsAreVersioned(t *testing.T) {
 	if got := filepath.Dir(localFFprobePath()); got != wantDir {
 		t.Errorf("ffprobe dir = %q, want %q", got, wantDir)
 	}
-	// yt-dlp stays in the flat bin/ directory.
-	if got := filepath.Dir(localYTDLPPath()); got != filepath.Join(dir, "bin") {
-		t.Errorf("yt-dlp dir = %q, want flat bin/", got)
+	// yt-dlp now lives in the same per-version directory as ffmpeg.
+	if got := filepath.Dir(localYTDLPPath()); got != wantDir {
+		t.Errorf("yt-dlp dir = %q, want %q", got, wantDir)
 	}
 }
 
@@ -209,6 +211,42 @@ func TestMigrateFallsBackWhenCopyLocked(t *testing.T) {
 	}
 	if fileExists(filepath.Join(dstDir, executableName("ffmpeg"))) {
 		t.Fatal("partial ffmpeg left behind after a failed copy")
+	}
+}
+
+func TestMigrateYTDLPInto(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("IMAGEPAD_DATA_DIR", dir)
+	root := filepath.Join(dir, "bin")
+
+	exe := executableName("yt-dlp")
+	srcDir := filepath.Join(root, "v0.0.1")
+	if err := os.MkdirAll(srcDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("yt-dlp-binary")
+	if err := os.WriteFile(filepath.Join(srcDir, exe), content, 0755); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(content)
+	wantSHA := hex.EncodeToString(sum[:])
+
+	dstDir := filepath.Join(root, about.Version)
+	if err := os.MkdirAll(dstDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Checksum mismatch (an outdated build) must NOT be migrated, so the caller
+	// downloads the latest instead.
+	if migrateYTDLPInto(dstDir, "deadbeef") {
+		t.Fatal("migrated a yt-dlp whose checksum did not match the wanted (latest) build")
+	}
+	// Matching checksum migrates forward.
+	if !migrateYTDLPInto(dstDir, wantSHA) {
+		t.Fatal("expected checksum-matching yt-dlp to migrate")
+	}
+	if got, _ := os.ReadFile(filepath.Join(dstDir, exe)); string(got) != string(content) {
+		t.Errorf("migrated yt-dlp content = %q, want %q", got, content)
 	}
 }
 
