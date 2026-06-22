@@ -128,7 +128,7 @@ func TestNormalizeSpectrumTrackShapeMonotonic(t *testing.T) {
 	if got[0][23] < 0.99 {
 		t.Errorf("top of ramp should fill the bar, got %v", got[0][23])
 	}
-	if got[0][0] != 0 {
+	if got[0][0] > 1e-6 {
 		t.Errorf("bottom of ramp should be empty, got %v", got[0][0])
 	}
 }

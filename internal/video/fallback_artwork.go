@@ -13,6 +13,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"golang.org/x/image/font"
+	"golang.org/x/image/font/opentype"
+	"golang.org/x/image/math/fixed"
 )
 
 // Palette holds two RGBA colors for a gradient fill.
@@ -32,28 +36,28 @@ func PaletteForFeatures(features AudioFeatures) Palette {
 	switch {
 	case features.BPM >= 130 || features.IntegratedLUFS >= -11:
 		return Palette{
-			Start: color.RGBA{122, 29, 79, 255},   // #7A1D4F
-			End:   color.RGBA{255, 107, 53, 255},  // #FF6B35
+			Start: color.RGBA{122, 29, 79, 255},  // #7A1D4F
+			End:   color.RGBA{255, 107, 53, 255}, // #FF6B35
 		}
 	case features.LowFrequencyRatio >= 0.45:
 		return Palette{
-			Start: color.RGBA{36, 16, 63, 255},    // #24103F
-			End:   color.RGBA{124, 58, 237, 255},  // #7C3AED
+			Start: color.RGBA{36, 16, 63, 255},   // #24103F
+			End:   color.RGBA{124, 58, 237, 255}, // #7C3AED
 		}
 	case features.SpectralCentroid >= 3500:
 		return Palette{
-			Start: color.RGBA{11, 85, 99, 255},    // #0B5563
-			End:   color.RGBA{32, 199, 201, 255},  // #20C7C9
+			Start: color.RGBA{11, 85, 99, 255},   // #0B5563
+			End:   color.RGBA{32, 199, 201, 255}, // #20C7C9
 		}
 	case features.BPM < 95 && features.IntegratedLUFS <= -16:
 		return Palette{
-			Start: color.RGBA{31, 42, 68, 255},    // #1F2A44
-			End:   color.RGBA{94, 92, 230, 255},   // #5E5CE6
+			Start: color.RGBA{31, 42, 68, 255},  // #1F2A44
+			End:   color.RGBA{94, 92, 230, 255}, // #5E5CE6
 		}
 	default:
 		return Palette{
-			Start: color.RGBA{23, 59, 87, 255},    // #173B57
-			End:   color.RGBA{58, 134, 255, 255},  // #3A86FF
+			Start: color.RGBA{23, 59, 87, 255},   // #173B57
+			End:   color.RGBA{58, 134, 255, 255}, // #3A86FF
 		}
 	}
 }
@@ -237,6 +241,15 @@ func blendPixel(img *image.RGBA, x, y int, c color.RGBA) {
 // tinted with the provided foreground colour and its visual bounding box is
 // centred on the tile.
 func renderGlyph(ctx context.Context, ffmpeg string, fonts FontSet, fg color.RGBA, size int) (*image.RGBA, error) {
+	glyph, err := renderGlyphWithFFmpeg(ctx, ffmpeg, fonts, fg, size)
+	if err == nil {
+		return glyph, nil
+	}
+	if !isMissingDrawtextError(err) {
+		return nil, err
+	}
+	return renderGlyphWithGo(fonts, fg, size)
+
 	tmpDir, err := os.MkdirTemp("", "fallback-artwork-*")
 	if err != nil {
 		return nil, fmt.Errorf("create temp dir: %w", err)
@@ -300,4 +313,112 @@ func renderGlyph(ctx context.Context, ffmpeg string, fonts FontSet, fg color.RGB
 	}
 
 	return dst, nil
+}
+
+func renderGlyphWithFFmpeg(ctx context.Context, ffmpeg string, fonts FontSet, fg color.RGBA, size int) (*image.RGBA, error) {
+	tmpDir, err := os.MkdirTemp("", "fallback-artwork-*")
+	if err != nil {
+		return nil, fmt.Errorf("create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	outPath := filepath.Join(tmpDir, "glyph.png")
+	fontFile := fonts.SemiBold600
+	fontFileFilter := strings.ReplaceAll(fontFile, "\\", "/")
+	fontFileFilter = strings.ReplaceAll(fontFileFilter, ":", "\\:")
+
+	fontSize := float64(size) * 0.58
+	glyphColor := "white@0.88"
+	args := []string{
+		"-y",
+		"-f", "lavfi",
+		"-i", fmt.Sprintf("color=c=black@0:size=%dx%d:d=0.04,format=rgba", size, size),
+		"-vf", fmt.Sprintf("drawtext=text='♪':fontfile='%s':fontsize=%.0f:fontcolor=%s:x=(w-text_w)/2:y=(h-text_h)/2",
+			fontFileFilter, fontSize, glyphColor),
+		"-frames:v", "1",
+		outPath,
+	}
+
+	cmd := exec.CommandContext(ctx, ffmpeg, args...)
+	hideWindow(cmd)
+	combOutput, err := CombinedOutputTrackedFFmpeg(cmd)
+	if err != nil {
+		return nil, fmt.Errorf("ffmpeg drawtext: %w\n%s", err, string(combOutput))
+	}
+
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		return nil, fmt.Errorf("read glyph png: %w", err)
+	}
+
+	src, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("decode glyph png: %w", err)
+	}
+
+	bounds := src.Bounds()
+	dst := image.NewRGBA(bounds)
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			_, _, _, a := src.At(x, y).RGBA()
+			alpha := uint8(a >> 8)
+			if alpha > 0 {
+				dst.SetRGBA(x, y, color.RGBA{
+					R: fg.R,
+					G: fg.G,
+					B: fg.B,
+					A: alpha,
+				})
+			}
+		}
+	}
+
+	return dst, nil
+}
+
+func renderGlyphWithGo(fonts FontSet, fg color.RGBA, size int) (*image.RGBA, error) {
+	data, err := os.ReadFile(fonts.SemiBold600)
+	if err != nil {
+		return nil, fmt.Errorf("read font: %w", err)
+	}
+	tt, err := opentype.Parse(data)
+	if err != nil {
+		return nil, fmt.Errorf("parse font: %w", err)
+	}
+	face, err := opentype.NewFace(tt, &opentype.FaceOptions{
+		Size:    float64(size) * 0.58,
+		DPI:     72,
+		Hinting: font.HintingFull,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create font face: %w", err)
+	}
+	defer face.Close()
+
+	dst := image.NewRGBA(image.Rect(0, 0, size, size))
+	drawer := font.Drawer{
+		Dst:  dst,
+		Src:  image.NewUniform(color.RGBA{R: fg.R, G: fg.G, B: fg.B, A: 224}),
+		Face: face,
+	}
+	const glyph = "♪"
+	advance := drawer.MeasureString(glyph)
+	metrics := face.Metrics()
+	textWidth := advance.Round()
+	textHeight := (metrics.Ascent + metrics.Descent).Round()
+	x := (size - textWidth) / 2
+	y := (size+textHeight)/2 - metrics.Descent.Round()
+	drawer.Dot = fixed.P(x, y)
+	drawer.DrawString(glyph)
+	return dst, nil
+}
+
+func isMissingDrawtextError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "No such filter: 'drawtext'") ||
+		strings.Contains(s, "No such filter: drawtext") ||
+		strings.Contains(s, "Filter not found")
 }

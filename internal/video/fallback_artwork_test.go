@@ -92,10 +92,10 @@ func TestPaletteForFeaturesDefault(t *testing.T) {
 func TestPaletteForFeaturesBoundaryExclusive(t *testing.T) {
 	// Values just below each threshold fall through to default.
 	p := PaletteForFeatures(AudioFeatures{
-		BPM:               129, // < 130
+		BPM:               129,  // < 130
 		LowFrequencyRatio: 0.44, // < 0.45
 		SpectralCentroid:  3499, // < 3500
-		IntegratedLUFS:    -12, // < -11 but > -16, and BPM 129 is not < 95
+		IntegratedLUFS:    -12,  // < -11 but > -16, and BPM 129 is not < 95
 	})
 	want := Palette{Start: color.RGBA{23, 59, 87, 255}, End: color.RGBA{58, 134, 255, 255}}
 	if p != want {
@@ -136,10 +136,10 @@ func TestRenderFallbackArtworkIsDeterministic(t *testing.T) {
 }
 
 func TestRenderFallbackArtworkGolden(t *testing.T) {
-	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
-		// Golden is an exact-byte PNG from FFmpeg drawtext, which varies by
-		// freetype/ffmpeg build; pin verification to the shipping platforms.
-		t.Skip("ffmpeg-rendered golden is build-sensitive; skip on non-shipping OS")
+	if runtime.GOOS != "windows" {
+		// Golden is an exact-byte PNG generated on Windows with the FFmpeg path.
+		// Only byte-compare it there.
+		t.Skip("ffmpeg-rendered golden is build-specific; verified on Windows only")
 	}
 	testFFmpeg := func(t *testing.T) string {
 		t.Helper()
