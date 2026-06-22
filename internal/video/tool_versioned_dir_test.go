@@ -61,33 +61,34 @@ func TestCleanupOldToolVersions(t *testing.T) {
 		return p
 	}
 
+	ff := executableName("ffmpeg")
 	cur := about.Version
-	mk(filepath.Join(cur, "ffmpeg.exe"), "cur")        // current version - keep
-	mk(filepath.Join("v0.0.1", "ffmpeg.exe"), "old")   // older version - remove
-	mk(filepath.Join("v9.9.9", "ffmpeg.exe"), "newer") // higher version - keep
-	mk(filepath.Join("misc", "note.txt"), "x")         // non-version dir - keep
-	mk("ffmpeg.exe", "flat")                           // legacy flat, versioned exists - remove
-	mk("cloudflared.exe", "cf")                        // unrelated flat tool - keep
+	mk(filepath.Join(cur, ff), "cur")          // current version - keep
+	mk(filepath.Join("v0.0.1", ff), "old")     // older version - remove
+	mk(filepath.Join("v9.9.9", ff), "newer")   // higher version - keep
+	mk(filepath.Join("misc", "note.txt"), "x") // non-version dir - keep
+	mk(ff, "flat")                             // legacy flat, versioned exists - remove
+	mk("unrelated.bin", "x")                   // unrelated flat file - keep
 
 	CleanupOldToolVersions()
 
-	if _, err := os.Stat(filepath.Join(root, cur, "ffmpeg.exe")); err != nil {
+	if _, err := os.Stat(filepath.Join(root, cur, ff)); err != nil {
 		t.Errorf("current version dir was removed: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(root, "v0.0.1")); !os.IsNotExist(err) {
 		t.Errorf("old version dir should be removed, stat err = %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(root, "v9.9.9", "ffmpeg.exe")); err != nil {
+	if _, err := os.Stat(filepath.Join(root, "v9.9.9", ff)); err != nil {
 		t.Errorf("higher version dir should be kept: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(root, "misc", "note.txt")); err != nil {
 		t.Errorf("non-version dir should be kept: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(root, "ffmpeg.exe")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(root, ff)); !os.IsNotExist(err) {
 		t.Errorf("legacy flat ffmpeg should be removed once versioned exists, stat err = %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(root, "cloudflared.exe")); err != nil {
-		t.Errorf("unrelated flat tool should be kept: %v", err)
+	if _, err := os.Stat(filepath.Join(root, "unrelated.bin")); err != nil {
+		t.Errorf("unrelated flat file should be kept: %v", err)
 	}
 }
 
