@@ -22,8 +22,16 @@ import (
 
 // Download URLs and checksum placeholders for external tools.
 const (
-	ffmpegDownloadURL    = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
-	ffmpegSHA256URL      = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip.sha256"
+	ffmpegDownloadURL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+	ffmpegSHA256URL   = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip.sha256"
+	// ffmpegGitHubURL is the same gyan "essentials" build mirrored on the
+	// publisher's own GitHub repo. GitHub's CDN is much faster/steadier than
+	// gyan.dev from many regions, so this is the primary source. GitHub has no
+	// .sha256 sidecar, so the hash is pinned inline alongside the version and
+	// must be bumped together with the URL. (Verified byte-identical to the
+	// gyan.dev release-essentials.zip of the same version.)
+	ffmpegGitHubURL      = "https://github.com/GyanD/codexffmpeg/releases/download/8.1.1/ffmpeg-8.1.1-essentials_build.zip"
+	ffmpegGitHubSHA256   = "6f58ce889f59c311410f7d2b18895b33c03456463486f3b1ebc93d97a0f54541"
 	ytdlpDownloadURL     = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
 	ytdlpMacOSURL        = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos"
 	ytdlpSHA256SumsURL   = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS"
@@ -347,7 +355,12 @@ func downloadFFmpeg() (string, error) {
 		envChecksum = ffmpegDownloadSHA256
 	}
 	attempt := func(src toolSource) error {
+		// Precedence: env override (tests) > inline per-source checksum >
+		// sidecar checksumURL fetched at download time.
 		checksum := envChecksum
+		if checksum == "" {
+			checksum = src.checksum
+		}
 		if checksum == "" && src.checksumURL != "" {
 			c, err := remoteTextSHA256(src.checksumURL)
 			if err != nil {

@@ -6,23 +6,28 @@ import (
 	"time"
 )
 
-// toolSource is one place to fetch a tool. checksumURL may be empty, in which
-// case the binary is trusted only after a successful -version validation.
+// toolSource is one place to fetch a tool. The checksum is resolved in this
+// priority order: an inline checksum, then a checksumURL fetched at download
+// time, then (if both are empty) trust only after a successful -version
+// validation. Use checksum for sources that have no sidecar (e.g. GitHub
+// release assets); use checksumURL for sources that publish a .sha256 sidecar.
 type toolSource struct {
 	url         string
+	checksum    string
 	checksumURL string
 }
 
 // ffmpegWindowsSources lists the Windows FFmpeg archive download locations in
-// priority order.
+// priority order. Both entries are the same gyan "essentials" build; the
+// primary is served from GitHub's CDN (fast) and the fallback from gyan.dev's
+// origin. The zips store binaries under bin/, but extractNamedBinaryFromZip
+// matches by basename so the layout does not matter.
 func ffmpegWindowsSources() []toolSource {
 	return []toolSource{
+		// Primary: gyan essentials mirrored on GitHub (fast CDN, pinned hash).
+		{url: ffmpegGitHubURL, checksum: ffmpegGitHubSHA256},
+		// Fallback: gyan.dev origin with its .sha256 sidecar.
 		{url: ffmpegDownloadURL, checksumURL: ffmpegSHA256URL},
-		// Mirror: BtbN nightly win64 build. No sidecar checksum; the archive
-		// is validated by running ffmpeg -version after extraction. The zip
-		// stores binaries under bin/, but extractNamedBinaryFromZip matches by
-		// basename so the layout does not matter.
-		{url: "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip"},
 	}
 }
 
