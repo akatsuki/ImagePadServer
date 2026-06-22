@@ -19,73 +19,96 @@ GitHub リリース資産という順序になっている。
   遅く・詰まる。`gyan.dev` は実質単一オリジン寄りで地理的に不利。さらに主ソースは
   ダウンロード前に sha256 を**同期取得**するため gyan.dev へ最低 2 往復する
   (`toolchain.go:349-357`)。
-- 一方 BtbN は GitHub リリース資産(Fastly CDN・日本にエッジあり)で、一般に
-  日本からは速く安定する。yt-dlp は既に GitHub 直取得で問題が出ていない。
 
-#### 実測サイズ(2026-06-22 時点, HEAD の Content-Length)
+### 着想: essentials を保ったまま GitHub CDN へ
 
-| ファイル | 実サイズ | 160MiB 上限に対して |
-|---|---|---|
-| gyan essentials(現・主) | 109,282,242 B ≈ 104.2 MiB | 余裕 |
-| BtbN gpl(現・ミラー) | 167,247,669 B ≈ 159.5 MiB | **残り約 0.5 MiB(上限ギリギリ)** |
-| BtbN lgpl | 145,211,394 B ≈ 138.5 MiB | 余裕だが GPL コーデック非搭載 |
+gyan の essentials ビルドは **gyan 本人(GyanD)の GitHub リポジトリ
+`GyanD/codexffmpeg` にも同一ファイルがミラー**されている。これを使えば、
+ビルド種別(= 対応コーデック/フォーマット)を一切変えずに、配信元だけを
+速い GitHub の CDN へ移せる。
 
-- BtbN gpl と gyan essentials はどちらも **GPL ビルドで libx264 等を搭載**しており
-  機能等価。乗り換えてもコーデック欠落はない。
-- BtbN lgpl は x264/x265 等の GPL コンポーネントを含まないため H.264 化に不適。採用しない。
-- BtbN は `.sha256` サイドカーを提供しない(URL は 404 を実測確認)。
+#### 実測(2026-06-22 時点)
 
-### 決定(スコープ: 最小 = 順序入替 + 上限引き上げ)
+| 取得先 | ファイル | 実サイズ | 備考 |
+|---|---|---|---|
+| gyan.dev(現・主) | `ffmpeg-release-essentials.zip` | 109,282,242 B ≈ 104.2 MiB | 単一オリジン寄り・遅い |
+| GitHub GyanD(改訂・主) | `8.1.1/ffmpeg-8.1.1-essentials_build.zip` | 109,282,242 B ≈ 104.2 MiB | **同一ファイル**(HEAD 200 確認)・GitHub CDN |
+| GitHub GyanD `.7z` | `…essentials_build.7z` | 33,664,824 B ≈ 32.1 MiB | 1/3 サイズだが 7z 解凍は Go 標準外。今回見送り |
 
-1. **ソース順の入れ替え** — `ffmpegWindowsSources()` で **GitHub(BtbN gpl)を主**、
-   `gyan.dev` をフォールバックにする。これにより成功時(happy path)は gyan を
-   一切叩かず、同期チェックサム往復も発生しないため最大の速度改善になる。
+- 改訂後の主ソースは**現在ユーザーが使っているファイルとバイト一致**(同 publisher・
+  同サイズ)。よって対応フォーマット/コーデックは**現状から一切変化しない**。
+  アプリが依存する libx264(H.264)・ネイティブ AAC・libass/libfreetype/fontconfig
+  (ビジュアライザの drawtext/ASS)はすべて essentials に同梱済み。
+- 版なしの「latest」エイリアス(`releases/latest/download/<versionless>`)は GyanD では
+  404。よって**版番号を固定**する必要がある(下記)。
+- 104.2 MiB は現行の 160 MiB 上限に十分収まるため、**サイズ上限の変更は不要**。
+
+### 決定(スコープ: 最小 = 取得元の差し替え)
+
+1. **主ソースを GitHub の GyanD 版固定 essentials に差し替え**、`gyan.dev` essentials を
+   フォールバックに残す。BtbN は heavy で上限ギリギリのため**リストから外す**
+   (独立ミラーが必要になれば将来、上限引き上げとセットで復帰)。
+
+2. **`toolSource` に個別 `checksum` フィールドを追加**。GyanD GitHub には `.sha256`
+   サイドカーが無い(404 実測)ため、主ソースのハッシュはコードに直書きし、版固定と
+   セットで管理する。現状の全ソース共通既定 `ffmpegDownloadSHA256` を直書きすると
+   gyan.dev フォールバックが将来の版ズレで検証失敗するため、ソース個別に持たせて
+   独立させる。
 
 ```go
+type toolSource struct {
+    url         string
+    checksum    string // inline sha256 (sidecar が無いソース用)
+    checksumURL string
+}
+
 func ffmpegWindowsSources() []toolSource {
     return []toolSource{
-        // 主: BtbN win64 gpl build (GitHub / Fastly CDN, fast from JP).
-        // sidecar checksum なし → extract 後の ffmpeg -version で検証。
-        {url: "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip"},
-        // フォールバック: gyan.dev release-essentials (sha256 検証付き)。
+        // 主: GyanD GitHub mirror, 版固定 essentials (GitHub CDN, fast from JP).
+        // gyan.dev と同一ファイル。直書き sha256 で検証。
+        {url: ffmpegGitHubURL, checksum: ffmpegGitHubSHA256},
+        // フォールバック: gyan.dev release-essentials (sidecar sha256)。
         {url: ffmpegDownloadURL, checksumURL: ffmpegSHA256URL},
     }
 }
 ```
 
-2. **サイズ上限の引き上げ(必須)** — BtbN gpl は現在 159.5 MiB で 160MiB 上限の
-   残り約 0.5 MiB。master はローリングで増え続けるため、主にするなら上限を上げないと
-   近い将来いきなり初回 DL が `download exceeds size limit` で失敗する。
-   `EnsureFFmpeg` 内の 2 箇所(`toolchain.go:359` と `:363`)の `160<<20` を
-   **`320<<20`(320 MiB)** に引き上げる。`maxBytes` を定数化して 1 箇所で管理する。
+3. **`attempt` のチェックサム優先順位**を `env(IMAGEPAD_FFMPEG_SHA256) → src.checksum
+   → src.checksumURL 取得` に整理する(テスト用 env 上書きを最優先のまま維持)。
+   `ffmpegDownloadSHA256` を全ソース共通既定として使う現挙動は廃し、上記に置き換える。
+
+4. **新規定数**(`toolchain.go`):
+   - `ffmpegGitHubURL = "https://github.com/GyanD/codexffmpeg/releases/download/8.1.1/ffmpeg-8.1.1-essentials_build.zip"`
+   - `ffmpegGitHubSHA256 = "<8.1.1 essentials zip の sha256>"`
+   - 直書き値は実装時に当該 zip を実ダウンロードして算出・確定する
+     (gyan.dev の現サイドカー `6f58ce889f59c311410f7d2b18895b33c03456463486f3b1ebc93d97a0f54541`
+     と一致するはず。一致を実装時に検証する)。
 
 ### この変更で守ること / 影響範囲
 
-- **検証**: BtbN は sha256 サイドカーを持たないが、これは既存ミラーと同じ扱い。
-  抽出後の `validateExecutable(ffmpeg, "-version")` で実行検証される。主ソースの
-  検証が「sha256 → 実行検証」に変わる点のみ許容する(ゴールは速度。HTTPS 経由で
-  GitHub から取得し -version 検証する形で、既存ミラーと同水準)。
-- **zip レイアウト**: BtbN の zip は `bin/` 配下に格納するが、
-  `extractNamedBinaryFromZip` は basename 照合なのでレイアウト非依存
-  (`tool_sources.go:22-24` のコメントどおり)。ffprobe.exe も同 zip から抽出される
-  (`extractFFmpegZip`, `toolchain.go:736-748`)ため両方そろう。
-- **再現性**: BtbN master はローリングビルド。今回のゴール(速度)では許容する。
-  将来、再現性を重視する場合は「自リポジトリ Release への自前ホスト+ピン留め」
-  (今回見送った案 B)を別途検討する。
+- **検証強度は維持**。主・フォールバックともに sha256 検証付き(主=直書き、
+  フォールバック=サイドカー)。さらに extract 後 `validateExecutable(ffmpeg, "-version")`。
+- **happy path で gyan.dev を一切叩かない**(同期チェックサム往復が消える)。これが
+  速度改善の本丸。
+- **zip レイアウト**: GyanD essentials も従来どおり `bin/` 配下。`extractNamedBinaryFromZip`
+  は basename 照合でレイアウト非依存。ffprobe.exe も同 zip から抽出される
+  (`extractFFmpegZip`, `toolchain.go:736-748`)。
+- **更新運用**: 新しい FFmpeg へ上げる時は `ffmpegGitHubURL` の版番号と
+  `ffmpegGitHubSHA256` を**セットで bump**する(リポジトリの pin 方針と整合)。
 - **darwin / linux**: 変更しない。本件は Windows の `gyan.dev` 起因のため。
-- `acquireFromSources` のリトライ/バックオフは変更しない(スコープ外)。
+- `acquireFromSources` のリトライ/バックオフ、`maxBytes`(160MiB)は**変更しない**。
 - HTTP クライアントの粒度タイムアウト不足(`toolchain.go:541,592` が
-  `Timeout: 5*time.Minute` のみで Transport 未設定)は実在する課題だが、今回の
-  最小スコープでは扱わない。将来のハードニング候補として記録に残す。
+  `Timeout: 5*time.Minute` のみで Transport 未設定)は実在課題だが今回スコープ外。
+  将来のハードニング候補として記録に残す。
 
 ### テスト
 
 - 既存の `internal/video` テストが緑であること(`bundled-only-tools`方針により、
   実ダウンロードを誘発しないよう `IMAGEPAD_*` のピン留めは維持)。
-- `ffmpegWindowsSources()` の先頭要素が BtbN(github.com を含む URL)であることを
-  確認する単体テストを追加する(順序の回帰防止)。
-- 引き上げ後の `maxBytes` 定数が BtbN gpl の現実サイズ(約 160 MiB)を上回ることを
-  確認するアサーション(将来の上限事故の回帰防止)。
+- `ffmpegWindowsSources()` の先頭要素が GitHub(github.com を含む URL)で、かつ
+  `checksum` が非空であることを確認する単体テスト(順序・検証欠落の回帰防止)。
+- フォールバック要素が従来どおり `checksumURL` を持つことを確認。
+- env(`IMAGEPAD_FFMPEG_SHA256`)上書きが引き続き最優先になることのテスト。
 
 ---
 
@@ -170,14 +193,19 @@ func ffmpegWindowsSources() []toolSource {
 
 - HTTP クライアントへの粒度タイムアウト追加、リトライ/バックオフの調整
   (ユーザー判断で「最小スコープ」に決定。将来のハードニング候補として記録済み)。
-- FFmpeg のバージョンピン留め・自前ホスト(案 B)、並列レースダウンロード(案 C)。
+- `.7z` essentials(32MiB)への切替(7z 解凍は Go 標準外=依存追加のため見送り)。
+- BtbN を独立ミラーとして併用すること(heavy で 160MiB 上限ギリギリのため今回は外す。
+  併用するなら `maxBytes` 引き上げとセットで将来検討)。
+- 自リポジトリ Release への ffmpeg 自前ホスト(案 B)、並列レースダウンロード(案 C)。
 - 終了ボタンの localhost 限定化(ユーザー判断で admin 範囲に決定済み)。
 - 再起動ボタン等、終了以外のライフサイクル操作。
 
 ## 影響ファイル(見込み)
 
-- `internal/video/tool_sources.go`(ソース順入替)+ 同テスト
-- `internal/video/toolchain.go`(`maxBytes` 定数化 + 320MiB へ引き上げ, `:359/:363`)
+- `internal/video/tool_sources.go`(`toolSource.checksum` 追加、`ffmpegWindowsSources()` で
+  主ソースを GyanD GitHub へ・BtbN 削除)+ 同テスト
+- `internal/video/toolchain.go`(`ffmpegGitHubURL` / `ffmpegGitHubSHA256` 定数追加、
+  `EnsureFFmpeg` 内 `attempt` のチェックサム優先順位を env→src.checksum→checksumURL に整理)
 - `internal/server/server.go`(`exitRequested`、`SetExitRequested`、`handleQuit`、`Register`)
 - `internal/app/app.go`(`SetExitRequested` 呼び出し)
 - `internal/server/ui.go`(CSS grid-area `quit` + ボタン + JS)
