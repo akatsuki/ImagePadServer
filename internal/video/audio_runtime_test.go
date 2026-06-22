@@ -143,6 +143,9 @@ func TestIntegrationGUNPEI(t *testing.T) {
 	// Locate required external tools.
 	ytdlp := requireTool(t, "yt-dlp", "IMAGEPAD_YTDLP")
 	ffmpeg := requireTool(t, "ffmpeg", "IMAGEPAD_FFMPEG")
+	if !hasFFmpegAssFilter(ffmpeg) {
+		t.Skip("ffmpeg was not built with libass (ass filter) support")
+	}
 	ffprobe := requireTool(t, "ffprobe", "IMAGEPAD_FFPROBE")
 
 	dir := t.TempDir()

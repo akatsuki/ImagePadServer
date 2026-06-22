@@ -336,6 +336,9 @@ func TestRunAudioVisualizerHLS_TitleOnlyNoArtwork(t *testing.T) {
 	if err != nil {
 		t.Skipf("ffmpeg unavailable: %v", err)
 	}
+	if !hasFFmpegAssFilter(ffmpeg) {
+		t.Skip("ffmpeg was not built with libass (ass filter) support")
+	}
 	if _, err := VisualizerFonts(); err != nil {
 		t.Skipf("fonts unavailable: %v", err)
 	}

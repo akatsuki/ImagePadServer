@@ -167,6 +167,19 @@ func verifyVisualizerFFmpeg(ffmpeg string) error {
 	return nil
 }
 
+// hasFFmpegAssFilter checks whether the given ffmpeg binary supports the
+// "ass" filter (provided by libass).  Returns false when the filter is not
+// found or when the filter listing command itself fails.
+func hasFFmpegAssFilter(ffmpeg string) bool {
+	cmd := exec.Command(ffmpeg, "-hide_banner", "-filters")
+	hideWindow(cmd)
+	output, err := CombinedOutputTrackedFFmpeg(cmd)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(output), " ass ")
+}
+
 // ---------------------------------------------------------------------------
 // ffmpeg / yt-dlp path resolution
 // ---------------------------------------------------------------------------
