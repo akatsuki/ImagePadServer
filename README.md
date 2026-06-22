@@ -352,7 +352,7 @@ Dev tags such as `v1.2.2-dev1` are published as `dev-release` prereleases.
 
 ## バージョン
 
-- Version: `v1.3.0`
+- Version: `v1.3.1`
 - Author: Akat / 赤月さん
 - Copyright: Copyright (c) 2026 Akat / 赤月さん
 - License: MIT License
