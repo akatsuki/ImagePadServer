@@ -75,6 +75,7 @@ func testServer(t *testing.T, videoEnabled bool) (*Server, *http.ServeMux) {
 
 	appDir := t.TempDir()
 	t.Setenv("IMAGEPAD_DATA_DIR", appDir)
+	pinDevTools(t)
 
 	if err := settings.Update(func(s *settings.Settings) error {
 		s.VideoPlayerEnabled = videoEnabled
@@ -93,6 +94,25 @@ func testServer(t *testing.T, videoEnabled bool) (*Server, *http.ServeMux) {
 	mux := http.NewServeMux()
 	srv.Register(mux)
 	return srv, mux
+}
+
+// pinDevTools points IMAGEPAD_FFMPEG/IMAGEPAD_FFPROBE at the dev machine's
+// tools when present on PATH. Production never resolves tools from PATH, so the
+// test helper locates them via exec.LookPath and supplies them as explicit env
+// overrides. Without this, EnsureFFmpeg would attempt a real network download
+// in tests that exercise audio/video paths. If the tools are absent, the env
+// vars are left unset and ffmpeg-dependent tests fail as they would in CI.
+func pinDevTools(t *testing.T) {
+	t.Helper()
+	if p, err := exec.LookPath("ffmpeg"); err == nil {
+		t.Setenv("IMAGEPAD_FFMPEG", p)
+	}
+	if p, err := exec.LookPath("ffprobe"); err == nil {
+		t.Setenv("IMAGEPAD_FFPROBE", p)
+	}
+	if p, err := exec.LookPath("yt-dlp"); err == nil {
+		t.Setenv("IMAGEPAD_YTDLP", p)
+	}
 }
 
 func adminJSON(t *testing.T, mux *http.ServeMux, req *http.Request) *httptest.ResponseRecorder {

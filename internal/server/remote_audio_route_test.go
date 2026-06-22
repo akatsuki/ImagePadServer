@@ -28,12 +28,12 @@ func requireFFprobe(t *testing.T) string {
 			return p
 		}
 	}
-	// Try findFFprobe (checks env + sibling to ffmpeg).
-	p, err := findFFprobe()
-	if err == nil {
-		return p
-	}
-	// Fall back to PATH lookup.
+	// Resolve from PATH (test-only) and pin it via IMAGEPAD_FFPROBE so the
+	// production bundled-only resolver finds it without a network download.
+	// Production code never consults PATH; locating the dev tool here is a
+	// test convenience only. We deliberately do NOT call findFFprobe()/
+	// EnsureFFprobe here: with the PATH fallback removed, those would attempt
+	// a real ~160MB FFmpeg download instead of failing fast.
 	if path, lookErr := exec.LookPath("ffprobe"); lookErr == nil {
 		t.Setenv("IMAGEPAD_FFPROBE", path)
 		return path

@@ -72,6 +72,17 @@ func run(useNativeWindow bool) error {
 		log.Printf("stopped %d stale FFmpeg process(es) from a previous ImagePadServer run", killed)
 	}
 	go updateYTDLPOnStartup()
+	go func() {
+		video.ValidateInstalledTools()
+		if appSettings, err := settings.Load(); err == nil && appSettings.VideoPlayerEnabled {
+			if _, err := video.EnsureFFmpeg(); err != nil {
+				log.Printf("startup ffmpeg warm failed: %v", err)
+			}
+			if _, err := video.EnsureFFprobe(); err != nil {
+				log.Printf("startup ffprobe warm failed: %v", err)
+			}
+		}
+	}()
 
 	storeDir := filepath.Join(settings.Dir(), "media")
 	store, err := library.NewStore(storeDir)

@@ -213,6 +213,123 @@ func TestVisualizerFFmpegRequiresSubtitlesFilter(t *testing.T) {
 	}
 }
 
+func TestValidateInstalledToolsRepairsCorruptFFmpeg(t *testing.T) {
+	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
+		t.Skip("tool bundle auto-install is only wired for windows/darwin")
+	}
+	dir := t.TempDir()
+	t.Setenv("IMAGEPAD_DATA_DIR", dir)
+	t.Setenv("IMAGEPAD_FFMPEG", "")
+	t.Setenv("IMAGEPAD_FFPROBE", "")
+	t.Setenv("PATH", t.TempDir())
+
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Corrupt ffmpeg: present but fails -version validation.
+	if err := os.WriteFile(localFFmpegPath(), []byte("garbage"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	oldInstaller := ffmpegBundleInstaller
+	oldFFValidator := validateToolExecutable
+	oldProbeValidator := ffprobeExecutableValidator
+	t.Cleanup(func() {
+		ffmpegBundleInstaller = oldInstaller
+		validateToolExecutable = oldFFValidator
+		ffprobeExecutableValidator = oldProbeValidator
+	})
+
+	installed := false
+	ffmpegBundleInstaller = func() (string, error) {
+		installed = true
+		if err := os.WriteFile(localFFmpegPath(), []byte("ffmpeg-ok"), 0755); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(localFFprobePath(), []byte("ffprobe-ok"), 0755); err != nil {
+			return "", err
+		}
+		return localFFmpegPath(), nil
+	}
+	validateToolExecutable = func(path string, args ...string) error {
+		data, _ := os.ReadFile(path)
+		if string(data) == "garbage" {
+			return errors.New("corrupt")
+		}
+		return nil
+	}
+	ffprobeExecutableValidator = func(path string) error {
+		if !fileExists(path) {
+			return errors.New("missing")
+		}
+		data, _ := os.ReadFile(path)
+		if string(data) == "garbage" {
+			return errors.New("corrupt")
+		}
+		return nil
+	}
+
+	ValidateInstalledTools()
+	if !installed {
+		t.Fatal("expected corrupt ffmpeg to trigger reinstall")
+	}
+}
+
+func TestAcquireFromSourcesFallsBackToMirror(t *testing.T) {
+	var calls []string
+	attempt := func(s toolSource) error {
+		calls = append(calls, s.url)
+		if s.url == "primary" {
+			return errors.New("primary down")
+		}
+		return nil
+	}
+	sources := []toolSource{{url: "primary"}, {url: "mirror"}}
+	if err := acquireFromSources("ffmpeg", sources, 1, attempt); err != nil {
+		t.Fatalf("acquireFromSources: %v", err)
+	}
+	if len(calls) != 2 || calls[1] != "mirror" {
+		t.Fatalf("expected fallback to mirror, calls=%v", calls)
+	}
+}
+
+func TestAcquireFromSourcesExhaustionFails(t *testing.T) {
+	attempt := func(s toolSource) error { return errors.New("nope") }
+	err := acquireFromSources("ffmpeg", []toolSource{{url: "a"}}, 2, attempt)
+	if err == nil {
+		t.Fatal("expected error when all sources/retries fail")
+	}
+}
+
+func TestResolversNeverUsePATH(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("IMAGEPAD_DATA_DIR", dir)
+	t.Setenv("IMAGEPAD_FFMPEG", "")
+	t.Setenv("IMAGEPAD_FFPROBE", "")
+	t.Setenv("IMAGEPAD_YTDLP", "")
+
+	// Put a fake ffmpeg/ffprobe/yt-dlp on PATH only.
+	pathDir := t.TempDir()
+	for _, base := range []string{"ffmpeg", "ffprobe", "yt-dlp"} {
+		mustWriteExecutable(t, filepath.Join(pathDir, executableName(base)))
+	}
+	t.Setenv("PATH", pathDir)
+
+	if got, err := ffmpegPath(); err == nil {
+		t.Fatalf("ffmpegPath() resolved %q from PATH; want error", got)
+	}
+	if got, err := ffprobePath(); err == nil {
+		t.Fatalf("ffprobePath() resolved %q from PATH; want error", got)
+	}
+	if got, err := ytdlpPath(); err == nil {
+		t.Fatalf("ytdlpPath() resolved %q from PATH; want error", got)
+	}
+	if got := usableFFprobePath(); got != "" {
+		t.Fatalf("usableFFprobePath() = %q from PATH; want empty", got)
+	}
+}
+
 func mustWriteExecutable(t *testing.T, path string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte("fixture"), 0755); err != nil {

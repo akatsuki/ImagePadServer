@@ -10,6 +10,20 @@ func getIndexHTML(t *testing.T) string {
 	return indexHTML
 }
 
+func TestUIContainsToolInstallOverlay(t *testing.T) {
+	html := getIndexHTML(t)
+	for _, want := range []string{
+		`id="toolInstallOverlay"`,
+		`id="toolInstallFill"`,
+		`updateToolInstall(data.toolInstall)`,
+		`function updateToolInstall(`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("served HTML missing %q", want)
+		}
+	}
+}
+
 func TestUIRendersIngestPhase(t *testing.T) {
 	html := getIndexHTML(t)
 	for _, want := range []string{"ingestPhase", "ダウンロード中", "解析中"} {

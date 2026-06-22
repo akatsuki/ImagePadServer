@@ -65,7 +65,7 @@ func ffprobePath() (string, error) {
 	if local := localFFprobePath(); fileExists(local) {
 		return local, nil
 	}
-	return exec.LookPath("ffprobe")
+	return "", fmt.Errorf("ffprobe not found in bundle. %s You can also set IMAGEPAD_FFPROBE.", toolInstallHint("ffmpeg"))
 }
 
 func localFFprobePath() string {
@@ -75,6 +75,8 @@ func localFFprobePath() string {
 var (
 	ffmpegBundleMu             sync.Mutex
 	ffprobeBundleInstaller     = downloadFFmpeg
+	ffmpegBundleInstaller      = downloadFFmpeg
+	validateToolExecutable     = validateExecutable
 	ffprobeExecutableValidator = func(path string) error {
 		return validateExecutable(path, "-version")
 	}
@@ -89,9 +91,6 @@ func usableFFprobePath() string {
 		candidates = append(candidates, filepath.Join(filepath.Dir(ffmpeg), executableName("ffprobe")))
 	}
 	candidates = append(candidates, localFFprobePath())
-	if path, err := exec.LookPath("ffprobe"); err == nil {
-		candidates = append(candidates, path)
-	}
 
 	seen := make(map[string]struct{}, len(candidates))
 	for _, candidate := range candidates {
@@ -182,7 +181,7 @@ func ffmpegPath() (string, error) {
 	if local := localFFmpegPath(); fileExists(local) {
 		return local, nil
 	}
-	return exec.LookPath("ffmpeg")
+	return "", fmt.Errorf("ffmpeg not found in bundle. %s You can also set IMAGEPAD_FFMPEG.", toolInstallHint("ffmpeg"))
 }
 
 func ytdlpPath() (string, error) {
@@ -195,7 +194,7 @@ func ytdlpPath() (string, error) {
 	if local := localYTDLPPath(); fileExists(local) {
 		return local, nil
 	}
-	return exec.LookPath("yt-dlp")
+	return "", fmt.Errorf("yt-dlp not found in bundle. %s You can also set IMAGEPAD_YTDLP.", toolInstallHint("yt-dlp"))
 }
 
 func localFFmpegPath() string {
@@ -229,7 +228,7 @@ func toolInstallHint(name string) string {
 // ---------------------------------------------------------------------------
 
 func EnsureFFmpeg() (string, error) {
-	if ffmpeg, err := ffmpegPath(); err == nil {
+	if ffmpeg, err := ffmpegPath(); err == nil && validateToolExecutable(ffmpeg, "-version") == nil {
 		return ffmpeg, nil
 	}
 	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
@@ -237,10 +236,40 @@ func EnsureFFmpeg() (string, error) {
 	}
 	ffmpegBundleMu.Lock()
 	defer ffmpegBundleMu.Unlock()
-	if ffmpeg, err := ffmpegPath(); err == nil {
+	if ffmpeg, err := ffmpegPath(); err == nil && validateToolExecutable(ffmpeg, "-version") == nil {
 		return ffmpeg, nil
 	}
-	return downloadFFmpeg()
+	return ffmpegBundleInstaller()
+}
+
+// ToolsReady reports whether ffmpeg and ffprobe both resolve to a bundled (or
+// IMAGEPAD_*) binary that passes -version, without downloading anything.
+func ToolsReady() bool {
+	ffmpeg, err := ffmpegPath()
+	if err != nil || validateToolExecutable(ffmpeg, "-version") != nil {
+		return false
+	}
+	return usableFFprobePath() != ""
+}
+
+// ValidateInstalledTools checks the bundled binaries at startup and re-acquires
+// any that are missing or fail validation. It is best-effort: errors are
+// surfaced only through the install tracker, never returned, so startup never
+// blocks on a tool problem it cannot fix.
+func ValidateInstalledTools() {
+	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
+		return
+	}
+	if ToolsReady() {
+		return
+	}
+	if _, err := EnsureFFmpeg(); err != nil {
+		installFail(err.Error())
+		return
+	}
+	if _, err := EnsureFFprobe(); err != nil {
+		installFail(err.Error())
+	}
 }
 
 func EnsureYTDLP() (string, error) {
@@ -298,27 +327,47 @@ func downloadFFmpeg() (string, error) {
 		return "", fmt.Errorf("failed to prepare FFmpeg folder: %w", err)
 	}
 
-	checksum := strings.TrimSpace(os.Getenv("IMAGEPAD_FFMPEG_SHA256"))
-	if checksum == "" {
-		checksum = ffmpegDownloadSHA256
-	}
-	if checksum == "" {
-		var err error
-		checksum, err = remoteTextSHA256(ffmpegSHA256URL)
-		if err != nil {
-			return "", fmt.Errorf("failed to resolve FFmpeg checksum: %w", err)
-		}
-	}
-
+	installBegin("ffmpeg")
 	zipPath := filepath.Join(settings.Dir(), "bin", "ffmpeg-release-essentials.zip")
-	if err := downloadFile(zipPath, ffmpegDownloadURL, 160<<20, checksum); err != nil {
-		return "", fmt.Errorf("failed to download FFmpeg: %w", err)
+	envChecksum := strings.TrimSpace(os.Getenv("IMAGEPAD_FFMPEG_SHA256"))
+	if envChecksum == "" {
+		envChecksum = ffmpegDownloadSHA256
 	}
-	defer os.Remove(zipPath)
-
-	if err := extractFFmpegZip(zipPath, target); err != nil {
-		return "", fmt.Errorf("failed to install FFmpeg: %w", err)
+	attempt := func(src toolSource) error {
+		checksum := envChecksum
+		if checksum == "" && src.checksumURL != "" {
+			c, err := remoteTextSHA256(src.checksumURL)
+			if err != nil {
+				return fmt.Errorf("failed to resolve FFmpeg checksum: %w", err)
+			}
+			checksum = c
+		}
+		if checksum != "" {
+			if err := downloadFile(zipPath, src.url, 160<<20, checksum); err != nil {
+				return fmt.Errorf("failed to download FFmpeg: %w", err)
+			}
+		} else {
+			if err := downloadFileAllowMissingChecksum(zipPath, src.url, 160<<20, ""); err != nil {
+				return fmt.Errorf("failed to download FFmpeg: %w", err)
+			}
+		}
+		defer os.Remove(zipPath)
+		installPhase("extract")
+		if err := extractFFmpegZip(zipPath, target); err != nil {
+			return fmt.Errorf("failed to install FFmpeg: %w", err)
+		}
+		installPhase("validate")
+		if err := validateExecutable(target, "-version"); err != nil {
+			_ = os.Remove(target)
+			return err
+		}
+		return nil
 	}
+	if err := acquireFromSources("ffmpeg", ffmpegWindowsSources(), 2, attempt); err != nil {
+		installFail(err.Error())
+		return "", err
+	}
+	installDone()
 	return target, nil
 }
 
@@ -338,24 +387,42 @@ func downloadYTDLPWithChecksum(checksum string) (string, error) {
 		return "", fmt.Errorf("failed to prepare yt-dlp folder: %w", err)
 	}
 
-	checksum = strings.TrimSpace(checksum)
-	if checksum == "" {
-		checksum = strings.TrimSpace(os.Getenv("IMAGEPAD_YTDLP_SHA256"))
+	installBegin("yt-dlp")
+	envChecksum := strings.TrimSpace(checksum)
+	if envChecksum == "" {
+		envChecksum = strings.TrimSpace(os.Getenv("IMAGEPAD_YTDLP_SHA256"))
 	}
-	if checksum == "" {
-		checksum = ytdlpDownloadSHA256
+	if envChecksum == "" {
+		envChecksum = ytdlpDownloadSHA256
 	}
-	if checksum == "" {
-		var err error
-		checksum, err = remoteSHA256For("yt-dlp.exe")
-		if err != nil {
-			return "", fmt.Errorf("failed to resolve yt-dlp checksum: %w", err)
+	attempt := func(src toolSource) error {
+		sum := envChecksum
+		if sum == "" {
+			if c, err := remoteSHA256For("yt-dlp.exe"); err == nil {
+				sum = c
+			}
 		}
+		if sum != "" {
+			if err := downloadFile(target, src.url, 50<<20, sum); err != nil {
+				return fmt.Errorf("failed to download yt-dlp: %w", err)
+			}
+		} else {
+			if err := downloadFileAllowMissingChecksum(target, src.url, 50<<20, ""); err != nil {
+				return fmt.Errorf("failed to download yt-dlp: %w", err)
+			}
+		}
+		installPhase("validate")
+		if err := validateExecutable(target, "--version"); err != nil {
+			_ = os.Remove(target)
+			return err
+		}
+		return nil
 	}
-
-	if err := downloadFile(target, ytdlpDownloadURL, 50<<20, checksum); err != nil {
-		return "", fmt.Errorf("failed to download yt-dlp: %w", err)
+	if err := acquireFromSources("yt-dlp", ytdlpSources(), 2, attempt); err != nil {
+		installFail(err.Error())
+		return "", err
 	}
+	installDone()
 	return target, nil
 }
 
@@ -483,7 +550,9 @@ func downloadFile(path, rawURL string, maxBytes int64, expectedSHA256 string) er
 	if err != nil {
 		return err
 	}
-	written, copyErr := io.Copy(out, io.LimitReader(resp.Body, maxBytes+1))
+	installPhase("download")
+	pw := &progressWriter{total: resp.ContentLength, onProgress: installPercent}
+	written, copyErr := io.Copy(out, io.TeeReader(io.LimitReader(resp.Body, maxBytes+1), pw))
 	closeErr := out.Close()
 	if copyErr != nil {
 		_ = os.Remove(tempPath)
@@ -529,7 +598,9 @@ func downloadFileAllowMissingChecksum(path, rawURL string, maxBytes int64, expec
 	if err != nil {
 		return err
 	}
-	written, copyErr := io.Copy(out, io.LimitReader(resp.Body, maxBytes+1))
+	installPhase("download")
+	pw := &progressWriter{total: resp.ContentLength, onProgress: installPercent}
+	written, copyErr := io.Copy(out, io.TeeReader(io.LimitReader(resp.Body, maxBytes+1), pw))
 	closeErr := out.Close()
 	if copyErr != nil {
 		_ = os.Remove(tempPath)

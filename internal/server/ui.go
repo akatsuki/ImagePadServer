@@ -434,6 +434,30 @@ const indexHTML = `<!doctype html>
       font-size: 12px;
       font-weight: 700;
     }
+    .tool-install-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: rgba(15, 28, 25, 0.55);
+      backdrop-filter: blur(2px);
+    }
+    .tool-install-overlay.open { display: flex; }
+    .tool-install-card {
+      width: min(90%, 420px);
+      display: grid;
+      gap: 14px;
+      padding: 24px;
+      border-radius: 16px;
+      background: #fff;
+      box-shadow: 0 18px 50px rgba(0,0,0,0.25);
+      text-align: center;
+    }
+    .tool-install-title { font-weight: 800; color: #21443d; }
+    .tool-install-detail { color: var(--muted); font-size: 13px; font-weight: 700; }
+    .tool-install-card.failed .tool-install-title { color: #b3261e; }
     .actions {
       display: flex;
       flex-wrap: wrap;
@@ -1009,6 +1033,15 @@ const indexHTML = `<!doctype html>
       <span id="dragDropOverlayHint">画像またはRAWファイルを選択します</span>
     </div>
   </div>
+  <div class="tool-install-overlay" id="toolInstallOverlay" role="status" aria-live="polite" aria-hidden="true">
+    <div class="tool-install-card" id="toolInstallCard">
+      <div class="tool-install-title" id="toolInstallTitle">必要なツールを準備しています…</div>
+      <div class="progress-track" aria-label="インストール進捗">
+        <div class="progress-fill" id="toolInstallFill" style="width:6%"></div>
+      </div>
+      <div class="tool-install-detail" id="toolInstallDetail"></div>
+    </div>
+  </div>
   <div class="pairing-panel" id="pairingPanel" role="status" aria-live="polite">
     <p class="pairing-title">BrowserRelayStreamer pairing code</p>
     <strong class="pairing-pin" id="pairingPin">0000</strong>
@@ -1178,6 +1211,7 @@ const indexHTML = `<!doctype html>
       document.getElementById('shareURLLabel').textContent = data.shareURLLabel || 'URL';
       document.getElementById('videoStatus').textContent = videoText(data.video);
       updateMobileProgress(data);
+      updateToolInstall(data.toolInstall);
       applyQuality(data.videoQuality);
       applyVideoPlayer(data.videoPlayer);
       applyOBS(data.obs);
@@ -1499,6 +1533,47 @@ const indexHTML = `<!doctype html>
 
     function ingestPhaseLabel(phase) {
       return { downloading: 'ダウンロード中…', analyzing: '解析中…', processing: '処理中…' }[phase] || '';
+    }
+
+    function updateToolInstall(info) {
+      const overlay = document.getElementById('toolInstallOverlay');
+      const card = document.getElementById('toolInstallCard');
+      const title = document.getElementById('toolInstallTitle');
+      const fill = document.getElementById('toolInstallFill');
+      const detail = document.getElementById('toolInstallDetail');
+      if (!overlay) return;
+      const active = !!(info && info.active);
+      const failed = !!(info && info.failed);
+      if (!active && !failed) {
+        overlay.classList.remove('open');
+        overlay.setAttribute('aria-hidden', 'true');
+        card.classList.remove('failed');
+        fill.classList.remove('indeterminate');
+        return;
+      }
+      overlay.classList.add('open');
+      overlay.setAttribute('aria-hidden', 'false');
+      const toolLabel = { ffmpeg: 'FFmpeg', ffprobe: 'ffprobe', 'yt-dlp': 'yt-dlp' }[info.tool] || 'ツール';
+      if (failed) {
+        card.classList.add('failed');
+        title.textContent = 'ツールの準備に失敗しました';
+        detail.textContent = info.message || '時間をおいて再度お試しください。';
+        fill.classList.remove('indeterminate');
+        fill.style.width = '100%';
+        return;
+      }
+      card.classList.remove('failed');
+      const phaseLabel = { download: 'ダウンロード中', extract: '展開中', validate: '検証中' }[info.phase] || '準備中';
+      title.textContent = toolLabel + ' を' + phaseLabel + '…';
+      const pct = Math.max(0, Math.min(100, Number(info.percent || 0)));
+      if (info.phase === 'download' && pct > 0) {
+        fill.classList.remove('indeterminate');
+        fill.style.width = Math.max(6, pct) + '%';
+        detail.textContent = pct + '%';
+      } else {
+        fill.classList.add('indeterminate');
+        detail.textContent = info.attempt > 1 ? ('再試行 ' + info.attempt + '回目') : '';
+      }
     }
 
     function updateMobileProgress(data) {

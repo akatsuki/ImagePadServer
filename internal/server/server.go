@@ -59,6 +59,9 @@ type Server struct {
 	pairings        map[string]pairingRequest
 	relayNonces     map[string]time.Time
 	ingest          ingestStatus
+
+	toolInstallMu  sync.Mutex
+	toolInstalling bool
 }
 
 func New(cfg config.Config, store *library.Store, imageURLBase string) *Server {
@@ -1421,11 +1424,13 @@ func (s *Server) handleVideoPlayer(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid video player request", http.StatusBadRequest)
 			return
 		}
-		if req.Enabled {
-			if _, err := video.EnsureFFmpeg(); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
+		if req.Enabled && !videoToolsReady() {
+			// Tools not ready: install in the background and return now. The
+			// toggle stays OFF until install succeeds (or reverts on failure).
+			// The UI shows progress via state.toolInstall.
+			s.startVideoToolInstall()
+			writeJSON(w, s.videoPlayerState())
+			return
 		}
 		if err := settings.Update(func(appSettings *settings.Settings) error {
 			appSettings.VideoPlayerEnabled = req.Enabled
@@ -1949,6 +1954,7 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 		"pairing":         s.pairingState(),
 		"videoQueue":      s.videoQueueState(),
 		"ingest":          s.ingestState(),
+		"toolInstall":     video.ToolInstallStatus(),
 		"current":         s.store.Current(),
 		"history":         s.historyState(),
 		"remoteAddr":      r.RemoteAddr,
@@ -1984,6 +1990,7 @@ func (s *Server) stateWithMedia(r *http.Request, upnpResult upnp.Result, tunnelS
 		"pairing":         s.pairingState(),
 		"videoQueue":      s.videoQueueState(),
 		"ingest":          s.ingestState(),
+		"toolInstall":     video.ToolInstallStatus(),
 		"current":         s.store.Current(),
 		"history":         s.historyState(),
 		"remoteAddr":      r.RemoteAddr,
