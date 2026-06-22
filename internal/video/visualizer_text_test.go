@@ -34,8 +34,8 @@ func TestResolveVisualizerFontFacesFromActualFonts(t *testing.T) {
 		if strings.ContainsAny(f.ASSFamily, `/\`) {
 			t.Errorf("%s.ASSFamily %q looks like a file path", name, f.ASSFamily)
 		}
-		if !strings.Contains(f.ASSFamily, "Noto Sans CJK") {
-			t.Errorf("%s.ASSFamily %q does not contain Noto Sans CJK", name, f.ASSFamily)
+		if !strings.Contains(f.ASSFamily, "Noto Sans JP") {
+			t.Errorf("%s.ASSFamily %q does not contain Noto Sans JP", name, f.ASSFamily)
 		}
 	}
 	checkFace("Regular400", faces.Regular400)
@@ -169,7 +169,7 @@ func TestResolveVisualizerFontFacesWeightIdentification(t *testing.T) {
 //     text produces a wider measurement.
 //
 // This test requires a working FFmpeg with the ass filter and the bundled
-// Noto Sans CJK JP font files.  It skips when either is unavailable.
+// Noto Sans JP font files.  It skips when either is unavailable.
 func TestASSWidthsConsistent(t *testing.T) {
 	ffmpeg, err := ffmpegPath()
 	if err != nil {
@@ -452,9 +452,9 @@ func TestParsePostScriptWeight(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"NotoSansCJKjp-Regular", "Regular"},
-		{"NotoSansCJKjp-Medium", "Medium"},
-		{"NotoSansCJKjp-SemiBold", "SemiBold"},
+		{"NotoSansJP-Regular", "Regular"},
+		{"NotoSansJP-Medium", "Medium"},
+		{"NotoSansJP-SemiBold", "SemiBold"},
 		{"NoDash", ""},
 		{"", ""},
 		{"Multiple-Dashes-Here", "Here"},

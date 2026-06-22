@@ -14,18 +14,18 @@ import (
 // -trimpath. FFmpeg/libass require real files on disk, so VisualizerFonts
 // materializes them to a per-content cache directory before returning paths.
 //
-//go:embed fonts/NotoSansCJKjp-Regular.otf fonts/NotoSansCJKjp-Medium.otf fonts/NotoSansCJKjp-SemiBold.otf
+//go:embed fonts/NotoSansJP-Regular.ttf fonts/NotoSansJP-Medium.ttf fonts/NotoSansJP-SemiBold.ttf
 var embeddedFonts embed.FS
 
-var errFontNotFound = errors.New("Noto Sans CJK JP font not found")
+var errFontNotFound = errors.New("Noto Sans JP font not found")
 
 var embeddedFontFiles = []string{
-	"fonts/NotoSansCJKjp-Regular.otf",
-	"fonts/NotoSansCJKjp-Medium.otf",
-	"fonts/NotoSansCJKjp-SemiBold.otf",
+	"fonts/NotoSansJP-Regular.ttf",
+	"fonts/NotoSansJP-Medium.ttf",
+	"fonts/NotoSansJP-SemiBold.ttf",
 }
 
-// VisualizerFonts extracts the bundled Noto Sans CJK JP fonts to a cache
+// VisualizerFonts extracts the bundled Noto Sans JP fonts to a cache
 // directory on disk and returns their paths. All three fonts live in the same
 // directory, which callers rely on when passing a single fontsdir to FFmpeg.
 func VisualizerFonts() (FontSet, error) {
@@ -34,9 +34,9 @@ func VisualizerFonts() (FontSet, error) {
 		return FontSet{}, errFontNotFound
 	}
 	return FontSet{
-		Regular400:  filepath.Join(dir, "NotoSansCJKjp-Regular.otf"),
-		Medium500:   filepath.Join(dir, "NotoSansCJKjp-Medium.otf"),
-		SemiBold600: filepath.Join(dir, "NotoSansCJKjp-SemiBold.otf"),
+		Regular400:  filepath.Join(dir, "NotoSansJP-Regular.ttf"),
+		Medium500:   filepath.Join(dir, "NotoSansJP-Medium.ttf"),
+		SemiBold600: filepath.Join(dir, "NotoSansJP-SemiBold.ttf"),
 	}, nil
 }
 

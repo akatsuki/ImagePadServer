@@ -220,9 +220,9 @@ func readOTFNameID(path string, targetID uint16) (string, error) {
 }
 
 // parsePostScriptWeight extracts the weight name from a PostScript font name.
-// For example "NotoSansCJKjp-Regular" returns "Regular",
-// "NotoSansCJKjp-Medium" returns "Medium",
-// "NotoSansCJKjp-SemiBold" returns "SemiBold".
+// For example "NotoSansJP-Regular" returns "Regular",
+// "NotoSansJP-Medium" returns "Medium",
+// "NotoSansJP-SemiBold" returns "SemiBold".
 func parsePostScriptWeight(psName string) string {
 	i := strings.LastIndex(psName, "-")
 	if i < 0 {
