@@ -200,10 +200,10 @@ func TestVideoEncoderProfileArguments(t *testing.T) {
 	}{
 		{"libx264", EncoderStandard, false, []string{"-c:v libx264", "-preset medium", "-crf 27"}},
 		{"libx264", EncoderLowLatency, false, []string{"-preset ultrafast", "-tune zerolatency"}},
-		{"h264_nvenc", EncoderStandard, true, []string{"-c:v h264_nvenc", "-preset p4", "-rc vbr", "-cq 27", "-b:v 0"}},
+		{"h264_nvenc", EncoderStandard, true, []string{"-c:v h264_nvenc", "-preset p6", "-rc vbr", "-cq 27", "-b:v 0", "-spatial_aq 1", "-bf 3"}},
 		{"h264_nvenc", EncoderLowLatency, true, []string{"-preset p1", "-tune ull", "-b:v 2500k"}},
 		{"h264_qsv", EncoderStandard, true, []string{"-c:v h264_qsv", "-preset medium", "-global_quality 27"}},
-		{"h264_amf", EncoderStandard, true, []string{"-c:v h264_amf", "-rc cqp", "-qp_i 27", "-qp_p 27"}},
+		{"h264_amf", EncoderStandard, true, []string{"-c:v h264_amf", "-quality quality", "-rc cqp", "-qp_i 27", "-qp_p 27", "-vbaq 1"}},
 		{"h264_amf", EncoderLowLatency, true, []string{"-c:v h264_amf", "-quality speed", "-usage lowlatency"}},
 		{"h264_videotoolbox", EncoderStandard, true, []string{"-c:v h264_videotoolbox", "-realtime 0"}},
 	}

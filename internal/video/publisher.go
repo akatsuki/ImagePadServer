@@ -126,20 +126,24 @@ func ResolveQualityForUpload(mode string, downloadMbps, uploadMbps int) QualityP
 		UploadMbps:  uploadMbps,
 	}
 	switch effective {
+	// CRF is +2 vs the older presets: the encoder efficiency upgrades (NVENC p6
+	// + AQ + B-frames, AMF quality + VBAQ, libx264 medium) buy back the quality,
+	// so the higher CRF lands at a similar look for a smaller file. CRF is not
+	// used by the OBS low-latency path, so live streaming quality is unchanged.
 	case "1080":
 		preset.Height = 1080
 		preset.VideoBitrate = "4500k"
 		preset.MaxRate = "5200k"
 		preset.BufferSize = "9000k"
 		preset.AudioBitrate = "160k"
-		preset.CRF = 24
+		preset.CRF = 26
 	case "360":
 		preset.Height = 360
 		preset.VideoBitrate = "900k"
 		preset.MaxRate = "1100k"
 		preset.BufferSize = "1800k"
 		preset.AudioBitrate = "96k"
-		preset.CRF = 30
+		preset.CRF = 32
 	default:
 		preset.Effective = "720"
 		preset.Height = 720
@@ -147,9 +151,29 @@ func ResolveQualityForUpload(mode string, downloadMbps, uploadMbps int) QualityP
 		preset.MaxRate = "3000k"
 		preset.BufferSize = "5000k"
 		preset.AudioBitrate = "128k"
-		preset.CRF = 27
+		preset.CRF = 29
 	}
 	return preset
+}
+
+// scaleBitrate multiplies a bitrate string like "3000k" by factor, preserving
+// the unit suffix. Empty or unparseable values are returned unchanged.
+func scaleBitrate(s string, factor float64) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return s
+	}
+	unit := ""
+	num := s
+	if last := s[len(s)-1]; last < '0' || last > '9' {
+		unit = s[len(s)-1:]
+		num = s[:len(s)-1]
+	}
+	v, err := strconv.Atoi(strings.TrimSpace(num))
+	if err != nil {
+		return s
+	}
+	return strconv.Itoa(int(float64(v)*factor)) + unit
 }
 
 func BitrateOnlyPreset(requested, active QualityPreset) QualityPreset {
@@ -638,14 +662,26 @@ func runUploadedHLS(ctx context.Context, outDir, ffmpeg, sourcePath, id string, 
 }
 
 func uploadedHLSArgsWithEncoder(sourcePath, id string, preset QualityPreset, encoder VideoEncoderProfile) []string {
+	// The source is a finite file on disk (uploaded, or fully downloaded from a
+	// URL), so do NOT pace input to real time (-re): like the music visualizer,
+	// encode as fast as the machine allows — the HLS event playlist still serves
+	// chase playback while it races ahead. This is also what lets GPU/CPU speed
+	// actually matter for throughput. The "medium" libx264 preset (CPU fallback)
+	// then trades the freed-up time for better compression.
 	args := []string{
 		"-y",
-		"-re",
 		"-i", sourcePath,
 		"-map", "0:v:0",
 		"-map", "0:a:0?",
 	}
-	args = append(args, encoder.FFmpegArgs(preset, "veryfast")...)
+	// Trim the NVENC bitrate ceiling ~17% for this VOD path only (a copy of the
+	// preset), so complex content that would otherwise clip at the full ceiling
+	// gets smaller. The OBS live path reads the shared preset directly, so its
+	// MaxRate is left untouched.
+	vod := preset
+	vod.MaxRate = scaleBitrate(preset.MaxRate, 0.83)
+	vod.BufferSize = scaleBitrate(preset.BufferSize, 0.83)
+	args = append(args, encoder.FFmpegArgs(vod, "medium")...)
 	return append(args,
 		"-vf", "scale=w='min(1920,iw)':h='min("+strconv.Itoa(preset.Height)+",ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
 		"-g", "60",

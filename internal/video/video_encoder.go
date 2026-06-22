@@ -215,8 +215,12 @@ func (p VideoEncoderProfile) FFmpegArgs(preset QualityPreset, softwarePreset str
 				// Capped constant-quality VBR: -cq governs quality and -b:v 0
 				// disables the bitrate target, so highly compressible video
 				// (a near-static visualizer) stays small like libx264 -crf,
-				// while -maxrate caps spikes.
-				args = append(args, "-preset", "p4", "-rc", "vbr", "-cq", cq, "-b:v", "0")
+				// while -maxrate caps spikes. p6 + lookahead + spatial/temporal
+				// AQ spend a little more GPU time (we have headroom now that
+				// conversion is no longer paced to real time) to hit the same
+				// -cq quality at a noticeably smaller size.
+				args = append(args, "-preset", "p6", "-rc", "vbr", "-cq", cq, "-b:v", "0",
+					"-rc-lookahead", "20", "-spatial_aq", "1", "-temporal_aq", "1", "-bf", "3")
 				args = append(args, hardwareBitrateCeiling(preset)...)
 			}
 		case "h264_qsv":
@@ -232,8 +236,12 @@ func (p VideoEncoderProfile) FFmpegArgs(preset QualityPreset, softwarePreset str
 				args = append(args, "-quality", "speed", "-usage", "lowlatency")
 				args = append(args, hardwareTargetBitrate(preset)...)
 			} else {
-				args = append(args, "-quality", "balanced", "-usage", "transcoding",
-					"-rc", "cqp", "-qp_i", cq, "-qp_p", cq, "-qp_b", cq)
+				// AMD analog of the NVENC path: the "quality" preset plus VBAQ
+				// (variance-based adaptive quantization) reaches the same QP
+				// quality at a smaller size. Keep constant-QP rate control,
+				// which is the most broadly supported AMF mode.
+				args = append(args, "-quality", "quality", "-usage", "transcoding",
+					"-rc", "cqp", "-qp_i", cq, "-qp_p", cq, "-qp_b", cq, "-vbaq", "1")
 			}
 		case "h264_videotoolbox":
 			// videotoolbox has no reliable constant-quality mode across builds;
