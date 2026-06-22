@@ -16,20 +16,36 @@ GitHub リリース資産という順序になっている。
 
 - 定義: `internal/video/toolchain.go:25-26`、`internal/video/tool_sources.go:18-27`
 - 問題: 日本からの初回インストール時、主ソース `gyan.dev` のダウンロードが
-  遅く・詰まることがある。`gyan.dev` は実質単一オリジン寄りで地理的に不利。
+  遅く・詰まる。`gyan.dev` は実質単一オリジン寄りで地理的に不利。さらに主ソースは
+  ダウンロード前に sha256 を**同期取得**するため gyan.dev へ最低 2 往復する
+  (`toolchain.go:349-357`)。
 - 一方 BtbN は GitHub リリース資産(Fastly CDN・日本にエッジあり)で、一般に
   日本からは速く安定する。yt-dlp は既に GitHub 直取得で問題が出ていない。
 
-### 決定: ソース順の入れ替え(案 A)
+#### 実測サイズ(2026-06-22 時点, HEAD の Content-Length)
 
-`ffmpegWindowsSources()` の優先順位を入れ替え、**GitHub(BtbN)を主**、
-`gyan.dev` をフォールバックにする。
+| ファイル | 実サイズ | 160MiB 上限に対して |
+|---|---|---|
+| gyan essentials(現・主) | 109,282,242 B ≈ 104.2 MiB | 余裕 |
+| BtbN gpl(現・ミラー) | 167,247,669 B ≈ 159.5 MiB | **残り約 0.5 MiB(上限ギリギリ)** |
+| BtbN lgpl | 145,211,394 B ≈ 138.5 MiB | 余裕だが GPL コーデック非搭載 |
+
+- BtbN gpl と gyan essentials はどちらも **GPL ビルドで libx264 等を搭載**しており
+  機能等価。乗り換えてもコーデック欠落はない。
+- BtbN lgpl は x264/x265 等の GPL コンポーネントを含まないため H.264 化に不適。採用しない。
+- BtbN は `.sha256` サイドカーを提供しない(URL は 404 を実測確認)。
+
+### 決定(スコープ: 最小 = 順序入替 + 上限引き上げ)
+
+1. **ソース順の入れ替え** — `ffmpegWindowsSources()` で **GitHub(BtbN gpl)を主**、
+   `gyan.dev` をフォールバックにする。これにより成功時(happy path)は gyan を
+   一切叩かず、同期チェックサム往復も発生しないため最大の速度改善になる。
 
 ```go
 func ffmpegWindowsSources() []toolSource {
     return []toolSource{
-        // 主: BtbN nightly win64 build (GitHub / Fastly CDN, fast from JP).
-        // sidecar checksum なし → 既存どおり ffmpeg -version で検証。
+        // 主: BtbN win64 gpl build (GitHub / Fastly CDN, fast from JP).
+        // sidecar checksum なし → extract 後の ffmpeg -version で検証。
         {url: "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip"},
         // フォールバック: gyan.dev release-essentials (sha256 検証付き)。
         {url: ffmpegDownloadURL, checksumURL: ffmpegSHA256URL},
@@ -37,12 +53,18 @@ func ffmpegWindowsSources() []toolSource {
 }
 ```
 
+2. **サイズ上限の引き上げ(必須)** — BtbN gpl は現在 159.5 MiB で 160MiB 上限の
+   残り約 0.5 MiB。master はローリングで増え続けるため、主にするなら上限を上げないと
+   近い将来いきなり初回 DL が `download exceeds size limit` で失敗する。
+   `EnsureFFmpeg` 内の 2 箇所(`toolchain.go:359` と `:363`)の `160<<20` を
+   **`320<<20`(320 MiB)** に引き上げる。`maxBytes` を定数化して 1 箇所で管理する。
+
 ### この変更で守ること / 影響範囲
 
 - **検証**: BtbN は sha256 サイドカーを持たないが、これは既存ミラーと同じ扱い。
-  抽出後の `validateExecutable(ffmpeg, "-version")` で実行検証されるため、検証の
-  強度は現状から低下しない(主ソースが検証付き sha256 → 実行検証に変わる点のみ
-  許容する。今回のゴールは「速度」であり、検証強化は別スコープ)。
+  抽出後の `validateExecutable(ffmpeg, "-version")` で実行検証される。主ソースの
+  検証が「sha256 → 実行検証」に変わる点のみ許容する(ゴールは速度。HTTPS 経由で
+  GitHub から取得し -version 検証する形で、既存ミラーと同水準)。
 - **zip レイアウト**: BtbN の zip は `bin/` 配下に格納するが、
   `extractNamedBinaryFromZip` は basename 照合なのでレイアウト非依存
   (`tool_sources.go:22-24` のコメントどおり)。ffprobe.exe も同 zip から抽出される
@@ -51,7 +73,10 @@ func ffmpegWindowsSources() []toolSource {
   将来、再現性を重視する場合は「自リポジトリ Release への自前ホスト+ピン留め」
   (今回見送った案 B)を別途検討する。
 - **darwin / linux**: 変更しない。本件は Windows の `gyan.dev` 起因のため。
-- `acquireFromSources` のリトライ/バックオフ機構は変更しない。順序のみ変える。
+- `acquireFromSources` のリトライ/バックオフは変更しない(スコープ外)。
+- HTTP クライアントの粒度タイムアウト不足(`toolchain.go:541,592` が
+  `Timeout: 5*time.Minute` のみで Transport 未設定)は実在する課題だが、今回の
+  最小スコープでは扱わない。将来のハードニング候補として記録に残す。
 
 ### テスト
 
@@ -59,6 +84,8 @@ func ffmpegWindowsSources() []toolSource {
   実ダウンロードを誘発しないよう `IMAGEPAD_*` のピン留めは維持)。
 - `ffmpegWindowsSources()` の先頭要素が BtbN(github.com を含む URL)であることを
   確認する単体テストを追加する(順序の回帰防止)。
+- 引き上げ後の `maxBytes` 定数が BtbN gpl の現実サイズ(約 160 MiB)を上回ることを
+  確認するアサーション(将来の上限事故の回帰防止)。
 
 ---
 
@@ -139,16 +166,19 @@ func ffmpegWindowsSources() []toolSource {
 
 ---
 
-## 非対象(YAGNI)
+## 非対象(YAGNI / 今回スコープ外)
 
+- HTTP クライアントへの粒度タイムアウト追加、リトライ/バックオフの調整
+  (ユーザー判断で「最小スコープ」に決定。将来のハードニング候補として記録済み)。
 - FFmpeg のバージョンピン留め・自前ホスト(案 B)、並列レースダウンロード(案 C)。
 - 終了ボタンの localhost 限定化(ユーザー判断で admin 範囲に決定済み)。
 - 再起動ボタン等、終了以外のライフサイクル操作。
 
 ## 影響ファイル(見込み)
 
-- `internal/video/tool_sources.go`(順序入替)+ 同テスト
+- `internal/video/tool_sources.go`(ソース順入替)+ 同テスト
+- `internal/video/toolchain.go`(`maxBytes` 定数化 + 320MiB へ引き上げ, `:359/:363`)
 - `internal/server/server.go`(`exitRequested`、`SetExitRequested`、`handleQuit`、`Register`)
 - `internal/app/app.go`(`SetExitRequested` 呼び出し)
-- `internal/server/ui.go`(CSS grid-area + ボタン + JS)
+- `internal/server/ui.go`(CSS grid-area `quit` + ボタン + JS)
 - サーバ側ハンドラのテスト
