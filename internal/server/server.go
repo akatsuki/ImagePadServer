@@ -422,6 +422,15 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Page URLs (YouTube, SoundCloud, ...) only return HTML to a plain GET;
+		// skip the direct-download fallback and surface the yt-dlp error so the
+		// real cause (e.g. "Requested format is not available") is not masked by
+		// a misleading ffprobe "Invalid data found" on the saved HTML.
+		if video.IsPageMediaURL(req.URL) {
+			http.Error(w, videoURLDownloadError(ytdlpErr), http.StatusBadRequest)
+			return
+		}
+
 		// Fallback: bounded SSRF-safe downloader. Redirects are revalidated and
 		// the completed bytes are classified by ffprobe.
 		media, err := s.downloadDirectMedia(r.Context(), req.URL)
@@ -575,6 +584,15 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			writeJSON(w, state)
+			return
+		}
+
+		// Page URLs (YouTube, SoundCloud, ...) only return HTML to a plain GET;
+		// skip the direct-download fallback and surface the yt-dlp error so the
+		// real cause is not masked by a misleading ffprobe "Invalid data found"
+		// on the saved HTML.
+		if video.IsPageMediaURL(req.URL) {
+			http.Error(w, videoURLDownloadError(ytdlpErr), http.StatusBadRequest)
 			return
 		}
 

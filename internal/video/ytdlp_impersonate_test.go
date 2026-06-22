@@ -69,11 +69,37 @@ func TestRunYTDLPDownloadYouTubeFallsBackThroughTargets(t *testing.T) {
 	}
 }
 
-func TestYouTubeAttemptsForceWebClient(t *testing.T) {
+func TestYouTubeAttemptsForceMultiClient(t *testing.T) {
 	for _, set := range ytdlpDownloadAttempts("https://youtu.be/x") {
 		joined := strings.Join(set, " ")
-		if !strings.Contains(joined, "youtube:player_client=web") {
-			t.Errorf("attempt %q does not force the web player client", joined)
+		if !strings.Contains(joined, "youtube:player_client=") {
+			t.Errorf("attempt %q does not pin player clients", joined)
+		}
+		// web alone is insufficient (some videos return an empty format list);
+		// android_vr alone 403s for some users. All three must be present so
+		// yt-dlp can fall back through them within a single attempt.
+		for _, client := range []string{"web", "web_safari", "android_vr"} {
+			if !strings.Contains(joined, client) {
+				t.Errorf("attempt %q missing player client %q", joined, client)
+			}
+		}
+	}
+}
+
+func TestIsPageMediaURL(t *testing.T) {
+	cases := map[string]bool{
+		"https://www.youtube.com/watch?v=x":        true,
+		"https://youtu.be/x":                       true,
+		"https://music.youtube.com/watch?v=x":      true,
+		"https://soundcloud.com/a/b":               true,
+		"https://on.soundcloud.com/abc":            true,
+		"https://example.com/clip.mp4":             false,
+		"https://x.com/u/status/1/video/1":         false,
+		"https://cdn.example.com/video.mp4":        false,
+	}
+	for url, want := range cases {
+		if got := IsPageMediaURL(url); got != want {
+			t.Errorf("IsPageMediaURL(%q) = %v, want %v", url, got, want)
 		}
 	}
 }

@@ -56,6 +56,16 @@ func isSoundCloudURL(rawURL string) bool {
 	}
 }
 
+// IsPageMediaURL reports whether rawURL is a media page URL (YouTube,
+// SoundCloud, etc.) that requires yt-dlp to fetch and cannot be retrieved with
+// a plain HTTP GET. The server uses this to skip the direct-download fallback
+// for such URLs: a plain GET on a YouTube /watch or SoundCloud page only
+// returns HTML, which ffprobe rejects as "Invalid data found", masking the real
+// yt-dlp error.
+func IsPageMediaURL(rawURL string) bool {
+	return isYouTubeURL(rawURL) || isSoundCloudURL(rawURL)
+}
+
 // DownloadMediaURL downloads media from rawURL. For SoundCloud URLs it
 // downloads audio + thumbnail using yt-dlp via DownloadSoundCloud. For
 // other URLs it delegates to downloadVideoURL (the standard video path

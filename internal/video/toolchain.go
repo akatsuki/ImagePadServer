@@ -88,6 +88,7 @@ func localFFprobePath() string {
 
 var (
 	ffmpegBundleMu             sync.Mutex
+	ytdlpBundleMu              sync.Mutex
 	ffprobeBundleInstaller     = downloadFFmpeg
 	ffmpegBundleInstaller      = downloadFFmpeg
 	validateToolExecutable     = validateExecutable
@@ -326,11 +327,21 @@ func ValidateInstalledTools() {
 }
 
 func EnsureYTDLP() (string, error) {
-	if exe, err := ytdlpPath(); err == nil {
+	if exe, err := ytdlpPath(); err == nil && validateToolExecutable(exe, "--version") == nil {
 		return exe, nil
 	}
 	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
 		return "", fmt.Errorf("yt-dlp not found. %s You can also set IMAGEPAD_YTDLP.", toolInstallHint("yt-dlp"))
+	}
+	// Serialize with EnsureLatestYTDLP: both write the same target path via
+	// downloadYTDLPWithChecksum, and the startup update goroutine can race a
+	// user-triggered download. Without this lock two concurrent downloads
+	// share the same "<target>.tmp" and corrupt each other's bytes, or one
+	// execs the binary mid-replaceFile.
+	ytdlpBundleMu.Lock()
+	defer ytdlpBundleMu.Unlock()
+	if exe, err := ytdlpPath(); err == nil && validateToolExecutable(exe, "--version") == nil {
+		return exe, nil
 	}
 	return downloadYTDLP()
 }
@@ -350,6 +361,11 @@ func EnsureLatestYTDLP() (string, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
+	// Hold the yt-dlp mutex only across the check + download + replace, not
+	// the checksum fetch above, so a slow SHA2-256SUMS request does not block
+	// a concurrent EnsureYTDLP.
+	ytdlpBundleMu.Lock()
+	defer ytdlpBundleMu.Unlock()
 	target := localYTDLPPath()
 	if fileExists(target) {
 		if err := verifySHA256(target, checksum); err == nil {

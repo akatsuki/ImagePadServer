@@ -77,6 +77,12 @@ func TestDownloadMusicPassesFFmpegLocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("IMAGEPAD_FFMPEG", ffmpeg)
+	// ffmpegLocationArgs now goes through EnsureFFmpeg, which validates the
+	// binary with -version. Stub the validator so the fake ffmpeg is accepted
+	// without attempting a real download.
+	oldValidate := validateToolExecutable
+	defer func() { validateToolExecutable = oldValidate }()
+	validateToolExecutable = func(string, ...string) error { return nil }
 
 	oldRun := runDownloadCmd
 	defer func() { runDownloadCmd = oldRun }()

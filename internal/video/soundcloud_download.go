@@ -19,9 +19,13 @@ var runDownloadCmd = run
 // bundled ffmpeg/ffprobe directory, so yt-dlp postprocessing (audio extraction
 // with -x and DASH/HLS muxing) works even when ffmpeg is not on PATH — which is
 // the normal case here because the tools are bundled, not installed system-wide.
-// Returns nil when no bundled ffmpeg resolves, letting yt-dlp fall back to PATH.
+// EnsureFFmpeg (not ffmpegPath) is used so the bundle is downloaded on first
+// use; without this, a cold start or a still-in-progress background install
+// would leave yt-dlp without ffmpeg and fail postprocessing with "ffprobe and
+// ffmpeg not found". Returns nil only when ffmpeg truly cannot be acquired,
+// letting yt-dlp fall back to PATH.
 func ffmpegLocationArgs() []string {
-	p, err := ffmpegPath()
+	p, err := EnsureFFmpeg()
 	if err != nil {
 		return nil
 	}
@@ -51,12 +55,22 @@ func isYouTubeURL(rawURL string) bool {
 	return false
 }
 
+// youtubePlayerClients is the comma-separated list of YouTube player clients
+// yt-dlp should try, in order. "web" alone is insufficient — some videos return
+// an empty format list on the web client; "android_vr" alone 403s for some
+// users. Listing all three lets yt-dlp fall back through them per attempt:
+// web → web_safari → android_vr. Combined with the browser impersonation loop
+// below, this covers both failure modes without pinning a single client.
+const youtubePlayerClients = "web,web_safari,android_vr"
+
 // ytdlpDownloadAttempts returns the ordered sets of extra yt-dlp args to try for
-// rawURL. For YouTube it forces the web player client and impersonates a browser
-// (the default android_vr client returns formats that 403 on download); each
-// target is a separate attempt, so the caller stops at the first success. Other
-// sites get a single attempt with no extra args to avoid impersonation side
-// effects on their extractors.
+// rawURL. For YouTube it impersonates a browser (the default android_vr client
+// 403s for some users) and lets yt-dlp try multiple player clients (web,
+// web_safari, android_vr) so a single client returning an empty format list
+// does not fail the whole download. Each impersonation target is a separate
+// attempt, so the caller stops at the first success. Other sites get a single
+// attempt with no extra args to avoid impersonation side effects on their
+// extractors.
 func ytdlpDownloadAttempts(rawURL string) [][]string {
 	if !isYouTubeURL(rawURL) {
 		return [][]string{nil}
@@ -65,7 +79,7 @@ func ytdlpDownloadAttempts(rawURL string) [][]string {
 	for _, target := range youtubeImpersonateTargets {
 		sets = append(sets, []string{
 			"--impersonate", target,
-			"--extractor-args", "youtube:player_client=web",
+			"--extractor-args", "youtube:player_client=" + youtubePlayerClients,
 		})
 	}
 	return sets

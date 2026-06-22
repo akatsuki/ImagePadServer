@@ -143,10 +143,9 @@ func TestVideoModeTriesYTDLPThenDirect(t *testing.T) {
 		}
 	})
 
-	t.Run("yt-dlp failure falls back to direct", func(t *testing.T) {
+	t.Run("yt-dlp failure falls back to direct for non-page URLs", func(t *testing.T) {
 		for _, rawURL := range []string{
 			"https://x.com/u/status/1/video/1",
-			"https://www.youtube.com/watch?v=test",
 			"https://example.com/clip.mp4",
 		} {
 			t.Run(rawURL, func(t *testing.T) {
@@ -178,6 +177,53 @@ func TestVideoModeTriesYTDLPThenDirect(t *testing.T) {
 				}
 				if !strings.Contains(rec.Body.String(), "yt-dlp route failed") {
 					t.Fatalf("body %q should surface the yt-dlp error", rec.Body.String())
+				}
+			})
+		}
+	})
+
+	t.Run("yt-dlp failure skips direct for page URLs", func(t *testing.T) {
+		// YouTube page URLs only return HTML to a plain GET; the direct
+		// fallback must be skipped so the real yt-dlp error is surfaced
+		// instead of a misleading ffprobe "Invalid data found" on saved HTML.
+		// (SoundCloud is handled by an earlier branch and never reaches this
+		// fallback site.)
+		for _, rawURL := range []string{
+			"https://www.youtube.com/watch?v=test",
+			"https://youtu.be/abc123",
+		} {
+			t.Run(rawURL, func(t *testing.T) {
+				_, mux := testServer(t, true)
+				oldPage := pageMediaDownloader
+				oldDirect := directMediaDownloader
+				defer func() {
+					pageMediaDownloader = oldPage
+					directMediaDownloader = oldDirect
+				}()
+				pageCalled := false
+				directCalled := false
+				pageMediaDownloader = func(string, string) (video.DownloadedMedia, error) {
+					pageCalled = true
+					return video.DownloadedMedia{}, errors.New("yt-dlp route failed")
+				}
+				directMediaDownloader = func(context.Context, string, string, func(context.Context, string) (video.MediaProbe, error)) (downloadedRemoteMedia, error) {
+					directCalled = true
+					return downloadedRemoteMedia{}, errors.New("direct route failed")
+				}
+
+				req := httptest.NewRequest(http.MethodPost, "/api/upload-url", strings.NewReader(`{"url":"`+rawURL+`"}`))
+				rec := adminJSON(t, mux, req)
+				if rec.Code != http.StatusBadRequest {
+					t.Fatalf("status=%d body=%q, want 400", rec.Code, rec.Body.String())
+				}
+				if !pageCalled {
+					t.Fatalf("pageCalled=%v, want yt-dlp tried", pageCalled)
+				}
+				if directCalled {
+					t.Fatalf("directCalled=%v, want direct skipped for page URL", directCalled)
+				}
+				if !strings.Contains(rec.Body.String(), "yt-dlp route failed") {
+					t.Fatalf("body %q should surface the yt-dlp error directly", rec.Body.String())
 				}
 			})
 		}
