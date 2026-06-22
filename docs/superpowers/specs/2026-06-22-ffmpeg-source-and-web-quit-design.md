@@ -1,7 +1,7 @@
 # FFmpeg 取得元の高速化 & Web からのアプリ終了ボタン — 設計
 
 - Date: 2026-06-22
-- Status: Draft (awaiting review)
+- Status: Implemented (2026-06-22)
 - Scope: 2 つの独立した機能を 1 つの実装サイクルで扱う
 
 ---

@@ -154,6 +154,7 @@ func run(useNativeWindow bool) error {
 
 	srv.SetPublicNetworkMessage("UPnP auto port mapping is disabled for safety.")
 	srv.SetTunnelReconnect(reconnect)
+	srv.SetExitRequested(trayExitRequested)
 
 	go func() {
 		time.Sleep(300 * time.Millisecond)

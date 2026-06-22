@@ -40,13 +40,28 @@ const indexHTML = `<!doctype html>
     main {
       display: grid;
       grid-template-columns: minmax(240px, 300px) minmax(0, 1fr) minmax(260px, 320px);
-      grid-template-areas: "sidebar content history";
+      grid-template-areas:
+        "sidebar content history"
+        "sidebar content quit";
       gap: 10px;
       padding: 10px clamp(12px, 2.4vw, 22px) 12px;
     }
     .sidebar { grid-area: sidebar; }
     .content { grid-area: content; }
     .history { grid-area: history; }
+    .quit { grid-area: quit; align-self: start; }
+    .quit-button {
+      width: 100%;
+      min-height: 40px;
+      background: #c0392b;
+      color: #fff;
+      font-weight: 700;
+    }
+    .quit-button:hover { background: #a93226; }
+    .quit-button.done {
+      background: #5b6b75;
+      cursor: default;
+    }
     section {
       background: var(--panel);
       border: 1px solid var(--line);
@@ -760,7 +775,8 @@ const indexHTML = `<!doctype html>
         grid-template-areas:
           "content"
           "history"
-          "sidebar";
+          "sidebar"
+          "quit";
       }
       .controls { grid-template-columns: 1fr; }
       header {
@@ -1025,6 +1041,10 @@ const indexHTML = `<!doctype html>
           <div class="empty">まだ履歴がありません</div>
         </div>
       </section>
+    </div>
+
+    <div class="quit">
+      <button type="button" class="quit-button" id="quitButton" title="サーバーアプリ本体を終了します">アプリを終了</button>
     </div>
   </main>
   <div class="drag-drop-overlay" id="dragDropOverlay" aria-hidden="true">
@@ -2286,6 +2306,24 @@ const indexHTML = `<!doctype html>
         button.disabled = false;
       }
     });
+    const quitButton = document.getElementById('quitButton');
+    if (quitButton) {
+      quitButton.addEventListener('click', async () => {
+        if (!confirm('アプリを終了しますか？\n配信中のストリームも停止します。')) return;
+        quitButton.disabled = true;
+        toast.textContent = 'アプリを終了しています...';
+        try {
+          const res = await fetch('/api/quit', { method: 'POST' });
+          if (!res.ok) throw new Error(await res.text());
+          quitButton.classList.add('done');
+          quitButton.textContent = '終了しました（この画面は閉じてかまいません）';
+          toast.textContent = 'アプリを終了しました';
+        } catch (error) {
+          quitButton.disabled = false;
+          toast.textContent = error.message || 'アプリの終了に失敗しました';
+        }
+      });
+    }
     fileModeButton.addEventListener('click', () => setUploadMode('file'));
     linkModeButton.addEventListener('click', () => setUploadMode('link'));
     obsModeButton.addEventListener('click', () => setUploadMode('obs'));

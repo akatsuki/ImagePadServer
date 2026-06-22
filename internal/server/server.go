@@ -54,6 +54,7 @@ type Server struct {
 	tunnelStatus    map[string]interface{}
 	tunnelURLBase   string
 	tunnelReconnect chan<- struct{}
+	exitRequested   func()
 	adminToken      string
 	obs             *obsrtmp.Manager
 	pairings        map[string]pairingRequest
@@ -102,6 +103,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/", s.admin(s.handleIndex))
 	mux.HandleFunc("/api/state", s.admin(s.handleState))
 	mux.HandleFunc("/api/tunnel/reconnect", s.admin(s.handleTunnelReconnect))
+	mux.HandleFunc("/api/quit", s.admin(s.handleQuit))
 	mux.HandleFunc("/api/upload", s.admin(s.handleUpload))
 	mux.HandleFunc("/api/upload-queue", s.admin(s.handleUploadQueue))
 	mux.HandleFunc("/api/upload-url", s.admin(s.handleUploadURL))
@@ -167,6 +169,15 @@ func (s *Server) SetTunnelReconnect(ch chan<- struct{}) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.tunnelReconnect = ch
+}
+
+// SetExitRequested wires the callback that quits the application. It is invoked
+// by the /api/quit handler so the web UI can shut the app down through the same
+// graceful path as the tray "Exit" item.
+func (s *Server) SetExitRequested(fn func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.exitRequested = fn
 }
 
 func (s *Server) SetTunnelStatus(ok bool, baseURL, message string) {
@@ -241,6 +252,32 @@ func (s *Server) handleTunnelReconnect(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, map[string]interface{}{"ok": true, "message": "再接続要求は保留中です"})
 	}
+}
+
+func (s *Server) handleQuit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	s.mu.RLock()
+	exit := s.exitRequested
+	s.mu.RUnlock()
+	if exit == nil {
+		http.Error(w, "app shutdown unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Respond before triggering shutdown so the browser receives the reply,
+	// then quit through the same graceful path as the tray "Exit" item.
+	writeJSON(w, map[string]interface{}{"ok": true, "message": "アプリを終了します"})
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		exit()
+	}()
 }
 
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
