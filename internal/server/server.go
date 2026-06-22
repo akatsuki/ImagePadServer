@@ -407,15 +407,14 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if isYTDLPPageURL(req.URL) {
-			media, err := pageMediaDownloader(req.URL, s.store.Dir())
+		// Try yt-dlp first — it handles YouTube, X/Twitter, niconico and many
+		// other video pages. If it cannot handle the URL, fall back to the
+		// bounded SSRF-safe direct downloader for direct media file links.
+		ytMedia, ytdlpErr := pageMediaDownloader(req.URL, s.store.Dir())
+		if ytdlpErr == nil {
+			state, err := s.processVideoFileAndPublish(r, ytMedia.SourcePath, ytMedia.Name)
 			if err != nil {
-				http.Error(w, videoURLDownloadError(err), http.StatusBadRequest)
-				return
-			}
-			state, err := s.processVideoFileAndPublish(r, media.SourcePath, media.Name)
-			if err != nil {
-				os.Remove(media.SourcePath)
+				os.Remove(ytMedia.SourcePath)
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
@@ -423,11 +422,11 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Direct files use the bounded SSRF-safe downloader. Redirects are
-		// revalidated and the completed bytes are classified by ffprobe.
+		// Fallback: bounded SSRF-safe downloader. Redirects are revalidated and
+		// the completed bytes are classified by ffprobe.
 		media, err := s.downloadDirectMedia(r.Context(), req.URL)
 		if err != nil {
-			http.Error(w, videoURLDownloadError(err), http.StatusBadRequest)
+			http.Error(w, videoURLDownloadError(combineURLErrors(ytdlpErr, err)), http.StatusBadRequest)
 			return
 		}
 		probe := media.Probe
@@ -565,15 +564,13 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if isYTDLPPageURL(req.URL) {
-			media, err := pageMediaDownloader(req.URL, s.store.Dir())
+		// Try yt-dlp first (YouTube, X/Twitter, niconico, …); fall back to the
+		// bounded SSRF-safe direct downloader for direct media file links.
+		ytMedia, ytdlpErr := pageMediaDownloader(req.URL, s.store.Dir())
+		if ytdlpErr == nil {
+			state, err := s.processVideoFileAndQueue(r, ytMedia.SourcePath, ytMedia.Name)
 			if err != nil {
-				http.Error(w, videoURLDownloadError(err), http.StatusBadRequest)
-				return
-			}
-			state, err := s.processVideoFileAndQueue(r, media.SourcePath, media.Name)
-			if err != nil {
-				os.Remove(media.SourcePath)
+				os.Remove(ytMedia.SourcePath)
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
@@ -583,7 +580,7 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 
 		media, err := s.downloadDirectMedia(r.Context(), req.URL)
 		if err != nil {
-			http.Error(w, videoURLDownloadError(err), http.StatusBadRequest)
+			http.Error(w, videoURLDownloadError(combineURLErrors(ytdlpErr, err)), http.StatusBadRequest)
 			return
 		}
 		probe := media.Probe
@@ -1520,18 +1517,17 @@ func (s *Server) handleMusicMode(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func isYTDLPPageURL(rawURL string) bool {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return false
+// combineURLErrors merges the yt-dlp and direct-download failures so the user
+// sees why both routes failed for a URL that is neither a supported video page
+// nor a direct media file.
+func combineURLErrors(ytdlpErr, directErr error) error {
+	if ytdlpErr == nil {
+		return directErr
 	}
-	host := strings.ToLower(u.Hostname())
-	for _, domain := range []string{"youtube.com", "youtu.be", "nicovideo.jp", "nico.ms"} {
-		if host == domain || strings.HasSuffix(host, "."+domain) {
-			return true
-		}
+	if directErr == nil {
+		return ytdlpErr
 	}
-	return false
+	return fmt.Errorf("%v (direct download: %v)", ytdlpErr, directErr)
 }
 
 func (s *Server) handleFFmpeg(w http.ResponseWriter, r *http.Request) {
