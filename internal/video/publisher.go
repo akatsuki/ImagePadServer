@@ -816,6 +816,9 @@ func downloadVideoURL(rawURL, outDir string) (string, string, error) {
 		"--max-filesize", "2G",
 		"-f", "bv*[height<=1080]+ba/b[height<=1080]/best[height<=1080]/best",
 		"--merge-output-format", "mp4",
+		// Download DASH/HLS fragments in parallel to work around per-connection
+		// throttling (notably YouTube), the same speedup music mode uses.
+		"--concurrent-fragments", "4",
 		"--write-info-json",
 		"-o", target,
 	}

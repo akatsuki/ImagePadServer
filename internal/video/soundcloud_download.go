@@ -134,6 +134,8 @@ func DownloadSoundCloud(ctx context.Context, ytdlp, rawURL, outDir string) (Acqu
 		"--no-playlist",
 		"--no-warnings",
 		"--max-filesize", strconv.FormatInt(int64(MaxMediaSourceBytes), 10),
+		// Parallel fragment download — same speedup music mode uses.
+		"--concurrent-fragments", "4",
 		"--write-thumbnail",
 		"--write-info-json",
 		"--print-to-file", "after_move:filepath", manifestPath,
