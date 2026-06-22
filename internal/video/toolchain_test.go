@@ -223,8 +223,7 @@ func TestValidateInstalledToolsRepairsCorruptFFmpeg(t *testing.T) {
 	t.Setenv("IMAGEPAD_FFPROBE", "")
 	t.Setenv("PATH", t.TempDir())
 
-	binDir := filepath.Join(dir, "bin")
-	if err := os.MkdirAll(binDir, 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(localFFmpegPath()), 0755); err != nil {
 		t.Fatal(err)
 	}
 	// Corrupt ffmpeg: present but fails -version validation.

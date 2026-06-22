@@ -1,0 +1,139 @@
+package video
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"imagepadserver/internal/about"
+)
+
+func TestLocalToolPathsAreVersioned(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("IMAGEPAD_DATA_DIR", dir)
+
+	wantDir := filepath.Join(dir, "bin", about.Version)
+	if got := filepath.Dir(localFFmpegPath()); got != wantDir {
+		t.Errorf("ffmpeg dir = %q, want %q", got, wantDir)
+	}
+	if got := filepath.Dir(localFFprobePath()); got != wantDir {
+		t.Errorf("ffprobe dir = %q, want %q", got, wantDir)
+	}
+	// yt-dlp stays in the flat bin/ directory.
+	if got := filepath.Dir(localYTDLPPath()); got != filepath.Join(dir, "bin") {
+		t.Errorf("yt-dlp dir = %q, want flat bin/", got)
+	}
+}
+
+func TestLooksLikeVersionDir(t *testing.T) {
+	cases := map[string]bool{
+		"v1.4.2":      true,
+		"v1.4.2-dev1": true,
+		"v0.0.1":      true,
+		"misc":        false,
+		"":            false,
+		"v":           false,
+		"version":     false,
+		"backup-v1.0": false,
+	}
+	for name, want := range cases {
+		if got := looksLikeVersionDir(name); got != want {
+			t.Errorf("looksLikeVersionDir(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
+func TestCleanupOldToolVersions(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("IMAGEPAD_DATA_DIR", dir)
+	root := filepath.Join(dir, "bin")
+
+	mk := func(rel string, content string) string {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0755); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	cur := about.Version
+	mk(filepath.Join(cur, "ffmpeg.exe"), "cur")      // current version - keep
+	mk(filepath.Join("v0.0.1", "ffmpeg.exe"), "old") // old version - remove
+	mk(filepath.Join("misc", "note.txt"), "x")       // non-version dir - keep
+	mk("ffmpeg.exe", "flat")                         // legacy flat, versioned exists - remove
+	mk("cloudflared.exe", "cf")                      // unrelated flat tool - keep
+
+	CleanupOldToolVersions()
+
+	if _, err := os.Stat(filepath.Join(root, cur, "ffmpeg.exe")); err != nil {
+		t.Errorf("current version dir was removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "v0.0.1")); !os.IsNotExist(err) {
+		t.Errorf("old version dir should be removed, stat err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "misc", "note.txt")); err != nil {
+		t.Errorf("non-version dir should be kept: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "ffmpeg.exe")); !os.IsNotExist(err) {
+		t.Errorf("legacy flat ffmpeg should be removed once versioned exists, stat err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "cloudflared.exe")); err != nil {
+		t.Errorf("unrelated flat tool should be kept: %v", err)
+	}
+}
+
+func TestMigrateFFmpegToolsInto(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("IMAGEPAD_DATA_DIR", dir)
+	root := filepath.Join(dir, "bin")
+
+	// Source: a previous version dir holding ffmpeg + ffprobe.
+	srcDir := filepath.Join(root, "v0.0.1")
+	if err := os.MkdirAll(srcDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for _, base := range []string{"ffmpeg", "ffprobe"} {
+		if err := os.WriteFile(filepath.Join(srcDir, executableName(base)), []byte(base), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	dstDir := filepath.Join(root, about.Version)
+	if err := os.MkdirAll(dstDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	oldReports := ffmpegReportsVersion
+	oldValidate := validateToolExecutable
+	t.Cleanup(func() {
+		ffmpegReportsVersion = oldReports
+		validateToolExecutable = oldValidate
+	})
+	validateToolExecutable = func(path string, args ...string) error { return nil }
+
+	// Version mismatch -> must NOT migrate.
+	ffmpegReportsVersion = func(path, want string) bool { return false }
+	if migrateFFmpegToolsInto(dstDir) {
+		t.Fatal("migrated despite version mismatch")
+	}
+	if fileExists(filepath.Join(dstDir, executableName("ffmpeg"))) {
+		t.Fatal("ffmpeg copied despite version mismatch")
+	}
+
+	// Pinned version present + ffprobe valid -> migrate.
+	ffmpegReportsVersion = func(path, want string) bool { return want == ffmpegPinnedVersion }
+	if !migrateFFmpegToolsInto(dstDir) {
+		t.Fatal("expected migration to succeed")
+	}
+	for _, base := range []string{"ffmpeg", "ffprobe"} {
+		p := filepath.Join(dstDir, executableName(base))
+		data, err := os.ReadFile(p)
+		if err != nil || !strings.Contains(string(data), base) {
+			t.Errorf("migrated %s missing/incorrect: data=%q err=%v", base, data, err)
+		}
+	}
+}

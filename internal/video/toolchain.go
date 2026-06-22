@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"imagepadserver/internal/about"
 	"imagepadserver/internal/settings"
 )
 
@@ -30,8 +31,13 @@ const (
 	// .sha256 sidecar, so the hash is pinned inline alongside the version and
 	// must be bumped together with the URL. (Verified byte-identical to the
 	// gyan.dev release-essentials.zip of the same version.)
-	ffmpegGitHubURL      = "https://github.com/GyanD/codexffmpeg/releases/download/8.1.1/ffmpeg-8.1.1-essentials_build.zip"
-	ffmpegGitHubSHA256   = "6f58ce889f59c311410f7d2b18895b33c03456463486f3b1ebc93d97a0f54541"
+	ffmpegGitHubURL    = "https://github.com/GyanD/codexffmpeg/releases/download/8.1.1/ffmpeg-8.1.1-essentials_build.zip"
+	ffmpegGitHubSHA256 = "6f58ce889f59c311410f7d2b18895b33c03456463486f3b1ebc93d97a0f54541"
+	// ffmpegPinnedVersion is the FFmpeg version this build expects (matches the
+	// pinned download URL above). A previous app version's bundle is migrated
+	// forward only when its ffmpeg reports this exact version; otherwise the
+	// newer pinned build is downloaded instead.
+	ffmpegPinnedVersion  = "8.1.1"
 	ytdlpDownloadURL     = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
 	ytdlpMacOSURL        = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos"
 	ytdlpSHA256SumsURL   = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS"
@@ -77,7 +83,7 @@ func ffprobePath() (string, error) {
 }
 
 func localFFprobePath() string {
-	return filepath.Join(settings.Dir(), "bin", executableName("ffprobe"))
+	return filepath.Join(toolVersionDir(), executableName("ffprobe"))
 }
 
 var (
@@ -218,12 +224,26 @@ func ytdlpPath() (string, error) {
 	return "", fmt.Errorf("yt-dlp not found in bundle. %s You can also set IMAGEPAD_YTDLP.", toolInstallHint("yt-dlp"))
 }
 
+// binDir is the root tools directory (settings.Dir()/bin).
+func binDir() string {
+	return filepath.Join(settings.Dir(), "bin")
+}
+
+// toolVersionDir is the per-app-version directory that holds ffmpeg/ffprobe.
+// Keying these tools by the ImagePadServer version means a newer build never
+// has to overwrite the (possibly running, therefore locked) binaries of the
+// version that is currently executing — which previously failed mid-install
+// with "Access is denied" on Windows.
+func toolVersionDir() string {
+	return filepath.Join(binDir(), about.Version)
+}
+
 func localFFmpegPath() string {
-	return filepath.Join(settings.Dir(), "bin", executableName("ffmpeg"))
+	return filepath.Join(toolVersionDir(), executableName("ffmpeg"))
 }
 
 func localYTDLPPath() string {
-	return filepath.Join(settings.Dir(), "bin", executableName("yt-dlp"))
+	return filepath.Join(binDir(), executableName("yt-dlp"))
 }
 
 func ytdlpAssetName() string {
@@ -281,6 +301,9 @@ func ValidateInstalledTools() {
 	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
 		return
 	}
+	// Reap tool directories from older app versions (best-effort; skips any that
+	// are still locked by another running instance).
+	defer CleanupOldToolVersions()
 	if ToolsReady() {
 		return
 	}
@@ -349,7 +372,14 @@ func downloadFFmpeg() (string, error) {
 	}
 
 	installBegin("ffmpeg")
-	zipPath := filepath.Join(settings.Dir(), "bin", "ffmpeg-release-essentials.zip")
+	// Avoid re-downloading on every app update: if a previous version's bundle
+	// (or the legacy flat layout) already holds working ffmpeg + ffprobe, copy
+	// them into this version's directory instead of fetching ~100 MB again.
+	if migrateFFmpegToolsInto(filepath.Dir(target)) {
+		installDone()
+		return target, nil
+	}
+	zipPath := filepath.Join(filepath.Dir(target), "ffmpeg-download.zip")
 	envChecksum := strings.TrimSpace(os.Getenv("IMAGEPAD_FFMPEG_SHA256"))
 	if envChecksum == "" {
 		envChecksum = ffmpegDownloadSHA256
@@ -796,10 +826,157 @@ func extractNamedBinaryFromZip(zipPath, target, binaryName string) error {
 			_ = os.Remove(tempTarget)
 			return closeErr
 		}
-		_ = os.Remove(target)
-		return os.Rename(tempTarget, target)
+		return replaceFile(target, tempTarget)
 	}
 	return fmt.Errorf("%s was not found in the downloaded archive", binaryName)
+}
+
+// replaceFile moves tempTarget onto target, tolerating a target that is locked
+// because it is currently executing or being scanned by antivirus (a common
+// Windows failure that surfaced as "rename ... Access is denied"). It first
+// tries a direct rename, then moves the existing file aside (Windows allows
+// renaming a running executable even when it cannot be overwritten), and
+// finally retries a few times for transient locks.
+func replaceFile(target, tempTarget string) error {
+	if err := os.Rename(tempTarget, target); err == nil {
+		return nil
+	}
+	aside := fmt.Sprintf("%s.old-%d", target, time.Now().UnixNano())
+	if err := os.Rename(target, aside); err == nil {
+		if err := os.Rename(tempTarget, target); err == nil {
+			_ = os.Remove(aside) // best effort; may still be locked
+			return nil
+		}
+		_ = os.Rename(aside, target) // restore on failure
+	}
+	var lastErr error
+	for i := 0; i < 5; i++ {
+		time.Sleep(time.Duration(150*(i+1)) * time.Millisecond)
+		_ = os.Remove(target)
+		if err := os.Rename(tempTarget, target); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+	}
+	_ = os.Remove(tempTarget)
+	if lastErr == nil {
+		lastErr = fmt.Errorf("could not replace %s", target)
+	}
+	return lastErr
+}
+
+// migrateFFmpegToolsInto copies a working ffmpeg + ffprobe pair from another
+// version directory (or the legacy flat bin/ layout) into dstDir, so an app
+// update does not have to re-download the archive. It only migrates when the
+// candidate ffmpeg reports the pinned version and ffprobe is present and valid;
+// otherwise it returns false and the caller downloads the pinned build.
+func migrateFFmpegToolsInto(dstDir string) bool {
+	ffName := executableName("ffmpeg")
+	fpName := executableName("ffprobe")
+	root := binDir()
+
+	candidates := []string{root}
+	if entries, err := os.ReadDir(root); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				candidates = append(candidates, filepath.Join(root, e.Name()))
+			}
+		}
+	}
+
+	for _, dir := range candidates {
+		if filepath.Clean(dir) == filepath.Clean(dstDir) {
+			continue
+		}
+		ff := filepath.Join(dir, ffName)
+		fp := filepath.Join(dir, fpName)
+		if !fileExists(ff) || !fileExists(fp) {
+			continue
+		}
+		if !ffmpegReportsVersion(ff, ffmpegPinnedVersion) {
+			continue
+		}
+		if validateToolExecutable(fp, "-version") != nil {
+			continue
+		}
+		if err := copyFileTo(filepath.Join(dstDir, ffName), ff); err != nil {
+			continue
+		}
+		if err := copyFileTo(filepath.Join(dstDir, fpName), fp); err != nil {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// ffmpegReportsVersion runs "<path> -version" and reports whether the output
+// identifies the wanted FFmpeg version. It is a var so tests can stub it.
+var ffmpegReportsVersion = func(path, want string) bool {
+	cmd := exec.Command(path, "-version")
+	hideWindow(cmd)
+	output, err := CombinedOutputTrackedFFmpeg(cmd)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(output), "ffmpeg version "+want)
+}
+
+// copyFileTo copies src to dst via a temp file and atomic rename, preserving an
+// executable mode.
+func copyFileTo(dst, src string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	tmp := dst + ".copy.tmp"
+	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0755)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return replaceFile(dst, tmp)
+}
+
+// CleanupOldToolVersions removes per-version tool directories that do not match
+// the running app version, plus any leftover legacy flat ffmpeg/ffprobe once a
+// versioned copy exists. It is best-effort: a directory still locked by another
+// running instance is left for a later run.
+func CleanupOldToolVersions() {
+	root := binDir()
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	current := about.Version
+	for _, e := range entries {
+		if e.IsDir() && e.Name() != current && looksLikeVersionDir(e.Name()) {
+			_ = os.RemoveAll(filepath.Join(root, e.Name()))
+		}
+	}
+	for _, base := range []string{"ffmpeg", "ffprobe"} {
+		flat := filepath.Join(root, executableName(base))
+		versioned := filepath.Join(root, current, executableName(base))
+		if fileExists(flat) && fileExists(versioned) {
+			_ = os.Remove(flat)
+		}
+	}
+}
+
+// looksLikeVersionDir reports whether name is an app-version directory such as
+// "v1.4.2" (so cleanup never touches unrelated entries).
+func looksLikeVersionDir(name string) bool {
+	return len(name) >= 2 && name[0] == 'v' && name[1] >= '0' && name[1] <= '9'
 }
 
 // ---------------------------------------------------------------------------
