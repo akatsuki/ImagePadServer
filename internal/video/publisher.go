@@ -159,18 +159,19 @@ func ResolveQualityForUpload(mode string, downloadMbps, uploadMbps int) QualityP
 // ResolveQualityForMusic returns a preset tuned for the music visualizer path
 // (SoundCloud / uploaded audio). The output is mostly a static background plus
 // a small animated waveform, so it compresses far better than camera/game
-// footage. We raise CRF and slash the bitrate ceiling so a 5-minute song stays
-// around 10 MB instead of 40 MB.
+// footage. CRF is raised and the bitrate ceiling is lowered to keep songs
+// small, but we avoid pushing it so hard that the waveform area becomes
+// blocky.
 func ResolveQualityForMusic(mode string, downloadMbps, uploadMbps int) QualityPreset {
 	preset := ResolveQualityForUpload(mode, downloadMbps, uploadMbps)
-	preset.CRF = clampInt(preset.CRF+4, 18, 40)
-	// Cap peaks at ~15% of the uploaded-video ceiling. Buffer is kept a bit
-	// larger (25%) so short waveform spikes do not stutter the rate controller.
+	preset.CRF = clampInt(preset.CRF+2, 18, 40)
+	// Cap peaks at ~30% of the uploaded-video ceiling. Buffer is 40% so short
+	// waveform spikes do not stutter the rate controller.
 	if preset.MaxRate != "" {
-		preset.MaxRate = scaleBitrate(preset.MaxRate, 0.15)
+		preset.MaxRate = scaleBitrate(preset.MaxRate, 0.30)
 	}
 	if preset.BufferSize != "" {
-		preset.BufferSize = scaleBitrate(preset.BufferSize, 0.25)
+		preset.BufferSize = scaleBitrate(preset.BufferSize, 0.40)
 	}
 	return preset
 }
@@ -679,6 +680,9 @@ func runUploadedHLS(ctx context.Context, outDir, ffmpeg, sourcePath, id string, 
 		vod := preset
 		if score, err := ProbeMotionScore(sourcePath); err == nil {
 			vod = AdaptPresetForContent(vod, score)
+		}
+		if sourceBitrate, err := ProbeSourceBitrate(sourcePath); err == nil {
+			vod = capPresetToSourceBitrate(vod, sourceBitrate)
 		}
 		return runInDirContext(ctx, outDir, ffmpeg, uploadedHLSArgsWithEncoder(sourcePath, id, vod, encoder)...)
 	})

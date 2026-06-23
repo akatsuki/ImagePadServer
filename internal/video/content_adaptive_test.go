@@ -108,3 +108,64 @@ func TestAdaptPresetForContentClampsCRF(t *testing.T) {
 		t.Fatalf("CRF = %d, want <= 40", adapted.CRF)
 	}
 }
+
+func TestCapPresetToSourceBitrateLowersCeiling(t *testing.T) {
+	base := QualityPreset{MaxRate: "3000k", BufferSize: "5000k"}
+	capped := capPresetToSourceBitrate(base, 2_000_000) // 2 Mbps source
+	if parseBitrateKInt(capped.MaxRate) >= 3000 {
+		t.Fatalf("MaxRate = %q, want lower than 3000k", capped.MaxRate)
+	}
+	if !strings.HasPrefix(capped.MaxRate, "2500") {
+		t.Fatalf("MaxRate = %q, want 2 Mbps * 1.25 = 2500k", capped.MaxRate)
+	}
+	if parseBitrateKInt(capped.BufferSize) >= 5000 {
+		t.Fatalf("BufferSize = %q, want lower than 5000k", capped.BufferSize)
+	}
+}
+
+func TestCapPresetToSourceBitrateIgnoresHigherBitrate(t *testing.T) {
+	base := QualityPreset{MaxRate: "3000k", BufferSize: "5000k"}
+	capped := capPresetToSourceBitrate(base, 5_000_000) // 5 Mbps source, cap is higher
+	if capped.MaxRate != "3000k" {
+		t.Fatalf("MaxRate = %q, want unchanged 3000k", capped.MaxRate)
+	}
+	if capped.BufferSize != "5000k" {
+		t.Fatalf("BufferSize = %q, want unchanged 5000k", capped.BufferSize)
+	}
+}
+
+func TestParseBitrateToBps(t *testing.T) {
+	tests := []struct {
+		in   string
+		want int
+	}{
+		{"3000k", 3_000_000},
+		{"2500K", 2_500_000},
+		{"5M", 5_000_000},
+		{"42", 42},
+		{"", 0},
+		{"bad", 0},
+	}
+	for _, tc := range tests {
+		if got := parseBitrateToBps(tc.in); got != tc.want {
+			t.Errorf("parseBitrateToBps(%q) = %d, want %d", tc.in, got, tc.want)
+		}
+	}
+}
+
+func parseBitrateKInt(s string) int {
+	s = strings.TrimSpace(s)
+	unit := ""
+	if s[len(s)-1] < '0' || s[len(s)-1] > '9' {
+		unit = s[len(s)-1:]
+		s = s[:len(s)-1]
+	}
+	v := 0
+	for _, c := range s {
+		v = v*10 + int(c-'0')
+	}
+	if unit == "m" || unit == "M" {
+		v *= 1000
+	}
+	return v
+}

@@ -268,8 +268,11 @@ func staticContentEncodeOptions(encoder VideoEncoderProfile) []string {
 	// Long GOP aligned to the 4s segment is generic and safe everywhere.
 	a := []string{"-g", "120", "-keyint_min", "120"}
 	if !encoder.Hardware {
-		// libx264: flat-content tune + no scene-cut keyframes.
-		return append(a, "-tune", "animation", "-sc_threshold", "0")
+		// libx264: flat-content tune + no scene-cut keyframes + strong
+		// macroblock-level adaptive quantization. The waveform is a tiny moving
+		// region on a large static background; AQ lets the encoder spend bits on
+		// the waveform while starving the background.
+		return append(a, "-tune", "animation", "-sc_threshold", "0", "-aq-mode", "3")
 	}
 	// GPU encoders have no content-type tune (NVENC's tune is hq/ll/ull and hq
 	// is already the default), but they expose equivalent static-content knobs:

@@ -24,12 +24,13 @@ func TestResolveQualityForMusicIsMoreCompressedThanUpload(t *testing.T) {
 
 func TestResolveQualityForMusicTargetsSmallLongFiles(t *testing.T) {
 	preset := ResolveQualityForMusic("auto", 100, 20)
-	// 5 minutes at the 1080p music ceiling: ~780k * 300 / 8 / 1024 = ~28 MB max,
-	// but CRF 30 keeps the average far below that. For 720p the ceiling is
-	// ~450k -> ~16 MB max. The goal is 10 MB for 5 min; this gets close while
-	// keeping visualizer waveforms readable.
-	if preset.CRF < 30 || preset.CRF > 40 {
-		t.Fatalf("CRF = %d, want 30-40", preset.CRF)
+	// 5 minutes at the 1080p music ceiling: ~1560k * 300 / 8 / 1024 = ~57 MB max,
+	// but CRF 28 keeps the average far below that. For 720p the ceiling is
+	// ~900k -> ~33 MB max. The target is now a compromise: smaller than the
+	// upload preset but without the blocky waveform artifacts produced by the
+	// earlier very-low-ceiling experiment.
+	if preset.CRF < 26 || preset.CRF > 40 {
+		t.Fatalf("CRF = %d, want 26-40", preset.CRF)
 	}
 }
 
