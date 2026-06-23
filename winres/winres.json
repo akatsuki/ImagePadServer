@@ -11,7 +11,7 @@
       "0409": {
         "identity": {
           "name": "ImagePadServer",
-          "version": "1.4.5.14"
+          "version": "1.4.5.0"
         },
         "description": "VRChat ImagePad upload helper",
         "minimum-os": "win7",
@@ -35,22 +35,22 @@
     "#1": {
       "0000": {
         "fixed": {
-      "file_version": "1.4.5.14",
-      "product_version": "1.4.5.14"
+      "file_version": "1.4.5.0",
+      "product_version": "1.4.5.0"
         },
         "info": {
           "0409": {
             "Comments": "VRChat ImagePad upload helper",
             "CompanyName": "Akat / 赤月さん",
             "FileDescription": "ImagePadServer",
-        "FileVersion": "v1.4.5-dev14",
+        "FileVersion": "v1.4.5",
             "InternalName": "imagepadserver",
             "LegalCopyright": "Copyright (c) 2026 Akat / 赤月さん",
             "LegalTrademarks": "",
             "OriginalFilename": "imagepadserver-windows-amd64.exe",
             "PrivateBuild": "",
             "ProductName": "ImagePadServer",
-        "ProductVersion": "v1.4.5-dev14",
+        "ProductVersion": "v1.4.5",
             "SpecialBuild": ""
           }
         }
