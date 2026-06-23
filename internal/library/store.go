@@ -361,6 +361,35 @@ func (s *Store) MarkConverted(id string, files []string) error {
 	return nil
 }
 
+// UpdateCurrentSize sets the current media's SizeBytes and persists state.json.
+func (s *Store) UpdateCurrentSize(size int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.current == nil {
+		return os.ErrNotExist
+	}
+	s.current.SizeBytes = size
+	return s.saveCurrentLocked()
+}
+
+// UpdateHistorySize updates the SizeBytes of the in-memory history item with
+// the given id. If the item is a favorite, favorites.json is also persisted so
+// the size survives restarts.
+func (s *Store) UpdateHistorySize(id string, size int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.history {
+		if s.history[i].ID == id {
+			s.history[i].SizeBytes = size
+			if s.history[i].Favorite {
+				return s.saveFavoritesLocked()
+			}
+			return nil
+		}
+	}
+	return os.ErrNotExist
+}
+
 func (s *Store) Clear() error {
 	s.mu.Lock()
 	s.current = nil

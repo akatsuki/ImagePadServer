@@ -147,9 +147,12 @@ func TestDownloadVideoURLUsesTitleFromInfoJSON(t *testing.T) {
 		if err := os.WriteFile(base+".mp4", []byte("video"), 0600); err != nil {
 			return err
 		}
-		return os.WriteFile(base+".info.json", []byte(`{"title":"My Cool Video","uploader":"Someone"}`), 0600)
+		if err := os.WriteFile(base+".info.json", []byte(`{"title":"My Cool Video","uploader":"Someone"}`), 0600); err != nil {
+			return err
+		}
+		return os.WriteFile(base+".jpg", []byte("thumbnail"), 0600)
 	}
-	path, name, err := downloadVideoURL("https://example.com/clip", dir)
+	path, name, thumbnailPath, err := downloadVideoURL("https://example.com/clip", dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,6 +161,9 @@ func TestDownloadVideoURLUsesTitleFromInfoJSON(t *testing.T) {
 	}
 	if !strings.HasSuffix(path, ".mp4") {
 		t.Fatalf("sourcePath = %q, want .mp4", path)
+	}
+	if !strings.HasSuffix(thumbnailPath, ".jpg") {
+		t.Fatalf("thumbnailPath = %q, want .jpg", thumbnailPath)
 	}
 }
 
@@ -178,11 +184,14 @@ func TestDownloadVideoURLFallsBackToFileNameWithoutTitle(t *testing.T) {
 		base := strings.TrimSuffix(target, ".%(ext)s")
 		return os.WriteFile(base+".mp4", []byte("video"), 0600)
 	}
-	_, name, err := downloadVideoURL("https://example.com/clip", dir)
+	_, name, thumbnailPath, err := downloadVideoURL("https://example.com/clip", dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if name != "yt-dlp-source.mp4" {
 		t.Fatalf("name = %q, want yt-dlp-source.mp4 fallback", name)
+	}
+	if thumbnailPath != "" {
+		t.Fatalf("thumbnailPath = %q, want empty", thumbnailPath)
 	}
 }

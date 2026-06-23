@@ -24,6 +24,7 @@ type DownloadedMedia struct {
 	ArtworkPath     string
 	Metadata        AudioMetadata
 	InformationPath string
+	ThumbnailPath   string // external thumbnail for link-downloaded videos
 }
 
 // isSoundCloudURL reports whether rawURL is a valid http/https URL with
@@ -88,14 +89,15 @@ func IsPageMediaURL(rawURL string) bool {
 // in publisher.go).
 func DownloadMediaURL(rawURL, outDir string) (DownloadedMedia, error) {
 	if !isSoundCloudURL(rawURL) {
-		sourcePath, name, err := downloadVideoURL(rawURL, outDir)
+		sourcePath, name, thumbnailPath, err := downloadVideoURL(rawURL, outDir)
 		if err != nil {
 			return DownloadedMedia{}, err
 		}
 		return DownloadedMedia{
-			SourcePath: sourcePath,
-			Name:       name,
-			Kind:       "video",
+			SourcePath:    sourcePath,
+			Name:          name,
+			Kind:          "video",
+			ThumbnailPath: thumbnailPath,
 		}, nil
 	}
 

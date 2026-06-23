@@ -96,6 +96,88 @@ func TestSetCurrentFromHistoryRestoresConvertedFiles(t *testing.T) {
 	}
 }
 
+func TestUpdateCurrentSizePersistsConvertedSize(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetCurrentInfo(CurrentImage{
+		FileName:    "current.mp4",
+		PublicName:  "current.mp4",
+		ContentType: "video/mp4",
+		SizeBytes:   1000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateCurrentSize(500); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Current().SizeBytes; got != 500 {
+		t.Fatalf("SizeBytes = %d, want 500", got)
+	}
+}
+
+func TestUpdateHistorySizeUpdatesInMemoryItem(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dummy := filepath.Join(store.Dir(), "dummy.mp4")
+	if err := os.WriteFile(dummy, []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.AddHistory(dummy, CurrentImage{
+		PublicName:  "clip.mp4",
+		ContentType: "video/mp4",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateHistorySize(item.ID, 2500); err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range store.History() {
+		if h.ID == item.ID && h.SizeBytes != 2500 {
+			t.Fatalf("history SizeBytes = %d, want 2500", h.SizeBytes)
+		}
+	}
+}
+
+func TestUpdateHistorySizePersistsFavoriteSize(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dummy := filepath.Join(store.Dir(), "dummy.mp4")
+	if err := os.WriteFile(dummy, []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.AddHistory(dummy, CurrentImage{
+		PublicName:  "clip.mp4",
+		ContentType: "video/mp4",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetFavorite(item.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateHistorySize(item.ID, 800); err != nil {
+		t.Fatal(err)
+	}
+
+	// Re-create store to verify favorites.json persistence.
+	store2, err := NewStore(store.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range store2.History() {
+		if h.ID == item.ID && h.SizeBytes != 800 {
+			t.Fatalf("favorite history SizeBytes = %d, want 800", h.SizeBytes)
+		}
+	}
+}
+
 func TestCurrentImageAudioMetadata(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {

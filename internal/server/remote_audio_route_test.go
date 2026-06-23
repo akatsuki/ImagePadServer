@@ -387,7 +387,7 @@ func TestHandleUploadURLRemoteVideoUnchanged(t *testing.T) {
 	defer srv.store.Reset()
 
 	req := httptest.NewRequest("GET", "/", nil)
-	state, err := srv.processVideoFileAndPublish(req, dummyPath, "clip.mp4")
+	state, err := srv.processVideoFileAndPublish(req, dummyPath, "clip.mp4", "")
 	if err != nil {
 		t.Fatal(err)
 	}

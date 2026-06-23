@@ -355,148 +355,148 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 		"maxMB":        req.MaxMB,
 	}
 	opts := optionsFromValues(func(key string) string { return values[key] })
-	if s.videoPlayerEnabled() {
-		if err := validateHTTPURL(req.URL); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		s.clearPublication()
+			if s.videoPlayerEnabled() {
+				if err := validateHTTPURL(req.URL); err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				s.clearPublication()
 
-		if !s.tryBeginIngest(ingestDownloading, req.URL) {
-			http.Error(w, "別の取り込み処理が進行中です", http.StatusConflict)
-			return
-		}
-		defer s.clearIngest()
+				if !s.tryBeginIngest(ingestDownloading, req.URL) {
+					http.Error(w, "別の取り込み処理が進行中です", http.StatusConflict)
+					return
+				}
+				defer s.clearIngest()
 
-		// Preserve SoundCloud-page detection (uses yt-dlp).
-		if isSoundCloudURL(req.URL) {
-			media, err := video.DownloadMediaURL(req.URL, s.store.Dir())
-			if err != nil {
-				http.Error(w, videoURLDownloadError(err), http.StatusBadRequest)
+				// Preserve SoundCloud-page detection (uses yt-dlp).
+				if isSoundCloudURL(req.URL) {
+					media, err := video.DownloadMediaURL(req.URL, s.store.Dir())
+					if err != nil {
+						http.Error(w, videoURLDownloadError(err), http.StatusBadRequest)
+						return
+					}
+					acquired, err := s.acquireDownloadedSoundCloud(r.Context(), media)
+					if err != nil {
+						os.Remove(media.SourcePath)
+						http.Error(w, err.Error(), http.StatusBadRequest)
+						return
+					}
+					state, err := s.processAudioFileAndPublish(r, acquired)
+					if err != nil {
+						os.Remove(acquired.SourcePath)
+						http.Error(w, err.Error(), http.StatusBadRequest)
+						return
+					}
+					writeJSON(w, state)
+					return
+				}
+
+				if s.musicModeEnabled() {
+					acquired, err := musicURLAcquirer(r.Context(), s, req.URL)
+					if err != nil {
+						http.Error(w, videoURLDownloadError(err), http.StatusBadRequest)
+						return
+					}
+					state, err := s.processAudioFileAndPublish(r, acquired)
+					if err != nil {
+						os.Remove(acquired.SourcePath)
+						http.Error(w, err.Error(), http.StatusBadRequest)
+						return
+					}
+					writeJSON(w, state)
+					return
+				}
+
+				// Try yt-dlp first — it handles YouTube, X/Twitter, niconico and many
+				// other video pages. If it cannot handle the URL, fall back to the
+				// bounded SSRF-safe direct downloader for direct media file links.
+				ytMedia, ytdlpErr := pageMediaDownloader(req.URL, s.store.Dir())
+				if ytdlpErr == nil {
+					state, err := s.processVideoFileAndPublish(r, ytMedia.SourcePath, ytMedia.Name, ytMedia.ThumbnailPath)
+					if err != nil {
+						os.Remove(ytMedia.SourcePath)
+						http.Error(w, err.Error(), http.StatusBadRequest)
+						return
+					}
+					writeJSON(w, state)
+					return
+				}
+
+				// Page URLs (YouTube, Twitter/X, SoundCloud) only return HTML to a
+				// plain GET; skip the direct-download fallback and surface the yt-dlp
+				// error so the real cause (e.g. Twitter "Bad guest token", YouTube
+				// "Requested format is not available") is not masked by a misleading
+				// ffprobe "Invalid data found" on the saved HTML.
+				if video.IsPageMediaURL(req.URL) {
+					http.Error(w, videoURLDownloadError(ytdlpErr), http.StatusBadRequest)
+					return
+				}
+
+				// Fallback: bounded SSRF-safe downloader. Redirects are revalidated and
+				// the completed bytes are classified by ffprobe.
+				media, err := s.downloadDirectMedia(r.Context(), req.URL)
+				if err != nil {
+					http.Error(w, videoURLDownloadError(combineURLErrors(ytdlpErr, err)), http.StatusBadRequest)
+					return
+				}
+				probe := media.Probe
+				class := media.Class
+				switch class {
+				case video.MediaAudio:
+					meta := extractEmbeddedMetadata(probe)
+					ffmpeg, aErr := video.EnsureFFmpeg()
+					if aErr != nil {
+						os.Remove(media.Path)
+						http.Error(w, aErr.Error(), http.StatusBadRequest)
+						return
+					}
+					candidates, aErr := video.ExtractEmbeddedArtwork(r.Context(), ffmpeg, media.Path, s.store.Dir(), probe)
+					if aErr != nil {
+						candidates = nil
+					}
+					acquired := video.AcquiredAudio{
+						SourcePath:       media.Path,
+						SourceName:       media.Name,
+						Kind:             video.SourceRemoteAudio,
+						Probe:            probe,
+						EmbeddedMetadata: meta,
+						EmbeddedArtwork:  candidates,
+					}
+					state, aErr := s.processAudioFileAndPublish(r, acquired)
+					if aErr != nil {
+						os.Remove(media.Path)
+						http.Error(w, aErr.Error(), http.StatusBadRequest)
+						return
+					}
+					writeJSON(w, state)
+
+				case video.MediaVideo:
+					state, vErr := s.processVideoFileAndPublish(r, media.Path, media.Name, "")
+					if vErr != nil {
+						http.Error(w, vErr.Error(), http.StatusBadRequest)
+						return
+					}
+					writeJSON(w, state)
+
+				default:
+					os.Remove(media.Path)
+					http.Error(w, "unsupported media type", http.StatusBadRequest)
+				}
 				return
 			}
-			acquired, err := s.acquireDownloadedSoundCloud(r.Context(), media)
+			remote, name, err := downloadRemoteImage(req.URL, opts.MaxInputBytes)
 			if err != nil {
-				os.Remove(media.SourcePath)
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			state, err := s.processAudioFileAndPublish(r, acquired)
+			defer remote.Close()
+
+			state, err := s.processAndPublish(r, remote, name, "", opts)
 			if err != nil {
-				os.Remove(acquired.SourcePath)
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
 			writeJSON(w, state)
-			return
-		}
-
-		if s.musicModeEnabled() {
-			acquired, err := musicURLAcquirer(r.Context(), s, req.URL)
-			if err != nil {
-				http.Error(w, videoURLDownloadError(err), http.StatusBadRequest)
-				return
-			}
-			state, err := s.processAudioFileAndPublish(r, acquired)
-			if err != nil {
-				os.Remove(acquired.SourcePath)
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			writeJSON(w, state)
-			return
-		}
-
-		// Try yt-dlp first — it handles YouTube, X/Twitter, niconico and many
-		// other video pages. If it cannot handle the URL, fall back to the
-		// bounded SSRF-safe direct downloader for direct media file links.
-		ytMedia, ytdlpErr := pageMediaDownloader(req.URL, s.store.Dir())
-		if ytdlpErr == nil {
-			state, err := s.processVideoFileAndPublish(r, ytMedia.SourcePath, ytMedia.Name)
-			if err != nil {
-				os.Remove(ytMedia.SourcePath)
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			writeJSON(w, state)
-			return
-		}
-
-		// Page URLs (YouTube, Twitter/X, SoundCloud) only return HTML to a
-		// plain GET; skip the direct-download fallback and surface the yt-dlp
-		// error so the real cause (e.g. Twitter "Bad guest token", YouTube
-		// "Requested format is not available") is not masked by a misleading
-		// ffprobe "Invalid data found" on the saved HTML.
-		if video.IsPageMediaURL(req.URL) {
-			http.Error(w, videoURLDownloadError(ytdlpErr), http.StatusBadRequest)
-			return
-		}
-
-		// Fallback: bounded SSRF-safe downloader. Redirects are revalidated and
-		// the completed bytes are classified by ffprobe.
-		media, err := s.downloadDirectMedia(r.Context(), req.URL)
-		if err != nil {
-			http.Error(w, videoURLDownloadError(combineURLErrors(ytdlpErr, err)), http.StatusBadRequest)
-			return
-		}
-		probe := media.Probe
-		class := media.Class
-		switch class {
-		case video.MediaAudio:
-			meta := extractEmbeddedMetadata(probe)
-			ffmpeg, aErr := video.EnsureFFmpeg()
-			if aErr != nil {
-				os.Remove(media.Path)
-				http.Error(w, aErr.Error(), http.StatusBadRequest)
-				return
-			}
-			candidates, aErr := video.ExtractEmbeddedArtwork(r.Context(), ffmpeg, media.Path, s.store.Dir(), probe)
-			if aErr != nil {
-				candidates = nil
-			}
-			acquired := video.AcquiredAudio{
-				SourcePath:       media.Path,
-				SourceName:       media.Name,
-				Kind:             video.SourceRemoteAudio,
-				Probe:            probe,
-				EmbeddedMetadata: meta,
-				EmbeddedArtwork:  candidates,
-			}
-			state, aErr := s.processAudioFileAndPublish(r, acquired)
-			if aErr != nil {
-				os.Remove(media.Path)
-				http.Error(w, aErr.Error(), http.StatusBadRequest)
-				return
-			}
-			writeJSON(w, state)
-
-		case video.MediaVideo:
-			state, vErr := s.processVideoFileAndPublish(r, media.Path, media.Name)
-			if vErr != nil {
-				http.Error(w, vErr.Error(), http.StatusBadRequest)
-				return
-			}
-			writeJSON(w, state)
-
-		default:
-			os.Remove(media.Path)
-			http.Error(w, "unsupported media type", http.StatusBadRequest)
-		}
-		return
-	}
-	remote, name, err := downloadRemoteImage(req.URL, opts.MaxInputBytes)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	defer remote.Close()
-
-	state, err := s.processAndPublish(r, remote, name, "", opts)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	writeJSON(w, state)
 }
 
 func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
@@ -578,7 +578,7 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 		// bounded SSRF-safe direct downloader for direct media file links.
 		ytMedia, ytdlpErr := pageMediaDownloader(req.URL, s.store.Dir())
 		if ytdlpErr == nil {
-			state, err := s.processVideoFileAndQueue(r, ytMedia.SourcePath, ytMedia.Name)
+			state, err := s.processVideoFileAndQueue(r, ytMedia.SourcePath, ytMedia.Name, ytMedia.ThumbnailPath)
 			if err != nil {
 				os.Remove(ytMedia.SourcePath)
 				http.Error(w, err.Error(), http.StatusBadRequest)
@@ -634,7 +634,7 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, state)
 
 		case video.MediaVideo:
-			state, vErr := s.processVideoFileAndQueue(r, media.Path, media.Name)
+			state, vErr := s.processVideoFileAndQueue(r, media.Path, media.Name, "")
 			if vErr != nil {
 				http.Error(w, vErr.Error(), http.StatusBadRequest)
 				return
@@ -784,7 +784,7 @@ func (s *Server) processVideoAndPublish(r *http.Request, reader io.Reader, name 
 		_ = os.Remove(sourcePath)
 		return nil, fmt.Errorf("video exceeds size limit of %d bytes", maxVideoUploadBytes)
 	}
-	return s.processVideoFileAndPublish(r, sourcePath, name)
+	return s.processVideoFileAndPublish(r, sourcePath, name, "")
 }
 
 func (s *Server) processVideoAndQueue(r *http.Request, reader io.Reader, name string) (map[string]interface{}, error) {
@@ -810,14 +810,14 @@ func (s *Server) processVideoAndQueue(r *http.Request, reader io.Reader, name st
 		_ = os.Remove(sourcePath)
 		return nil, fmt.Errorf("video exceeds size limit of %d bytes", maxVideoUploadBytes)
 	}
-	return s.processVideoFileAndQueue(r, sourcePath, name)
+	return s.processVideoFileAndQueue(r, sourcePath, name, "")
 }
 
-func (s *Server) processVideoFileAndPublish(r *http.Request, sourcePath, name string) (map[string]interface{}, error) {
+func (s *Server) processVideoFileAndPublish(r *http.Request, sourcePath, name, providedThumbnail string) (map[string]interface{}, error) {
 	if _, err := video.EnsureFFmpeg(); err != nil {
 		return nil, err
 	}
-	thumbnail := s.createVideoThumbnail(sourcePath)
+	thumbnail := s.useOrCreateVideoThumbnail(sourcePath, providedThumbnail)
 	info := library.CurrentImage{
 		Kind:         "video",
 		FileName:     filepath.Base(sourcePath),
@@ -848,11 +848,11 @@ func (s *Server) processVideoFileAndPublish(r *http.Request, sourcePath, name st
 	return s.withClipboardResult(state), nil
 }
 
-func (s *Server) processVideoFileAndQueue(r *http.Request, sourcePath, name string) (map[string]interface{}, error) {
+func (s *Server) processVideoFileAndQueue(r *http.Request, sourcePath, name, providedThumbnail string) (map[string]interface{}, error) {
 	if _, err := video.EnsureFFmpeg(); err != nil {
 		return nil, err
 	}
-	thumbnail := s.createVideoThumbnail(sourcePath)
+	thumbnail := s.useOrCreateVideoThumbnail(sourcePath, providedThumbnail)
 	info := library.CurrentImage{
 		Kind:         "video",
 		FileName:     filepath.Base(sourcePath),
@@ -874,6 +874,21 @@ func (s *Server) processVideoFileAndQueue(r *http.Request, sourcePath, name stri
 	return s.state(r), nil
 }
 
+// useOrCreateVideoThumbnail copies an externally provided thumbnail into the
+// store directory when available, otherwise generates one from the video.
+func (s *Server) useOrCreateVideoThumbnail(sourcePath, provided string) string {
+	if provided != "" {
+		if info, err := os.Stat(provided); err == nil && !info.IsDir() && info.Size() > 0 {
+			name := "video-thumb-external-" + randomSuffix() + filepath.Ext(provided)
+			dest := filepath.Join(s.store.Dir(), name)
+			if err := copyFile(provided, dest); err == nil {
+				return name
+			}
+		}
+	}
+	return s.createVideoThumbnail(sourcePath)
+}
+
 func (s *Server) createVideoThumbnail(sourcePath string) string {
 	name := "video-thumb-" + randomSuffix() + ".jpg"
 	path := filepath.Join(s.store.Dir(), name)
@@ -882,6 +897,26 @@ func (s *Server) createVideoThumbnail(sourcePath string) string {
 		return ""
 	}
 	return name
+}
+
+func copyFile(dst, src string) error {
+	if filepath.Clean(dst) == filepath.Clean(src) {
+		return nil
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Close()
 }
 
 func (s *Server) createOBSVideoThumbnail(session obsrtmp.Session) string {
@@ -1404,6 +1439,11 @@ func (s *Server) watchConversion(jobID, mediaID string) {
 					case "done":
 						files := video.GeneratedFiles(s.store.Dir(), mediaID)
 						if len(files) > 0 {
+							convertedSize := totalFileSize(files)
+							if current := s.store.Current(); current != nil && current.ID == mediaID {
+								_ = s.store.UpdateCurrentSize(convertedSize)
+							}
+							_ = s.store.UpdateHistorySize(mediaID, convertedSize)
 							_ = s.store.MarkConverted(mediaID, files)
 						}
 						return
@@ -1414,6 +1454,16 @@ func (s *Server) watchConversion(jobID, mediaID string) {
 			}
 		}
 	}()
+}
+
+func totalFileSize(paths []string) int64 {
+	var total int64
+	for _, p := range paths {
+		if info, err := os.Stat(p); err == nil && !info.IsDir() {
+			total += info.Size()
+		}
+	}
+	return total
 }
 
 func (s *Server) handleHistoryMedia(w http.ResponseWriter, r *http.Request) {

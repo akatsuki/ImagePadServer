@@ -798,14 +798,15 @@ func cancelQueue(outDir string) {
 // selector and produces an MP4 file prefixed "yt-dlp-source". The returned
 // name is the video's title (from yt-dlp's info JSON) so history/favorites
 // show a meaningful title instead of the generic "yt-dlp-source.mp4"; it
-// falls back to the file name when the title is unavailable.
-func downloadVideoURL(rawURL, outDir string) (string, string, error) {
+// falls back to the file name when the title is unavailable. The returned
+// thumbnailPath is the yt-dlp-written thumbnail image (if any).
+func downloadVideoURL(rawURL, outDir string) (sourcePath, name, thumbnailPath string, err error) {
 	exe, err := EnsureYTDLP()
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	if err := os.MkdirAll(outDir, 0700); err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	removeYTDLPFiles(outDir)
 	target := filepath.Join(outDir, "yt-dlp-source.%(ext)s")
@@ -820,33 +821,45 @@ func downloadVideoURL(rawURL, outDir string) (string, string, error) {
 		// throttling (notably YouTube), the same speedup music mode uses.
 		"--concurrent-fragments", "4",
 		"--write-info-json",
+		"--write-thumbnail",
 		"-o", target,
 	}
 	args = append(args, ffmpegLocationArgs()...)
 	if err := runYTDLPDownload(exe, rawURL, args); err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
-	sourcePath := ""
 	matches, _ := filepath.Glob(filepath.Join(outDir, "yt-dlp-source.*"))
+	var thumbPaths []string
 	for _, match := range matches {
-		if filepath.Ext(match) == ".json" {
+		ext := strings.ToLower(filepath.Ext(match))
+		if ext == ".json" {
 			continue
 		}
-		if info, err := os.Stat(match); err == nil && !info.IsDir() && info.Size() > 0 {
-			sourcePath = match
-			break
+		if info, statErr := os.Stat(match); statErr != nil || info.IsDir() || info.Size() == 0 {
+			continue
+		}
+		switch ext {
+		case ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif":
+			thumbPaths = append(thumbPaths, match)
+		default:
+			if sourcePath == "" {
+				sourcePath = match
+			}
 		}
 	}
 	if sourcePath == "" {
-		return "", "", errors.New("yt-dlp did not produce a video file")
+		return "", "", "", errors.New("yt-dlp did not produce a video file")
 	}
-	name := "yt-dlp-source" + filepath.Ext(sourcePath)
+	name = "yt-dlp-source" + filepath.Ext(sourcePath)
 	if data, readErr := os.ReadFile(infoPath); readErr == nil {
 		if meta, parseErr := ParseMusicInfoJSON(data); parseErr == nil && strings.TrimSpace(meta.Title) != "" {
 			name = meta.Title
 		}
 	}
-	return sourcePath, name, nil
+	if len(thumbPaths) > 0 {
+		thumbnailPath = thumbPaths[0]
+	}
+	return sourcePath, name, thumbnailPath, nil
 }
 
 // DownloadURL downloads media from a URL and returns the source path and
