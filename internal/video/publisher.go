@@ -657,7 +657,11 @@ func runStillHLS(ctx context.Context, outDir, ffmpeg, imagePath, id string, pres
 func runUploadedHLS(ctx context.Context, outDir, ffmpeg, sourcePath, id string, preset QualityPreset) error {
 	selected := SelectVideoEncoder(ctx, ffmpeg, EncoderStandard)
 	return runVideoEncodeWithFallback(ctx, selected, func() { removeHLSForID(outDir, id) }, func(encoder VideoEncoderProfile) error {
-		return runInDirContext(ctx, outDir, ffmpeg, uploadedHLSArgsWithEncoder(sourcePath, id, preset, encoder)...)
+		vod := preset
+		if score, err := ProbeMotionScore(sourcePath); err == nil {
+			vod = AdaptPresetForContent(vod, score)
+		}
+		return runInDirContext(ctx, outDir, ffmpeg, uploadedHLSArgsWithEncoder(sourcePath, id, vod, encoder)...)
 	})
 }
 
