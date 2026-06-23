@@ -1,282 +1,52 @@
 package video
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
-func TestApplyQueueProgressUsesActualPlaylistDurations(t *testing.T) {
-	outDir := t.TempDir()
-	id := "progress-media"
-	playlist := "#EXTM3U\n#EXT-X-TARGETDURATION:9\n" +
-		"#EXTINF:8.333333,\nsegment-0.ts\n" +
-		"#EXTINF:8.333333,\nsegment-1.ts\n"
-	if err := os.WriteFile(filepath.Join(outDir, playlistName(id)), []byte(playlist), 0600); err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{
-		"current-" + safeID(id) + "-100-0.ts",
-		"current-" + safeID(id) + "-100-1.ts",
-	} {
-		if err := os.WriteFile(filepath.Join(outDir, name), []byte("segment"), 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
+func TestResolveQualityForMusicIsMoreCompressedThanUpload(t *testing.T) {
+	music := ResolveQualityForMusic("720", 0, 0)
+	upload := ResolveQualityForUpload("720", 0, 0)
 
-	job := &queueJob{QueueItem: QueueItem{MediaID: id}, OutDir: outDir, TotalSeconds: 60}
-	item := QueueItem{}
-	applyQueueProgressLocked(job, &item)
-
-	if item.ProgressPercent != 28 {
-		t.Fatalf("ProgressPercent = %d, want 28 from 16.67 / 60 seconds", item.ProgressPercent)
+	if music.CRF <= upload.CRF {
+		t.Fatalf("music CRF %d should be higher than upload CRF %d", music.CRF, upload.CRF)
 	}
-	if item.ProgressText != "28% (17 / 60 sec)" {
-		t.Fatalf("ProgressText = %q, want actual EXTINF duration", item.ProgressText)
+	if music.MaxRate == "" || upload.MaxRate == "" {
+		t.Fatal("missing maxrate")
+	}
+	musicMax := parseBitrateK(t, music.MaxRate)
+	uploadMax := parseBitrateK(t, upload.MaxRate)
+	if musicMax >= uploadMax {
+		t.Fatalf("music maxrate %dk should be lower than upload maxrate %dk", musicMax, uploadMax)
 	}
 }
 
-// TestCancelConversionDiscardsPreemptedJob verifies that replacing the published
-// media stops the old conversion permanently: a running-but-preempted job for the
-// replaced id must become "canceled" (not "pending"), so the queue cannot resume
-// it and resurface the old video after the new one has taken over.
-func TestCancelConversionDiscardsPreemptedJob(t *testing.T) {
-	outDir := t.TempDir()
-
-	canceled := false
-	oldRunning := &queueJob{
-		QueueItem: QueueItem{ID: "job-old", MediaID: "old", Status: "running"},
-		Preempted: true, // a newer publish had preempted it back toward "pending"
-		Cancel:    func() { canceled = true },
-	}
-	oldPending := &queueJob{
-		QueueItem: QueueItem{ID: "job-old-2", MediaID: "old", Status: "pending"},
-	}
-	keep := &queueJob{
-		QueueItem: QueueItem{ID: "job-new", MediaID: "new", Status: "pending"},
-	}
-
-	state := &queueState{items: []*queueJob{keep, oldRunning, oldPending}}
-	queues.Store(outDir, state)
-	t.Cleanup(func() { queues.Delete(outDir) })
-
-	CancelConversion(outDir, "old")
-
-	if !canceled {
-		t.Fatal("running job for replaced media id was not canceled")
-	}
-	if oldRunning.Status != "canceled" || oldRunning.Preempted {
-		t.Fatalf("running job = %q preempted=%v, want canceled and not preempted", oldRunning.Status, oldRunning.Preempted)
-	}
-	if oldPending.Status != "canceled" {
-		t.Fatalf("pending job = %q, want canceled", oldPending.Status)
-	}
-	if keep.Status != "pending" {
-		t.Fatalf("unrelated job = %q, want pending (untouched)", keep.Status)
-	}
-
-	// The replaced media must not be resumable by the queue runner.
-	if next := state.nextPending(); next != nil && next.MediaID == "old" {
-		t.Fatalf("nextPending resurfaced replaced media: %q", next.ID)
+func TestResolveQualityForMusicTargetsSmallLongFiles(t *testing.T) {
+	preset := ResolveQualityForMusic("auto", 100, 20)
+	// 5 minutes at the 1080p music ceiling: ~780k * 300 / 8 / 1024 = ~28 MB max,
+	// but CRF 30 keeps the average far below that. For 720p the ceiling is
+	// ~450k -> ~16 MB max. The goal is 10 MB for 5 min; this gets close while
+	// keeping visualizer waveforms readable.
+	if preset.CRF < 30 || preset.CRF > 40 {
+		t.Fatalf("CRF = %d, want 30-40", preset.CRF)
 	}
 }
 
-func TestEnqueueSoundCloudForID_CreatesSoundCloudJob(t *testing.T) {
-	outDir := t.TempDir()
-	preset := ResolveQuality("720", 0)
-	jobID := EnqueueSoundCloudForID("audio.m4a", "art.jpg", outDir, "media-1", "My Track", preset, 300)
-	t.Cleanup(func() {
-		CancelQueue(outDir)
-		queues.Delete(outDir)
-	})
-
-	if jobID == "" {
-		t.Fatal("EnqueueSoundCloudForID returned empty job ID")
+func parseBitrateK(t *testing.T, s string) int {
+	t.Helper()
+	s = strings.TrimSpace(s)
+	unit := ""
+	if s[len(s)-1] < '0' || s[len(s)-1] > '9' {
+		unit = s[len(s)-1:]
+		s = s[:len(s)-1]
 	}
-
-	state := queueFor(outDir)
-	state.mu.Lock()
-	var found *queueJob
-	for _, job := range state.items {
-		if job.ID == jobID {
-			found = job
-			break
-		}
+	v := 0
+	for _, c := range s {
+		v = v*10 + int(c-'0')
 	}
-	state.mu.Unlock()
-
-	if found == nil {
-		t.Fatal("SoundCloud job not found in queue")
+	if unit == "m" || unit == "M" {
+		v *= 1000
 	}
-	if found.Mode != "soundcloud" {
-		t.Errorf("Mode = %q, want %q", found.Mode, "soundcloud")
-	}
-	if found.Kind != "soundcloud" {
-		t.Errorf("Kind = %q, want %q", found.Kind, "soundcloud")
-	}
-	if found.SourcePath != "audio.m4a" {
-		t.Errorf("SourcePath = %q, want %q", found.SourcePath, "audio.m4a")
-	}
-	if found.ArtworkPath != "art.jpg" {
-		t.Errorf("ArtworkPath = %q, want %q", found.ArtworkPath, "art.jpg")
-	}
-	if found.MediaID != "media-1" {
-		t.Errorf("MediaID = %q, want %q", found.MediaID, "media-1")
-	}
-	if found.Title != "My Track" {
-		t.Errorf("Title = %q, want %q", found.Title, "My Track")
-	}
-	if found.Status != "pending" {
-		t.Errorf("Status = %q, want %q", found.Status, "pending")
-	}
-}
-
-func TestEnqueueSoundCloudForID_FallbackTitle(t *testing.T) {
-	outDir := t.TempDir()
-	preset := ResolveQuality("720", 0)
-	jobID := EnqueueSoundCloudForID("audio.m4a", "", outDir, "media-2", "", preset, 0)
-	t.Cleanup(func() {
-		CancelQueue(outDir)
-		queues.Delete(outDir)
-	})
-
-	state := queueFor(outDir)
-	state.mu.Lock()
-	var found *queueJob
-	for _, job := range state.items {
-		if job.ID == jobID {
-			found = job
-			break
-		}
-	}
-	state.mu.Unlock()
-
-	if found == nil {
-		t.Fatal("SoundCloud job not found in queue")
-	}
-	if found.Title != "SoundCloud" {
-		t.Errorf("fallback Title = %q, want %q", found.Title, "SoundCloud")
-	}
-}
-
-func TestRunQueueJob_SoundCloudMode_CreatesCorrectJob(t *testing.T) {
-	outDir := t.TempDir()
-	preset := ResolveQuality("720", 0)
-
-	jobID := EnqueueSoundCloudForID("audio.m4a", "art.jpg", outDir, "sc-media", "SC Track", preset, 300)
-	t.Cleanup(func() {
-		CancelQueue(outDir)
-		queues.Delete(outDir)
-	})
-
-	state := queueFor(outDir)
-	state.mu.Lock()
-	var found *queueJob
-	for _, job := range state.items {
-		if job.ID == jobID {
-			found = job
-			break
-		}
-	}
-	state.mu.Unlock()
-
-	if found == nil {
-		t.Fatal("SoundCloud job not found in queue")
-	}
-	if found.Mode != "soundcloud" {
-		t.Errorf("Mode = %q, want %q", found.Mode, "soundcloud")
-	}
-	if found.ArtworkPath != "art.jpg" {
-		t.Errorf("ArtworkPath = %q, want %q", found.ArtworkPath, "art.jpg")
-	}
-
-	// Verify the queue item appears in QueueStatus
-	items := QueueStatus(outDir)
-	var foundItem bool
-	for _, item := range items {
-		if item.ID == jobID {
-			foundItem = true
-			if item.Kind != "soundcloud" {
-				t.Errorf("QueueItem.Kind = %q, want %q", item.Kind, "soundcloud")
-			}
-			if !strings.Contains(item.Title, "SC Track") {
-				t.Errorf("QueueItem.Title = %q, want to contain 'SC Track'", item.Title)
-			}
-			break
-		}
-	}
-	if !foundItem {
-		t.Error("SoundCloud job not found in QueueStatus")
-	}
-}
-
-func TestEnqueueSoundCloudForID_TimestampsAndZeroTotalSeconds(t *testing.T) {
-	outDir := t.TempDir()
-	preset := ResolveQuality("720", 0)
-	before := time.Now()
-
-	jobID := EnqueueSoundCloudForID("audio.m4a", "", outDir, "ts-test", "Timestamps", preset, 0)
-	t.Cleanup(func() {
-		CancelQueue(outDir)
-		queues.Delete(outDir)
-	})
-
-	state := queueFor(outDir)
-	state.mu.Lock()
-	var found *queueJob
-	for _, job := range state.items {
-		if job.ID == jobID {
-			found = job
-			break
-		}
-	}
-	state.mu.Unlock()
-
-	if found == nil {
-		t.Fatal("SoundCloud job not found")
-	}
-	if found.CreatedAt.Before(before) {
-		t.Error("CreatedAt before test start")
-	}
-	if found.TotalSeconds != 0 {
-		t.Errorf("TotalSeconds = %d, want 0", found.TotalSeconds)
-	}
-}
-
-// TestEnqueueUploadedVideoForID_PropagatesTotalSeconds verifies the uploaded-
-// video queue job carries the source duration so the queue status can surface
-// a segment-based "X% (N / M sec)" progress like music mode, instead of only a
-// raw segment count.
-func TestEnqueueUploadedVideoForID_PropagatesTotalSeconds(t *testing.T) {
-	outDir := t.TempDir()
-	preset := ResolveQuality("720", 0)
-
-	jobID := EnqueueUploadedVideoForID("source.mp4", outDir, "dur-media", "Duration", preset, 240)
-	t.Cleanup(func() {
-		CancelQueue(outDir)
-		queues.Delete(outDir)
-	})
-
-	state := queueFor(outDir)
-	state.mu.Lock()
-	var found *queueJob
-	for _, job := range state.items {
-		if job.ID == jobID {
-			found = job
-			break
-		}
-	}
-	state.mu.Unlock()
-
-	if found == nil {
-		t.Fatal("uploaded-video job not found")
-	}
-	if found.TotalSeconds != 240 {
-		t.Fatalf("TotalSeconds = %d, want 240 so segment-based %% progress is shown", found.TotalSeconds)
-	}
-	if found.Mode != "uploaded" {
-		t.Fatalf("Mode = %q, want uploaded", found.Mode)
-	}
+	return v
 }

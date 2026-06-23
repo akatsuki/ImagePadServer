@@ -1414,7 +1414,7 @@ func (s *Server) enqueueSoundCloudConversion(audioPath, artworkPath, id, title s
 		Kind:        video.SourceSoundCloud,
 		ArtworkPath: artworkPath,
 	}
-	jobID := video.EnqueueAudioForID(input, s.store.Dir(), id, title, s.videoQualityPreset())
+	jobID := video.EnqueueAudioForID(input, s.store.Dir(), id, title, s.musicQualityPreset())
 	s.watchConversion(jobID, id)
 }
 
@@ -2235,6 +2235,18 @@ func (s *Server) videoPlayerEmptyState() map[string]interface{} {
 		"status":           status,
 		"quality":          s.videoQualityPreset(),
 	}
+}
+
+func (s *Server) musicQualityPreset() video.QualityPreset {
+	appSettings, err := settings.Load()
+	if err != nil {
+		return video.ResolveQualityForMusic("auto", 0, 0)
+	}
+	preset := video.ResolveQualityForMusic(appSettings.VideoQualityMode, appSettings.NetworkMbps, appSettings.NetworkUploadMbps)
+	if active, ok := video.ActiveQuality(s.store.Dir()); ok {
+		return video.BitrateOnlyPreset(preset, active)
+	}
+	return preset
 }
 
 func (s *Server) videoQualityPreset() video.QualityPreset {

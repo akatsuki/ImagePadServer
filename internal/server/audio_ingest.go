@@ -170,6 +170,6 @@ func (s *Server) processAudioFileAndQueue(r *http.Request, acquired video.Acquir
 // enqueueAudioConversion enqueues an audio visualizer job using the generic
 // EnqueueAudioForID path and watches for completion.
 func (s *Server) enqueueAudioConversion(input video.AudioRenderInput, id, title string) {
-	jobID := video.EnqueueAudioForID(input, s.store.Dir(), id, title, s.videoQualityPreset())
+	jobID := video.EnqueueAudioForID(input, s.store.Dir(), id, title, s.musicQualityPreset())
 	s.watchConversion(jobID, id)
 }

@@ -156,6 +156,25 @@ func ResolveQualityForUpload(mode string, downloadMbps, uploadMbps int) QualityP
 	return preset
 }
 
+// ResolveQualityForMusic returns a preset tuned for the music visualizer path
+// (SoundCloud / uploaded audio). The output is mostly a static background plus
+// a small animated waveform, so it compresses far better than camera/game
+// footage. We raise CRF and slash the bitrate ceiling so a 5-minute song stays
+// around 10 MB instead of 40 MB.
+func ResolveQualityForMusic(mode string, downloadMbps, uploadMbps int) QualityPreset {
+	preset := ResolveQualityForUpload(mode, downloadMbps, uploadMbps)
+	preset.CRF = clampInt(preset.CRF+4, 18, 40)
+	// Cap peaks at ~15% of the uploaded-video ceiling. Buffer is kept a bit
+	// larger (25%) so short waveform spikes do not stutter the rate controller.
+	if preset.MaxRate != "" {
+		preset.MaxRate = scaleBitrate(preset.MaxRate, 0.15)
+	}
+	if preset.BufferSize != "" {
+		preset.BufferSize = scaleBitrate(preset.BufferSize, 0.25)
+	}
+	return preset
+}
+
 // scaleBitrate multiplies a bitrate string like "3000k" by factor, preserving
 // the unit suffix. Empty or unparseable values are returned unchanged.
 func scaleBitrate(s string, factor float64) string {

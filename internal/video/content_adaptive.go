@@ -3,7 +3,6 @@ package video
 import (
 	"bufio"
 	"context"
-	"math"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -11,39 +10,38 @@ import (
 )
 
 // MotionScore summarizes how compressible a source video is. Low-motion,
-// visually-simple content has small, stable frame sizes; high-motion or
-// detailed content has larger, more variable frame sizes.
+// visually-simple content has small inter-frame sizes; high-motion or
+// detailed content has large inter-frame sizes.
 type MotionScore struct {
-	AverageFrameSize int
-	StdDev           float64
-	FrameCount       int
+	AverageFrameSize     int
+	NonIAverageFrameSize int // average excluding keyframes, which are outliers
+	FrameCount           int
 }
 
 // IsLowMotion reports whether the score indicates largely static content.
+// It uses non-keyframe sizes because I-frames are periodic outliers that
+// inflate the overall average even for slideshow-like video.
 func (s MotionScore) IsLowMotion() bool {
-	if s.FrameCount < 5 || s.AverageFrameSize <= 0 {
+	if s.FrameCount < 5 || s.NonIAverageFrameSize <= 0 {
 		return false
 	}
-	avgKB := float64(s.AverageFrameSize) / 1024.0
-	coeffVar := s.StdDev / float64(s.AverageFrameSize)
-	return avgKB < 45 && coeffVar < 0.55
+	return float64(s.NonIAverageFrameSize) < 12*1024
 }
 
 // IsVeryLowMotion reports whether the score indicates near-static content
 // (e.g. slideshows, idle game screens, vtuber talking head with little movement).
 func (s MotionScore) IsVeryLowMotion() bool {
-	if s.FrameCount < 5 || s.AverageFrameSize <= 0 {
+	if s.FrameCount < 5 || s.NonIAverageFrameSize <= 0 {
 		return false
 	}
-	avgKB := float64(s.AverageFrameSize) / 1024.0
-	coeffVar := s.StdDev / float64(s.AverageFrameSize)
-	return avgKB < 22 && coeffVar < 0.45
+	return float64(s.NonIAverageFrameSize) < 5*1024
 }
 
 // ProbeMotionScore samples the first few seconds of a video and returns a
 // MotionScore describing its frame-size distribution. Frame size is a proxy
 // for motion/complexity: identical frames compress to tiny sizes, whereas
-// high-motion or noisy frames compress poorly.
+// high-motion or noisy frames compress poorly. Keyframes are excluded from
+// the low-motion heuristic because they are large regardless of content.
 func ProbeMotionScore(sourcePath string) (MotionScore, error) {
 	ffprobe, err := EnsureFFprobe()
 	if err != nil {
@@ -56,7 +54,7 @@ func ProbeMotionScore(sourcePath string) (MotionScore, error) {
 	cmd := exec.CommandContext(ctx, ffprobe,
 		"-v", "error",
 		"-select_streams", "v:0",
-		"-show_entries", "frame=pkt_size",
+		"-show_entries", "frame=pkt_size,pict_type",
 		"-of", "csv=p=0",
 		"-read_intervals", "%+8",
 		sourcePath,
@@ -68,44 +66,51 @@ func ProbeMotionScore(sourcePath string) (MotionScore, error) {
 		return MotionScore{}, err
 	}
 
-	var sizes []int
+	var all []int
+	var nonI []int
 	scanner := bufio.NewScanner(strings.NewReader(string(out)))
 	for scanner.Scan() {
-		n, err := strconv.Atoi(strings.TrimSpace(scanner.Text()))
+		parts := strings.Split(strings.TrimSpace(scanner.Text()), ",")
+		if len(parts) < 2 {
+			continue
+		}
+		n, err := strconv.Atoi(parts[0])
 		if err != nil || n <= 0 {
 			continue
 		}
-		sizes = append(sizes, n)
+		all = append(all, n)
+		if parts[1] != "I" {
+			nonI = append(nonI, n)
+		}
 	}
-	if len(sizes) == 0 {
+	if len(all) == 0 {
 		return MotionScore{}, nil
 	}
 
-	var sum int
-	for _, s := range sizes {
-		sum += s
-	}
-	avg := float64(sum) / float64(len(sizes))
-	var variance float64
-	for _, s := range sizes {
-		d := float64(s) - avg
-		variance += d * d
-	}
-	variance /= float64(len(sizes))
-
 	return MotionScore{
-		AverageFrameSize: int(avg),
-		StdDev:           math.Sqrt(variance),
-		FrameCount:       len(sizes),
+		AverageFrameSize:     averageInt(all),
+		NonIAverageFrameSize: averageInt(nonI),
+		FrameCount:           len(all),
 	}, nil
 }
 
+func averageInt(values []int) int {
+	if len(values) == 0 {
+		return 0
+	}
+	var sum int
+	for _, v := range values {
+		sum += v
+	}
+	return sum / len(values)
+}
+
 // AdaptPresetForContent adjusts the encoding preset based on source motion
-// complexity. Low-motion sources get a higher CRF and a lower bitrate ceiling,
-// so they do not bloat to the same size as high-motion content. High-motion
-// sources keep the original preset.
+// complexity. Low-motion / near-static sources get a higher CRF and a lower
+// maxrate/bufsize ceiling, so they do not bloat to the same size as high-motion
+// content. High-motion sources keep the original preset.
 func AdaptPresetForContent(preset QualityPreset, score MotionScore) QualityPreset {
-	if score.FrameCount < 5 || score.AverageFrameSize <= 0 {
+	if score.FrameCount < 5 || score.NonIAverageFrameSize <= 0 {
 		return preset
 	}
 
