@@ -280,10 +280,12 @@ func staticContentEncodeOptions(encoder VideoEncoderProfile) []string {
 	switch encoder.Name {
 	case "h264_nvenc":
 		// -no-scenecut is the NVENC analog of libx264 -sc_threshold 0; it only
-		// applies when look-ahead is enabled. Spatial AQ strength is raised for
-		// largely-static content so the small moving regions (waveforms) get more
-		// bits at the expense of the flat background.
-		a = append(a, "-rc-lookahead", "20", "-no-scenecut", "1", "-bf", "3", "-aq-strength", "12")
+		// applies when look-ahead is enabled. Spatial AQ is disabled for
+		// largely-static content: NVENC's spatial AQ favors flat regions over
+		// high-detail regions, which starves the moving waveform in the music
+		// visualizer. The base NVENC args already enable -spatial_aq 1, so we
+		// override it here.
+		a = append(a, "-rc-lookahead", "20", "-no-scenecut", "1", "-bf", "3", "-spatial_aq", "0")
 	case "h264_amf":
 		a = append(a, "-bf", "3")
 	}
