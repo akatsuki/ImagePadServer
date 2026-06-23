@@ -283,7 +283,7 @@ func staticContentEncodeOptions(encoder VideoEncoderProfile) []string {
 		// applies when look-ahead is enabled. Spatial AQ strength is raised for
 		// largely-static content so the small moving regions (waveforms) get more
 		// bits at the expense of the flat background.
-		a = append(a, "-rc-lookahead", "20", "-no-scenecut", "1", "-bf", "3", "-aq-strength", "8")
+		a = append(a, "-rc-lookahead", "20", "-no-scenecut", "1", "-bf", "3", "-aq-strength", "12")
 	case "h264_amf":
 		a = append(a, "-bf", "3")
 	}
