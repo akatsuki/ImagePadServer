@@ -164,16 +164,16 @@ func ResolveQualityForUpload(mode string, downloadMbps, uploadMbps int) QualityP
 // blocky.
 func ResolveQualityForMusic(mode string, downloadMbps, uploadMbps int) QualityPreset {
 	preset := ResolveQualityForUpload(mode, downloadMbps, uploadMbps)
-	preset.CRF = clampInt(preset.CRF+3, 18, 40)
-	// Cap peaks at ~20% of the uploaded-video ceiling in exchange for a smaller
-	// file. Buffer is 30% so short waveform spikes do not stutter the rate
-	// controller. Spatial AQ strength is raised separately to keep the small
-	// moving waveform region from breaking apart at this lower bitrate.
+	preset.CRF = clampInt(preset.CRF+2, 18, 40)
+	// Cap peaks at ~30% of the uploaded-video ceiling. Buffer is 40% so short
+	// waveform spikes do not stutter the rate controller. Spatial AQ is disabled
+	// in the NVENC static-content path so the moving waveform is not starved of
+	// bits in favor of the flat background.
 	if preset.MaxRate != "" {
-		preset.MaxRate = scaleBitrate(preset.MaxRate, 0.20)
+		preset.MaxRate = scaleBitrate(preset.MaxRate, 0.30)
 	}
 	if preset.BufferSize != "" {
-		preset.BufferSize = scaleBitrate(preset.BufferSize, 0.30)
+		preset.BufferSize = scaleBitrate(preset.BufferSize, 0.40)
 	}
 	return preset
 }

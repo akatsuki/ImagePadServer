@@ -20,20 +20,19 @@ func TestResolveQualityForMusicIsMoreCompressedThanUpload(t *testing.T) {
 	if musicMax >= uploadMax {
 		t.Fatalf("music maxrate %dk should be lower than upload maxrate %dk", musicMax, uploadMax)
 	}
-	// 720p upload MaxRate is 3000k; music 20% -> 600k.
-	if musicMax != 600 {
-		t.Fatalf("music maxrate = %dk, want 600k", musicMax)
+	// 720p upload MaxRate is 3000k; music 30% -> 900k.
+	if musicMax != 900 {
+		t.Fatalf("music maxrate = %dk, want 900k", musicMax)
 	}
 }
 
 func TestResolveQualityForMusicTargetsSmallLongFiles(t *testing.T) {
 	preset := ResolveQualityForMusic("auto", 100, 20)
-	// 5 minutes at the 1080p music ceiling: ~1040k * 300 / 8 / 1024 = ~38 MB max,
-	// but CRF 29 keeps the average far below that. For 720p the ceiling is
-	// ~600k -> ~22 MB max. The goal is ~10 MB for 5 min; this gets closer while
-	// relying on strong spatial AQ to preserve the waveform area.
-	if preset.CRF < 27 || preset.CRF > 40 {
-		t.Fatalf("CRF = %d, want 27-40", preset.CRF)
+	// 5 minutes at the 1080p music ceiling: ~1560k * 300 / 8 / 1024 = ~57 MB max,
+	// but CRF 28 keeps the average far below that. For 720p the ceiling is
+	// ~900k -> ~33 MB max.
+	if preset.CRF < 26 || preset.CRF > 40 {
+		t.Fatalf("CRF = %d, want 26-40", preset.CRF)
 	}
 }
 
