@@ -416,12 +416,7 @@ func TestDownloadMediaURLPreservesSoundCloudMetadata(t *testing.T) {
 
 	dir := t.TempDir()
 
-	// Create a mock yt-dlp executable so EnsureYTDLP succeeds.
-	mockExe := filepath.Join(dir, "mock-yt-dlp.exe")
-	if err := os.WriteFile(mockExe, []byte("mock"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("IMAGEPAD_YTDLP", mockExe)
+	requireFakeYTDLP(t)
 
 	media, err := DownloadMediaURL("https://soundcloud.com/user/track", dir)
 	if err != nil {

@@ -133,6 +133,7 @@ func TestParseMusicInfoJSONFallsBackToChannelForArtist(t *testing.T) {
 // surfaces yt-dlp's video title as the display name so history/favorites show
 // a meaningful title instead of the generic "yt-dlp-source.mp4".
 func TestDownloadVideoURLUsesTitleFromInfoJSON(t *testing.T) {
+	requireFakeYTDLP(t)
 	dir := t.TempDir()
 	oldRun := runDownloadCmd
 	defer func() { runDownloadCmd = oldRun }()
@@ -171,6 +172,7 @@ func TestDownloadVideoURLUsesTitleFromInfoJSON(t *testing.T) {
 // does not write an info JSON (or the title is empty), the display name falls
 // back to the generic yt-dlp-source filename so history still shows something.
 func TestDownloadVideoURLFallsBackToFileNameWithoutTitle(t *testing.T) {
+	requireFakeYTDLP(t)
 	dir := t.TempDir()
 	oldRun := runDownloadCmd
 	defer func() { runDownloadCmd = oldRun }()
