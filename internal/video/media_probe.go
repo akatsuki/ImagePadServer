@@ -118,9 +118,9 @@ func ProbeMedia(ctx context.Context, ffprobe, path string) (MediaProbe, error) {
 		path,
 	)
 	hideWindow(cmd)
-	output, err := CombinedOutputTrackedFFmpeg(cmd)
+	stdout, stderr, err := SeparateOutputTrackedFFmpeg(cmd)
 	if err != nil {
-		return MediaProbe{}, fmt.Errorf("ffprobe failed: %w: %s", err, trimOutput(output))
+		return MediaProbe{}, fmt.Errorf("ffprobe failed: %w: %s", err, trimOutput(stderr))
 	}
-	return ParseMediaProbeJSON(output)
+	return ParseMediaProbeJSON(stdout)
 }

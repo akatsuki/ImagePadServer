@@ -110,6 +110,26 @@ func CombinedOutputTrackedFFmpeg(cmd *exec.Cmd) ([]byte, error) {
 	return output.Bytes(), err
 }
 
+// SeparateOutputTrackedFFmpeg runs cmd and captures stdout and stderr into
+// separate buffers. Use this instead of CombinedOutputTrackedFFmpeg when
+// stdout must be parsed independently (e.g. as JSON) and stderr is only
+// needed for diagnostic context.
+func SeparateOutputTrackedFFmpeg(cmd *exec.Cmd) (stdout, stderr []byte, err error) {
+	if cmd.Stdout != nil || cmd.Stderr != nil {
+		return nil, nil, errors.New("exec: Stdout or Stderr already set")
+	}
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	if err := cmd.Start(); err != nil {
+		return nil, nil, err
+	}
+	untrack := TrackStartedFFmpeg(cmd)
+	runErr := cmd.Wait()
+	untrack()
+	return outBuf.Bytes(), errBuf.Bytes(), runErr
+}
+
 func addTrackedProcess(entry trackedProcess) error {
 	processRegistryMu.Lock()
 	defer processRegistryMu.Unlock()

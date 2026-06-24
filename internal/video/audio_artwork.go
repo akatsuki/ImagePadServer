@@ -4,21 +4,49 @@ import (
 	"context"
 	"fmt"
 	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	_ "golang.org/x/image/bmp"
+	_ "golang.org/x/image/tiff"
+	_ "golang.org/x/image/webp"
 )
 
 // ---------------------------------------------------------------------------
 // ExtractEmbeddedArtwork
 // ---------------------------------------------------------------------------
 
+// attachedPicExt returns a file extension for an attached picture stream based
+// on its codec name. Unrecognised codecs default to ".png" so that ffmpeg's
+// image2 muxer can still write the raw bytes; the actual content is always
+// detected by magic bytes downstream.
+func attachedPicExt(codecName string) string {
+	switch codecName {
+	case "mjpeg", "jpeg":
+		return ".jpg"
+	case "webp":
+		return ".webp"
+	case "gif":
+		return ".gif"
+	case "bmp":
+		return ".bmp"
+	case "tiff":
+		return ".tiff"
+	default:
+		return ".png"
+	}
+}
+
 // ExtractEmbeddedArtwork runs ffmpeg to extract every attached_pic stream from
-// sourcePath into a unique PNG/JPEG file in outDir, validates each image, and
-// returns the list of viable ArtworkCandidates.  A stream whose image fails to
-// decode is silently skipped.
+// sourcePath into outDir, and returns the list of ArtworkCandidates.
+// Streams that ffmpeg cannot extract are skipped; dimension detection falls
+// back to 0×0 for image formats not supported by Go's image decoders.
 func ExtractEmbeddedArtwork(ctx context.Context, ffmpeg, sourcePath, outDir string, probe MediaProbe) ([]ArtworkCandidate, error) {
 	var candidates []ArtworkCandidate
 
@@ -27,13 +55,7 @@ func ExtractEmbeddedArtwork(ctx context.Context, ffmpeg, sourcePath, outDir stri
 			continue
 		}
 
-		ext := ".png"
-		switch stream.CodecName {
-		case "mjpeg", "jpeg":
-			ext = ".jpg"
-		case "png":
-			ext = ".png"
-		}
+		ext := attachedPicExt(stream.CodecName)
 
 		outPath := filepath.Join(outDir, fmt.Sprintf("attached_pic_%d%s", stream.Index, ext))
 
@@ -52,7 +74,8 @@ func ExtractEmbeddedArtwork(ctx context.Context, ffmpeg, sourcePath, outDir stri
 			continue // ffmpeg failed; skip this stream
 		}
 
-		// Validate the extracted image.
+		// Validate the extracted image. With all common decoders registered,
+		// only genuinely corrupt data fails here.
 		f, err := os.Open(outPath)
 		if err != nil {
 			continue
@@ -61,7 +84,7 @@ func ExtractEmbeddedArtwork(ctx context.Context, ffmpeg, sourcePath, outDir stri
 		f.Close()
 		if err != nil {
 			os.Remove(outPath)
-			continue // corrupt image; skip
+			continue
 		}
 
 		info, err := os.Stat(outPath)
