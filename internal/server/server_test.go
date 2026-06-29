@@ -477,6 +477,65 @@ func TestOBSStateIncludesLatencyCapabilities(t *testing.T) {
 	}
 }
 
+func TestOBSLatencyAliasesAndCapabilitySurface(t *testing.T) {
+	// Legacy aliases (and whitespace/case) normalize onto the canonical
+	// transports without ever inventing a new one.
+	aliases := map[string]string{
+		"auto":   obsrtmp.LatencyModeHLS,
+		"normal": obsrtmp.LatencyModeHLS,
+		"low":    obsrtmp.LatencyModeLHLS,
+		"ultra":  obsrtmp.LatencyModeLLHLS,
+		" HLS ":  obsrtmp.LatencyModeHLS,
+		"RTSPT":  obsrtmp.LatencyModeRTSPT,
+		"bogus":  obsrtmp.LatencyModeHLS,
+	}
+	for in, want := range aliases {
+		if got := obsrtmp.NormalizeLatencyMode(in); got != want {
+			t.Fatalf("NormalizeLatencyMode(%q) = %q, want %q", in, got, want)
+		}
+	}
+
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+
+	caps := map[string]obsrtmp.LatencyCapability{}
+	for _, c := range srv.obsState().Capabilities {
+		caps[c.Mode] = c
+	}
+	experimental := map[string]bool{
+		obsrtmp.LatencyModeHLS:   false,
+		obsrtmp.LatencyModeLHLS:  true,
+		obsrtmp.LatencyModeLLHLS: true,
+		obsrtmp.LatencyModeRTSPT: false,
+	}
+	for mode, exp := range experimental {
+		c, ok := caps[mode]
+		if !ok {
+			t.Fatalf("missing capability for mode %q", mode)
+		}
+		if !c.Available || !c.Selectable {
+			t.Fatalf("%s capability must be available and selectable: %#v", mode, c)
+		}
+		if c.Experimental != exp {
+			t.Fatalf("%s experimental = %v, want %v", mode, c.Experimental, exp)
+		}
+		// No cross-transport labelling: each capability advertises only its
+		// own transport, so the UI can never present a mislabelled fallback.
+		if c.Transport != mode {
+			t.Fatalf("%s transport = %q, want %q (no cross-transport fallback)", mode, c.Transport, mode)
+		}
+	}
+
+	// With no active session, no transport leaks a preview URL.
+	if url := srv.obsState().PreviewURL; url != "" {
+		t.Fatalf("idle state should expose no preview URL, got %q", url)
+	}
+}
+
 func TestPairingIssuesRelayDeviceAndSignedRelayAuthWorks(t *testing.T) {
 	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
 	store, err := library.NewStore(t.TempDir())

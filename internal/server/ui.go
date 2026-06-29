@@ -976,12 +976,18 @@ const indexHTML = `<!doctype html>
                   <span id="obsLatencyStatus">auto</span>
                 </div>
                 <select id="obsLatencyMode" aria-label="OBS latency mode">
-                  <option value="auto">自動</option>
-                  <option value="normal">普通（5s）</option>
-                  <option value="low">低遅延（1s）</option>
-                  <option value="ultra">超低遅延（0.5s+）</option>
+                  <option value="hls">通常遅延（HLS）</option>
+                  <option value="lhls">低遅延（LHLS, 実験）</option>
+                  <option value="llhls">超低遅延（LL-HLS, 実験）</option>
+                  <option value="rtspt">リアルタイム（RTSPT, PC専用）</option>
                 </select>
                 <label><input id="obsDVRToggle" type="checkbox"> DVR 30min</label>
+                <div id="obsRtspt" class="obs-rtspt" style="display:none">
+                  <strong>RTSPT URL</strong>
+                  <code id="obsRtsptURL"></code>
+                  <button id="obsRtsptCopy" type="button">コピー</button>
+                  <span class="hint">PC専用。ブラウザプレビュー非対応のためURLをコピーして再生してください。</span>
+                </div>
               </div>
             </div>
           </div>
@@ -1724,13 +1730,26 @@ const indexHTML = `<!doctype html>
       server.textContent = data.serverAddress || 'RTMP receiver is stopped';
       key.textContent = obsKeyVisible ? (data.streamKey || '-') : maskSecret(data.streamKey);
       const latency = data.latency || {};
-      if (obsLatencyMode) obsLatencyMode.value = latency.mode || 'auto';
+      if (obsLatencyMode) obsLatencyMode.value = latency.mode || 'hls';
       if (obsDVRToggle) obsDVRToggle.checked = !!latency.dvr;
       if (obsLatencyStatus) {
         const target = latency.target && latency.target !== 'auto' ? ' / ' + latency.target : '';
         const dvr = latency.dvr ? ' / DVR 30min' : '';
-        obsLatencyStatus.textContent = (latency.label || latency.mode || 'auto') + target + dvr;
+        obsLatencyStatus.textContent = (latency.label || latency.mode || 'hls') + target + dvr;
         obsLatencyStatus.title = latency.message || '';
+      }
+      // RTSPT has no browser preview: surface its copyable URL only once the
+      // session is ready (rtsptURL is set by the server after readiness).
+      const obsRtspt = document.getElementById('obsRtspt');
+      const obsRtsptURL = document.getElementById('obsRtsptURL');
+      if (obsRtspt && obsRtsptURL) {
+        if (data.rtsptURL) {
+          obsRtsptURL.textContent = data.rtsptURL;
+          obsRtspt.style.display = '';
+        } else {
+          obsRtsptURL.textContent = '';
+          obsRtspt.style.display = 'none';
+        }
       }
       if (data.connected && data.publishing) {
         status.textContent = 'publishing / HLS event';
@@ -2261,6 +2280,20 @@ const indexHTML = `<!doctype html>
         obsKeyRotateButton.disabled = false;
       }
     });
+    const obsRtsptCopyBtn = document.getElementById('obsRtsptCopy');
+    if (obsRtsptCopyBtn) {
+      obsRtsptCopyBtn.addEventListener('click', async () => {
+        const url = (document.getElementById('obsRtsptURL') || {}).textContent || '';
+        if (!url) return;
+        try {
+          await navigator.clipboard.writeText(url);
+          obsRtsptCopyBtn.textContent = 'コピーしました';
+          setTimeout(() => { obsRtsptCopyBtn.textContent = 'コピー'; }, 1500);
+        } catch (e) {
+          obsRtsptCopyBtn.textContent = 'コピー失敗';
+        }
+      });
+    }
     obsLatencyMode.addEventListener('change', async () => {
       updateOBSLatency();
     });
