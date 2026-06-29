@@ -505,6 +505,34 @@ func TestOBSRelayConfigEnablesReceiverAndReturnsConnectionInfo(t *testing.T) {
 	}
 }
 
+func TestHandleOBSKeyStoresCustomStreamKey(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8080/api/obs/key", strings.NewReader(`{"streamKey":"vrc-custom-key_01"}`))
+	req.RemoteAddr = "127.0.0.1:50000"
+	rec := httptest.NewRecorder()
+	srv.admin(srv.handleOBSKey)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q", rec.Code, rec.Body.String())
+	}
+	appSettings, err := settings.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if appSettings.OBSStreamKey != "vrc-custom-key_01" {
+		t.Fatalf("OBSStreamKey = %q, want custom key", appSettings.OBSStreamKey)
+	}
+	if got := srv.obsState().StreamKey; got != "vrc-custom-key_01" {
+		t.Fatalf("obs stream key = %q, want custom key", got)
+	}
+}
+
 func TestHandleOBSLatencyNormalizesStorage(t *testing.T) {
 	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
 	store, err := library.NewStore(t.TempDir())
@@ -792,6 +820,24 @@ func TestRTSPUIUsesSharedURLAndRiskDialog(t *testing.T) {
 	for _, forbidden := range mustNotContain {
 		if strings.Contains(indexHTML, forbidden) {
 			t.Fatalf("indexHTML contains forbidden RTSP UI fragment %q", forbidden)
+		}
+	}
+}
+
+func TestOBSStreamKeyUIUsesRiskDialogBeforeEditing(t *testing.T) {
+	mustContain := []string{
+		`id="obsStreamKey"`,
+		`role="button"`,
+		`tabindex="0"`,
+		`id="obsKeyRiskDialog"`,
+		`id="obsKeyEditInput"`,
+		`OBS Stream Keyを変更します`,
+		`キーを知る人はOBSから配信を送信できます。`,
+		`それでも変更する`,
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(indexHTML, want) {
+			t.Fatalf("indexHTML missing %q", want)
 		}
 	}
 }

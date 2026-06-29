@@ -997,12 +997,12 @@ const indexHTML = `<!doctype html>
               <div class="urlbox">
                 <div>
                   <strong>Stream Key</strong>
-                  <code id="obsStreamKey">-</code>
+                  <code id="obsStreamKey" role="button" tabindex="0" title="クリックしてStream Keyを変更">-</code>
                 </div>
                 <div class="secret-actions">
                   <button type="button" class="secondary icon-button" id="obsKeyRevealButton" title="Stream Keyを表示" aria-label="Stream Keyを表示">&#128065;</button>
                   <button type="button" data-copy="obsStreamKey">コピー</button>
-                  <button type="button" class="secondary" id="obsKeyRotateButton">更新</button>
+                  <button type="button" class="secondary" id="obsKeyRotateButton">変更</button>
                 </div>
               </div>
               <div class="pill"><strong>OBS</strong><span id="obsStatus">確認中</span></div>
@@ -1121,6 +1121,24 @@ const indexHTML = `<!doctype html>
       </div>
     </section>
   </div>
+  <div class="modal-backdrop" id="obsKeyRiskDialog" hidden>
+    <section class="modal-card" role="alertdialog" aria-modal="true" aria-labelledby="obsKeyRiskTitle" aria-describedby="obsKeyRiskDescription">
+      <h2 id="obsKeyRiskTitle">OBS Stream Keyを変更します</h2>
+      <div id="obsKeyRiskDescription">
+        <p>Stream KeyはOBSからこの受信機へ配信を送るための認証情報です。</p>
+        <ul>
+          <li>キーを知る人はOBSから配信を送信できます。</li>
+          <li>変更後はOBS側のStream Keyも同じ値へ差し替える必要があります。</li>
+          <li>現在待ち受け中の場合、受信機を再起動して新しいキーを反映します。</li>
+        </ul>
+        <label><span>新しいStream Key</span><input id="obsKeyEditInput" type="text" autocomplete="off" spellcheck="false" maxlength="128"></label>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="secondary" id="obsKeyRiskCancel">キャンセル</button>
+        <button type="button" class="warn" id="obsKeyRiskConfirm">それでも変更する</button>
+      </div>
+    </section>
+  </div>
   <script>
     const state = {
       imageURL: {{printf "%q" .imageURL}},
@@ -1188,6 +1206,10 @@ const indexHTML = `<!doctype html>
     const rtspRiskDialog = document.getElementById('rtspRiskDialog');
     const rtspRiskCancel = document.getElementById('rtspRiskCancel');
     const rtspRiskConfirm = document.getElementById('rtspRiskConfirm');
+    const obsKeyRiskDialog = document.getElementById('obsKeyRiskDialog');
+    const obsKeyRiskCancel = document.getElementById('obsKeyRiskCancel');
+    const obsKeyRiskConfirm = document.getElementById('obsKeyRiskConfirm');
+    const obsKeyEditInput = document.getElementById('obsKeyEditInput');
     const pairingPanel = document.getElementById('pairingPanel');
     const pairingPin = document.getElementById('pairingPin');
     const pairingDetail = document.getElementById('pairingDetail');
@@ -2301,25 +2323,22 @@ const indexHTML = `<!doctype html>
       button.setAttribute('aria-label', button.title);
       applyOBS(state.obs);
     });
-    obsKeyRotateButton.addEventListener('click', async () => {
-      if (!window.confirm('OBSのStream Keyを更新します。OBS側のキーも差し替える必要があります。よろしいですか？')) {
-        return;
-      }
-      obsKeyRotateButton.disabled = true;
-      toast.textContent = 'OBS Stream Keyを更新中...';
-      try {
-        const res = await fetch('/api/obs/key', { method: 'POST' });
-        if (!res.ok) throw new Error(await res.text());
-        const data = await res.json();
-        applyState(data);
-        announceLocalChange();
-        toast.textContent = 'OBS Stream Keyを更新しました';
-      } catch (error) {
-        toast.textContent = error.message || 'OBS Stream Keyの更新に失敗しました';
-      } finally {
-        obsKeyRotateButton.disabled = false;
-      }
-    });
+    const obsStreamKeyElement = document.getElementById('obsStreamKey');
+    const requestOBSKeyChange = async () => {
+      const nextKey = await showOBSKeyRiskDialog();
+      if (!nextKey) return;
+      await updateOBSStreamKey(nextKey);
+    };
+    if (obsStreamKeyElement) {
+      obsStreamKeyElement.addEventListener('click', requestOBSKeyChange);
+      obsStreamKeyElement.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          requestOBSKeyChange();
+        }
+      });
+    }
+    obsKeyRotateButton.addEventListener('click', requestOBSKeyChange);
     obsLatencyMode.addEventListener('change', async () => {
       const requestedMode = obsLatencyMode.value;
       if (requestedMode.startsWith('rtsp-') && !String(confirmedOBSLatencyMode || '').startsWith('rtsp-')) {
@@ -2390,6 +2409,88 @@ const indexHTML = `<!doctype html>
         document.addEventListener('keydown', onKeyDown);
         rtspRiskConfirm.focus();
       });
+    }
+    function showOBSKeyRiskDialog() {
+      if (!obsKeyRiskDialog || !obsKeyRiskCancel || !obsKeyRiskConfirm || !obsKeyEditInput) {
+        return Promise.resolve('');
+      }
+      obsKeyEditInput.value = (state.obs && state.obs.streamKey) || '';
+      return new Promise((resolve) => {
+        let settled = false;
+        const finish = (value) => {
+          if (settled) return;
+          settled = true;
+          obsKeyRiskDialog.hidden = true;
+          obsKeyRiskDialog.removeEventListener('click', onBackdrop);
+          obsKeyRiskCancel.removeEventListener('click', onCancel);
+          obsKeyRiskConfirm.removeEventListener('click', onConfirm);
+          obsKeyEditInput.removeEventListener('keydown', onInputKeyDown);
+          document.removeEventListener('keydown', onKeyDown);
+          const key = document.getElementById('obsStreamKey');
+          if (key) key.focus();
+          resolve(value);
+        };
+        const validate = () => {
+          const value = obsKeyEditInput.value.trim();
+          if (!value) {
+            toast.textContent = 'OBS Stream Keyを入力してください';
+            obsKeyEditInput.focus();
+            return '';
+          }
+          if (/[\\/\s?#]/.test(value)) {
+            toast.textContent = 'OBS Stream Keyに空白、/、\\\\、?、# は使えません';
+            obsKeyEditInput.focus();
+            return '';
+          }
+          return value;
+        };
+        const onCancel = () => finish('');
+        const onConfirm = () => {
+          const value = validate();
+          if (value) finish(value);
+        };
+        const onBackdrop = (event) => {
+          if (event.target === obsKeyRiskDialog) finish('');
+        };
+        const onKeyDown = (event) => {
+          if (event.key === 'Escape') finish('');
+        };
+        const onInputKeyDown = (event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            onConfirm();
+          }
+        };
+        obsKeyRiskDialog.hidden = false;
+        obsKeyRiskDialog.addEventListener('click', onBackdrop);
+        obsKeyRiskCancel.addEventListener('click', onCancel);
+        obsKeyRiskConfirm.addEventListener('click', onConfirm);
+        obsKeyEditInput.addEventListener('keydown', onInputKeyDown);
+        document.addEventListener('keydown', onKeyDown);
+        obsKeyEditInput.focus();
+        obsKeyEditInput.select();
+      });
+    }
+    async function updateOBSStreamKey(streamKey) {
+      obsKeyRotateButton.disabled = true;
+      toast.textContent = 'OBS Stream Keyを保存中...';
+      try {
+        const res = await fetch('/api/obs/key', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ streamKey })
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        obsKeyVisible = true;
+        applyState(data);
+        announceLocalChange();
+        toast.textContent = 'OBS Stream Keyを保存しました。OBS側の設定も同じ値へ変更してください';
+      } catch (error) {
+        toast.textContent = error.message || 'OBS Stream Keyの保存に失敗しました';
+      } finally {
+        obsKeyRotateButton.disabled = false;
+      }
     }
     document.getElementById('tunnelReconnectButton').addEventListener('click', async () => {
       const button = document.getElementById('tunnelReconnectButton');
