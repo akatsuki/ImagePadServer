@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -147,6 +148,7 @@ type Manager struct {
 	status  Status
 	current *Session
 	sink    *lhlsSink
+	mtx     *mediaMTXRuntime
 }
 
 type Session struct {
@@ -168,6 +170,7 @@ type Status struct {
 	Port           int                 `json:"port"`
 	MediaID        string              `json:"mediaID,omitempty"`
 	PreviewURL     string              `json:"previewURL,omitempty"`
+	RTSPTURL       string              `json:"rtsptURL,omitempty"`
 	Publishing     bool                `json:"publishing"`
 	Latency        LatencyProfile      `json:"latency"`
 	Capabilities   []LatencyCapability `json:"capabilities,omitempty"`
@@ -234,6 +237,7 @@ func (m *Manager) Stop() {
 	m.status.Listening = false
 	m.status.Connected = false
 	m.status.MediaID = ""
+	m.status.RTSPTURL = ""
 	m.status.Publishing = false
 	m.status.Message = "OBS RTMP receiver is stopped."
 	m.current = nil
@@ -278,6 +282,7 @@ func (m *Manager) SetStreamKey(key string, timeout time.Duration) {
 	m.key = key
 	m.status.StreamKey = key
 	m.status.MediaID = ""
+	m.status.RTSPTURL = ""
 	m.status.Publishing = false
 	m.current = nil
 	m.mu.Unlock()
@@ -295,6 +300,7 @@ func (m *Manager) StopAndWait(timeout time.Duration) {
 	m.status.Listening = false
 	m.status.Connected = false
 	m.status.MediaID = ""
+	m.status.RTSPTURL = ""
 	m.status.Publishing = false
 	m.status.Message = "OBS RTMP receiver is restarting."
 	m.current = nil
@@ -339,6 +345,7 @@ func (m *Manager) loop(ctx context.Context, done chan struct{}) {
 				status.Listening = false
 				status.Connected = false
 				status.MediaID = ""
+				status.RTSPTURL = ""
 				status.Message = err.Error()
 			})
 			select {
@@ -398,10 +405,13 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 
 	latency := m.currentLatency()
 	lhls := latency.Mode == LatencyModeLHLS
+	sidecar := latency.Mode == LatencyModeLLHLS || latency.Mode == LatencyModeRTSPT
+	var rtsptURL string
 
 	var args []string
 	ready := func() bool { return fileExists(filepath.Join(m.outDir, session.PlaylistName)) }
-	if lhls {
+	switch {
+	case lhls:
 		sink, err := newLHLSSink(m.outDir, id, lhlsSinkMaxBytes)
 		if err != nil {
 			cancel()
@@ -427,7 +437,63 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 		// and one media segment exist; a half-formed LHLS output stays hidden.
 		ready = sink.ready
 		args = m.ffmpegLHLSArgs(id, recording, sink.baseURL()+"/stream.mpd", preset, encoder)
-	} else {
+	case sidecar:
+		mtxExe, err := EnsureMediaMTX(parent)
+		if err != nil {
+			cancel()
+			return err
+		}
+		ports, err := allocMediaMTXPorts()
+		if err != nil {
+			cancel()
+			return err
+		}
+		user, pass, err := mediaMTXCredential()
+		if err != nil {
+			cancel()
+			return err
+		}
+		runtime := newMediaMTXRuntime(mtxExe, mediaMTXSessionConfig{
+			Path:          mediaMTXPathName(id),
+			PublishUser:   user,
+			PublishPass:   pass,
+			Ports:         ports,
+			AdvertiseHost: m.host,
+		})
+		if err := runtime.start(ctx); err != nil {
+			cancel()
+			return err
+		}
+		m.mu.Lock()
+		m.mtx = runtime
+		m.mu.Unlock()
+		// Ordered shutdown: FFmpeg is cancelled via ctx and its exit is awaited
+		// before this deferred stop runs, so the owned MediaMTX process is only
+		// stopped after its publisher has disconnected and the path is removed.
+		defer func() {
+			m.mu.Lock()
+			if m.mtx == runtime {
+				m.mtx = nil
+			}
+			m.mu.Unlock()
+			_ = runtime.stop(5 * time.Second)
+		}()
+		rtsptURL = runtime.rtsptURL()
+		if latency.Mode == LatencyModeLLHLS {
+			ready = func() bool {
+				rc, rcancel := context.WithTimeout(ctx, 2*time.Second)
+				defer rcancel()
+				return runtime.llhlsReady(rc)
+			}
+		} else {
+			ready = func() bool {
+				rc, rcancel := context.WithTimeout(ctx, 2*time.Second)
+				defer rcancel()
+				return runtime.pathReady(rc)
+			}
+		}
+		args = m.ffmpegRTSPArgs(id, recording, runtime.publishURL(), preset, encoder)
+	default:
 		args = m.ffmpegArgsWithEncoder(id, recording, preset, encoder)
 	}
 	cmd := exec.Command(ffmpeg, args...)
@@ -475,15 +541,27 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 		cancel()
 		return waitErr
 	}
+	if started && sidecar {
+		mode := latency.Mode
+		url := rtsptURL
+		m.setStatus(func(status *Status) {
+			if mode == LatencyModeRTSPT {
+				status.RTSPTURL = url
+				status.Message = "RTSPT stream is ready. Copy the rtspt:// URL into a PC player."
+			} else {
+				status.Message = "LL-HLS stream is ready."
+			}
+		})
+	}
 	processErr := <-errCh
 	cancel()
 
 	if started {
 		session.FinishedAt = time.Now()
 		session.Published = session.Published || m.sessionPublished(session.ID)
-		if !lhls {
-			// LHLS has no on-disk HLS playlist to convert; its VOD is the
-			// separately recorded MP4 referenced by the session.
+		if !lhls && !sidecar {
+			// LHLS and the MediaMTX sidecar modes have no on-disk HLS playlist
+			// to convert; their VOD is the separately recorded MP4.
 			_ = video.FinalizeHLSPlaylist(m.outDir, id)
 		}
 		if session.Published && m.cb.OnDone != nil {
@@ -493,9 +571,10 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 			status.Listening = true
 			status.Connected = false
 			status.MediaID = ""
+			status.RTSPTURL = ""
 			status.Publishing = false
 			status.FinishedAt = session.FinishedAt
-			status.Message = "OBS stream ended. HLS playlist finalized as VOD."
+			status.Message = "OBS stream ended. Recording finalized as VOD."
 		})
 		m.mu.Lock()
 		if m.current != nil && m.current.ID == session.ID {
@@ -703,6 +782,69 @@ func (m *Manager) ffmpegLHLSArgs(id, recording, output string, preset video.Qual
 	return args
 }
 
+// ffmpegRTSPArgs encodes the RTMP input to H.264/AAC and publishes it to the
+// app-owned MediaMTX path over RTSP/TCP at rtspURL. MediaMTX repackages the
+// stream into LL-HLS and serves the RTSP/TCP read path. A separate copy output
+// records the MP4 VOD.
+func (m *Manager) ffmpegRTSPArgs(id, recording, rtspURL string, preset video.QualityPreset, encoder video.VideoEncoderProfile) []string {
+	_ = id
+	inputURL := fmt.Sprintf("rtmp://0.0.0.0:%d/live/%s", m.port, m.key)
+	latency := m.currentLatency()
+	args := []string{
+		"-hide_banner",
+		"-loglevel", "warning",
+		"-y",
+		"-listen", "1",
+		"-fflags", "nobuffer",
+		"-flags", "low_delay",
+		"-analyzeduration", "100000",
+		"-probesize", "32768",
+		"-i", inputURL,
+	}
+	scaleFilter := "scale=w='min(1920,iw)':h='min(" + strconv.Itoa(preset.Height) + ",ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,pad=ceil(iw/2)*2:ceil(ih/2)*2"
+	args = append(args,
+		"-map", "0:v:0",
+		"-map", "0:a:0?",
+		"-vf", scaleFilter,
+		"-r", latency.FrameRate,
+	)
+	encoderPreset := preset
+	encoderPreset.BufferSize = preset.VideoBitrate
+	args = append(args, encoder.FFmpegArgs(encoderPreset, "ultrafast")...)
+	args = append(args,
+		"-g", latency.GOPFrames,
+		"-keyint_min", latency.GOPFrames,
+		"-sc_threshold", "0",
+		"-force_key_frames", "expr:gte(t,n_forced*"+latency.SegmentSeconds+")",
+	)
+	if !encoder.Hardware {
+		args = append(args,
+			"-b:v", preset.VideoBitrate,
+			"-maxrate", preset.MaxRate,
+			"-bufsize", preset.VideoBitrate,
+		)
+	}
+	args = append(args,
+		"-c:a", "aac",
+		"-b:a", preset.AudioBitrate,
+		"-ar", "48000",
+		"-ac", "2",
+		"-flush_packets", "1",
+		"-muxdelay", "0",
+		"-f", "rtsp",
+		"-rtsp_transport", "tcp",
+		rtspURL,
+	)
+	args = append(args,
+		"-map", "0:v:0",
+		"-map", "0:a:0?",
+		"-c", "copy",
+		"-movflags", "+faststart",
+		recording,
+	)
+	return args
+}
+
 // LHLSPublicFile resolves an allowlisted public LHLS artifact for the active
 // session to an absolute path. ok is false unless id is the connected session,
 // an LHLS sink is live, name passes the sink allowlist, and the file exists.
@@ -719,6 +861,25 @@ func (m *Manager) LHLSPublicFile(id, name string) (string, bool) {
 		return "", false
 	}
 	return full, true
+}
+
+// ProxyLLHLS forwards a public LL-HLS request to the active session's MediaMTX
+// sidecar. It returns true when it has handled the request (LL-HLS is the
+// active transport and id is the connected session), so the HLS-family handlers
+// do not fall through to the standard MPEG-TS path.
+func (m *Manager) ProxyLLHLS(w http.ResponseWriter, r *http.Request, id, name string) bool {
+	if m.currentLatency().Mode != LatencyModeLLHLS {
+		return false
+	}
+	m.mu.Lock()
+	runtime := m.mtx
+	active := m.current != nil && m.current.ID == id
+	m.mu.Unlock()
+	if !active || runtime == nil {
+		return false
+	}
+	runtime.proxyHLS(w, r, name)
+	return true
 }
 
 func EnableDVR(profile LatencyProfile) LatencyProfile {

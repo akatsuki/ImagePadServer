@@ -1825,6 +1825,9 @@ func (s *Server) handleCurrentHLS(w http.ResponseWriter, r *http.Request) {
 		if s.serveLHLSArtifact(w, r, requestedID) {
 			return
 		}
+		if s.serveLLHLSProxy(w, r, requestedID) {
+			return
+		}
 		s.serveGeneratedFile(w, r, video.PlaylistName(requestedID), "application/vnd.apple.mpegurl", "current.m3u8", time.Now())
 		return
 	}
@@ -1859,6 +1862,9 @@ func (s *Server) handleCurrentHLSSegment(w http.ResponseWriter, r *http.Request)
 	}
 	if requestedID := streamRequestID(r); requestedID != "" && s.obsMediaActive(requestedID) {
 		if s.serveLHLSArtifact(w, r, requestedID) {
+			return
+		}
+		if s.serveLLHLSProxy(w, r, requestedID) {
 			return
 		}
 		fileName := filepath.Base(r.URL.Path)
@@ -1932,6 +1938,24 @@ func (s *Server) serveLHLSArtifact(w http.ResponseWriter, r *http.Request, id st
 	}
 	s.serveGeneratedAbsFile(w, r, path, lhlsContentType(name), name, time.Now())
 	return true
+}
+
+// serveLLHLSProxy forwards LL-HLS playlist/segment requests for the active OBS
+// session to its MediaMTX sidecar. It returns true when LL-HLS is the active
+// transport and the request was proxied, so the HLS-family handlers do not fall
+// back to the standard MPEG-TS path.
+func (s *Server) serveLLHLSProxy(w http.ResponseWriter, r *http.Request, id string) bool {
+	if s.obs == nil {
+		return false
+	}
+	if obsrtmp.NormalizeLatencyMode(s.obs.Status().Latency.Mode) != obsrtmp.LatencyModeLLHLS {
+		return false
+	}
+	name := filepath.Base(r.URL.Path)
+	if name == "current.m3u8" || name == "." || name == "/" {
+		name = "index.m3u8"
+	}
+	return s.obs.ProxyLLHLS(w, r, id, name)
 }
 
 func (s *Server) serveGeneratedAbsFile(w http.ResponseWriter, r *http.Request, absPath, contentType, publicName string, modTime time.Time) {
@@ -2335,7 +2359,11 @@ func (s *Server) obsState() obsrtmp.Status {
 	}
 	status := s.obs.Status()
 	status.Capabilities = obsrtmp.LatencyCapabilities()
-	if status.MediaID != "" {
+	// RTSPT has no browser-playable surface; its copyable rtspt:// URL is carried
+	// in status.RTSPTURL instead of a preview URL. Every HLS-family mode (HLS,
+	// LHLS, LL-HLS) shares the same /stream entry; the handlers route by the
+	// active transport.
+	if status.MediaID != "" && obsrtmp.NormalizeLatencyMode(status.Latency.Mode) != obsrtmp.LatencyModeRTSPT {
 		status.PreviewURL = s.adminPath("/stream/" + url.PathEscape(status.MediaID) + "/" + video.PlaylistName(status.MediaID))
 	}
 	return status
