@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,9 +23,28 @@ type Callbacks struct {
 	OnDone  func(Session)
 }
 
+const (
+	LatencyModeHLS   = "hls"
+	LatencyModeLHLS  = "lhls"
+	LatencyModeLLHLS = "llhls"
+	LatencyModeRTSPT = "rtspt"
+)
+
+var legacyLatencyModeAliases = map[string]string{
+	"auto":   LatencyModeHLS,
+	"normal": LatencyModeHLS,
+	"low":    LatencyModeLHLS,
+	"ultra":  LatencyModeLLHLS,
+}
+
 type LatencyProfile struct {
 	Mode           string `json:"mode"`
 	Label          string `json:"label"`
+	Transport      string `json:"transport,omitempty"`
+	Experimental   bool   `json:"experimental,omitempty"`
+	Available      bool   `json:"available,omitempty"`
+	Selectable     bool   `json:"selectable,omitempty"`
+	PreviewURL     string `json:"previewURL,omitempty"`
 	Target         string `json:"target"`
 	SegmentSeconds string `json:"segmentSeconds"`
 	ListSize       string `json:"listSize"`
@@ -37,21 +57,12 @@ type LatencyProfile struct {
 }
 
 var latencyProfiles = map[string]LatencyProfile{
-	"auto": {
-		Mode:           "auto",
-		Label:          "自動",
-		Target:         "10s",
-		SegmentSeconds: "2",
-		ListSize:       "5",
-		DVRListSize:    "900",
-		FrameRate:      "30",
-		GOPFrames:      "60",
-		Reencode:       true,
-		Message:        "回線測定値が低い場合は普通より高い遅延を選びます。",
-	},
-	"normal": {
-		Mode:           "normal",
-		Label:          "普通",
+	LatencyModeHLS: {
+		Mode:           LatencyModeHLS,
+		Label:          "通常遅延（HLS）",
+		Transport:      LatencyModeHLS,
+		Available:      true,
+		Selectable:     true,
 		Target:         "5s",
 		SegmentSeconds: "1",
 		ListSize:       "8",
@@ -59,10 +70,15 @@ var latencyProfiles = map[string]LatencyProfile{
 		FrameRate:      "30",
 		GOPFrames:      "30",
 		Reencode:       true,
+		Message:        "通常遅延の標準HLS出力です。",
 	},
-	"low": {
-		Mode:           "low",
-		Label:          "低遅延",
+	LatencyModeLHLS: {
+		Mode:           LatencyModeLHLS,
+		Label:          "低遅延（LHLS, 実験）",
+		Transport:      LatencyModeLHLS,
+		Experimental:   true,
+		Available:      true,
+		Selectable:     true,
 		Target:         "1s",
 		SegmentSeconds: "0.5",
 		ListSize:       "12",
@@ -70,10 +86,15 @@ var latencyProfiles = map[string]LatencyProfile{
 		FrameRate:      "30",
 		GOPFrames:      "15",
 		Reencode:       true,
+		Message:        "community LHLS は実験扱いです。",
 	},
-	"ultra": {
-		Mode:           "ultra",
-		Label:          "超低遅延",
+	LatencyModeLLHLS: {
+		Mode:           LatencyModeLLHLS,
+		Label:          "超低遅延（LL-HLS, 実験）",
+		Transport:      LatencyModeLLHLS,
+		Experimental:   true,
+		Available:      true,
+		Selectable:     true,
 		Target:         "0.5s+",
 		SegmentSeconds: "0.5",
 		ListSize:       "16",
@@ -81,8 +102,34 @@ var latencyProfiles = map[string]LatencyProfile{
 		FrameRate:      "30",
 		GOPFrames:      "15",
 		Reencode:       true,
-		Message:        "0.5秒セグメントを長めに保持し、VRChat側の遅れによるセグメント欠落を避けます。",
+		Message:        "Apple LL-HLS は実験扱いです。",
 	},
+	LatencyModeRTSPT: {
+		Mode:           LatencyModeRTSPT,
+		Label:          "リアルタイム（RTSPT, PC専用）",
+		Transport:      LatencyModeRTSPT,
+		Available:      true,
+		Selectable:     true,
+		Target:         "0.5s+",
+		SegmentSeconds: "0.5",
+		ListSize:       "16",
+		DVRListSize:    "3600",
+		FrameRate:      "30",
+		GOPFrames:      "15",
+		Reencode:       true,
+		Message:        "PC専用のRTSPT出力です。",
+	},
+}
+
+type LatencyCapability struct {
+	Mode         string `json:"mode"`
+	Label        string `json:"label"`
+	Transport    string `json:"transport"`
+	Experimental bool   `json:"experimental"`
+	Available    bool   `json:"available"`
+	Selectable   bool   `json:"selectable"`
+	PreviewURL   string `json:"previewURL,omitempty"`
+	Message      string `json:"message,omitempty"`
 }
 
 type Manager struct {
@@ -100,6 +147,8 @@ type Manager struct {
 	done    chan struct{}
 	status  Status
 	current *Session
+	sink    *lhlsSink
+	mtx     *mediaMTXRuntime
 }
 
 type Session struct {
@@ -113,21 +162,23 @@ type Session struct {
 }
 
 type Status struct {
-	Enabled        bool           `json:"enabled"`
-	Listening      bool           `json:"listening"`
-	Connected      bool           `json:"connected"`
-	ServerAddress  string         `json:"serverAddress"`
-	StreamKey      string         `json:"streamKey"`
-	Port           int            `json:"port"`
-	MediaID        string         `json:"mediaID,omitempty"`
-	PreviewURL     string         `json:"previewURL,omitempty"`
-	Publishing     bool           `json:"publishing"`
-	Latency        LatencyProfile `json:"latency"`
-	Message        string         `json:"message"`
-	StartedAt      time.Time      `json:"startedAt,omitempty"`
-	FinishedAt     time.Time      `json:"finishedAt,omitempty"`
-	EncoderName    string         `json:"encoderName,omitempty"`
-	HardwareEncode bool           `json:"hardwareEncode"`
+	Enabled        bool                `json:"enabled"`
+	Listening      bool                `json:"listening"`
+	Connected      bool                `json:"connected"`
+	ServerAddress  string              `json:"serverAddress"`
+	StreamKey      string              `json:"streamKey"`
+	Port           int                 `json:"port"`
+	MediaID        string              `json:"mediaID,omitempty"`
+	PreviewURL     string              `json:"previewURL,omitempty"`
+	RTSPTURL       string              `json:"rtsptURL,omitempty"`
+	Publishing     bool                `json:"publishing"`
+	Latency        LatencyProfile      `json:"latency"`
+	Capabilities   []LatencyCapability `json:"capabilities,omitempty"`
+	Message        string              `json:"message"`
+	StartedAt      time.Time           `json:"startedAt,omitempty"`
+	FinishedAt     time.Time           `json:"finishedAt,omitempty"`
+	EncoderName    string              `json:"encoderName,omitempty"`
+	HardwareEncode bool                `json:"hardwareEncode"`
 }
 
 func New(outDir, host string, port int, key string, preset func() video.QualityPreset, latency func() LatencyProfile, cb Callbacks) *Manager {
@@ -186,6 +237,7 @@ func (m *Manager) Stop() {
 	m.status.Listening = false
 	m.status.Connected = false
 	m.status.MediaID = ""
+	m.status.RTSPTURL = ""
 	m.status.Publishing = false
 	m.status.Message = "OBS RTMP receiver is stopped."
 	m.current = nil
@@ -230,6 +282,7 @@ func (m *Manager) SetStreamKey(key string, timeout time.Duration) {
 	m.key = key
 	m.status.StreamKey = key
 	m.status.MediaID = ""
+	m.status.RTSPTURL = ""
 	m.status.Publishing = false
 	m.current = nil
 	m.mu.Unlock()
@@ -247,6 +300,7 @@ func (m *Manager) StopAndWait(timeout time.Duration) {
 	m.status.Listening = false
 	m.status.Connected = false
 	m.status.MediaID = ""
+	m.status.RTSPTURL = ""
 	m.status.Publishing = false
 	m.status.Message = "OBS RTMP receiver is restarting."
 	m.current = nil
@@ -291,6 +345,7 @@ func (m *Manager) loop(ctx context.Context, done chan struct{}) {
 				status.Listening = false
 				status.Connected = false
 				status.MediaID = ""
+				status.RTSPTURL = ""
 				status.Message = err.Error()
 			})
 			select {
@@ -348,7 +403,99 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 	video.BeginExternalHLS(m.outDir, id, preset, cancel, done)
 	defer video.EndExternalHLS(m.outDir, done)
 
-	args := m.ffmpegArgsWithEncoder(id, recording, preset, encoder)
+	latency := m.currentLatency()
+	lhls := latency.Mode == LatencyModeLHLS
+	sidecar := latency.Mode == LatencyModeLLHLS || latency.Mode == LatencyModeRTSPT
+	var rtsptURL string
+
+	var args []string
+	ready := func() bool { return fileExists(filepath.Join(m.outDir, session.PlaylistName)) }
+	switch {
+	case lhls:
+		sink, err := newLHLSSink(m.outDir, id, lhlsSinkMaxBytes)
+		if err != nil {
+			cancel()
+			return err
+		}
+		if err := sink.start(); err != nil {
+			cancel()
+			_ = sink.close()
+			return err
+		}
+		m.mu.Lock()
+		m.sink = sink
+		m.mu.Unlock()
+		defer func() {
+			m.mu.Lock()
+			if m.sink == sink {
+				m.sink = nil
+			}
+			m.mu.Unlock()
+			_ = sink.close()
+		}()
+		// Only expose the public URL once #EXT-X-PREFETCH, the init segment,
+		// and one media segment exist; a half-formed LHLS output stays hidden.
+		ready = sink.ready
+		args = m.ffmpegLHLSArgs(id, recording, sink.baseURL()+"/stream.mpd", preset, encoder)
+	case sidecar:
+		mtxExe, err := EnsureMediaMTX(parent)
+		if err != nil {
+			cancel()
+			return err
+		}
+		ports, err := allocMediaMTXPorts()
+		if err != nil {
+			cancel()
+			return err
+		}
+		user, pass, err := mediaMTXCredential()
+		if err != nil {
+			cancel()
+			return err
+		}
+		runtime := newMediaMTXRuntime(mtxExe, mediaMTXSessionConfig{
+			Path:          mediaMTXPathName(id),
+			PublishUser:   user,
+			PublishPass:   pass,
+			Ports:         ports,
+			AdvertiseHost: m.host,
+		})
+		if err := runtime.start(ctx); err != nil {
+			cancel()
+			return err
+		}
+		m.mu.Lock()
+		m.mtx = runtime
+		m.mu.Unlock()
+		// Ordered shutdown: FFmpeg is cancelled via ctx and its exit is awaited
+		// before this deferred stop runs, so the owned MediaMTX process is only
+		// stopped after its publisher has disconnected and the path is removed.
+		defer func() {
+			m.mu.Lock()
+			if m.mtx == runtime {
+				m.mtx = nil
+			}
+			m.mu.Unlock()
+			_ = runtime.stop(5 * time.Second)
+		}()
+		rtsptURL = runtime.rtsptURL()
+		if latency.Mode == LatencyModeLLHLS {
+			ready = func() bool {
+				rc, rcancel := context.WithTimeout(ctx, 2*time.Second)
+				defer rcancel()
+				return runtime.llhlsReady(rc)
+			}
+		} else {
+			ready = func() bool {
+				rc, rcancel := context.WithTimeout(ctx, 2*time.Second)
+				defer rcancel()
+				return runtime.pathReady(rc)
+			}
+		}
+		args = m.ffmpegRTSPArgs(id, recording, runtime.publishURL(), preset, encoder)
+	default:
+		args = m.ffmpegArgsWithEncoder(id, recording, preset, encoder)
+	}
 	cmd := exec.Command(ffmpeg, args...)
 	cmd.Dir = m.outDir
 	hideWindow(cmd)
@@ -389,10 +536,22 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 		status.HardwareEncode = encoder.Hardware
 	})
 
-	started, waitErr := m.waitForStart(ctx, session, errCh)
+	started, waitErr := m.waitForStart(ctx, session, errCh, ready)
 	if waitErr != nil {
 		cancel()
 		return waitErr
+	}
+	if started && sidecar {
+		mode := latency.Mode
+		url := rtsptURL
+		m.setStatus(func(status *Status) {
+			if mode == LatencyModeRTSPT {
+				status.RTSPTURL = url
+				status.Message = "RTSPT stream is ready. Copy the rtspt:// URL into a PC player."
+			} else {
+				status.Message = "LL-HLS stream is ready."
+			}
+		})
 	}
 	processErr := <-errCh
 	cancel()
@@ -400,7 +559,11 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 	if started {
 		session.FinishedAt = time.Now()
 		session.Published = session.Published || m.sessionPublished(session.ID)
-		_ = video.FinalizeHLSPlaylist(m.outDir, id)
+		if !lhls && !sidecar {
+			// LHLS and the MediaMTX sidecar modes have no on-disk HLS playlist
+			// to convert; their VOD is the separately recorded MP4.
+			_ = video.FinalizeHLSPlaylist(m.outDir, id)
+		}
 		if session.Published && m.cb.OnDone != nil {
 			m.cb.OnDone(session)
 		}
@@ -408,9 +571,10 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 			status.Listening = true
 			status.Connected = false
 			status.MediaID = ""
+			status.RTSPTURL = ""
 			status.Publishing = false
 			status.FinishedAt = session.FinishedAt
-			status.Message = "OBS stream ended. HLS playlist finalized as VOD."
+			status.Message = "OBS stream ended. Recording finalized as VOD."
 		})
 		m.mu.Lock()
 		if m.current != nil && m.current.ID == session.ID {
@@ -427,7 +591,7 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 	return nil
 }
 
-func (m *Manager) waitForStart(ctx context.Context, session Session, errCh <-chan error) (bool, error) {
+func (m *Manager) waitForStart(ctx context.Context, session Session, errCh <-chan error, ready func() bool) (bool, error) {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -440,7 +604,7 @@ func (m *Manager) waitForStart(ctx context.Context, session Session, errCh <-cha
 			}
 			return false, fmt.Errorf("OBS RTMP receiver stopped before a stream connected")
 		case <-ticker.C:
-			if !fileExists(filepath.Join(m.outDir, session.PlaylistName)) {
+			if ready == nil || !ready() {
 				continue
 			}
 			session.StartedAt = time.Now()
@@ -548,6 +712,176 @@ func (m *Manager) ffmpegArgsWithEncoder(id, recording string, preset video.Quali
 	return args
 }
 
+// ffmpegLHLSArgs encodes the RTMP input to community LHLS (fMP4 with
+// #EXT-X-PREFETCH) via FFmpeg's DASH muxer, streamed over HTTP PUT to the
+// private loopback sink at output. A separate copy output records the MP4 VOD.
+// Plain file output suppresses the prefetch tag, so HTTP output is required.
+func (m *Manager) ffmpegLHLSArgs(id, recording, output string, preset video.QualityPreset, encoder video.VideoEncoderProfile) []string {
+	_ = id
+	inputURL := fmt.Sprintf("rtmp://0.0.0.0:%d/live/%s", m.port, m.key)
+	latency := m.currentLatency()
+	args := []string{
+		"-hide_banner",
+		"-loglevel", "warning",
+		"-y",
+		"-listen", "1",
+		"-fflags", "nobuffer",
+		"-flags", "low_delay",
+		"-analyzeduration", "100000",
+		"-probesize", "32768",
+		"-i", inputURL,
+	}
+	scaleFilter := "scale=w='min(1920,iw)':h='min(" + strconv.Itoa(preset.Height) + ",ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,pad=ceil(iw/2)*2:ceil(ih/2)*2"
+	args = append(args,
+		"-map", "0:v:0",
+		"-map", "0:a:0?",
+		"-vf", scaleFilter,
+		"-r", latency.FrameRate,
+	)
+	encoderPreset := preset
+	encoderPreset.BufferSize = preset.VideoBitrate
+	args = append(args, encoder.FFmpegArgs(encoderPreset, "ultrafast")...)
+	args = append(args,
+		"-g", latency.GOPFrames,
+		"-keyint_min", latency.GOPFrames,
+		"-sc_threshold", "0",
+		"-force_key_frames", "expr:gte(t,n_forced*"+latency.SegmentSeconds+")",
+	)
+	if !encoder.Hardware {
+		// Explicit bitrates so the LHLS master playlist carries usable stream
+		// metadata (BANDWIDTH). Hardware encoders set their own rate control.
+		args = append(args,
+			"-b:v", preset.VideoBitrate,
+			"-maxrate", preset.MaxRate,
+			"-bufsize", preset.VideoBitrate,
+		)
+	}
+	args = append(args,
+		"-c:a", "aac",
+		"-b:a", preset.AudioBitrate,
+		"-ar", "48000",
+		"-ac", "2",
+		"-flush_packets", "1",
+		"-strict", "experimental",
+		"-f", "dash",
+		"-method", "PUT",
+		"-streaming", "1",
+		"-lhls", "1",
+		"-hls_playlist", "1",
+		"-seg_duration", "1",
+		"-window_size", latency.ListSize,
+		output,
+	)
+	args = append(args,
+		"-map", "0:v:0",
+		"-map", "0:a:0?",
+		"-c", "copy",
+		"-movflags", "+faststart",
+		recording,
+	)
+	return args
+}
+
+// ffmpegRTSPArgs encodes the RTMP input to H.264/AAC and publishes it to the
+// app-owned MediaMTX path over RTSP/TCP at rtspURL. MediaMTX repackages the
+// stream into LL-HLS and serves the RTSP/TCP read path. A separate copy output
+// records the MP4 VOD.
+func (m *Manager) ffmpegRTSPArgs(id, recording, rtspURL string, preset video.QualityPreset, encoder video.VideoEncoderProfile) []string {
+	_ = id
+	inputURL := fmt.Sprintf("rtmp://0.0.0.0:%d/live/%s", m.port, m.key)
+	latency := m.currentLatency()
+	args := []string{
+		"-hide_banner",
+		"-loglevel", "warning",
+		"-y",
+		"-listen", "1",
+		"-fflags", "nobuffer",
+		"-flags", "low_delay",
+		"-analyzeduration", "100000",
+		"-probesize", "32768",
+		"-i", inputURL,
+	}
+	scaleFilter := "scale=w='min(1920,iw)':h='min(" + strconv.Itoa(preset.Height) + ",ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,pad=ceil(iw/2)*2:ceil(ih/2)*2"
+	args = append(args,
+		"-map", "0:v:0",
+		"-map", "0:a:0?",
+		"-vf", scaleFilter,
+		"-r", latency.FrameRate,
+	)
+	encoderPreset := preset
+	encoderPreset.BufferSize = preset.VideoBitrate
+	args = append(args, encoder.FFmpegArgs(encoderPreset, "ultrafast")...)
+	args = append(args,
+		"-g", latency.GOPFrames,
+		"-keyint_min", latency.GOPFrames,
+		"-sc_threshold", "0",
+		"-force_key_frames", "expr:gte(t,n_forced*"+latency.SegmentSeconds+")",
+	)
+	if !encoder.Hardware {
+		args = append(args,
+			"-b:v", preset.VideoBitrate,
+			"-maxrate", preset.MaxRate,
+			"-bufsize", preset.VideoBitrate,
+		)
+	}
+	args = append(args,
+		"-c:a", "aac",
+		"-b:a", preset.AudioBitrate,
+		"-ar", "48000",
+		"-ac", "2",
+		"-flush_packets", "1",
+		"-muxdelay", "0",
+		"-f", "rtsp",
+		"-rtsp_transport", "tcp",
+		rtspURL,
+	)
+	args = append(args,
+		"-map", "0:v:0",
+		"-map", "0:a:0?",
+		"-c", "copy",
+		"-movflags", "+faststart",
+		recording,
+	)
+	return args
+}
+
+// LHLSPublicFile resolves an allowlisted public LHLS artifact for the active
+// session to an absolute path. ok is false unless id is the connected session,
+// an LHLS sink is live, name passes the sink allowlist, and the file exists.
+func (m *Manager) LHLSPublicFile(id, name string) (string, bool) {
+	m.mu.Lock()
+	sink := m.sink
+	active := m.current != nil && m.current.ID == id
+	m.mu.Unlock()
+	if !active || sink == nil || !sink.publicReadable(name) {
+		return "", false
+	}
+	full := filepath.Join(sink.dir, name)
+	if !fileExists(full) {
+		return "", false
+	}
+	return full, true
+}
+
+// ProxyLLHLS forwards a public LL-HLS request to the active session's MediaMTX
+// sidecar. It returns true when it has handled the request (LL-HLS is the
+// active transport and id is the connected session), so the HLS-family handlers
+// do not fall through to the standard MPEG-TS path.
+func (m *Manager) ProxyLLHLS(w http.ResponseWriter, r *http.Request, id, name string) bool {
+	if m.currentLatency().Mode != LatencyModeLLHLS {
+		return false
+	}
+	m.mu.Lock()
+	runtime := m.mtx
+	active := m.current != nil && m.current.ID == id
+	m.mu.Unlock()
+	if !active || runtime == nil {
+		return false
+	}
+	runtime.proxyHLS(w, r, name)
+	return true
+}
+
 func EnableDVR(profile LatencyProfile) LatencyProfile {
 	profile = normalizeLatencyProfile(profile)
 	if profile.DVRListSize != "" {
@@ -575,37 +909,16 @@ func (m *Manager) currentLatency() LatencyProfile {
 }
 
 func NormalizeLatencyProfile(mode string) LatencyProfile {
-	mode = strings.ToLower(strings.TrimSpace(mode))
+	mode = NormalizeLatencyMode(mode)
 	if profile, ok := latencyProfiles[mode]; ok {
 		return profile
 	}
-	return latencyProfiles["auto"]
+	return latencyProfiles[LatencyModeHLS]
 }
 
 func ResolveLatencyProfile(mode string, uploadMbps int) LatencyProfile {
-	profile := NormalizeLatencyProfile(mode)
-	if profile.Mode != "auto" {
-		return profile
-	}
-	switch {
-	case uploadMbps > 0 && uploadMbps < 3:
-		profile.Target = "16s"
-		profile.SegmentSeconds = "4"
-		profile.ListSize = "4"
-		profile.GOPFrames = "120"
-	case uploadMbps > 0 && uploadMbps < 8:
-		profile.Target = "10s"
-		profile.SegmentSeconds = "2"
-		profile.ListSize = "5"
-		profile.GOPFrames = "60"
-	default:
-		profile.Target = "5s"
-		profile.SegmentSeconds = "1"
-		profile.ListSize = "5"
-		profile.GOPFrames = "30"
-	}
-	profile.Message = "回線測定値に応じてOBS HLS遅延を自動調整します。低速時は普通より高い遅延になります。"
-	return profile
+	_ = uploadMbps
+	return NormalizeLatencyProfile(mode)
 }
 
 func normalizeLatencyProfile(profile LatencyProfile) LatencyProfile {
@@ -615,29 +928,48 @@ func normalizeLatencyProfile(profile LatencyProfile) LatencyProfile {
 			normalized.ListSize = normalized.DVRListSize
 		}
 		normalized.DVR = true
-		if profile.Message != "" {
-			normalized.Message = profile.Message
-		} else if normalized.Message == "" {
-			normalized.Message = "DVR is enabled. Up to 30 minutes of HLS segments are kept for players that support live seeking."
-		}
-		return normalized
+	} else {
+		normalized.DVR = false
 	}
-	if profile.Mode != "auto" {
-		return normalized
-	}
-	if profile.SegmentSeconds != "" {
-		normalized.Target = profile.Target
-		normalized.SegmentSeconds = profile.SegmentSeconds
-		normalized.ListSize = profile.ListSize
-		normalized.DVRListSize = profile.DVRListSize
-		normalized.FrameRate = profile.FrameRate
-		normalized.GOPFrames = profile.GOPFrames
-		normalized.Reencode = profile.Reencode
-		normalized.DVR = profile.DVR
+	if profile.Message != "" {
 		normalized.Message = profile.Message
-		return normalized
 	}
 	return normalized
+}
+
+func NormalizeLatencyMode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if alias, ok := legacyLatencyModeAliases[mode]; ok {
+		return alias
+	}
+	switch mode {
+	case LatencyModeHLS, LatencyModeLHLS, LatencyModeLLHLS, LatencyModeRTSPT:
+		return mode
+	default:
+		return LatencyModeHLS
+	}
+}
+
+func LatencyCapabilities() []LatencyCapability {
+	result := make([]LatencyCapability, 0, len(latencyProfiles))
+	for _, mode := range []string{LatencyModeHLS, LatencyModeLHLS, LatencyModeLLHLS, LatencyModeRTSPT} {
+		profile := NormalizeLatencyProfile(mode)
+		result = append(result, profile.Capability())
+	}
+	return result
+}
+
+func (p LatencyProfile) Capability() LatencyCapability {
+	return LatencyCapability{
+		Mode:         p.Mode,
+		Label:        p.Label,
+		Transport:    p.Transport,
+		Experimental: p.Experimental,
+		Available:    p.Available,
+		Selectable:   p.Selectable,
+		PreviewURL:   p.PreviewURL,
+		Message:      p.Message,
+	}
 }
 
 func (m *Manager) isPublishingArmed() bool {

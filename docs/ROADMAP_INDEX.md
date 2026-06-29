@@ -4,6 +4,8 @@
 
 今後の機能計画や優先順位は `docs/ROADMAP.md` に分離しています。このファイルは「何をやるか」ではなく「どこを読むか」を短時間で判断するための索引です。
 
+OBS 遅延モード関連: `internal/obsrtmp/manager.go`（モード分岐・FFmpeg 引数）、`internal/obsrtmp/lhls_sink.go`（LHLS のループバック HTTP sink）、`internal/obsrtmp/mediamtx.go`（LL-HLS / RTSPT の MediaMTX サイドカーとプロキシ）、`internal/obsrtmp/mediamtx_tool.go`（MediaMTX の解決・取得）。設計は `docs/OBS_AVPRO_FEASIBILITY.md` と `docs/OBS_LATENCY_PROTOCOL_DECISION.md`。
+
 ---
 
 ## 0. 目次の使い方

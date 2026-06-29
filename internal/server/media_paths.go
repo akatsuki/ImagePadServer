@@ -106,6 +106,19 @@ func hlsURLPath(id string) string {
 	return "stream/" + url.PathEscape(id) + "/" + video.PlaylistName(id)
 }
 
+// lhlsContentType maps a community-LHLS artifact filename (HLS playlists and
+// fMP4 init/media segments produced by the DASH muxer) to its MIME type.
+func lhlsContentType(name string) string {
+	switch {
+	case strings.HasSuffix(name, ".m3u8"):
+		return "application/vnd.apple.mpegurl"
+	case strings.HasSuffix(name, ".m4s"), strings.HasSuffix(name, ".mp4"):
+		return "video/mp4"
+	default:
+		return "application/octet-stream"
+	}
+}
+
 func streamRequestID(r *http.Request) string {
 	if requestedID := r.URL.Query().Get("v"); requestedID != "" {
 		return requestedID
