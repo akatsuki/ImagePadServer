@@ -16,6 +16,7 @@ import (
 
 	"imagepadserver/internal/config"
 	"imagepadserver/internal/library"
+	"imagepadserver/internal/obsrtmp"
 	"imagepadserver/internal/settings"
 	"imagepadserver/internal/video"
 )
@@ -414,6 +415,65 @@ func TestOBSRelayConfigEnablesReceiverAndReturnsConnectionInfo(t *testing.T) {
 	}
 	if !appSettings.VideoPlayerEnabled {
 		t.Fatal("expected relay config request to enable video player support")
+	}
+}
+
+func TestHandleOBSLatencyNormalizesStorage(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+	srv.obs = nil
+
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8080/api/obs/latency", strings.NewReader(`{"mode":"  low  ","dvr":true}`))
+	req.RemoteAddr = "127.0.0.1:50000"
+	rec := httptest.NewRecorder()
+	srv.admin(srv.handleOBSLatency)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q", rec.Code, rec.Body.String())
+	}
+	appSettings, err := settings.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if appSettings.OBSLatencyMode != obsrtmp.LatencyModeLHLS {
+		t.Fatalf("OBSLatencyMode = %q, want %q", appSettings.OBSLatencyMode, obsrtmp.LatencyModeLHLS)
+	}
+	if !appSettings.OBSDVREnabled {
+		t.Fatal("expected DVR flag to be stored")
+	}
+}
+
+func TestOBSStateIncludesLatencyCapabilities(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+
+	status := srv.obsState()
+	if len(status.Capabilities) != 4 {
+		t.Fatalf("capabilities len = %d, want 4", len(status.Capabilities))
+	}
+	got := map[string]obsrtmp.LatencyCapability{}
+	for _, capability := range status.Capabilities {
+		got[capability.Mode] = capability
+	}
+
+	for _, mode := range []string{obsrtmp.LatencyModeHLS, obsrtmp.LatencyModeLHLS, obsrtmp.LatencyModeLLHLS, obsrtmp.LatencyModeRTSPT} {
+		if _, ok := got[mode]; !ok {
+			t.Fatalf("missing capability for mode %q", mode)
+		}
+	}
+	if got[obsrtmp.LatencyModeLHLS].Label != "低遅延（LHLS, 実験）" || !got[obsrtmp.LatencyModeLHLS].Experimental {
+		t.Fatalf("LHLS capability = %#v, want experimental LHLS label", got[obsrtmp.LatencyModeLHLS])
+	}
+	if got[obsrtmp.LatencyModeRTSPT].Transport != obsrtmp.LatencyModeRTSPT {
+		t.Fatalf("RTSPT capability = %#v, want RTSPT transport", got[obsrtmp.LatencyModeRTSPT])
 	}
 }
 

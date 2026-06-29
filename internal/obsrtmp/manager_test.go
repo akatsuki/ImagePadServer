@@ -9,7 +9,7 @@ import (
 )
 
 func TestFFmpegArgsUseLowLatencyHLS(t *testing.T) {
-	manager := newTestManager(t, "low")
+	manager := newTestManager(t, "lhls")
 	args := manager.ffmpegArgs("media123", "recording.mp4", video.ResolveQuality("720", 0))
 
 	wantValues := map[string]string{
@@ -60,14 +60,14 @@ func TestFFmpegArgsUseAutoLatencyProfile(t *testing.T) {
 	manager := newTestManager(t, "auto")
 	args := manager.ffmpegArgs("media123", "recording.mp4", video.ResolveQuality("720", 0))
 
-	if got := valueAfter(args, "-hls_time"); got != "2" {
-		t.Fatalf("hls_time = %q, want 2\nargs: %s", got, strings.Join(args, " "))
+	if got := valueAfter(args, "-hls_time"); got != "1" {
+		t.Fatalf("hls_time = %q, want 1\nargs: %s", got, strings.Join(args, " "))
 	}
-	if got := valueAfter(args, "-hls_list_size"); got != "5" {
-		t.Fatalf("hls_list_size = %q, want 5\nargs: %s", got, strings.Join(args, " "))
+	if got := valueAfter(args, "-hls_list_size"); got != "8" {
+		t.Fatalf("hls_list_size = %q, want 8\nargs: %s", got, strings.Join(args, " "))
 	}
 	if !containsSubsequence(args, []string{"-c:v", "libx264"}) {
-		t.Fatalf("expected auto latency to re-encode HLS for predictable segments: %s", strings.Join(args, " "))
+		t.Fatalf("expected auto alias to re-encode HLS for predictable segments: %s", strings.Join(args, " "))
 	}
 }
 
@@ -89,7 +89,7 @@ func TestFFmpegArgsUseNormalLatencyProfile(t *testing.T) {
 }
 
 func TestFFmpegArgsUseUltraLowLatencyProfile(t *testing.T) {
-	manager := newTestManager(t, "ultra")
+	manager := newTestManager(t, "llhls")
 	args := manager.ffmpegArgs("media123", "recording.mp4", video.ResolveQuality("720", 0))
 
 	wantValues := map[string]string{
@@ -107,7 +107,7 @@ func TestFFmpegArgsUseUltraLowLatencyProfile(t *testing.T) {
 
 func TestFFmpegArgsUseDVRListSize(t *testing.T) {
 	manager := New(t.TempDir(), "127.0.0.1", 1935, "secret", nil, func() LatencyProfile {
-		return EnableDVR(NormalizeLatencyProfile("low"))
+		return EnableDVR(NormalizeLatencyProfile(LatencyModeLHLS))
 	}, Callbacks{})
 	args := manager.ffmpegArgs("media123", "recording.mp4", video.ResolveQuality("720", 0))
 
@@ -119,18 +119,40 @@ func TestFFmpegArgsUseDVRListSize(t *testing.T) {
 	}
 }
 
-func TestResolveLatencyProfileAutoUsesUploadBandwidth(t *testing.T) {
-	fast := ResolveLatencyProfile("auto", 12)
-	if fast.Target != "5s" || fast.SegmentSeconds != "1" {
-		t.Fatalf("fast auto profile = %+v, want 5s target with 1s segments", fast)
+func TestNormalizeLatencyModeAndProfile(t *testing.T) {
+	cases := []struct {
+		name             string
+		input            string
+		wantMode         string
+		wantLabel        string
+		wantExperimental bool
+	}{
+		{name: "canonical hls", input: "hls", wantMode: LatencyModeHLS, wantLabel: "通常遅延（HLS）"},
+		{name: "canonical lhls", input: "lhls", wantMode: LatencyModeLHLS, wantLabel: "低遅延（LHLS, 実験）", wantExperimental: true},
+		{name: "canonical llhls", input: "llhls", wantMode: LatencyModeLLHLS, wantLabel: "超低遅延（LL-HLS, 実験）", wantExperimental: true},
+		{name: "canonical rtspt", input: "rtspt", wantMode: LatencyModeRTSPT, wantLabel: "リアルタイム（RTSPT, PC専用）"},
+		{name: "legacy auto", input: "  AUTO  ", wantMode: LatencyModeHLS, wantLabel: "通常遅延（HLS）"},
+		{name: "legacy normal", input: "normal", wantMode: LatencyModeHLS, wantLabel: "通常遅延（HLS）"},
+		{name: "legacy low", input: "low", wantMode: LatencyModeLHLS, wantLabel: "低遅延（LHLS, 実験）", wantExperimental: true},
+		{name: "legacy ultra", input: "ultra", wantMode: LatencyModeLLHLS, wantLabel: "超低遅延（LL-HLS, 実験）", wantExperimental: true},
+		{name: "unknown", input: "not-a-mode", wantMode: LatencyModeHLS, wantLabel: "通常遅延（HLS）"},
 	}
-	slow := ResolveLatencyProfile("auto", 2)
-	if slow.Target != "16s" || slow.SegmentSeconds != "4" {
-		t.Fatalf("slow auto profile = %+v, want 16s target with 4s segments", slow)
-	}
-	manual := ResolveLatencyProfile("low", 2)
-	if manual.Mode != "low" || manual.Target != "1s" {
-		t.Fatalf("manual profile = %+v, want low profile unchanged", manual)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := NormalizeLatencyMode(tc.input); got != tc.wantMode {
+				t.Fatalf("NormalizeLatencyMode(%q) = %q, want %q", tc.input, got, tc.wantMode)
+			}
+			profile := NormalizeLatencyProfile(tc.input)
+			if profile.Mode != tc.wantMode {
+				t.Fatalf("NormalizeLatencyProfile(%q).Mode = %q, want %q", tc.input, profile.Mode, tc.wantMode)
+			}
+			if profile.Label != tc.wantLabel {
+				t.Fatalf("NormalizeLatencyProfile(%q).Label = %q, want %q", tc.input, profile.Label, tc.wantLabel)
+			}
+			if profile.Experimental != tc.wantExperimental {
+				t.Fatalf("NormalizeLatencyProfile(%q).Experimental = %v, want %v", tc.input, profile.Experimental, tc.wantExperimental)
+			}
+		})
 	}
 }
 

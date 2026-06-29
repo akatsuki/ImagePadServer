@@ -22,9 +22,28 @@ type Callbacks struct {
 	OnDone  func(Session)
 }
 
+const (
+	LatencyModeHLS   = "hls"
+	LatencyModeLHLS  = "lhls"
+	LatencyModeLLHLS = "llhls"
+	LatencyModeRTSPT = "rtspt"
+)
+
+var legacyLatencyModeAliases = map[string]string{
+	"auto":   LatencyModeHLS,
+	"normal": LatencyModeHLS,
+	"low":    LatencyModeLHLS,
+	"ultra":  LatencyModeLLHLS,
+}
+
 type LatencyProfile struct {
 	Mode           string `json:"mode"`
 	Label          string `json:"label"`
+	Transport      string `json:"transport,omitempty"`
+	Experimental   bool   `json:"experimental,omitempty"`
+	Available      bool   `json:"available,omitempty"`
+	Selectable     bool   `json:"selectable,omitempty"`
+	PreviewURL     string `json:"previewURL,omitempty"`
 	Target         string `json:"target"`
 	SegmentSeconds string `json:"segmentSeconds"`
 	ListSize       string `json:"listSize"`
@@ -37,21 +56,12 @@ type LatencyProfile struct {
 }
 
 var latencyProfiles = map[string]LatencyProfile{
-	"auto": {
-		Mode:           "auto",
-		Label:          "自動",
-		Target:         "10s",
-		SegmentSeconds: "2",
-		ListSize:       "5",
-		DVRListSize:    "900",
-		FrameRate:      "30",
-		GOPFrames:      "60",
-		Reencode:       true,
-		Message:        "回線測定値が低い場合は普通より高い遅延を選びます。",
-	},
-	"normal": {
-		Mode:           "normal",
-		Label:          "普通",
+	LatencyModeHLS: {
+		Mode:           LatencyModeHLS,
+		Label:          "通常遅延（HLS）",
+		Transport:      LatencyModeHLS,
+		Available:      true,
+		Selectable:     true,
 		Target:         "5s",
 		SegmentSeconds: "1",
 		ListSize:       "8",
@@ -59,10 +69,15 @@ var latencyProfiles = map[string]LatencyProfile{
 		FrameRate:      "30",
 		GOPFrames:      "30",
 		Reencode:       true,
+		Message:        "通常遅延の標準HLS出力です。",
 	},
-	"low": {
-		Mode:           "low",
-		Label:          "低遅延",
+	LatencyModeLHLS: {
+		Mode:           LatencyModeLHLS,
+		Label:          "低遅延（LHLS, 実験）",
+		Transport:      LatencyModeLHLS,
+		Experimental:   true,
+		Available:      true,
+		Selectable:     true,
 		Target:         "1s",
 		SegmentSeconds: "0.5",
 		ListSize:       "12",
@@ -70,10 +85,15 @@ var latencyProfiles = map[string]LatencyProfile{
 		FrameRate:      "30",
 		GOPFrames:      "15",
 		Reencode:       true,
+		Message:        "community LHLS は実験扱いです。",
 	},
-	"ultra": {
-		Mode:           "ultra",
-		Label:          "超低遅延",
+	LatencyModeLLHLS: {
+		Mode:           LatencyModeLLHLS,
+		Label:          "超低遅延（LL-HLS, 実験）",
+		Transport:      LatencyModeLLHLS,
+		Experimental:   true,
+		Available:      true,
+		Selectable:     true,
 		Target:         "0.5s+",
 		SegmentSeconds: "0.5",
 		ListSize:       "16",
@@ -81,8 +101,34 @@ var latencyProfiles = map[string]LatencyProfile{
 		FrameRate:      "30",
 		GOPFrames:      "15",
 		Reencode:       true,
-		Message:        "0.5秒セグメントを長めに保持し、VRChat側の遅れによるセグメント欠落を避けます。",
+		Message:        "Apple LL-HLS は実験扱いです。",
 	},
+	LatencyModeRTSPT: {
+		Mode:           LatencyModeRTSPT,
+		Label:          "リアルタイム（RTSPT, PC専用）",
+		Transport:      LatencyModeRTSPT,
+		Available:      true,
+		Selectable:     true,
+		Target:         "0.5s+",
+		SegmentSeconds: "0.5",
+		ListSize:       "16",
+		DVRListSize:    "3600",
+		FrameRate:      "30",
+		GOPFrames:      "15",
+		Reencode:       true,
+		Message:        "PC専用のRTSPT出力です。",
+	},
+}
+
+type LatencyCapability struct {
+	Mode         string `json:"mode"`
+	Label        string `json:"label"`
+	Transport    string `json:"transport"`
+	Experimental bool   `json:"experimental"`
+	Available    bool   `json:"available"`
+	Selectable   bool   `json:"selectable"`
+	PreviewURL   string `json:"previewURL,omitempty"`
+	Message      string `json:"message,omitempty"`
 }
 
 type Manager struct {
@@ -113,21 +159,22 @@ type Session struct {
 }
 
 type Status struct {
-	Enabled        bool           `json:"enabled"`
-	Listening      bool           `json:"listening"`
-	Connected      bool           `json:"connected"`
-	ServerAddress  string         `json:"serverAddress"`
-	StreamKey      string         `json:"streamKey"`
-	Port           int            `json:"port"`
-	MediaID        string         `json:"mediaID,omitempty"`
-	PreviewURL     string         `json:"previewURL,omitempty"`
-	Publishing     bool           `json:"publishing"`
-	Latency        LatencyProfile `json:"latency"`
-	Message        string         `json:"message"`
-	StartedAt      time.Time      `json:"startedAt,omitempty"`
-	FinishedAt     time.Time      `json:"finishedAt,omitempty"`
-	EncoderName    string         `json:"encoderName,omitempty"`
-	HardwareEncode bool           `json:"hardwareEncode"`
+	Enabled        bool                `json:"enabled"`
+	Listening      bool                `json:"listening"`
+	Connected      bool                `json:"connected"`
+	ServerAddress  string              `json:"serverAddress"`
+	StreamKey      string              `json:"streamKey"`
+	Port           int                 `json:"port"`
+	MediaID        string              `json:"mediaID,omitempty"`
+	PreviewURL     string              `json:"previewURL,omitempty"`
+	Publishing     bool                `json:"publishing"`
+	Latency        LatencyProfile      `json:"latency"`
+	Capabilities   []LatencyCapability `json:"capabilities,omitempty"`
+	Message        string              `json:"message"`
+	StartedAt      time.Time           `json:"startedAt,omitempty"`
+	FinishedAt     time.Time           `json:"finishedAt,omitempty"`
+	EncoderName    string              `json:"encoderName,omitempty"`
+	HardwareEncode bool                `json:"hardwareEncode"`
 }
 
 func New(outDir, host string, port int, key string, preset func() video.QualityPreset, latency func() LatencyProfile, cb Callbacks) *Manager {
@@ -575,37 +622,16 @@ func (m *Manager) currentLatency() LatencyProfile {
 }
 
 func NormalizeLatencyProfile(mode string) LatencyProfile {
-	mode = strings.ToLower(strings.TrimSpace(mode))
+	mode = NormalizeLatencyMode(mode)
 	if profile, ok := latencyProfiles[mode]; ok {
 		return profile
 	}
-	return latencyProfiles["auto"]
+	return latencyProfiles[LatencyModeHLS]
 }
 
 func ResolveLatencyProfile(mode string, uploadMbps int) LatencyProfile {
-	profile := NormalizeLatencyProfile(mode)
-	if profile.Mode != "auto" {
-		return profile
-	}
-	switch {
-	case uploadMbps > 0 && uploadMbps < 3:
-		profile.Target = "16s"
-		profile.SegmentSeconds = "4"
-		profile.ListSize = "4"
-		profile.GOPFrames = "120"
-	case uploadMbps > 0 && uploadMbps < 8:
-		profile.Target = "10s"
-		profile.SegmentSeconds = "2"
-		profile.ListSize = "5"
-		profile.GOPFrames = "60"
-	default:
-		profile.Target = "5s"
-		profile.SegmentSeconds = "1"
-		profile.ListSize = "5"
-		profile.GOPFrames = "30"
-	}
-	profile.Message = "回線測定値に応じてOBS HLS遅延を自動調整します。低速時は普通より高い遅延になります。"
-	return profile
+	_ = uploadMbps
+	return NormalizeLatencyProfile(mode)
 }
 
 func normalizeLatencyProfile(profile LatencyProfile) LatencyProfile {
@@ -615,29 +641,48 @@ func normalizeLatencyProfile(profile LatencyProfile) LatencyProfile {
 			normalized.ListSize = normalized.DVRListSize
 		}
 		normalized.DVR = true
-		if profile.Message != "" {
-			normalized.Message = profile.Message
-		} else if normalized.Message == "" {
-			normalized.Message = "DVR is enabled. Up to 30 minutes of HLS segments are kept for players that support live seeking."
-		}
-		return normalized
+	} else {
+		normalized.DVR = false
 	}
-	if profile.Mode != "auto" {
-		return normalized
-	}
-	if profile.SegmentSeconds != "" {
-		normalized.Target = profile.Target
-		normalized.SegmentSeconds = profile.SegmentSeconds
-		normalized.ListSize = profile.ListSize
-		normalized.DVRListSize = profile.DVRListSize
-		normalized.FrameRate = profile.FrameRate
-		normalized.GOPFrames = profile.GOPFrames
-		normalized.Reencode = profile.Reencode
-		normalized.DVR = profile.DVR
+	if profile.Message != "" {
 		normalized.Message = profile.Message
-		return normalized
 	}
 	return normalized
+}
+
+func NormalizeLatencyMode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if alias, ok := legacyLatencyModeAliases[mode]; ok {
+		return alias
+	}
+	switch mode {
+	case LatencyModeHLS, LatencyModeLHLS, LatencyModeLLHLS, LatencyModeRTSPT:
+		return mode
+	default:
+		return LatencyModeHLS
+	}
+}
+
+func LatencyCapabilities() []LatencyCapability {
+	result := make([]LatencyCapability, 0, len(latencyProfiles))
+	for _, mode := range []string{LatencyModeHLS, LatencyModeLHLS, LatencyModeLLHLS, LatencyModeRTSPT} {
+		profile := NormalizeLatencyProfile(mode)
+		result = append(result, profile.Capability())
+	}
+	return result
+}
+
+func (p LatencyProfile) Capability() LatencyCapability {
+	return LatencyCapability{
+		Mode:         p.Mode,
+		Label:        p.Label,
+		Transport:    p.Transport,
+		Experimental: p.Experimental,
+		Available:    p.Available,
+		Selectable:   p.Selectable,
+		PreviewURL:   p.PreviewURL,
+		Message:      p.Message,
+	}
 }
 
 func (m *Manager) isPublishingArmed() bool {
