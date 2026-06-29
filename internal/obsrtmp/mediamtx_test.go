@@ -19,6 +19,7 @@ import (
 // touches a real OS process, so a test can drive stop/kill/exit ordering
 // deterministically.
 type fakeProcess struct {
+	processID  int
 	exit       chan error
 	stopCalls  atomic.Int32
 	killCalls  atomic.Int32
@@ -28,6 +29,8 @@ type fakeProcess struct {
 }
 
 func newFakeProcess() *fakeProcess { return &fakeProcess{exit: make(chan error, 1)} }
+
+func (f *fakeProcess) pid() int { return f.processID }
 
 func (f *fakeProcess) stop() error {
 	f.stopCalls.Add(1)
@@ -78,6 +81,7 @@ func TestRenderMediaMTXConfigDisablesAndRestricts(t *testing.T) {
 		"rtmp: no",
 		"webrtc: no",
 		"srt: no",
+		"moq: no",
 		"rtsp: yes",
 		"rtspTransports: [tcp]",
 		"apiAddress: 127.0.0.1:9997",
@@ -95,6 +99,14 @@ func TestRenderMediaMTXConfigDisablesAndRestricts(t *testing.T) {
 	}
 	if strings.Count(out, "source: publisher") != 1 {
 		t.Fatalf("expected exactly one publisher path:\n%s", out)
+	}
+}
+
+func TestRenderMediaMTXConfigAllowsPrivateNetworkReaders(t *testing.T) {
+	out := renderMediaMTXConfig(defaultTestConfig())
+	readUser := "  - user: any\n    ips: ['127.0.0.1/32', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '100.64.0.0/10']\n"
+	if !strings.Contains(out, readUser) {
+		t.Fatalf("read user is not available to private-network clients:\n%s", out)
 	}
 }
 

@@ -1928,7 +1928,7 @@ func (s *Server) serveLHLSArtifact(w http.ResponseWriter, r *http.Request, id st
 		return false
 	}
 	name := filepath.Base(r.URL.Path)
-	if name == "current.m3u8" || name == "." || name == "/" {
+	if isOBSEntryPlaylistAlias(id, name) {
 		name = "master.m3u8"
 	}
 	path, ok := s.obs.LHLSPublicFile(id, name)
@@ -1952,10 +1952,14 @@ func (s *Server) serveLLHLSProxy(w http.ResponseWriter, r *http.Request, id stri
 		return false
 	}
 	name := filepath.Base(r.URL.Path)
-	if name == "current.m3u8" || name == "." || name == "/" {
+	if isOBSEntryPlaylistAlias(id, name) {
 		name = "index.m3u8"
 	}
 	return s.obs.ProxyLLHLS(w, r, id, name)
+}
+
+func isOBSEntryPlaylistAlias(id, name string) bool {
+	return name == "." || name == "/" || name == "current.m3u8" || name == video.PlaylistName(id)
 }
 
 func (s *Server) serveGeneratedAbsFile(w http.ResponseWriter, r *http.Request, absPath, contentType, publicName string, modTime time.Time) {

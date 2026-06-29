@@ -477,6 +477,20 @@ func TestOBSStateIncludesLatencyCapabilities(t *testing.T) {
 	}
 }
 
+func TestOBSEntryPlaylistAliasDoesNotRewriteChildPlaylists(t *testing.T) {
+	id := "abc123"
+	for _, name := range []string{"current.m3u8", video.PlaylistName(id), ".", "/"} {
+		if !isOBSEntryPlaylistAlias(id, name) {
+			t.Errorf("entry alias %q was not recognized", name)
+		}
+	}
+	for _, name := range []string{"media_0.m3u8", "stream.m3u8", "index.m3u8"} {
+		if isOBSEntryPlaylistAlias(id, name) {
+			t.Errorf("child playlist %q was incorrectly treated as an entry alias", name)
+		}
+	}
+}
+
 func TestOBSLatencyAliasesAndCapabilitySurface(t *testing.T) {
 	// Legacy aliases (and whitespace/case) normalize onto the canonical
 	// transports without ever inventing a new one.

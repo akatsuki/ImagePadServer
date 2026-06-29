@@ -53,6 +53,7 @@ func renderMediaMTXConfig(cfg mediaMTXSessionConfig) string {
 	b.WriteString("rtmp: no\n")
 	b.WriteString("webrtc: no\n")
 	b.WriteString("srt: no\n")
+	b.WriteString("moq: no\n")
 
 	b.WriteString("rtsp: yes\n")
 	b.WriteString("rtspTransports: [tcp]\n")
@@ -75,7 +76,7 @@ func renderMediaMTXConfig(cfg mediaMTXSessionConfig) string {
 	b.WriteString("    permissions:\n")
 	fmt.Fprintf(&b, "      - action: publish\n        path: %s\n", cfg.Path)
 	b.WriteString("  - user: any\n")
-	b.WriteString("    ips: ['127.0.0.1/32']\n")
+	b.WriteString("    ips: ['127.0.0.1/32', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '100.64.0.0/10']\n")
 	b.WriteString("    permissions:\n")
 	b.WriteString("      - action: read\n")
 	b.WriteString("      - action: playback\n")
@@ -96,6 +97,7 @@ func renderMediaMTXConfig(cfg mediaMTXSessionConfig) string {
 // signals the handle it started, never a process discovered by name or PID, so
 // it cannot terminate an unrelated process.
 type managedProcess interface {
+	pid() int
 	stop() error
 	kill() error
 	done() <-chan error
@@ -104,6 +106,13 @@ type managedProcess interface {
 type osManagedProcess struct {
 	cmd  *exec.Cmd
 	exit chan error
+}
+
+func (p *osManagedProcess) pid() int {
+	if p.cmd.Process == nil {
+		return 0
+	}
+	return p.cmd.Process.Pid
 }
 
 func (p *osManagedProcess) stop() error {
@@ -136,7 +145,13 @@ func realStartMediaMTXProcess(ctx context.Context, exe, configPath string) (mana
 		return nil, fmt.Errorf("start MediaMTX: %w", err)
 	}
 	proc := &osManagedProcess{cmd: cmd, exit: make(chan error, 1)}
-	go func() { proc.exit <- cmd.Wait() }()
+	pid := proc.pid()
+	_ = registerMediaMTXProcess(pid)
+	go func() {
+		err := cmd.Wait()
+		_ = unregisterMediaMTXProcess(pid)
+		proc.exit <- err
+	}()
 	return proc, nil
 }
 
