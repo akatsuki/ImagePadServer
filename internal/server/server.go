@@ -1822,6 +1822,9 @@ func (s *Server) handleCurrentHLS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if requestedID := streamRequestID(r); requestedID != "" && s.obsMediaActive(requestedID) {
+		if s.serveLHLSArtifact(w, r, requestedID) {
+			return
+		}
 		s.serveGeneratedFile(w, r, video.PlaylistName(requestedID), "application/vnd.apple.mpegurl", "current.m3u8", time.Now())
 		return
 	}
@@ -1855,6 +1858,9 @@ func (s *Server) handleCurrentHLSSegment(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if requestedID := streamRequestID(r); requestedID != "" && s.obsMediaActive(requestedID) {
+		if s.serveLHLSArtifact(w, r, requestedID) {
+			return
+		}
 		fileName := filepath.Base(r.URL.Path)
 		if !isHLSSegmentName(fileName) {
 			http.NotFound(w, r)
@@ -1891,6 +1897,45 @@ func (s *Server) obsMediaActive(id string) bool {
 func (s *Server) serveGeneratedFile(w http.ResponseWriter, r *http.Request, fileName, contentType, publicName string, modTime time.Time) {
 	path := filepath.Join(s.store.Dir(), fileName)
 	file, err := os.Open(path)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer file.Close()
+
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "no-store, max-age=0")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, safeFileName(publicName)))
+	s.recordImageRequest(r)
+	http.ServeContent(w, r, publicName, modTime, file)
+}
+
+// serveLHLSArtifact serves community-LHLS playlists and fMP4 segments from the
+// active OBS session's private sink directory. It returns true when it has
+// handled the request (i.e. LHLS is the active transport), so the HLS-family
+// handlers fall back to the standard MPEG-TS path only for non-LHLS modes.
+func (s *Server) serveLHLSArtifact(w http.ResponseWriter, r *http.Request, id string) bool {
+	if s.obs == nil {
+		return false
+	}
+	if obsrtmp.NormalizeLatencyMode(s.obs.Status().Latency.Mode) != obsrtmp.LatencyModeLHLS {
+		return false
+	}
+	name := filepath.Base(r.URL.Path)
+	if name == "current.m3u8" || name == "." || name == "/" {
+		name = "master.m3u8"
+	}
+	path, ok := s.obs.LHLSPublicFile(id, name)
+	if !ok {
+		http.NotFound(w, r)
+		return true
+	}
+	s.serveGeneratedAbsFile(w, r, path, lhlsContentType(name), name, time.Now())
+	return true
+}
+
+func (s *Server) serveGeneratedAbsFile(w http.ResponseWriter, r *http.Request, absPath, contentType, publicName string, modTime time.Time) {
+	file, err := os.Open(absPath)
 	if err != nil {
 		http.NotFound(w, r)
 		return

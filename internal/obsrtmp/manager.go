@@ -146,6 +146,7 @@ type Manager struct {
 	done    chan struct{}
 	status  Status
 	current *Session
+	sink    *lhlsSink
 }
 
 type Session struct {
@@ -395,7 +396,40 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 	video.BeginExternalHLS(m.outDir, id, preset, cancel, done)
 	defer video.EndExternalHLS(m.outDir, done)
 
-	args := m.ffmpegArgsWithEncoder(id, recording, preset, encoder)
+	latency := m.currentLatency()
+	lhls := latency.Mode == LatencyModeLHLS
+
+	var args []string
+	ready := func() bool { return fileExists(filepath.Join(m.outDir, session.PlaylistName)) }
+	if lhls {
+		sink, err := newLHLSSink(m.outDir, id, lhlsSinkMaxBytes)
+		if err != nil {
+			cancel()
+			return err
+		}
+		if err := sink.start(); err != nil {
+			cancel()
+			_ = sink.close()
+			return err
+		}
+		m.mu.Lock()
+		m.sink = sink
+		m.mu.Unlock()
+		defer func() {
+			m.mu.Lock()
+			if m.sink == sink {
+				m.sink = nil
+			}
+			m.mu.Unlock()
+			_ = sink.close()
+		}()
+		// Only expose the public URL once #EXT-X-PREFETCH, the init segment,
+		// and one media segment exist; a half-formed LHLS output stays hidden.
+		ready = sink.ready
+		args = m.ffmpegLHLSArgs(id, recording, sink.baseURL()+"/stream.mpd", preset, encoder)
+	} else {
+		args = m.ffmpegArgsWithEncoder(id, recording, preset, encoder)
+	}
 	cmd := exec.Command(ffmpeg, args...)
 	cmd.Dir = m.outDir
 	hideWindow(cmd)
@@ -436,7 +470,7 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 		status.HardwareEncode = encoder.Hardware
 	})
 
-	started, waitErr := m.waitForStart(ctx, session, errCh)
+	started, waitErr := m.waitForStart(ctx, session, errCh, ready)
 	if waitErr != nil {
 		cancel()
 		return waitErr
@@ -447,7 +481,11 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 	if started {
 		session.FinishedAt = time.Now()
 		session.Published = session.Published || m.sessionPublished(session.ID)
-		_ = video.FinalizeHLSPlaylist(m.outDir, id)
+		if !lhls {
+			// LHLS has no on-disk HLS playlist to convert; its VOD is the
+			// separately recorded MP4 referenced by the session.
+			_ = video.FinalizeHLSPlaylist(m.outDir, id)
+		}
 		if session.Published && m.cb.OnDone != nil {
 			m.cb.OnDone(session)
 		}
@@ -474,7 +512,7 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 	return nil
 }
 
-func (m *Manager) waitForStart(ctx context.Context, session Session, errCh <-chan error) (bool, error) {
+func (m *Manager) waitForStart(ctx context.Context, session Session, errCh <-chan error, ready func() bool) (bool, error) {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -487,7 +525,7 @@ func (m *Manager) waitForStart(ctx context.Context, session Session, errCh <-cha
 			}
 			return false, fmt.Errorf("OBS RTMP receiver stopped before a stream connected")
 		case <-ticker.C:
-			if !fileExists(filepath.Join(m.outDir, session.PlaylistName)) {
+			if ready == nil || !ready() {
 				continue
 			}
 			session.StartedAt = time.Now()
@@ -593,6 +631,94 @@ func (m *Manager) ffmpegArgsWithEncoder(id, recording string, preset video.Quali
 		recording,
 	)
 	return args
+}
+
+// ffmpegLHLSArgs encodes the RTMP input to community LHLS (fMP4 with
+// #EXT-X-PREFETCH) via FFmpeg's DASH muxer, streamed over HTTP PUT to the
+// private loopback sink at output. A separate copy output records the MP4 VOD.
+// Plain file output suppresses the prefetch tag, so HTTP output is required.
+func (m *Manager) ffmpegLHLSArgs(id, recording, output string, preset video.QualityPreset, encoder video.VideoEncoderProfile) []string {
+	_ = id
+	inputURL := fmt.Sprintf("rtmp://0.0.0.0:%d/live/%s", m.port, m.key)
+	latency := m.currentLatency()
+	args := []string{
+		"-hide_banner",
+		"-loglevel", "warning",
+		"-y",
+		"-listen", "1",
+		"-fflags", "nobuffer",
+		"-flags", "low_delay",
+		"-analyzeduration", "100000",
+		"-probesize", "32768",
+		"-i", inputURL,
+	}
+	scaleFilter := "scale=w='min(1920,iw)':h='min(" + strconv.Itoa(preset.Height) + ",ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,pad=ceil(iw/2)*2:ceil(ih/2)*2"
+	args = append(args,
+		"-map", "0:v:0",
+		"-map", "0:a:0?",
+		"-vf", scaleFilter,
+		"-r", latency.FrameRate,
+	)
+	encoderPreset := preset
+	encoderPreset.BufferSize = preset.VideoBitrate
+	args = append(args, encoder.FFmpegArgs(encoderPreset, "ultrafast")...)
+	args = append(args,
+		"-g", latency.GOPFrames,
+		"-keyint_min", latency.GOPFrames,
+		"-sc_threshold", "0",
+		"-force_key_frames", "expr:gte(t,n_forced*"+latency.SegmentSeconds+")",
+	)
+	if !encoder.Hardware {
+		// Explicit bitrates so the LHLS master playlist carries usable stream
+		// metadata (BANDWIDTH). Hardware encoders set their own rate control.
+		args = append(args,
+			"-b:v", preset.VideoBitrate,
+			"-maxrate", preset.MaxRate,
+			"-bufsize", preset.VideoBitrate,
+		)
+	}
+	args = append(args,
+		"-c:a", "aac",
+		"-b:a", preset.AudioBitrate,
+		"-ar", "48000",
+		"-ac", "2",
+		"-flush_packets", "1",
+		"-strict", "experimental",
+		"-f", "dash",
+		"-method", "PUT",
+		"-streaming", "1",
+		"-lhls", "1",
+		"-hls_playlist", "1",
+		"-seg_duration", "1",
+		"-window_size", latency.ListSize,
+		output,
+	)
+	args = append(args,
+		"-map", "0:v:0",
+		"-map", "0:a:0?",
+		"-c", "copy",
+		"-movflags", "+faststart",
+		recording,
+	)
+	return args
+}
+
+// LHLSPublicFile resolves an allowlisted public LHLS artifact for the active
+// session to an absolute path. ok is false unless id is the connected session,
+// an LHLS sink is live, name passes the sink allowlist, and the file exists.
+func (m *Manager) LHLSPublicFile(id, name string) (string, bool) {
+	m.mu.Lock()
+	sink := m.sink
+	active := m.current != nil && m.current.ID == id
+	m.mu.Unlock()
+	if !active || sink == nil || !sink.publicReadable(name) {
+		return "", false
+	}
+	full := filepath.Join(sink.dir, name)
+	if !fileExists(full) {
+		return "", false
+	}
+	return full, true
 }
 
 func EnableDVR(profile LatencyProfile) LatencyProfile {
