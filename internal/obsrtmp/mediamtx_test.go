@@ -360,7 +360,7 @@ func TestLLHLSMediaReadyRequiresAllTags(t *testing.T) {
 }
 
 func TestFFmpegRTSPArgsPublishOverTCP(t *testing.T) {
-	manager := newTestManager(t, "rtspt")
+	manager := newTestManager(t, LatencyModeRTSPRealtime)
 	url := "rtsp://pub:secret@127.0.0.1:8554/obs_session"
 	args := manager.ffmpegRTSPArgs("media123", "recording.mp4", url, video.ResolveQuality("720", 0), video.CPUVideoEncoder(video.EncoderLowLatency))
 
@@ -373,8 +373,33 @@ func TestFFmpegRTSPArgsPublishOverTCP(t *testing.T) {
 	if !containsSubsequence(args, []string{"-c:v", "libx264"}) {
 		t.Fatalf("expected re-encode to H.264: %s", strings.Join(args, " "))
 	}
+	if got := valueAfter(args, "-b:v"); got != "7500k" {
+		t.Fatalf("realtime RTSP -b:v = %q, want 7500k\nargs: %s", got, strings.Join(args, " "))
+	}
 	if !containsSubsequence(args, []string{url, "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy", "-movflags", "+faststart", "recording.mp4"}) {
 		t.Fatalf("expected separate stream-copy MP4 recording after the RTSP output: %s", strings.Join(args, " "))
+	}
+}
+
+func TestFFmpegRTSPArgsUseModeSpecificBitrateAndGOP(t *testing.T) {
+	tests := []struct {
+		mode    string
+		wantBV  string
+		wantGOP string
+	}{
+		{mode: LatencyModeRTSPLow, wantBV: "2500k", wantGOP: "60"},
+		{mode: LatencyModeRTSPUltra, wantBV: "5000k", wantGOP: "30"},
+		{mode: LatencyModeRTSPRealtime, wantBV: "7500k", wantGOP: "15"},
+	}
+	for _, tc := range tests {
+		manager := newTestManager(t, tc.mode)
+		args := manager.ffmpegRTSPArgs("media123", "recording.mp4", "rtsp://127.0.0.1/live", video.ResolveQuality("720", 0), video.CPUVideoEncoder(manager.currentLatency().encoderPurpose()))
+		if got := valueAfter(args, "-b:v"); got != tc.wantBV {
+			t.Fatalf("%s -b:v = %q, want %q\nargs: %s", tc.mode, got, tc.wantBV, strings.Join(args, " "))
+		}
+		if got := valueAfter(args, "-g"); got != tc.wantGOP {
+			t.Fatalf("%s -g = %q, want %q\nargs: %s", tc.mode, got, tc.wantGOP, strings.Join(args, " "))
+		}
 	}
 }
 

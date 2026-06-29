@@ -162,6 +162,27 @@ func TestLatencyCapabilitiesExposeFiveProductionModes(t *testing.T) {
 	}
 }
 
+func TestScaledLatencyPresetMultipliesStreamingBitrates(t *testing.T) {
+	base := video.ResolveQuality("1080", 0)
+	tests := []struct {
+		multiplier int
+		wantVideo  string
+		wantMax    string
+		wantBuffer string
+	}{
+		{multiplier: 1, wantVideo: "4500k", wantMax: "5200k", wantBuffer: "9000k"},
+		{multiplier: 2, wantVideo: "9000k", wantMax: "10400k", wantBuffer: "18000k"},
+		{multiplier: 3, wantVideo: "13500k", wantMax: "15600k", wantBuffer: "27000k"},
+	}
+	for _, tc := range tests {
+		got := scaledLatencyPreset(base, tc.multiplier)
+		if got.VideoBitrate != tc.wantVideo || got.MaxRate != tc.wantMax || got.BufferSize != tc.wantBuffer {
+			t.Fatalf("x%d preset = %s/%s/%s, want %s/%s/%s",
+				tc.multiplier, got.VideoBitrate, got.MaxRate, got.BufferSize, tc.wantVideo, tc.wantMax, tc.wantBuffer)
+		}
+	}
+}
+
 func newTestManager(t *testing.T, latencyMode string) *Manager {
 	t.Helper()
 	return New(t.TempDir(), "127.0.0.1", 1935, "secret", nil, func() LatencyProfile {

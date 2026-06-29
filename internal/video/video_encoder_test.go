@@ -190,6 +190,29 @@ func TestStandardHardwareUsesConstantQualityNotTargetBitrate(t *testing.T) {
 	}
 }
 
+func TestScaleBitrateForStreaming(t *testing.T) {
+	tests := []struct {
+		value      string
+		multiplier int
+		want       string
+	}{
+		{value: "4500k", multiplier: 1, want: "4500k"},
+		{value: "4500k", multiplier: 2, want: "9000k"},
+		{value: "5200k", multiplier: 2, want: "10400k"},
+		{value: "9000k", multiplier: 2, want: "18000k"},
+		{value: "4500k", multiplier: 3, want: "13500k"},
+		{value: "5200k", multiplier: 3, want: "15600k"},
+		{value: "9000k", multiplier: 3, want: "27000k"},
+		{value: "", multiplier: 3, want: ""},
+		{value: "bad", multiplier: 3, want: "bad"},
+	}
+	for _, tc := range tests {
+		if got := ScaleBitrateForStreaming(tc.value, tc.multiplier); got != tc.want {
+			t.Fatalf("ScaleBitrateForStreaming(%q, %d) = %q, want %q", tc.value, tc.multiplier, got, tc.want)
+		}
+	}
+}
+
 func TestVideoEncoderProfileArguments(t *testing.T) {
 	preset := QualityPreset{VideoBitrate: "2500k", MaxRate: "3000k", BufferSize: "5000k", CRF: 27}
 	tests := []struct {

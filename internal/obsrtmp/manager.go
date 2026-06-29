@@ -463,15 +463,17 @@ func (m *Manager) runOne(parent context.Context) error {
 	if err != nil {
 		return err
 	}
-	selected := video.VideoEncoderProfile{Name: "copy", Purpose: video.EncoderLowLatency}
-	if m.currentLatency().Reencode {
-		selected = video.SelectVideoEncoder(parent, ffmpeg, video.EncoderLowLatency)
+	latency := m.currentLatency()
+	purpose := latency.encoderPurpose()
+	selected := video.VideoEncoderProfile{Name: "copy", Purpose: purpose}
+	if latency.Reencode {
+		selected = video.SelectVideoEncoder(parent, ffmpeg, purpose)
 	}
 	err = m.runOneWithEncoder(parent, ffmpeg, selected)
 	if err == nil || !selected.Hardware || parent.Err() != nil {
 		return err
 	}
-	return m.runOneWithEncoder(parent, ffmpeg, video.CPUVideoEncoder(video.EncoderLowLatency))
+	return m.runOneWithEncoder(parent, ffmpeg, video.CPUVideoEncoder(purpose))
 }
 
 func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encoder video.VideoEncoderProfile) error {
@@ -764,12 +766,13 @@ func (m *Manager) waitForStart(ctx context.Context, session Session, errCh <-cha
 }
 
 func (m *Manager) ffmpegArgs(id, recording string, preset video.QualityPreset) []string {
-	return m.ffmpegArgsWithEncoder(id, recording, preset, video.CPUVideoEncoder(video.EncoderLowLatency))
+	return m.ffmpegArgsWithEncoder(id, recording, preset, video.CPUVideoEncoder(m.currentLatency().encoderPurpose()))
 }
 
 func (m *Manager) ffmpegArgsWithEncoder(id, recording string, preset video.QualityPreset, encoder video.VideoEncoderProfile) []string {
 	inputURL := fmt.Sprintf("rtmp://0.0.0.0:%d/live/%s", m.port, m.key)
 	latency := m.currentLatency()
+	preset = scaledLatencyPreset(preset, latency.BitrateMultiplier)
 	args := []string{
 		"-hide_banner",
 		"-loglevel", "warning",
@@ -857,6 +860,7 @@ func (m *Manager) ffmpegLHLSArgs(id, recording, output string, preset video.Qual
 	_ = id
 	inputURL := fmt.Sprintf("rtmp://0.0.0.0:%d/live/%s", m.port, m.key)
 	latency := m.currentLatency()
+	preset = scaledLatencyPreset(preset, latency.BitrateMultiplier)
 	args := []string{
 		"-hide_banner",
 		"-loglevel", "warning",
@@ -927,6 +931,7 @@ func (m *Manager) ffmpegRTSPArgs(id, recording, rtspURL string, preset video.Qua
 	_ = id
 	inputURL := fmt.Sprintf("rtmp://0.0.0.0:%d/live/%s", m.port, m.key)
 	latency := m.currentLatency()
+	preset = scaledLatencyPreset(preset, latency.BitrateMultiplier)
 	args := []string{
 		"-hide_banner",
 		"-loglevel", "warning",
@@ -1107,6 +1112,23 @@ func (p LatencyProfile) Capability() LatencyCapability {
 		PreviewURL:   p.PreviewURL,
 		Message:      p.Message,
 	}
+}
+
+func (p LatencyProfile) encoderPurpose() video.EncoderPurpose {
+	if p.EncoderPurpose != "" {
+		return p.EncoderPurpose
+	}
+	return video.EncoderLowLatency
+}
+
+func scaledLatencyPreset(preset video.QualityPreset, multiplier int) video.QualityPreset {
+	if multiplier <= 1 {
+		return preset
+	}
+	preset.VideoBitrate = video.ScaleBitrateForStreaming(preset.VideoBitrate, multiplier)
+	preset.MaxRate = video.ScaleBitrateForStreaming(preset.MaxRate, multiplier)
+	preset.BufferSize = video.ScaleBitrateForStreaming(preset.BufferSize, multiplier)
+	return preset
 }
 
 func (m *Manager) isPublishingArmed() bool {
