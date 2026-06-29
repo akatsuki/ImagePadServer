@@ -91,6 +91,7 @@ func testServer(t *testing.T, videoEnabled bool) (*Server, *http.ServeMux) {
 
 	cfg := config.Config{Host: "127.0.0.1", Port: 8080}
 	srv := New(cfg, store, "")
+	t.Cleanup(srv.StopOBSReceiver)
 	mux := http.NewServeMux()
 	srv.Register(mux)
 	return srv, mux

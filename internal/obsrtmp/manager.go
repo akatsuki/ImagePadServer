@@ -835,9 +835,9 @@ func (m *Manager) ffmpegArgsWithEncoder(id, recording string, preset video.Quali
 		"-f", "hls",
 		"-hls_time", latency.SegmentSeconds,
 		"-hls_list_size", latency.ListSize,
-		"-hls_delete_threshold", "4",
 		"-hls_allow_cache", "0",
-		"-hls_flags", "delete_segments+independent_segments+program_date_time",
+		"-hls_playlist_type", "event",
+		"-hls_flags", "independent_segments+program_date_time",
 		"-hls_segment_filename", video.SegmentPattern(id),
 		video.PlaylistName(id),
 	)

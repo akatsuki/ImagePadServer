@@ -26,8 +26,14 @@ func TestFFmpegArgsUseNormalHLS(t *testing.T) {
 		}
 	}
 
-	if !slices.Contains(args, "delete_segments+independent_segments+program_date_time") {
-		t.Fatalf("expected live sliding playlist flags in args: %s", strings.Join(args, " "))
+	if got := valueAfter(args, "-hls_playlist_type"); got != "event" {
+		t.Fatalf("hls_playlist_type = %q, want event\nargs: %s", got, strings.Join(args, " "))
+	}
+	if !slices.Contains(args, "independent_segments+program_date_time") {
+		t.Fatalf("expected stable HLS playlist flags in args: %s", strings.Join(args, " "))
+	}
+	if slices.Contains(args, "-hls_delete_threshold") || strings.Contains(strings.Join(args, " "), "delete_segments") {
+		t.Fatalf("HLS output must not delete live segments while VRChat may still retry them: %s", strings.Join(args, " "))
 	}
 	if !containsSubsequence(args, []string{"-c:v", "libx264"}) {
 		t.Fatalf("expected HLS output to be re-encoded with libx264: %s", strings.Join(args, " "))
