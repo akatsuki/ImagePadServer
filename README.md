@@ -78,6 +78,24 @@ https://xxxxx.trycloudflare.com/stream/{video-id}/current-{video-id}.m3u8
 
 VRChat では、HLS やライブ系の読み込みは AVPro 系プレーヤーが前提です。Unity Video Player は単純な MP4 直リンク向けと考えてください。
 
+## OBS 遅延モード（HLS / LHLS / LL-HLS / RTSPT）
+
+OBS から RTMP で受けた映像は、4 つの配信方式から選べます。設定 UI の「OBS Latency」で切り替えます。
+
+| モード | 方式 | 配信経路 | 備考 |
+|---|---|---|---|
+| 通常遅延（HLS） | 標準 MPEG-TS HLS | 既存の HLS 配信 | 最も互換性が高い |
+| 低遅延（LHLS, 実験） | community LHLS（fMP4 + `#EXT-X-PREFETCH`） | FFmpeg の DASH muxer をループバック専用の HTTP sink に流す | **実験的** |
+| 超低遅延（LL-HLS, 実験） | Apple LL-HLS | アプリ所有の MediaMTX サイドカーを経由してプロキシ配信 | **実験的** |
+| リアルタイム（RTSPT, PC専用） | RTSP over TCP | 同じ MediaMTX サイドカーの読み出し | ブラウザプレビュー非対応。`rtspt://` URL をコピーして PC プレーヤーで再生 |
+
+注意:
+
+- LHLS と LL-HLS は **実験的** です。実機（ブラウザ／VRChat）での受け入れ確認が完了するまで実験扱いのままにしています。
+- セグメント長やパート長などの設定値から「実測遅延」を断定しません。実際の遅延は経路・プレーヤー・回線に依存します。
+- 各モードは選択した方式のまま配信し、別方式への無言のフォールバックは行いません。準備が整うまで公開 URL は出しません。
+- RTSPT は PC 専用です。ブラウザや Quest では再生できません。
+
 ## HLS の挙動
 
 動画変換中は、FFmpeg が HLS セグメントを作りながら配信します。変換完了を待たずに VRChat 側が読み込みを開始できるように、変換中の playlist は EVENT として出力します。
