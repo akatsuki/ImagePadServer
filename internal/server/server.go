@@ -63,7 +63,20 @@ type Server struct {
 
 	toolInstallMu  sync.Mutex
 	toolInstalling bool
+	rtspMap        rtspMappingHandle
+	rtspSessionID  string
+	rtspReadySeq   uint64
+	mapRTSPPort    rtspPortMapper
+	setRTSPURL     func(sessionID, publicURL, message string) bool
 }
+
+type rtspMappingHandle interface {
+	ExternalIP() string
+	ExternalPort() int
+	Close() error
+}
+
+type rtspPortMapper func(internalPort, externalPort int, description string) (rtspMappingHandle, upnp.Result)
 
 func New(cfg config.Config, store *library.Store, imageURLBase string) *Server {
 	advertisedHost := cfg.AdvertisedHost(network.BestReachableIP(cfg.PreferTailscale))
@@ -93,9 +106,16 @@ func New(cfg config.Config, store *library.Store, imageURLBase string) *Server {
 		relayNonces:    make(map[string]time.Time),
 	}
 	srv.obs = obsrtmp.New(store.Dir(), advertisedHost, 1935, obsStreamKey, srv.videoQualityPreset, srv.obsLatencyProfile, obsrtmp.Callbacks{
-		OnStart: srv.handleOBSStreamStart,
-		OnDone:  srv.handleOBSStreamDone,
+		OnStart:     srv.handleOBSStreamStart,
+		OnDone:      srv.handleOBSStreamDone,
+		OnRTSPReady: srv.handleRTSPReady,
+		OnRTSPDone:  srv.handleRTSPDone,
 	})
+	srv.mapRTSPPort = func(internalPort, externalPort int, description string) (rtspMappingHandle, upnp.Result) {
+		mapping, result := upnp.MapTCP(internalPort, externalPort, description)
+		return mapping, result
+	}
+	srv.setRTSPURL = srv.obs.SetRTSPURL
 	return srv
 }
 
@@ -203,12 +223,82 @@ func (s *Server) SyncOBSReceiver() {
 		s.obs.Start()
 		return
 	}
+	s.closeRTSPMapping("")
 	s.obs.Stop()
 }
 
 func (s *Server) StopOBSReceiver() {
+	s.closeRTSPMapping("")
 	if s.obs != nil {
 		s.obs.StopAndWait(8 * time.Second)
+	}
+}
+
+func (s *Server) handleRTSPReady(endpoint obsrtmp.RTSPEndpoint) {
+	s.mu.Lock()
+	s.rtspReadySeq++
+	seq := s.rtspReadySeq
+	mapPort := s.mapRTSPPort
+	setURL := s.setRTSPURL
+	s.mu.Unlock()
+
+	if mapPort == nil || setURL == nil {
+		return
+	}
+	mapping, result := mapPort(endpoint.Port, endpoint.Port, "ImagePadServer RTSP TCP")
+	if mapping == nil || !result.OK {
+		message := "RTSP TCP is available on LAN/Tailscale; UPnP publication failed"
+		if result.Message != "" {
+			message += ": " + result.Message
+		}
+		setURL(endpoint.SessionID, endpoint.LocalURL, message)
+		return
+	}
+	if !upnp.IsGloballyRoutableIPv4(mapping.ExternalIP()) {
+		_ = mapping.Close()
+		setURL(endpoint.SessionID, endpoint.LocalURL,
+			"RTSP TCP is available on LAN/Tailscale; CGNAT or upstream NAT prevents direct publication.")
+		return
+	}
+
+	s.mu.Lock()
+	if seq != s.rtspReadySeq {
+		s.mu.Unlock()
+		_ = mapping.Close()
+		return
+	}
+	previous := s.rtspMap
+	s.rtspMap = mapping
+	s.rtspSessionID = endpoint.SessionID
+	s.mu.Unlock()
+	if previous != nil {
+		_ = previous.Close()
+	}
+
+	publicURL := fmt.Sprintf("rtsp://%s:%d/%s", mapping.ExternalIP(), mapping.ExternalPort(), endpoint.Path)
+	if !setURL(endpoint.SessionID, publicURL,
+		"RTSP TCP is published through UPnP at "+mapping.ExternalIP()+".") {
+		s.closeRTSPMapping(endpoint.SessionID)
+	}
+}
+
+func (s *Server) handleRTSPDone(sessionID string) {
+	s.closeRTSPMapping(sessionID)
+}
+
+func (s *Server) closeRTSPMapping(sessionID string) {
+	s.mu.Lock()
+	if sessionID != "" && s.rtspSessionID != sessionID {
+		s.mu.Unlock()
+		return
+	}
+	mapping := s.rtspMap
+	s.rtspMap = nil
+	s.rtspSessionID = ""
+	s.rtspReadySeq++
+	s.mu.Unlock()
+	if mapping != nil {
+		_ = mapping.Close()
 	}
 }
 
@@ -1170,6 +1260,9 @@ func (s *Server) handleOBSLatency(w http.ResponseWriter, r *http.Request) {
 		}); err != nil {
 			http.Error(w, "failed to save settings", http.StatusInternalServerError)
 			return
+		}
+		if mode != obsrtmp.LatencyModeRTSPT {
+			s.closeRTSPMapping("")
 		}
 		if s.obs != nil {
 			s.obs.Restart(8 * time.Second)
