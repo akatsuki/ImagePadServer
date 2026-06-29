@@ -19,8 +19,18 @@ import (
 )
 
 type Callbacks struct {
-	OnStart func(Session)
-	OnDone  func(Session)
+	OnStart     func(Session)
+	OnDone      func(Session)
+	OnRTSPReady func(RTSPEndpoint)
+	OnRTSPDone  func(sessionID string)
+}
+
+type RTSPEndpoint struct {
+	SessionID string
+	Host      string
+	Port      int
+	Path      string
+	LocalURL  string
 }
 
 const (
@@ -106,7 +116,7 @@ var latencyProfiles = map[string]LatencyProfile{
 	},
 	LatencyModeRTSPT: {
 		Mode:           LatencyModeRTSPT,
-		Label:          "リアルタイム（RTSPT, PC専用）",
+		Label:          "リアルタイム（RTSP TCP）",
 		Transport:      LatencyModeRTSPT,
 		Available:      true,
 		Selectable:     true,
@@ -117,7 +127,7 @@ var latencyProfiles = map[string]LatencyProfile{
 		FrameRate:      "30",
 		GOPFrames:      "15",
 		Reencode:       true,
-		Message:        "PC専用のRTSPT出力です。",
+		Message:        "PC/Android向けRTSP-over-TCP出力です。",
 	},
 }
 
@@ -149,6 +159,7 @@ type Manager struct {
 	current *Session
 	sink    *lhlsSink
 	mtx     *mediaMTXRuntime
+	rtspEndpoint *RTSPEndpoint
 }
 
 type Session struct {
@@ -254,6 +265,7 @@ func (m *Manager) Restart(timeout time.Duration) {
 
 func (m *Manager) StartPublishing() bool {
 	var session *Session
+	var endpoint *RTSPEndpoint
 	m.mu.Lock()
 	m.status.Publishing = true
 	m.status.Message = "OBS publishing is armed. Waiting for a stream."
@@ -263,13 +275,65 @@ func (m *Manager) StartPublishing() bool {
 			copy := *m.current
 			session = &copy
 		}
+		if m.rtspEndpoint != nil && m.rtspEndpoint.SessionID == m.current.ID {
+			copy := *m.rtspEndpoint
+			endpoint = &copy
+		}
 		m.status.Message = "OBS stream is being published to HLS."
 	}
 	m.mu.Unlock()
 	if session != nil && m.cb.OnStart != nil {
 		m.cb.OnStart(*session)
 	}
+	if session != nil && endpoint != nil && m.cb.OnRTSPReady != nil {
+		m.cb.OnRTSPReady(*endpoint)
+	}
 	return session != nil
+}
+
+func (m *Manager) SetRTSPURL(sessionID, publicURL, message string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.current == nil || m.current.ID != sessionID ||
+		NormalizeLatencyMode(m.currentLatency().Mode) != LatencyModeRTSPT {
+		return false
+	}
+	m.status.RTSPTURL = publicURL
+	m.status.Message = message
+	return true
+}
+
+func (m *Manager) setRTSPEndpoint(endpoint RTSPEndpoint) bool {
+	m.mu.Lock()
+	if m.current == nil || m.current.ID != endpoint.SessionID ||
+		NormalizeLatencyMode(m.currentLatency().Mode) != LatencyModeRTSPT {
+		m.mu.Unlock()
+		return false
+	}
+	copy := endpoint
+	m.rtspEndpoint = &copy
+	m.status.RTSPTURL = endpoint.LocalURL
+	m.status.Message = "RTSP TCP stream is ready."
+	publishing := m.status.Publishing
+	m.mu.Unlock()
+	if publishing && m.cb.OnRTSPReady != nil {
+		m.cb.OnRTSPReady(endpoint)
+	}
+	return true
+}
+
+func (m *Manager) clearRTSPEndpoint(sessionID string) {
+	m.mu.Lock()
+	if m.rtspEndpoint == nil || m.rtspEndpoint.SessionID != sessionID {
+		m.mu.Unlock()
+		return
+	}
+	m.rtspEndpoint = nil
+	m.status.RTSPTURL = ""
+	m.mu.Unlock()
+	if m.cb.OnRTSPDone != nil {
+		m.cb.OnRTSPDone(sessionID)
+	}
 }
 
 func (m *Manager) SetStreamKey(key string, timeout time.Duration) {
@@ -407,6 +471,7 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 	lhls := latency.Mode == LatencyModeLHLS
 	sidecar := latency.Mode == LatencyModeLLHLS || latency.Mode == LatencyModeRTSPT
 	var rtsptURL string
+	var rtspEndpoint *RTSPEndpoint
 
 	var args []string
 	ready := func() bool { return fileExists(filepath.Join(m.outDir, session.PlaylistName)) }
@@ -471,6 +536,7 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 		// before this deferred stop runs, so the owned MediaMTX process is only
 		// stopped after its publisher has disconnected and the path is removed.
 		defer func() {
+			m.clearRTSPEndpoint(id)
 			m.mu.Lock()
 			if m.mtx == runtime {
 				m.mtx = nil
@@ -478,7 +544,16 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 			m.mu.Unlock()
 			_ = runtime.stop(5 * time.Second)
 		}()
-		rtsptURL = runtime.rtsptURL()
+		rtsptURL = runtime.rtspURL()
+		if latency.Mode == LatencyModeRTSPT {
+			rtspEndpoint = &RTSPEndpoint{
+				SessionID: id,
+				Host:      runtime.cfg.AdvertiseHost,
+				Port:      runtime.cfg.Ports.RTSP,
+				Path:      runtime.cfg.Path,
+				LocalURL:  rtsptURL,
+			}
+		}
 		if latency.Mode == LatencyModeLLHLS {
 			ready = func() bool {
 				rc, rcancel := context.WithTimeout(ctx, 2*time.Second)
@@ -543,15 +618,15 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 	}
 	if started && sidecar {
 		mode := latency.Mode
-		url := rtsptURL
-		m.setStatus(func(status *Status) {
-			if mode == LatencyModeRTSPT {
-				status.RTSPTURL = url
-				status.Message = "RTSPT stream is ready. Copy the rtspt:// URL into a PC player."
-			} else {
-				status.Message = "LL-HLS stream is ready."
+		if mode == LatencyModeRTSPT {
+			if rtspEndpoint != nil {
+				m.setRTSPEndpoint(*rtspEndpoint)
 			}
-		})
+		} else {
+			m.setStatus(func(status *Status) {
+				status.Message = "LL-HLS stream is ready."
+			})
+		}
 	}
 	processErr := <-errCh
 	cancel()

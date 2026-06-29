@@ -67,8 +67,7 @@ func renderMediaMTXConfig(cfg mediaMTXSessionConfig) string {
 	b.WriteString("hlsEncryption: no\n")
 
 	// Per-session publish credential, restricted to loopback and to the single
-	// owned path. A read-only "any" user lets the loopback HLS server and the
-	// app's own proxy read the stream; the HLS server is bound to 127.0.0.1.
+	// owned path. Anonymous readers can access only the randomized active path.
 	b.WriteString("authInternalUsers:\n")
 	fmt.Fprintf(&b, "  - user: %s\n", cfg.PublishUser)
 	fmt.Fprintf(&b, "    pass: %s\n", cfg.PublishPass)
@@ -76,13 +75,15 @@ func renderMediaMTXConfig(cfg mediaMTXSessionConfig) string {
 	b.WriteString("    permissions:\n")
 	fmt.Fprintf(&b, "      - action: publish\n        path: %s\n", cfg.Path)
 	b.WriteString("  - user: any\n")
-	b.WriteString("    ips: ['127.0.0.1/32', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '100.64.0.0/10']\n")
 	b.WriteString("    permissions:\n")
-	b.WriteString("      - action: read\n")
-	b.WriteString("      - action: playback\n")
+	fmt.Fprintf(&b, "      - action: read\n        path: %s\n", cfg.Path)
+	fmt.Fprintf(&b, "      - action: playback\n        path: %s\n", cfg.Path)
 	// The API and metrics endpoints are themselves gated by authInternalUsers;
 	// without this the app could not health-check or manage its own loopback
 	// MediaMTX. Restricted to loopback like every other permission here.
+	b.WriteString("  - user: any\n")
+	b.WriteString("    ips: ['127.0.0.1/32']\n")
+	b.WriteString("    permissions:\n")
 	b.WriteString("      - action: api\n")
 	b.WriteString("      - action: metrics\n")
 	b.WriteString("      - action: pprof\n")
@@ -323,13 +324,13 @@ func (r *mediaMTXRuntime) publishURL() string {
 		r.cfg.PublishUser, r.cfg.PublishPass, r.cfg.Ports.RTSP, r.cfg.Path)
 }
 
-// rtsptURL is the advertised RTSP-over-TCP URL handed to PC players.
-func (r *mediaMTXRuntime) rtsptURL() string {
+// rtspURL is the advertised RTSP-over-TCP URL handed to players.
+func (r *mediaMTXRuntime) rtspURL() string {
 	host := strings.TrimSpace(r.cfg.AdvertiseHost)
 	if host == "" {
 		host = "127.0.0.1"
 	}
-	return fmt.Sprintf("rtspt://%s:%d/%s", host, r.cfg.Ports.RTSP, r.cfg.Path)
+	return fmt.Sprintf("rtsp://%s:%d/%s", host, r.cfg.Ports.RTSP, r.cfg.Path)
 }
 
 // proxyHLS forwards a public LL-HLS request to the loopback MediaMTX HLS server

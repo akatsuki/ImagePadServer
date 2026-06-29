@@ -102,11 +102,18 @@ func TestRenderMediaMTXConfigDisablesAndRestricts(t *testing.T) {
 	}
 }
 
-func TestRenderMediaMTXConfigAllowsPrivateNetworkReaders(t *testing.T) {
+func TestRenderMediaMTXConfigAllowsExternalReadersOnRandomPath(t *testing.T) {
 	out := renderMediaMTXConfig(defaultTestConfig())
-	readUser := "  - user: any\n    ips: ['127.0.0.1/32', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '100.64.0.0/10']\n"
+	readUser := "  - user: any\n    permissions:\n      - action: read\n        path: obs_session\n      - action: playback\n        path: obs_session\n"
 	if !strings.Contains(out, readUser) {
-		t.Fatalf("read user is not available to private-network clients:\n%s", out)
+		t.Fatalf("external path-scoped read permission missing:\n%s", out)
+	}
+	if strings.Contains(out, "ips: ['127.0.0.1/32', '10.0.0.0/8'") {
+		t.Fatalf("read permission remains private-network-only:\n%s", out)
+	}
+	apiUser := "  - user: any\n    ips: ['127.0.0.1/32']\n    permissions:\n      - action: api\n"
+	if !strings.Contains(out, apiUser) {
+		t.Fatalf("loopback API permission missing:\n%s", out)
 	}
 }
 
@@ -118,8 +125,8 @@ func TestMediaMTXRuntimeURLs(t *testing.T) {
 	if got, want := rt.hlsBaseURL(), "http://127.0.0.1:8888/obs_session"; got != want {
 		t.Fatalf("hlsBaseURL = %q, want %q", got, want)
 	}
-	if got, want := rt.rtsptURL(), "rtspt://192.168.1.50:8554/obs_session"; got != want {
-		t.Fatalf("rtsptURL = %q, want %q", got, want)
+	if got, want := rt.rtspURL(), "rtsp://192.168.1.50:8554/obs_session"; got != want {
+		t.Fatalf("rtspURL = %q, want %q", got, want)
 	}
 }
 

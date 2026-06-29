@@ -130,7 +130,7 @@ func TestNormalizeLatencyModeAndProfile(t *testing.T) {
 		{name: "canonical hls", input: "hls", wantMode: LatencyModeHLS, wantLabel: "通常遅延（HLS）"},
 		{name: "canonical lhls", input: "lhls", wantMode: LatencyModeLHLS, wantLabel: "低遅延（LHLS, 実験）", wantExperimental: true},
 		{name: "canonical llhls", input: "llhls", wantMode: LatencyModeLLHLS, wantLabel: "超低遅延（LL-HLS, 実験）", wantExperimental: true},
-		{name: "canonical rtspt", input: "rtspt", wantMode: LatencyModeRTSPT, wantLabel: "リアルタイム（RTSPT, PC専用）"},
+		{name: "canonical rtspt", input: "rtspt", wantMode: LatencyModeRTSPT, wantLabel: "リアルタイム（RTSP TCP）"},
 		{name: "legacy auto", input: "  AUTO  ", wantMode: LatencyModeHLS, wantLabel: "通常遅延（HLS）"},
 		{name: "legacy normal", input: "normal", wantMode: LatencyModeHLS, wantLabel: "通常遅延（HLS）"},
 		{name: "legacy low", input: "low", wantMode: LatencyModeLHLS, wantLabel: "低遅延（LHLS, 実験）", wantExperimental: true},
@@ -161,6 +161,116 @@ func newTestManager(t *testing.T, latencyMode string) *Manager {
 	return New(t.TempDir(), "127.0.0.1", 1935, "secret", nil, func() LatencyProfile {
 		return NormalizeLatencyProfile(latencyMode)
 	}, Callbacks{})
+}
+
+func TestSetRTSPURLRejectsStaleSession(t *testing.T) {
+	manager := newTestManager(t, "rtspt")
+	manager.current = &Session{ID: "current"}
+	manager.status.RTSPTURL = "rtsp://127.0.0.1:8554/current"
+
+	if manager.SetRTSPURL("stale", "rtsp://8.8.8.8:8554/stale", "public") {
+		t.Fatal("stale session update was accepted")
+	}
+	if got, want := manager.status.RTSPTURL, "rtsp://127.0.0.1:8554/current"; got != want {
+		t.Fatalf("RTSPTURL = %q, want %q", got, want)
+	}
+	if !manager.SetRTSPURL("current", "rtsp://8.8.8.8:8554/current", "public") {
+		t.Fatal("current session update was rejected")
+	}
+	if got, want := manager.status.RTSPTURL, "rtsp://8.8.8.8:8554/current"; got != want {
+		t.Fatalf("RTSPTURL = %q, want %q", got, want)
+	}
+	if got, want := manager.status.Message, "public"; got != want {
+		t.Fatalf("Message = %q, want %q", got, want)
+	}
+}
+
+func TestStartPublishingReemitsReadyRTSPEndpoint(t *testing.T) {
+	manager := newTestManager(t, "rtspt")
+	endpoint := RTSPEndpoint{
+		SessionID: "current",
+		Host:      "192.168.1.20",
+		Port:      49152,
+		Path:      "obs_current",
+		LocalURL:  "rtsp://192.168.1.20:49152/obs_current",
+	}
+	manager.current = &Session{ID: "current"}
+	manager.status.Connected = true
+	manager.rtspEndpoint = &endpoint
+
+	var started []string
+	var ready []RTSPEndpoint
+	manager.cb = Callbacks{
+		OnStart: func(session Session) {
+			started = append(started, session.ID)
+		},
+		OnRTSPReady: func(got RTSPEndpoint) {
+			ready = append(ready, got)
+		},
+	}
+
+	if !manager.StartPublishing() {
+		t.Fatal("StartPublishing returned false")
+	}
+	if len(started) != 1 || started[0] != "current" {
+		t.Fatalf("OnStart sessions = %#v", started)
+	}
+	if len(ready) != 1 || ready[0] != endpoint {
+		t.Fatalf("OnRTSPReady endpoints = %#v, want %#v", ready, endpoint)
+	}
+}
+
+func TestSetAndClearRTSPEndpointFollowCurrentSession(t *testing.T) {
+	manager := newTestManager(t, "rtspt")
+	manager.current = &Session{ID: "current"}
+	manager.status.Publishing = true
+	endpoint := RTSPEndpoint{
+		SessionID: "current",
+		Host:      "192.168.1.20",
+		Port:      49152,
+		Path:      "obs_current",
+		LocalURL:  "rtsp://192.168.1.20:49152/obs_current",
+	}
+
+	var ready []RTSPEndpoint
+	var done []string
+	manager.cb = Callbacks{
+		OnRTSPReady: func(got RTSPEndpoint) {
+			ready = append(ready, got)
+		},
+		OnRTSPDone: func(sessionID string) {
+			done = append(done, sessionID)
+		},
+	}
+
+	if !manager.setRTSPEndpoint(endpoint) {
+		t.Fatal("current endpoint was rejected")
+	}
+	if manager.rtspEndpoint == nil || *manager.rtspEndpoint != endpoint {
+		t.Fatalf("stored endpoint = %#v, want %#v", manager.rtspEndpoint, endpoint)
+	}
+	if got, want := manager.status.RTSPTURL, endpoint.LocalURL; got != want {
+		t.Fatalf("RTSPTURL = %q, want %q", got, want)
+	}
+	if len(ready) != 1 || ready[0] != endpoint {
+		t.Fatalf("ready callbacks = %#v, want %#v", ready, endpoint)
+	}
+
+	manager.clearRTSPEndpoint("stale")
+	if manager.rtspEndpoint == nil {
+		t.Fatal("stale clear removed current endpoint")
+	}
+	if len(done) != 0 {
+		t.Fatalf("stale clear callbacks = %#v", done)
+	}
+
+	manager.clearRTSPEndpoint("current")
+	if manager.rtspEndpoint != nil {
+		t.Fatalf("endpoint not cleared: %#v", manager.rtspEndpoint)
+	}
+	if len(done) != 1 || done[0] != "current" {
+		t.Fatalf("done callbacks = %#v, want current", done)
+	}
 }
 
 func valueAfter(args []string, flag string) string {
