@@ -151,14 +151,14 @@ type Manager struct {
 	latency func() LatencyProfile
 	cb      Callbacks
 
-	mu      sync.Mutex
-	running bool
-	stop    context.CancelFunc
-	done    chan struct{}
-	status  Status
-	current *Session
-	sink    *lhlsSink
-	mtx     *mediaMTXRuntime
+	mu           sync.Mutex
+	running      bool
+	stop         context.CancelFunc
+	done         chan struct{}
+	status       Status
+	current      *Session
+	sink         *lhlsSink
+	mtx          *mediaMTXRuntime
 	rtspEndpoint *RTSPEndpoint
 }
 
