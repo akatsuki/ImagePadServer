@@ -1140,6 +1140,10 @@ func (s *Server) handleOBSStreamDone(session obsrtmp.Session) {
 		files := video.GeneratedFiles(s.store.Dir(), session.ID)
 		if len(files) > 0 {
 			_ = s.store.MarkConverted(session.ID, files)
+		} else if session.Recording != "" {
+			if _, err := os.Stat(session.Recording); err == nil {
+				s.enqueueUploadedConversion(session.Recording, session.ID, session.Title)
+			}
 		}
 	}
 }

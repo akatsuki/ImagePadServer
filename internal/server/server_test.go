@@ -955,6 +955,32 @@ func TestSoundCloudCurrentInfoUsesVideoPresentationAndSoundCloudSource(t *testin
 	}
 }
 
+func TestOBSStreamDoneQueuesHLSForRecordedRTSPVideo(t *testing.T) {
+	t.Setenv("IMAGEPAD_FFMPEG", slowFFmpegPath(t))
+	srv, _ := testServer(t, true)
+	defer video.CancelQueue(srv.store.Dir())
+
+	recording := filepath.Join(srv.store.Dir(), "obs-recording-rtsp1.mp4")
+	if err := os.WriteFile(recording, []byte("mp4"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	srv.handleOBSStreamDone(obsrtmp.Session{
+		ID:        "rtsp1",
+		Title:     "RTSP recording",
+		Recording: recording,
+		Published: true,
+	})
+
+	queue := video.QueueStatus(srv.store.Dir())
+	for _, item := range queue {
+		if item.MediaID == "rtsp1" && item.Kind == "video" {
+			return
+		}
+	}
+	t.Fatalf("expected HLS conversion job for RTSP recording, queue = %#v", queue)
+}
+
 func signedRelayRequest(t *testing.T, clientID, clientSecret, nonce string) *http.Request {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "http://192.168.1.20:8080/api/obs/relay-config", nil)
