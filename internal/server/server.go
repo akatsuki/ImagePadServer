@@ -1339,7 +1339,7 @@ func (s *Server) handleOBSLatency(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "failed to save settings", http.StatusInternalServerError)
 			return
 		}
-		if mode != obsrtmp.LatencyModeRTSPT {
+		if obsrtmp.NormalizeLatencyProfile(mode).Transport != obsrtmp.LatencyModeRTSPT {
 			s.closeRTSPMapping("")
 		}
 		if s.obs != nil {
@@ -2537,11 +2537,9 @@ func (s *Server) obsState() obsrtmp.Status {
 	}
 	status := s.obs.Status()
 	status.Capabilities = obsrtmp.LatencyCapabilities()
-	// RTSPT has no browser-playable surface; its copyable rtspt:// URL is carried
-	// in status.RTSPTURL instead of a preview URL. Every HLS-family mode (HLS,
-	// LHLS, LL-HLS) shares the same /stream entry; the handlers route by the
-	// active transport.
-	if status.MediaID != "" && obsrtmp.NormalizeLatencyMode(status.Latency.Mode) != obsrtmp.LatencyModeRTSPT {
+	// RTSP has no browser-playable surface; its copyable rtsp:// URL is carried
+	// in status.RTSPTURL instead of a preview URL. HLS modes share /stream.
+	if status.MediaID != "" && status.Latency.Transport != obsrtmp.LatencyModeRTSPT {
 		status.PreviewURL = s.adminPath("/stream/" + url.PathEscape(status.MediaID) + "/" + video.PlaylistName(status.MediaID))
 	}
 	return status
@@ -2623,7 +2621,7 @@ func urlForClipboard(state map[string]interface{}) string {
 
 func primaryShareURL(state map[string]interface{}) (string, string) {
 	if obsStatus, ok := state["obs"].(obsrtmp.Status); ok &&
-		obsrtmp.NormalizeLatencyMode(obsStatus.Latency.Mode) == obsrtmp.LatencyModeRTSPT &&
+		obsStatus.Latency.Transport == obsrtmp.LatencyModeRTSPT &&
 		strings.HasPrefix(obsStatus.RTSPTURL, "rtsp://") {
 		return obsStatus.RTSPTURL, "RTSP TCP URL"
 	}

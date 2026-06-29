@@ -1012,10 +1012,11 @@ const indexHTML = `<!doctype html>
                   <span id="obsLatencyStatus">auto</span>
                 </div>
                 <select id="obsLatencyMode" aria-label="OBS latency mode">
-                  <option value="hls">通常遅延（HLS）</option>
-                  <option value="lhls">低遅延（LHLS, 実験）</option>
-                  <option value="llhls">超低遅延（LL-HLS, 実験）</option>
-                  <option value="rtspt">リアルタイム（RTSP TCP）</option>
+                  <option value="hls-high">最高画質HLS（遅延増）</option>
+                  <option value="hls">高画質HLS（通常遅延）</option>
+                  <option value="rtsp-low">低遅延RTSP</option>
+                  <option value="rtsp-ultra">超低遅延RTSP</option>
+                  <option value="rtsp-realtime">リアルタイムRTSP</option>
                 </select>
                 <label><input id="obsDVRToggle" type="checkbox"> DVR 30min</label>
               </div>
@@ -2321,7 +2322,7 @@ const indexHTML = `<!doctype html>
     });
     obsLatencyMode.addEventListener('change', async () => {
       const requestedMode = obsLatencyMode.value;
-      if (requestedMode === 'rtspt' && confirmedOBSLatencyMode !== 'rtspt') {
+      if (requestedMode.startsWith('rtsp-') && !String(confirmedOBSLatencyMode || '').startsWith('rtsp-')) {
         const accepted = await showRTSPRiskDialog();
         if (!accepted) {
           obsLatencyMode.value = confirmedOBSLatencyMode;

@@ -511,8 +511,8 @@ func TestHandleOBSLatencyNormalizesStorage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if appSettings.OBSLatencyMode != obsrtmp.LatencyModeLHLS {
-		t.Fatalf("OBSLatencyMode = %q, want %q", appSettings.OBSLatencyMode, obsrtmp.LatencyModeLHLS)
+	if appSettings.OBSLatencyMode != obsrtmp.LatencyModeRTSPLow {
+		t.Fatalf("OBSLatencyMode = %q, want %q", appSettings.OBSLatencyMode, obsrtmp.LatencyModeRTSPLow)
 	}
 	if !appSettings.OBSDVREnabled {
 		t.Fatal("expected DVR flag to be stored")
@@ -528,24 +528,24 @@ func TestOBSStateIncludesLatencyCapabilities(t *testing.T) {
 	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
 
 	status := srv.obsState()
-	if len(status.Capabilities) != 4 {
-		t.Fatalf("capabilities len = %d, want 4", len(status.Capabilities))
+	if len(status.Capabilities) != 5 {
+		t.Fatalf("capabilities len = %d, want 5", len(status.Capabilities))
 	}
 	got := map[string]obsrtmp.LatencyCapability{}
 	for _, capability := range status.Capabilities {
 		got[capability.Mode] = capability
 	}
 
-	for _, mode := range []string{obsrtmp.LatencyModeHLS, obsrtmp.LatencyModeLHLS, obsrtmp.LatencyModeLLHLS, obsrtmp.LatencyModeRTSPT} {
+	for _, mode := range []string{obsrtmp.LatencyModeHLSHigh, obsrtmp.LatencyModeHLS, obsrtmp.LatencyModeRTSPLow, obsrtmp.LatencyModeRTSPUltra, obsrtmp.LatencyModeRTSPRealtime} {
 		if _, ok := got[mode]; !ok {
 			t.Fatalf("missing capability for mode %q", mode)
 		}
 	}
-	if got[obsrtmp.LatencyModeLHLS].Label != "低遅延（LHLS, 実験）" || !got[obsrtmp.LatencyModeLHLS].Experimental {
-		t.Fatalf("LHLS capability = %#v, want experimental LHLS label", got[obsrtmp.LatencyModeLHLS])
+	if got[obsrtmp.LatencyModeHLSHigh].Label != "最高画質HLS（遅延増）" || got[obsrtmp.LatencyModeHLSHigh].Experimental {
+		t.Fatalf("highest HLS capability = %#v, want non-experimental highest HLS label", got[obsrtmp.LatencyModeHLSHigh])
 	}
-	if got[obsrtmp.LatencyModeRTSPT].Transport != obsrtmp.LatencyModeRTSPT {
-		t.Fatalf("RTSPT capability = %#v, want RTSPT transport", got[obsrtmp.LatencyModeRTSPT])
+	if got[obsrtmp.LatencyModeRTSPRealtime].Transport != obsrtmp.LatencyModeRTSPT {
+		t.Fatalf("realtime RTSP capability = %#v, want RTSPT transport", got[obsrtmp.LatencyModeRTSPRealtime])
 	}
 }
 
@@ -751,7 +751,11 @@ func TestChangingAwayFromRTSPClosesMapping(t *testing.T) {
 
 func TestRTSPUIUsesSharedURLAndRiskDialog(t *testing.T) {
 	mustContain := []string{
-		`<option value="rtspt">リアルタイム（RTSP TCP）</option>`,
+		`<option value="hls-high">最高画質HLS（遅延増）</option>`,
+		`<option value="hls">高画質HLS（通常遅延）</option>`,
+		`<option value="rtsp-low">低遅延RTSP</option>`,
+		`<option value="rtsp-ultra">超低遅延RTSP</option>`,
+		`<option value="rtsp-realtime">リアルタイムRTSP</option>`,
 		`id="shareURL"`,
 		`data-copy="shareURL"`,
 		`id="rtspRiskDialog"`,
@@ -797,10 +801,12 @@ func TestOBSLatencyAliasesAndCapabilitySurface(t *testing.T) {
 	aliases := map[string]string{
 		"auto":   obsrtmp.LatencyModeHLS,
 		"normal": obsrtmp.LatencyModeHLS,
-		"low":    obsrtmp.LatencyModeLHLS,
-		"ultra":  obsrtmp.LatencyModeLLHLS,
+		"low":    obsrtmp.LatencyModeRTSPLow,
+		"ultra":  obsrtmp.LatencyModeRTSPUltra,
+		"lhls":   obsrtmp.LatencyModeRTSPLow,
+		"llhls":  obsrtmp.LatencyModeRTSPUltra,
 		" HLS ":  obsrtmp.LatencyModeHLS,
-		"RTSPT":  obsrtmp.LatencyModeRTSPT,
+		"RTSPT":  obsrtmp.LatencyModeRTSPRealtime,
 		"bogus":  obsrtmp.LatencyModeHLS,
 	}
 	for in, want := range aliases {
@@ -820,13 +826,14 @@ func TestOBSLatencyAliasesAndCapabilitySurface(t *testing.T) {
 	for _, c := range srv.obsState().Capabilities {
 		caps[c.Mode] = c
 	}
-	experimental := map[string]bool{
-		obsrtmp.LatencyModeHLS:   false,
-		obsrtmp.LatencyModeLHLS:  true,
-		obsrtmp.LatencyModeLLHLS: true,
-		obsrtmp.LatencyModeRTSPT: false,
+	transports := map[string]string{
+		obsrtmp.LatencyModeHLSHigh:      obsrtmp.LatencyModeHLS,
+		obsrtmp.LatencyModeHLS:          obsrtmp.LatencyModeHLS,
+		obsrtmp.LatencyModeRTSPLow:      obsrtmp.LatencyModeRTSPT,
+		obsrtmp.LatencyModeRTSPUltra:    obsrtmp.LatencyModeRTSPT,
+		obsrtmp.LatencyModeRTSPRealtime: obsrtmp.LatencyModeRTSPT,
 	}
-	for mode, exp := range experimental {
+	for mode, transport := range transports {
 		c, ok := caps[mode]
 		if !ok {
 			t.Fatalf("missing capability for mode %q", mode)
@@ -834,13 +841,11 @@ func TestOBSLatencyAliasesAndCapabilitySurface(t *testing.T) {
 		if !c.Available || !c.Selectable {
 			t.Fatalf("%s capability must be available and selectable: %#v", mode, c)
 		}
-		if c.Experimental != exp {
-			t.Fatalf("%s experimental = %v, want %v", mode, c.Experimental, exp)
+		if c.Experimental {
+			t.Fatalf("%s experimental = true, want false", mode)
 		}
-		// No cross-transport labelling: each capability advertises only its
-		// own transport, so the UI can never present a mislabelled fallback.
-		if c.Transport != mode {
-			t.Fatalf("%s transport = %q, want %q (no cross-transport fallback)", mode, c.Transport, mode)
+		if c.Transport != transport {
+			t.Fatalf("%s transport = %q, want %q", mode, c.Transport, transport)
 		}
 	}
 
