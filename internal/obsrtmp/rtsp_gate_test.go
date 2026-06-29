@@ -23,6 +23,15 @@ func TestRTSPGateRejectsWindowsMediaFoundationUDPSetup(t *testing.T) {
 	}
 }
 
+func TestRTSPGateSwitchesToRawTunnelAfterTCPPlay(t *testing.T) {
+	var session rtspGateSessionState
+	session.noteRequest(parseRTSPRequest([]byte("SETUP rtsp://example/live/trackID=0 RTSP/1.0\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n\r\n")))
+
+	if !session.shouldTunnelAfter(parseRTSPRequest([]byte("PLAY rtsp://example/live RTSP/1.0\r\nCSeq: 3\r\n\r\n"))) {
+		t.Fatal("TCP interleaved RTSP session must switch to raw tunneling after PLAY")
+	}
+}
+
 func TestRTSPGateAllowsAndroidUDPSetup(t *testing.T) {
 	req := rtspRequest{
 		Method: "SETUP",

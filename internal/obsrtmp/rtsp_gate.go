@@ -107,6 +107,7 @@ func (g *rtspGate) handleConn(ctx context.Context, client net.Conn) {
 	if tcpAddr, ok := client.RemoteAddr().(*net.TCPAddr); ok {
 		clientIP = tcpAddr.IP
 	}
+	var session rtspGateSessionState
 
 	for {
 		select {
@@ -122,6 +123,7 @@ func (g *rtspGate) handleConn(ctx context.Context, client net.Conn) {
 			_, _ = client.Write(unsupportedTransportResponse(req))
 			continue
 		}
+		session.noteRequest(req)
 		if isUDPSetup(req) {
 			rtpClient, rtcpClient, ok := parseRTSPClientPorts(req.Headers["transport"])
 			if ok && g.cfg.PublicRTPPort > 0 && g.cfg.PublicRTCPPort > 0 {
@@ -150,12 +152,26 @@ func (g *rtspGate) handleConn(ctx context.Context, client net.Conn) {
 		if _, err := client.Write(resp); err != nil {
 			return
 		}
-		if req.Method == "PLAY" && strings.Contains(strings.ToUpper(req.Headers["transport"]), "RTP/AVP/TCP") {
+		if session.shouldTunnelAfter(req) {
 			go io.Copy(backend, clientReader)
 			_, _ = io.Copy(client, backendReader)
 			return
 		}
 	}
+}
+
+type rtspGateSessionState struct {
+	tcpInterleaved bool
+}
+
+func (s *rtspGateSessionState) noteRequest(req rtspRequest) {
+	if isTCPSetup(req) {
+		s.tcpInterleaved = true
+	}
+}
+
+func (s rtspGateSessionState) shouldTunnelAfter(req rtspRequest) bool {
+	return req.Method == "PLAY" && s.tcpInterleaved
 }
 
 func readRTSPPacket(r *bufio.Reader) ([]byte, rtspRequest, error) {
@@ -244,6 +260,14 @@ func isUDPSetup(req rtspRequest) bool {
 	}
 	transport := strings.ToUpper(req.Headers["transport"])
 	return strings.Contains(transport, "RTP/AVP/UDP") || (strings.Contains(transport, "RTP/AVP") && !strings.Contains(transport, "TCP"))
+}
+
+func isTCPSetup(req rtspRequest) bool {
+	if req.Method != "SETUP" {
+		return false
+	}
+	transport := strings.ToUpper(req.Headers["transport"])
+	return strings.Contains(transport, "RTP/AVP/TCP") || strings.Contains(transport, "INTERLEAVED=")
 }
 
 func unsupportedTransportResponse(req rtspRequest) []byte {
