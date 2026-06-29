@@ -204,6 +204,7 @@ type Session struct {
 	Title        string
 	PlaylistName string
 	Recording    string
+	HLSDirectory string
 	Published    bool
 	StartedAt    time.Time
 	FinishedAt   time.Time
@@ -511,6 +512,7 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 	sidecar := latency.Transport == LatencyModeLLHLS || latency.Transport == LatencyModeRTSPT
 	var rtsptURL string
 	var rtspEndpoint *RTSPEndpoint
+	var mediaMTXHLSDir string
 
 	var args []string
 	ready := func() bool { return fileExists(filepath.Join(m.outDir, session.PlaylistName)) }
@@ -557,13 +559,25 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 			cancel()
 			return err
 		}
+		hlsVariant := ""
+		hlsAlwaysRemux := false
+		if latency.Transport == LatencyModeRTSPT {
+			mediaMTXHLSDir = filepath.Join(m.outDir, "mediamtx-hls-"+id)
+			session.HLSDirectory = mediaMTXHLSDir
+			_ = os.RemoveAll(mediaMTXHLSDir)
+			hlsVariant = "mpegts"
+			hlsAlwaysRemux = true
+		}
 		runtime := newMediaMTXRuntime(mtxExe, mediaMTXSessionConfig{
-			Path:          mediaMTXPathName(id),
-			PublishUser:   user,
-			PublishPass:   pass,
-			Ports:         ports,
-			AdvertiseHost: m.host,
-			DebugLogPath:  mediaMTXDebugLogPath(),
+			Path:           mediaMTXPathName(id),
+			PublishUser:    user,
+			PublishPass:    pass,
+			Ports:          ports,
+			AdvertiseHost:  m.host,
+			DebugLogPath:   mediaMTXDebugLogPath(),
+			HLSVariant:     hlsVariant,
+			HLSAlwaysRemux: hlsAlwaysRemux,
+			HLSDirectory:   mediaMTXHLSDir,
 		})
 		if err := runtime.start(ctx); err != nil {
 			cancel()
@@ -605,6 +619,9 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 				_ = gate.stop()
 			}
 			_ = runtime.stop(5 * time.Second)
+			if mediaMTXHLSDir != "" {
+				_ = os.RemoveAll(mediaMTXHLSDir)
+			}
 		}()
 		rtsptURL = runtime.rtspURL()
 		if latency.Transport == LatencyModeRTSPT {
@@ -701,6 +718,8 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 			// LHLS and the MediaMTX sidecar modes have no on-disk HLS playlist
 			// to convert; their VOD is the separately recorded MP4.
 			_ = video.FinalizeHLSPlaylist(m.outDir, id)
+		} else if sidecar && mediaMTXHLSDir != "" {
+			_, _ = importMediaMTXHLS(m.outDir, id, mediaMTXHLSDir, mediaMTXPathName(id))
 		}
 		if session.Published && m.cb.OnDone != nil {
 			m.cb.OnDone(session)

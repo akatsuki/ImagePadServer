@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -120,6 +121,24 @@ func TestRenderMediaMTXConfigAllowsExternalReadersOnRandomPath(t *testing.T) {
 	apiUser := "  - user: any\n    ips: ['127.0.0.1/32']\n    permissions:\n      - action: api\n"
 	if !strings.Contains(out, apiUser) {
 		t.Fatalf("loopback API permission missing:\n%s", out)
+	}
+}
+
+func TestRenderMediaMTXConfigCanPersistRTSPHLSRemux(t *testing.T) {
+	cfg := defaultTestConfig()
+	cfg.HLSVariant = "mpegts"
+	cfg.HLSAlwaysRemux = true
+	cfg.HLSDirectory = `C:\ImagePadServer\rtsp-hls`
+
+	out := renderMediaMTXConfig(cfg)
+	for _, want := range []string{
+		"hlsVariant: mpegts",
+		"hlsAlwaysRemux: yes",
+		`hlsDirectory: "C:/ImagePadServer/rtsp-hls"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("config missing %q:\n%s", want, out)
+		}
 	}
 }
 
@@ -399,6 +418,51 @@ func TestFFmpegRTSPArgsUseModeSpecificBitrateAndGOP(t *testing.T) {
 		}
 		if got := valueAfter(args, "-g"); got != tc.wantGOP {
 			t.Fatalf("%s -g = %q, want %q\nargs: %s", tc.mode, got, tc.wantGOP, strings.Join(args, " "))
+		}
+	}
+}
+
+func TestImportMediaMTXHLSRewritesPlaylistForHistory(t *testing.T) {
+	outDir := t.TempDir()
+	hlsDir := filepath.Join(t.TempDir(), "hls")
+	pathDir := filepath.Join(hlsDir, "obs_media123")
+	if err := os.MkdirAll(pathDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	playlist := "#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:1.0,\nsegment0.ts\n#EXTINF:1.0,\nsegment1.ts?cache=1\n"
+	if err := os.WriteFile(filepath.Join(pathDir, "index.m3u8"), []byte(playlist), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"segment0.ts", "segment1.ts"} {
+		if err := os.WriteFile(filepath.Join(pathDir, name), []byte(name), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	files, err := importMediaMTXHLS(outDir, "media123", hlsDir, "obs_media123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 3 {
+		t.Fatalf("files = %#v, want playlist plus two segments", files)
+	}
+
+	data, err := os.ReadFile(filepath.Join(outDir, video.PlaylistName("media123")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "#EXT-X-ENDLIST") {
+		t.Fatalf("playlist missing ENDLIST:\n%s", text)
+	}
+	if strings.Contains(text, "segment0.ts") || strings.Contains(text, "?cache=1") {
+		t.Fatalf("playlist was not rewritten to generated segment names:\n%s", text)
+	}
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(line, "current-media123-") && strings.HasSuffix(line, ".ts") {
+			if _, err := os.Stat(filepath.Join(outDir, line)); err != nil {
+				t.Fatalf("rewritten segment %s missing: %v", line, err)
+			}
 		}
 	}
 }

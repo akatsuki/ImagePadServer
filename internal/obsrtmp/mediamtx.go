@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"imagepadserver/internal/settings"
+	"imagepadserver/internal/video"
 )
 
 // mediaMTXPorts are the loopback management/HLS ports and the advertised RTSP
@@ -34,12 +35,15 @@ type mediaMTXPorts struct {
 // one publish path protected by a per-session credential, with every protocol
 // except RTSP and HLS disabled.
 type mediaMTXSessionConfig struct {
-	Path          string
-	PublishUser   string
-	PublishPass   string
-	Ports         mediaMTXPorts
-	AdvertiseHost string
-	DebugLogPath  string
+	Path           string
+	PublishUser    string
+	PublishPass    string
+	Ports          mediaMTXPorts
+	AdvertiseHost  string
+	DebugLogPath   string
+	HLSVariant     string
+	HLSAlwaysRemux bool
+	HLSDirectory   string
 }
 
 // renderMediaMTXConfig renders a minimal MediaMTX YAML configuration. Only the
@@ -77,9 +81,20 @@ func renderMediaMTXConfig(cfg mediaMTXSessionConfig) string {
 
 	b.WriteString("hls: yes\n")
 	fmt.Fprintf(&b, "hlsAddress: 127.0.0.1:%d\n", cfg.Ports.HLS)
-	b.WriteString("hlsVariant: lowLatency\n")
-	b.WriteString("hlsAlwaysRemux: no\n")
+	hlsVariant := strings.TrimSpace(cfg.HLSVariant)
+	if hlsVariant == "" {
+		hlsVariant = "lowLatency"
+	}
+	fmt.Fprintf(&b, "hlsVariant: %s\n", hlsVariant)
+	if cfg.HLSAlwaysRemux {
+		b.WriteString("hlsAlwaysRemux: yes\n")
+	} else {
+		b.WriteString("hlsAlwaysRemux: no\n")
+	}
 	b.WriteString("hlsEncryption: no\n")
+	if cfg.HLSDirectory != "" {
+		fmt.Fprintf(&b, "hlsDirectory: %q\n", filepath.ToSlash(cfg.HLSDirectory))
+	}
 
 	// Per-session publish credential, restricted to loopback and to the single
 	// owned path. Anonymous readers can access only the randomized active path.
@@ -377,6 +392,103 @@ func (r *mediaMTXRuntime) proxyHLS(w http.ResponseWriter, req *http.Request, nam
 	copyProxyHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
+}
+
+func importMediaMTXHLS(outDir, id, hlsDir, pathName string) ([]string, error) {
+	playlistPath, baseDir, err := findMediaMTXPlaylist(hlsDir, pathName)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(playlistPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(outDir, 0700); err != nil {
+		return nil, err
+	}
+
+	segmentPattern := video.SegmentPattern(id)
+	segmentIndex := 0
+	files := []string{}
+	var rewritten strings.Builder
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "#") {
+			rewritten.WriteString(line)
+			rewritten.WriteByte('\n')
+			continue
+		}
+		sourceName := strings.Split(trimmed, "?")[0]
+		sourcePath := filepath.Join(baseDir, filepath.FromSlash(sourceName))
+		destName := fmt.Sprintf(segmentPattern, segmentIndex)
+		segmentIndex++
+		destPath := filepath.Join(outDir, destName)
+		if err := copyMediaMTXFile(destPath, sourcePath); err != nil {
+			return nil, err
+		}
+		files = append(files, destPath)
+		rewritten.WriteString(destName)
+		rewritten.WriteByte('\n')
+	}
+	text := rewritten.String()
+	if !strings.Contains(text, "#EXT-X-ENDLIST") {
+		text += "#EXT-X-ENDLIST\n"
+	}
+	playlistOut := filepath.Join(outDir, video.PlaylistName(id))
+	if err := os.WriteFile(playlistOut, []byte(text), 0600); err != nil {
+		return nil, err
+	}
+	return append([]string{playlistOut}, files...), nil
+}
+
+func findMediaMTXPlaylist(hlsDir, pathName string) (string, string, error) {
+	if strings.TrimSpace(hlsDir) == "" {
+		return "", "", errors.New("MediaMTX HLS directory is empty")
+	}
+	candidates := []string{
+		filepath.Join(hlsDir, pathName, "index.m3u8"),
+		filepath.Join(hlsDir, pathName, "stream.m3u8"),
+		filepath.Join(hlsDir, "index.m3u8"),
+	}
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, filepath.Dir(candidate), nil
+		}
+	}
+	var found string
+	_ = filepath.WalkDir(hlsDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d == nil || d.IsDir() || found != "" {
+			return nil
+		}
+		if strings.EqualFold(filepath.Ext(path), ".m3u8") {
+			found = path
+		}
+		return nil
+	})
+	if found == "" {
+		return "", "", fmt.Errorf("MediaMTX HLS playlist not found in %s", hlsDir)
+	}
+	return found, filepath.Dir(found), nil
+}
+
+func copyMediaMTXFile(dst, src string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Close()
 }
 
 func copyProxyHeaders(dst, src http.Header) {
