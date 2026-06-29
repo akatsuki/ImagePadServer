@@ -104,11 +104,11 @@ func TestFFmpegArgsUseDVRListSize(t *testing.T) {
 
 func TestNormalizeLatencyModeAndProfile(t *testing.T) {
 	cases := []struct {
-		name             string
-		input            string
-		wantMode         string
-		wantLabel        string
-		wantMultiplier   int
+		name           string
+		input          string
+		wantMode       string
+		wantLabel      string
+		wantMultiplier int
 	}{
 		{name: "highest hls", input: LatencyModeHLSHigh, wantMode: LatencyModeHLSHigh, wantLabel: "最高画質HLS（遅延増）", wantMultiplier: 1},
 		{name: "normal hls", input: LatencyModeHLS, wantMode: LatencyModeHLS, wantLabel: "高画質HLS（通常遅延）", wantMultiplier: 1},

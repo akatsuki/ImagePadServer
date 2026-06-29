@@ -48,10 +48,10 @@ const (
 )
 
 var legacyLatencyModeAliases = map[string]string{
-	"auto":          LatencyModeHLS,
-	"normal":        LatencyModeHLS,
-	"low":           LatencyModeRTSPLow,
-	"ultra":         LatencyModeRTSPUltra,
+	"auto":           LatencyModeHLS,
+	"normal":         LatencyModeHLS,
+	"low":            LatencyModeRTSPLow,
+	"ultra":          LatencyModeRTSPUltra,
 	LatencyModeLHLS:  LatencyModeRTSPLow,
 	LatencyModeLLHLS: LatencyModeRTSPUltra,
 	LatencyModeRTSPT: LatencyModeRTSPRealtime,
