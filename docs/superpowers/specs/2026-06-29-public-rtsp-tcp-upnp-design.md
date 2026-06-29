@@ -80,6 +80,20 @@ For HLS-family modes, existing HTTP and Cloudflare URL selection is unchanged.
 
 Remove the dedicated `obsRtspt` block and its special copy handler.
 
+Selecting `リアルタイム（RTSP TCP）` must open a dedicated confirmation
+dialog before the latency setting is submitted. The dialog warns that:
+
+- the global IPv4 address and a TCP port will be exposed to the internet;
+- anyone who obtains the RTSP URL may connect to the active stream;
+- ImagePadServer temporarily changes the router's port mapping;
+- ImagePadServer removes the mapping when streaming ends, but an abnormal
+  termination or router failure can leave the mapping behind.
+
+The affirmative action is labelled `リスクを理解して有効化`. The cancel
+action restores the previously selected latency mode and must not call the
+latency-setting API. The acknowledgement is not persisted: the dialog appears
+every time the user changes into RTSP TCP mode.
+
 When real-time mode is active and ready:
 
 - `shareURL` contains the RTSP URL.
@@ -139,6 +153,10 @@ prevents direct RTSP publication.
 
 - No dedicated RTSP URL block remains.
 - Real-time mode uses the normal share URL and label.
+- Selecting RTSP TCP opens the risk dialog before submitting the mode change.
+- Cancelling restores the previous mode without calling the settings API.
+- Confirming submits RTSP TCP exactly once.
+- Returning to RTSP TCP later displays the dialog again.
 - Existing HLS share URL behavior is unchanged.
 
 ## Acceptance
@@ -148,5 +166,7 @@ prevents direct RTSP publication.
 - A router mapping exists only during an actively published RTSP session.
 - The displayed URL uses a globally routable external IPv4 address when UPnP
   succeeds.
+- RTSP TCP cannot be enabled from the UI without an explicit, non-persisted
+  risk acknowledgement.
 - The URL appears in the normal share URL position without layout breakage.
 - HLS, LHLS, and LL-HLS behavior does not regress.
