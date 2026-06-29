@@ -53,10 +53,12 @@ func (s *Server) startVideoToolInstall() {
 		const maxRounds = 4
 		for round := 0; round < maxRounds; round++ {
 			if videoToolsReady() {
+				video.ClearToolInstallStatus()
 				s.commitVideoPlayerEnabled()
 				return
 			}
 			if err := ensureVideoTools(); err == nil {
+				video.ClearToolInstallStatus()
 				s.commitVideoPlayerEnabled()
 				return
 			}

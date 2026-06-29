@@ -27,6 +27,12 @@ func ToolInstallStatus() ToolInstall {
 	return installProgress.status
 }
 
+// ClearToolInstallStatus clears stale installer status after a caller has
+// independently verified that the required tools are available.
+func ClearToolInstallStatus() {
+	resetInstallProgress()
+}
+
 func resetInstallProgress() {
 	installProgress.mu.Lock()
 	defer installProgress.mu.Unlock()
