@@ -8,15 +8,15 @@ import (
 	"imagepadserver/internal/video"
 )
 
-func TestFFmpegArgsUseLowLatencyHLS(t *testing.T) {
-	manager := newTestManager(t, "lhls")
+func TestFFmpegArgsUseNormalHLS(t *testing.T) {
+	manager := newTestManager(t, LatencyModeHLS)
 	args := manager.ffmpegArgs("media123", "recording.mp4", video.ResolveQuality("720", 0))
 
 	wantValues := map[string]string{
-		"-hls_time":      "0.5",
-		"-hls_list_size": "12",
-		"-g":             "15",
-		"-keyint_min":    "15",
+		"-hls_time":      "1",
+		"-hls_list_size": "8",
+		"-g":             "30",
+		"-keyint_min":    "30",
 		"-preset":        "ultrafast",
 		"-tune":          "zerolatency",
 	}
@@ -38,7 +38,7 @@ func TestFFmpegArgsUseLowLatencyHLS(t *testing.T) {
 }
 
 func TestFFmpegArgsUseInjectedHardwareEncoder(t *testing.T) {
-	manager := newTestManager(t, "low")
+	manager := newTestManager(t, LatencyModeHLS)
 	profile := video.NewVideoEncoderProfile("h264_nvenc", video.EncoderLowLatency)
 	args := manager.ffmpegArgsWithEncoder("media123", "recording.mp4", video.ResolveQuality("720", 0), profile)
 
@@ -71,32 +71,15 @@ func TestFFmpegArgsUseAutoLatencyProfile(t *testing.T) {
 	}
 }
 
-func TestFFmpegArgsUseNormalLatencyProfile(t *testing.T) {
-	manager := newTestManager(t, "normal")
+func TestFFmpegArgsUseHighestQualityHLSProfile(t *testing.T) {
+	manager := newTestManager(t, LatencyModeHLSHigh)
 	args := manager.ffmpegArgs("media123", "recording.mp4", video.ResolveQuality("720", 0))
 
 	wantValues := map[string]string{
-		"-hls_time":      "1",
-		"-hls_list_size": "8",
-		"-g":             "30",
-		"-keyint_min":    "30",
-	}
-	for flag, want := range wantValues {
-		if got := valueAfter(args, flag); got != want {
-			t.Fatalf("%s = %q, want %q\nargs: %s", flag, got, want, strings.Join(args, " "))
-		}
-	}
-}
-
-func TestFFmpegArgsUseUltraLowLatencyProfile(t *testing.T) {
-	manager := newTestManager(t, "llhls")
-	args := manager.ffmpegArgs("media123", "recording.mp4", video.ResolveQuality("720", 0))
-
-	wantValues := map[string]string{
-		"-hls_time":      "0.5",
-		"-hls_list_size": "16",
-		"-g":             "15",
-		"-keyint_min":    "15",
+		"-hls_time":      "4",
+		"-hls_list_size": "6",
+		"-g":             "120",
+		"-keyint_min":    "120",
 	}
 	for flag, want := range wantValues {
 		if got := valueAfter(args, flag); got != want {
@@ -107,15 +90,15 @@ func TestFFmpegArgsUseUltraLowLatencyProfile(t *testing.T) {
 
 func TestFFmpegArgsUseDVRListSize(t *testing.T) {
 	manager := New(t.TempDir(), "127.0.0.1", 1935, "secret", nil, func() LatencyProfile {
-		return EnableDVR(NormalizeLatencyProfile(LatencyModeLHLS))
+		return EnableDVR(NormalizeLatencyProfile(LatencyModeHLS))
 	}, Callbacks{})
 	args := manager.ffmpegArgs("media123", "recording.mp4", video.ResolveQuality("720", 0))
 
-	if got := valueAfter(args, "-hls_time"); got != "0.5" {
-		t.Fatalf("hls_time = %q, want 0.5\nargs: %s", got, strings.Join(args, " "))
+	if got := valueAfter(args, "-hls_time"); got != "1" {
+		t.Fatalf("hls_time = %q, want 1\nargs: %s", got, strings.Join(args, " "))
 	}
-	if got := valueAfter(args, "-hls_list_size"); got != "3600" {
-		t.Fatalf("hls_list_size = %q, want 3600\nargs: %s", got, strings.Join(args, " "))
+	if got := valueAfter(args, "-hls_list_size"); got != "1800" {
+		t.Fatalf("hls_list_size = %q, want 1800\nargs: %s", got, strings.Join(args, " "))
 	}
 }
 
@@ -125,17 +108,21 @@ func TestNormalizeLatencyModeAndProfile(t *testing.T) {
 		input            string
 		wantMode         string
 		wantLabel        string
-		wantExperimental bool
+		wantMultiplier   int
 	}{
-		{name: "canonical hls", input: "hls", wantMode: LatencyModeHLS, wantLabel: "通常遅延（HLS）"},
-		{name: "canonical lhls", input: "lhls", wantMode: LatencyModeLHLS, wantLabel: "低遅延（LHLS, 実験）", wantExperimental: true},
-		{name: "canonical llhls", input: "llhls", wantMode: LatencyModeLLHLS, wantLabel: "超低遅延（LL-HLS, 実験）", wantExperimental: true},
-		{name: "canonical rtspt", input: "rtspt", wantMode: LatencyModeRTSPT, wantLabel: "リアルタイム（RTSP TCP）"},
-		{name: "legacy auto", input: "  AUTO  ", wantMode: LatencyModeHLS, wantLabel: "通常遅延（HLS）"},
-		{name: "legacy normal", input: "normal", wantMode: LatencyModeHLS, wantLabel: "通常遅延（HLS）"},
-		{name: "legacy low", input: "low", wantMode: LatencyModeLHLS, wantLabel: "低遅延（LHLS, 実験）", wantExperimental: true},
-		{name: "legacy ultra", input: "ultra", wantMode: LatencyModeLLHLS, wantLabel: "超低遅延（LL-HLS, 実験）", wantExperimental: true},
-		{name: "unknown", input: "not-a-mode", wantMode: LatencyModeHLS, wantLabel: "通常遅延（HLS）"},
+		{name: "highest hls", input: LatencyModeHLSHigh, wantMode: LatencyModeHLSHigh, wantLabel: "最高画質HLS（遅延増）", wantMultiplier: 1},
+		{name: "normal hls", input: LatencyModeHLS, wantMode: LatencyModeHLS, wantLabel: "高画質HLS（通常遅延）", wantMultiplier: 1},
+		{name: "low rtsp", input: LatencyModeRTSPLow, wantMode: LatencyModeRTSPLow, wantLabel: "低遅延RTSP", wantMultiplier: 1},
+		{name: "ultra rtsp", input: LatencyModeRTSPUltra, wantMode: LatencyModeRTSPUltra, wantLabel: "超低遅延RTSP", wantMultiplier: 2},
+		{name: "realtime rtsp", input: LatencyModeRTSPRealtime, wantMode: LatencyModeRTSPRealtime, wantLabel: "リアルタイムRTSP", wantMultiplier: 3},
+		{name: "legacy auto", input: "  AUTO  ", wantMode: LatencyModeHLS, wantLabel: "高画質HLS（通常遅延）", wantMultiplier: 1},
+		{name: "legacy normal", input: "normal", wantMode: LatencyModeHLS, wantLabel: "高画質HLS（通常遅延）", wantMultiplier: 1},
+		{name: "legacy low", input: "low", wantMode: LatencyModeRTSPLow, wantLabel: "低遅延RTSP", wantMultiplier: 1},
+		{name: "legacy ultra", input: "ultra", wantMode: LatencyModeRTSPUltra, wantLabel: "超低遅延RTSP", wantMultiplier: 2},
+		{name: "legacy lhls", input: "lhls", wantMode: LatencyModeRTSPLow, wantLabel: "低遅延RTSP", wantMultiplier: 1},
+		{name: "legacy llhls", input: "llhls", wantMode: LatencyModeRTSPUltra, wantLabel: "超低遅延RTSP", wantMultiplier: 2},
+		{name: "legacy rtspt", input: "rtspt", wantMode: LatencyModeRTSPRealtime, wantLabel: "リアルタイムRTSP", wantMultiplier: 3},
+		{name: "unknown", input: "not-a-mode", wantMode: LatencyModeHLS, wantLabel: "高画質HLS（通常遅延）", wantMultiplier: 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -149,10 +136,29 @@ func TestNormalizeLatencyModeAndProfile(t *testing.T) {
 			if profile.Label != tc.wantLabel {
 				t.Fatalf("NormalizeLatencyProfile(%q).Label = %q, want %q", tc.input, profile.Label, tc.wantLabel)
 			}
-			if profile.Experimental != tc.wantExperimental {
-				t.Fatalf("NormalizeLatencyProfile(%q).Experimental = %v, want %v", tc.input, profile.Experimental, tc.wantExperimental)
+			if profile.Experimental {
+				t.Fatalf("NormalizeLatencyProfile(%q).Experimental = true, want false", tc.input)
+			}
+			if profile.BitrateMultiplier != tc.wantMultiplier {
+				t.Fatalf("NormalizeLatencyProfile(%q).BitrateMultiplier = %d, want %d", tc.input, profile.BitrateMultiplier, tc.wantMultiplier)
 			}
 		})
+	}
+}
+
+func TestLatencyCapabilitiesExposeFiveProductionModes(t *testing.T) {
+	caps := LatencyCapabilities()
+	want := []string{LatencyModeHLSHigh, LatencyModeHLS, LatencyModeRTSPLow, LatencyModeRTSPUltra, LatencyModeRTSPRealtime}
+	if len(caps) != len(want) {
+		t.Fatalf("capability count = %d, want %d: %#v", len(caps), len(want), caps)
+	}
+	for i, mode := range want {
+		if caps[i].Mode != mode {
+			t.Fatalf("capability[%d].Mode = %q, want %q", i, caps[i].Mode, mode)
+		}
+		if caps[i].Experimental {
+			t.Fatalf("capability[%d] unexpectedly experimental: %#v", i, caps[i])
+		}
 	}
 }
 

@@ -36,17 +36,25 @@ type RTSPEndpoint struct {
 }
 
 const (
-	LatencyModeHLS   = "hls"
+	LatencyModeHLSHigh      = "hls-high"
+	LatencyModeHLS          = "hls"
+	LatencyModeRTSPLow      = "rtsp-low"
+	LatencyModeRTSPUltra    = "rtsp-ultra"
+	LatencyModeRTSPRealtime = "rtsp-realtime"
+
 	LatencyModeLHLS  = "lhls"
 	LatencyModeLLHLS = "llhls"
 	LatencyModeRTSPT = "rtspt"
 )
 
 var legacyLatencyModeAliases = map[string]string{
-	"auto":   LatencyModeHLS,
-	"normal": LatencyModeHLS,
-	"low":    LatencyModeLHLS,
-	"ultra":  LatencyModeLLHLS,
+	"auto":          LatencyModeHLS,
+	"normal":        LatencyModeHLS,
+	"low":           LatencyModeRTSPLow,
+	"ultra":         LatencyModeRTSPUltra,
+	LatencyModeLHLS:  LatencyModeRTSPLow,
+	LatencyModeLLHLS: LatencyModeRTSPUltra,
+	LatencyModeRTSPT: LatencyModeRTSPRealtime,
 }
 
 type LatencyProfile struct {
@@ -66,70 +74,96 @@ type LatencyProfile struct {
 	Reencode       bool   `json:"reencode"`
 	DVR            bool   `json:"dvr"`
 	Message        string `json:"message,omitempty"`
+
+	BitrateMultiplier int                  `json:"bitrateMultiplier,omitempty"`
+	EncoderPurpose    video.EncoderPurpose `json:"-"`
 }
 
 var latencyProfiles = map[string]LatencyProfile{
+	LatencyModeHLSHigh: {
+		Mode:              LatencyModeHLSHigh,
+		Label:             "最高画質HLS（遅延増）",
+		Transport:         LatencyModeHLS,
+		Available:         true,
+		Selectable:        true,
+		Target:            "10s+",
+		SegmentSeconds:    "4",
+		ListSize:          "6",
+		DVRListSize:       "1800",
+		FrameRate:         "30",
+		GOPFrames:         "120",
+		Reencode:          true,
+		BitrateMultiplier: 1,
+		EncoderPurpose:    video.EncoderStandard,
+		Message:           "画質優先のHLS出力です。遅延は増えます。",
+	},
 	LatencyModeHLS: {
-		Mode:           LatencyModeHLS,
-		Label:          "通常遅延（HLS）",
-		Transport:      LatencyModeHLS,
-		Available:      true,
-		Selectable:     true,
-		Target:         "5s",
-		SegmentSeconds: "1",
-		ListSize:       "8",
-		DVRListSize:    "1800",
-		FrameRate:      "30",
-		GOPFrames:      "30",
-		Reencode:       true,
-		Message:        "通常遅延の標準HLS出力です。",
+		Mode:              LatencyModeHLS,
+		Label:             "高画質HLS（通常遅延）",
+		Transport:         LatencyModeHLS,
+		Available:         true,
+		Selectable:        true,
+		Target:            "5s",
+		SegmentSeconds:    "1",
+		ListSize:          "8",
+		DVRListSize:       "1800",
+		FrameRate:         "30",
+		GOPFrames:         "30",
+		Reencode:          true,
+		BitrateMultiplier: 1,
+		EncoderPurpose:    video.EncoderLowLatency,
+		Message:           "通常遅延のHLS出力です。",
 	},
-	LatencyModeLHLS: {
-		Mode:           LatencyModeLHLS,
-		Label:          "低遅延（LHLS, 実験）",
-		Transport:      LatencyModeLHLS,
-		Experimental:   true,
-		Available:      true,
-		Selectable:     true,
-		Target:         "1s",
-		SegmentSeconds: "0.5",
-		ListSize:       "12",
-		DVRListSize:    "3600",
-		FrameRate:      "30",
-		GOPFrames:      "15",
-		Reencode:       true,
-		Message:        "community LHLS は実験扱いです。",
+	LatencyModeRTSPLow: {
+		Mode:              LatencyModeRTSPLow,
+		Label:             "低遅延RTSP",
+		Transport:         LatencyModeRTSPT,
+		Available:         true,
+		Selectable:        true,
+		Target:            "3-4s",
+		SegmentSeconds:    "2",
+		ListSize:          "4",
+		DVRListSize:       "3600",
+		FrameRate:         "30",
+		GOPFrames:         "60",
+		Reencode:          true,
+		BitrateMultiplier: 1,
+		EncoderPurpose:    video.EncoderStandard,
+		Message:           "画質寄りのRTSP出力です。",
 	},
-	LatencyModeLLHLS: {
-		Mode:           LatencyModeLLHLS,
-		Label:          "超低遅延（LL-HLS, 実験）",
-		Transport:      LatencyModeLLHLS,
-		Experimental:   true,
-		Available:      true,
-		Selectable:     true,
-		Target:         "0.5s+",
-		SegmentSeconds: "0.5",
-		ListSize:       "16",
-		DVRListSize:    "3600",
-		FrameRate:      "30",
-		GOPFrames:      "15",
-		Reencode:       true,
-		Message:        "Apple LL-HLS は実験扱いです。",
+	LatencyModeRTSPUltra: {
+		Mode:              LatencyModeRTSPUltra,
+		Label:             "超低遅延RTSP",
+		Transport:         LatencyModeRTSPT,
+		Available:         true,
+		Selectable:        true,
+		Target:            "1-2s",
+		SegmentSeconds:    "1",
+		ListSize:          "4",
+		DVRListSize:       "3600",
+		FrameRate:         "30",
+		GOPFrames:         "30",
+		Reencode:          true,
+		BitrateMultiplier: 2,
+		EncoderPurpose:    video.EncoderLowLatency,
+		Message:           "低遅延と画質のバランスを取ったRTSP出力です。",
 	},
-	LatencyModeRTSPT: {
-		Mode:           LatencyModeRTSPT,
-		Label:          "リアルタイム（RTSP TCP）",
-		Transport:      LatencyModeRTSPT,
-		Available:      true,
-		Selectable:     true,
-		Target:         "0.5s+",
-		SegmentSeconds: "0.5",
-		ListSize:       "16",
-		DVRListSize:    "3600",
-		FrameRate:      "30",
-		GOPFrames:      "15",
-		Reencode:       true,
-		Message:        "PC/Android向けRTSP-over-TCP出力です。",
+	LatencyModeRTSPRealtime: {
+		Mode:              LatencyModeRTSPRealtime,
+		Label:             "リアルタイムRTSP",
+		Transport:         LatencyModeRTSPT,
+		Available:         true,
+		Selectable:        true,
+		Target:            "0.5s+",
+		SegmentSeconds:    "0.5",
+		ListSize:          "16",
+		DVRListSize:       "3600",
+		FrameRate:         "30",
+		GOPFrames:         "15",
+		Reencode:          true,
+		BitrateMultiplier: 3,
+		EncoderPurpose:    video.EncoderLowLatency,
+		Message:           "最小遅延のRTSP出力です。",
 	},
 }
 
@@ -1046,7 +1080,7 @@ func NormalizeLatencyMode(mode string) string {
 		return alias
 	}
 	switch mode {
-	case LatencyModeHLS, LatencyModeLHLS, LatencyModeLLHLS, LatencyModeRTSPT:
+	case LatencyModeHLSHigh, LatencyModeHLS, LatencyModeRTSPLow, LatencyModeRTSPUltra, LatencyModeRTSPRealtime:
 		return mode
 	default:
 		return LatencyModeHLS
@@ -1055,7 +1089,7 @@ func NormalizeLatencyMode(mode string) string {
 
 func LatencyCapabilities() []LatencyCapability {
 	result := make([]LatencyCapability, 0, len(latencyProfiles))
-	for _, mode := range []string{LatencyModeHLS, LatencyModeLHLS, LatencyModeLLHLS, LatencyModeRTSPT} {
+	for _, mode := range []string{LatencyModeHLSHigh, LatencyModeHLS, LatencyModeRTSPLow, LatencyModeRTSPUltra, LatencyModeRTSPRealtime} {
 		profile := NormalizeLatencyProfile(mode)
 		result = append(result, profile.Capability())
 	}
