@@ -49,6 +49,23 @@ blocking-reload query (`_HLS_msn`/`_HLS_part`), `Range`, status code, and
 `Content-Type` are preserved through the public proxy; cancellation returns 502
 without hanging.
 
+### 1b. Live-server HTTP acceptance — PASS
+
+`TestOBSPublicStreamHTTPAcceptance` (gated by `IMAGEPAD_OBS_HTTP_TEST=1`) attaches
+a real `obsrtmp.Manager` to a real `Server`, publishes a synthetic H.264/AAC RTMP
+stream with FFmpeg (standing in for OBS), and fetches the public `/stream` URLs
+through the registered mux/handlers. Captured 2026-06-29:
+
+| Mode | Playlist | Segment | First-frame |
+|---|---|---|---|
+| HLS | `200`, `Content-Type: application/vnd.apple.mpegurl`, `Cache-Control: no-store, max-age=0` | `*.ts` `200`, `video/mp2t`, ~26 KB | FFprobe: `h264,video aac,audio` (readable) |
+| LHLS | `200`, `application/vnd.apple.mpegurl`, `no-store, max-age=0`; media playlist carries `#EXT-X-PREFETCH` | live `chunk-stream0-*.m4s` `200`, `video/mp4`, ~18 KB | bare fMP4 chunk (no init map) not independently probeable; init+segment readability proven in `TestLHLSProducerArtifacts` |
+
+This confirms, at the real HTTP layer, the MIME types, no-store caching, status
+codes, live segment/prefetch serving, and (HLS) an FFprobe-readable first frame.
+LL-HLS HTTP serving routes through the same proxy verified in §1; an end-to-end
+LL-HLS-through-server run is not separately scripted here.
+
 ## 2. Failure-behavior acceptance — PASS (automated)
 
 Plan Step 4 behaviors, verified by unit tests in `internal/obsrtmp`:
