@@ -2280,6 +2280,7 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 			"localImageURL": localImageURL,
 			"videoPlayer":   videoPlayer,
 			"obs":           obsStatus,
+			"obsLatency":    s.obsLatencyProfile(),
 		})
 		return s.stateWithMedia(r, upnpResult, tunnelStatus, videoPlayer, obsStatus, imageURL, videoURL, hlsURL, shareURL, shareURLLabel, publicImageURL, publicVideoURL, publicHLSURL, localImageURL, previewImageURL)
 	}
@@ -2297,6 +2298,7 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 		"localImageURL": localImageURL,
 		"videoPlayer":   videoPlayer,
 		"obs":           obsStatus,
+		"obsLatency":    s.obsLatencyProfile(),
 	})
 
 	return map[string]interface{}{
@@ -2620,8 +2622,9 @@ func urlForClipboard(state map[string]interface{}) string {
 }
 
 func primaryShareURL(state map[string]interface{}) (string, string) {
+	obsLatency, _ := state["obsLatency"].(obsrtmp.LatencyProfile)
 	if obsStatus, ok := state["obs"].(obsrtmp.Status); ok &&
-		obsStatus.Latency.Transport == obsrtmp.LatencyModeRTSPT &&
+		activeOBSLatency(obsLatency, obsStatus).Transport == obsrtmp.LatencyModeRTSPT &&
 		strings.HasPrefix(obsStatus.RTSPTURL, "rtsp://") {
 		return obsStatus.RTSPTURL, "RTSP TCP URL"
 	}
@@ -2645,6 +2648,13 @@ func primaryShareURL(state map[string]interface{}) (string, string) {
 		return localURL, "Local URL"
 	}
 	return "", "URL"
+}
+
+func activeOBSLatency(selected obsrtmp.LatencyProfile, status obsrtmp.Status) obsrtmp.LatencyProfile {
+	if selected.Mode != "" {
+		return selected
+	}
+	return status.Latency
 }
 
 func urlForCopyTarget(state map[string]interface{}, target string) string {

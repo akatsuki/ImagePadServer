@@ -232,6 +232,21 @@ func TestPrimaryShareURL(t *testing.T) {
 	if url != "rtsp://8.8.8.8:52000/obs_session" || label != "RTSP TCP URL" {
 		t.Fatalf("share URL = %q (%s), want RTSP TCP", url, label)
 	}
+
+	url, label = primaryShareURL(map[string]interface{}{
+		"hlsURL":     "https://example.com/stream/current.m3u8",
+		"obsLatency": obsrtmp.NormalizeLatencyProfile(obsrtmp.LatencyModeHLS),
+		"obs": obsrtmp.Status{
+			Latency:  obsrtmp.NormalizeLatencyProfile(obsrtmp.LatencyModeRTSPRealtime),
+			RTSPTURL: "rtsp://8.8.8.8:52000/obs_session",
+		},
+		"videoPlayer": map[string]interface{}{
+			"enabled": true,
+		},
+	})
+	if url != "https://example.com/stream/current.m3u8" || label != "HLS URL" {
+		t.Fatalf("share URL = %q (%s), want HLS when selected OBS latency is HLS", url, label)
+	}
 }
 
 func TestOBSRelayConfigStartsReceiverWithoutPublishing(t *testing.T) {
