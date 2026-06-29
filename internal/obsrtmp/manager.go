@@ -161,6 +161,7 @@ type Manager struct {
 	current      *Session
 	sink         *lhlsSink
 	mtx          *mediaMTXRuntime
+	rtspGate     *rtspGate
 	rtspEndpoint *RTSPEndpoint
 }
 
@@ -532,8 +533,24 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 			cancel()
 			return err
 		}
+		var gate *rtspGate
+		if latency.Mode == LatencyModeRTSPT {
+			gate = newRTSPGate(rtspGateConfig{
+				PublicRTSPPort:  ports.RTSP,
+				PublicRTPPort:   ports.RTP,
+				PublicRTCPPort:  ports.RTCP,
+				BackendRTSPPort: ports.mediaMTXRTSPPort(),
+				Path:            mediaMTXPathName(id),
+			})
+			if err := gate.start(ctx); err != nil {
+				_ = runtime.stop(5 * time.Second)
+				cancel()
+				return err
+			}
+		}
 		m.mu.Lock()
 		m.mtx = runtime
+		m.rtspGate = gate
 		m.mu.Unlock()
 		// Ordered shutdown: FFmpeg is cancelled via ctx and its exit is awaited
 		// before this deferred stop runs, so the owned MediaMTX process is only
@@ -544,7 +561,13 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 			if m.mtx == runtime {
 				m.mtx = nil
 			}
+			if m.rtspGate == gate {
+				m.rtspGate = nil
+			}
 			m.mu.Unlock()
+			if gate != nil {
+				_ = gate.stop()
+			}
 			_ = runtime.stop(5 * time.Second)
 		}()
 		rtsptURL = runtime.rtspURL()

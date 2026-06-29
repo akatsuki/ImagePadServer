@@ -70,7 +70,7 @@ func defaultTestConfig() mediaMTXSessionConfig {
 		Path:          "obs_session",
 		PublishUser:   "pub",
 		PublishPass:   "secret",
-		Ports:         mediaMTXPorts{API: 9997, HLS: 8888, RTSP: 8554, RTP: 8556, RTCP: 8557},
+		Ports:         mediaMTXPorts{API: 9997, HLS: 8888, RTSP: 8554, RTP: 8556, RTCP: 8557, BackendRTSP: 18554, BackendRTP: 18556, BackendRTCP: 18557},
 		AdvertiseHost: "192.168.1.50",
 		DebugLogPath:  `C:\ImagePadServer\mediamtx-rtsp-debug.log`,
 	}
@@ -91,9 +91,9 @@ func TestRenderMediaMTXConfigDisablesAndRestricts(t *testing.T) {
 		"apiAddress: 127.0.0.1:9997",
 		"hlsAddress: 127.0.0.1:8888",
 		"hlsVariant: lowLatency",
-		"rtspAddress: :8554",
-		"rtpAddress: :8556",
-		"rtcpAddress: :8557",
+		"rtspAddress: 127.0.0.1:18554",
+		"rtpAddress: 127.0.0.1:18556",
+		"rtcpAddress: 127.0.0.1:18557",
 		"user: pub",
 		"pass: secret",
 		"path: obs_session",
@@ -125,7 +125,7 @@ func TestRenderMediaMTXConfigAllowsExternalReadersOnRandomPath(t *testing.T) {
 
 func TestMediaMTXRuntimeURLs(t *testing.T) {
 	rt := testRuntime(defaultTestConfig())
-	if got, want := rt.publishURL(), "rtsp://pub:secret@127.0.0.1:8554/obs_session"; got != want {
+	if got, want := rt.publishURL(), "rtsp://pub:secret@127.0.0.1:18554/obs_session"; got != want {
 		t.Fatalf("publishURL = %q, want %q", got, want)
 	}
 	if got, want := rt.hlsBaseURL(), "http://127.0.0.1:8888/obs_session"; got != want {

@@ -20,11 +20,14 @@ import (
 // mediaMTXPorts are the loopback management/HLS ports and the advertised RTSP
 // port for one app-owned MediaMTX sidecar.
 type mediaMTXPorts struct {
-	API  int
-	HLS  int
-	RTSP int
-	RTP  int
-	RTCP int
+	API         int
+	HLS         int
+	RTSP        int
+	RTP         int
+	RTCP        int
+	BackendRTSP int
+	BackendRTP  int
+	BackendRTCP int
 }
 
 // mediaMTXSessionConfig describes a single OBS session's MediaMTX instance:
@@ -68,9 +71,9 @@ func renderMediaMTXConfig(cfg mediaMTXSessionConfig) string {
 	b.WriteString("rtsp: yes\n")
 	b.WriteString("rtspTransports: [tcp, udp]\n")
 	b.WriteString("rtspEncryption: \"no\"\n")
-	fmt.Fprintf(&b, "rtspAddress: :%d\n", cfg.Ports.RTSP)
-	fmt.Fprintf(&b, "rtpAddress: :%d\n", cfg.Ports.RTP)
-	fmt.Fprintf(&b, "rtcpAddress: :%d\n", cfg.Ports.RTCP)
+	fmt.Fprintf(&b, "rtspAddress: 127.0.0.1:%d\n", cfg.Ports.mediaMTXRTSPPort())
+	fmt.Fprintf(&b, "rtpAddress: 127.0.0.1:%d\n", cfg.Ports.mediaMTXRTPPort())
+	fmt.Fprintf(&b, "rtcpAddress: 127.0.0.1:%d\n", cfg.Ports.mediaMTXRTCPPort())
 
 	b.WriteString("hls: yes\n")
 	fmt.Fprintf(&b, "hlsAddress: 127.0.0.1:%d\n", cfg.Ports.HLS)
@@ -333,7 +336,7 @@ func (r *mediaMTXRuntime) hlsBaseURL() string {
 // per-session credential.
 func (r *mediaMTXRuntime) publishURL() string {
 	return fmt.Sprintf("rtsp://%s:%s@127.0.0.1:%d/%s",
-		r.cfg.PublishUser, r.cfg.PublishPass, r.cfg.Ports.RTSP, r.cfg.Path)
+		r.cfg.PublishUser, r.cfg.PublishPass, r.cfg.Ports.mediaMTXRTSPPort(), r.cfg.Path)
 }
 
 // rtspURL is the advertised RTSP-over-TCP URL handed to players.
@@ -509,7 +512,7 @@ func freeLoopbackUDPPort() (int, error) {
 func allocMediaMTXPorts() (mediaMTXPorts, error) {
 	var ports mediaMTXPorts
 	seen := map[int]bool{}
-	for _, target := range []*int{&ports.API, &ports.HLS, &ports.RTSP} {
+	for _, target := range []*int{&ports.API, &ports.HLS, &ports.RTSP, &ports.BackendRTSP} {
 		for {
 			port, err := freeLoopbackPort()
 			if err != nil {
@@ -523,7 +526,7 @@ func allocMediaMTXPorts() (mediaMTXPorts, error) {
 			break
 		}
 	}
-	for _, target := range []*int{&ports.RTP, &ports.RTCP} {
+	for _, target := range []*int{&ports.RTP, &ports.RTCP, &ports.BackendRTP, &ports.BackendRTCP} {
 		for {
 			port, err := freeLoopbackUDPPort()
 			if err != nil {
@@ -538,6 +541,27 @@ func allocMediaMTXPorts() (mediaMTXPorts, error) {
 		}
 	}
 	return ports, nil
+}
+
+func (p mediaMTXPorts) mediaMTXRTSPPort() int {
+	if p.BackendRTSP > 0 {
+		return p.BackendRTSP
+	}
+	return p.RTSP
+}
+
+func (p mediaMTXPorts) mediaMTXRTPPort() int {
+	if p.BackendRTP > 0 {
+		return p.BackendRTP
+	}
+	return p.RTP
+}
+
+func (p mediaMTXPorts) mediaMTXRTCPPort() int {
+	if p.BackendRTCP > 0 {
+		return p.BackendRTCP
+	}
+	return p.RTCP
 }
 
 func mediaMTXCredential() (string, string, error) {
