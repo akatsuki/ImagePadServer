@@ -332,7 +332,7 @@ func (m *Manager) SetRTSPURL(sessionID, publicURL, message string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.current == nil || m.current.ID != sessionID ||
-		NormalizeLatencyMode(m.currentLatency().Mode) != LatencyModeRTSPT {
+		m.currentLatency().Transport != LatencyModeRTSPT {
 		return false
 	}
 	m.status.RTSPTURL = publicURL
@@ -343,7 +343,7 @@ func (m *Manager) SetRTSPURL(sessionID, publicURL, message string) bool {
 func (m *Manager) setRTSPEndpoint(endpoint RTSPEndpoint) bool {
 	m.mu.Lock()
 	if m.current == nil || m.current.ID != endpoint.SessionID ||
-		NormalizeLatencyMode(m.currentLatency().Mode) != LatencyModeRTSPT {
+		m.currentLatency().Transport != LatencyModeRTSPT {
 		m.mu.Unlock()
 		return false
 	}
@@ -507,8 +507,8 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 	defer video.EndExternalHLS(m.outDir, done)
 
 	latency := m.currentLatency()
-	lhls := latency.Mode == LatencyModeLHLS
-	sidecar := latency.Mode == LatencyModeLLHLS || latency.Mode == LatencyModeRTSPT
+	lhls := latency.Transport == LatencyModeLHLS
+	sidecar := latency.Transport == LatencyModeLLHLS || latency.Transport == LatencyModeRTSPT
 	var rtsptURL string
 	var rtspEndpoint *RTSPEndpoint
 
@@ -570,7 +570,7 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 			return err
 		}
 		var gate *rtspGate
-		if latency.Mode == LatencyModeRTSPT {
+		if latency.Transport == LatencyModeRTSPT {
 			gate = newRTSPGate(rtspGateConfig{
 				PublicRTSPPort:  ports.RTSP,
 				PublicRTPPort:   ports.RTP,
@@ -607,7 +607,7 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 			_ = runtime.stop(5 * time.Second)
 		}()
 		rtsptURL = runtime.rtspURL()
-		if latency.Mode == LatencyModeRTSPT {
+		if latency.Transport == LatencyModeRTSPT {
 			rtspEndpoint = &RTSPEndpoint{
 				SessionID: id,
 				Host:      runtime.cfg.AdvertiseHost,
@@ -618,7 +618,7 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 				LocalURL:  rtsptURL,
 			}
 		}
-		if latency.Mode == LatencyModeLLHLS {
+		if latency.Transport == LatencyModeLLHLS {
 			ready = func() bool {
 				rc, rcancel := context.WithTimeout(ctx, 2*time.Second)
 				defer rcancel()
@@ -681,8 +681,7 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 		return waitErr
 	}
 	if started && sidecar {
-		mode := latency.Mode
-		if mode == LatencyModeRTSPT {
+		if latency.Transport == LatencyModeRTSPT {
 			if rtspEndpoint != nil {
 				m.setRTSPEndpoint(*rtspEndpoint)
 			}
@@ -1010,7 +1009,7 @@ func (m *Manager) LHLSPublicFile(id, name string) (string, bool) {
 // active transport and id is the connected session), so the HLS-family handlers
 // do not fall through to the standard MPEG-TS path.
 func (m *Manager) ProxyLLHLS(w http.ResponseWriter, r *http.Request, id, name string) bool {
-	if m.currentLatency().Mode != LatencyModeLLHLS {
+	if m.currentLatency().Transport != LatencyModeLLHLS {
 		return false
 	}
 	m.mu.Lock()
