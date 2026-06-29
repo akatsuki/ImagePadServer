@@ -460,6 +460,42 @@ const indexHTML = `<!doctype html>
       backdrop-filter: blur(2px);
     }
     .tool-install-overlay.open { display: flex; }
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 1100;
+      display: grid;
+      place-items: center;
+      padding: 18px;
+      background: rgba(15, 28, 25, 0.58);
+      backdrop-filter: blur(2px);
+    }
+    .modal-backdrop[hidden] { display: none; }
+    .modal-card {
+      width: min(100%, 440px);
+      max-height: calc(100vh - 36px);
+      overflow: auto;
+      display: grid;
+      gap: 12px;
+      padding: 18px;
+      border-radius: 14px;
+      background: #fff;
+      box-shadow: 0 18px 50px rgba(0,0,0,0.25);
+    }
+    .modal-card h2 { margin: 0; }
+    .modal-card p { margin: 0; color: var(--ink); }
+    .modal-card ul {
+      margin: 0;
+      padding-left: 20px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
     .tool-install-card {
       width: min(90%, 420px);
       display: grid;
@@ -979,15 +1015,9 @@ const indexHTML = `<!doctype html>
                   <option value="hls">通常遅延（HLS）</option>
                   <option value="lhls">低遅延（LHLS, 実験）</option>
                   <option value="llhls">超低遅延（LL-HLS, 実験）</option>
-                  <option value="rtspt">リアルタイム（RTSPT, PC専用）</option>
+                  <option value="rtspt">リアルタイム（RTSP TCP）</option>
                 </select>
                 <label><input id="obsDVRToggle" type="checkbox"> DVR 30min</label>
-                <div id="obsRtspt" class="obs-rtspt" style="display:none">
-                  <strong>RTSPT URL</strong>
-                  <code id="obsRtsptURL"></code>
-                  <button id="obsRtsptCopy" type="button">コピー</button>
-                  <span class="hint">PC専用。ブラウザプレビュー非対応のためURLをコピーして再生してください。</span>
-                </div>
               </div>
             </div>
           </div>
@@ -1073,6 +1103,23 @@ const indexHTML = `<!doctype html>
     <strong class="pairing-pin" id="pairingPin">0000</strong>
     <p class="pairing-detail" id="pairingDetail">Enter this code on the other computer.</p>
   </div>
+  <div class="modal-backdrop" id="rtspRiskDialog" hidden>
+    <section class="modal-card" role="alertdialog" aria-modal="true" aria-labelledby="rtspRiskTitle" aria-describedby="rtspRiskDescription">
+      <h2 id="rtspRiskTitle">RTSP TCPを外部公開します</h2>
+      <div id="rtspRiskDescription">
+        <p>グローバルIPアドレスとTCPポートがインターネットへ公開されます。</p>
+        <ul>
+          <li>RTSP URLを知る第三者が配信へ接続できる可能性があります。</li>
+          <li>ルーターのUPnPポート設定を一時的に変更します。</li>
+          <li>異常終了やルーター障害時はポート設定が残る可能性があります。</li>
+        </ul>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="secondary" id="rtspRiskCancel">キャンセル</button>
+        <button type="button" class="warn" id="rtspRiskConfirm">リスクを理解して有効化</button>
+      </div>
+    </section>
+  </div>
   <script>
     const state = {
       imageURL: {{printf "%q" .imageURL}},
@@ -1137,6 +1184,9 @@ const indexHTML = `<!doctype html>
     const obsLatencyMode = document.getElementById('obsLatencyMode');
     const obsLatencyStatus = document.getElementById('obsLatencyStatus');
     const obsDVRToggle = document.getElementById('obsDVRToggle');
+    const rtspRiskDialog = document.getElementById('rtspRiskDialog');
+    const rtspRiskCancel = document.getElementById('rtspRiskCancel');
+    const rtspRiskConfirm = document.getElementById('rtspRiskConfirm');
     const pairingPanel = document.getElementById('pairingPanel');
     const pairingPin = document.getElementById('pairingPin');
     const pairingDetail = document.getElementById('pairingDetail');
@@ -1157,6 +1207,7 @@ const indexHTML = `<!doctype html>
     let ffmpegReady = false;
     let ffmpegPromise = null;
     let obsKeyVisible = false;
+    let confirmedOBSLatencyMode = 'hls';
 
     function syncFailureMessage(error) {
       const text = String((error && error.message) || error || '').trim();
@@ -1730,26 +1781,14 @@ const indexHTML = `<!doctype html>
       server.textContent = data.serverAddress || 'RTMP receiver is stopped';
       key.textContent = obsKeyVisible ? (data.streamKey || '-') : maskSecret(data.streamKey);
       const latency = data.latency || {};
-      if (obsLatencyMode) obsLatencyMode.value = latency.mode || 'hls';
+      confirmedOBSLatencyMode = latency.mode || 'hls';
+      if (obsLatencyMode) obsLatencyMode.value = confirmedOBSLatencyMode;
       if (obsDVRToggle) obsDVRToggle.checked = !!latency.dvr;
       if (obsLatencyStatus) {
         const target = latency.target && latency.target !== 'auto' ? ' / ' + latency.target : '';
         const dvr = latency.dvr ? ' / DVR 30min' : '';
         obsLatencyStatus.textContent = (latency.label || latency.mode || 'hls') + target + dvr;
         obsLatencyStatus.title = latency.message || '';
-      }
-      // RTSPT has no browser preview: surface its copyable URL only once the
-      // session is ready (rtsptURL is set by the server after readiness).
-      const obsRtspt = document.getElementById('obsRtspt');
-      const obsRtsptURL = document.getElementById('obsRtsptURL');
-      if (obsRtspt && obsRtsptURL) {
-        if (data.rtsptURL) {
-          obsRtsptURL.textContent = data.rtsptURL;
-          obsRtspt.style.display = '';
-        } else {
-          obsRtsptURL.textContent = '';
-          obsRtspt.style.display = 'none';
-        }
       }
       if (data.connected && data.publishing) {
         status.textContent = 'publishing / HLS event';
@@ -1975,7 +2014,7 @@ const indexHTML = `<!doctype html>
 
     async function copyStartedOBSURL(data) {
       const url = data && (data.shareURL || data.hlsURL || data.publicHLSURL);
-      if (!url || !url.startsWith('http')) {
+      if (!url || !(url.startsWith('http') || url.startsWith('rtsp://'))) {
         return;
       }
       const source = document.getElementById('shareURL');
@@ -2280,34 +2319,28 @@ const indexHTML = `<!doctype html>
         obsKeyRotateButton.disabled = false;
       }
     });
-    const obsRtsptCopyBtn = document.getElementById('obsRtsptCopy');
-    if (obsRtsptCopyBtn) {
-      obsRtsptCopyBtn.addEventListener('click', async () => {
-        const url = (document.getElementById('obsRtsptURL') || {}).textContent || '';
-        if (!url) return;
-        try {
-          await navigator.clipboard.writeText(url);
-          obsRtsptCopyBtn.textContent = 'コピーしました';
-          setTimeout(() => { obsRtsptCopyBtn.textContent = 'コピー'; }, 1500);
-        } catch (e) {
-          obsRtsptCopyBtn.textContent = 'コピー失敗';
-        }
-      });
-    }
     obsLatencyMode.addEventListener('change', async () => {
-      updateOBSLatency();
+      const requestedMode = obsLatencyMode.value;
+      if (requestedMode === 'rtspt' && confirmedOBSLatencyMode !== 'rtspt') {
+        const accepted = await showRTSPRiskDialog();
+        if (!accepted) {
+          obsLatencyMode.value = confirmedOBSLatencyMode;
+          return;
+        }
+      }
+      updateOBSLatency(requestedMode);
     });
     obsDVRToggle.addEventListener('change', async () => {
-      updateOBSLatency();
+      updateOBSLatency(obsLatencyMode.value);
     });
-    async function updateOBSLatency() {
+    async function updateOBSLatency(mode) {
       obsLatencyMode.disabled = true;
       obsDVRToggle.disabled = true;
       try {
         const res = await fetch('/api/obs/latency', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mode: obsLatencyMode.value, dvr: obsDVRToggle.checked })
+          body: JSON.stringify({ mode: mode || obsLatencyMode.value, dvr: obsDVRToggle.checked })
         });
         if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
@@ -2323,6 +2356,39 @@ const indexHTML = `<!doctype html>
         obsLatencyMode.disabled = false;
         obsDVRToggle.disabled = false;
       }
+    }
+    function showRTSPRiskDialog() {
+      if (!rtspRiskDialog || !rtspRiskCancel || !rtspRiskConfirm) {
+        return Promise.resolve(false);
+      }
+      return new Promise((resolve) => {
+        let settled = false;
+        const finish = (accepted) => {
+          if (settled) return;
+          settled = true;
+          rtspRiskDialog.hidden = true;
+          rtspRiskDialog.removeEventListener('click', onBackdrop);
+          rtspRiskCancel.removeEventListener('click', onCancel);
+          rtspRiskConfirm.removeEventListener('click', onConfirm);
+          document.removeEventListener('keydown', onKeyDown);
+          if (obsLatencyMode) obsLatencyMode.focus();
+          resolve(accepted);
+        };
+        const onCancel = () => finish(false);
+        const onConfirm = () => finish(true);
+        const onBackdrop = (event) => {
+          if (event.target === rtspRiskDialog) finish(false);
+        };
+        const onKeyDown = (event) => {
+          if (event.key === 'Escape') finish(false);
+        };
+        rtspRiskDialog.hidden = false;
+        rtspRiskDialog.addEventListener('click', onBackdrop);
+        rtspRiskCancel.addEventListener('click', onCancel);
+        rtspRiskConfirm.addEventListener('click', onConfirm);
+        document.addEventListener('keydown', onKeyDown);
+        rtspRiskConfirm.focus();
+      });
     }
     document.getElementById('tunnelReconnectButton').addEventListener('click', async () => {
       const button = document.getElementById('tunnelReconnectButton');

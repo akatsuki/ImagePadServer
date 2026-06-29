@@ -2155,6 +2155,7 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 	s.mu.RUnlock()
 
 	localImageURL := ""
+	obsStatus := s.obsState()
 	imageURLBase := s.imageURLBase
 	if tunnelURLBase != "" {
 		imageURLBase = tunnelURLBase
@@ -2200,8 +2201,9 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 			"hlsURL":        hlsURL,
 			"localImageURL": localImageURL,
 			"videoPlayer":   videoPlayer,
+			"obs":           obsStatus,
 		})
-		return s.stateWithMedia(r, upnpResult, tunnelStatus, videoPlayer, imageURL, videoURL, hlsURL, shareURL, shareURLLabel, publicImageURL, publicVideoURL, publicHLSURL, localImageURL, previewImageURL)
+		return s.stateWithMedia(r, upnpResult, tunnelStatus, videoPlayer, obsStatus, imageURL, videoURL, hlsURL, shareURL, shareURLLabel, publicImageURL, publicVideoURL, publicHLSURL, localImageURL, previewImageURL)
 	}
 	if imageURL == "" {
 		imageURL = ""
@@ -2216,6 +2218,7 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 		"hlsURL":        hlsURL,
 		"localImageURL": localImageURL,
 		"videoPlayer":   videoPlayer,
+		"obs":           obsStatus,
 	})
 
 	return map[string]interface{}{
@@ -2242,7 +2245,7 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 		"video":           videoPlayer["status"],
 		"videoPlayer":     videoPlayer,
 		"videoQuality":    s.videoQualityState(),
-		"obs":             s.obsState(),
+		"obs":             obsStatus,
 		"pairing":         s.pairingState(),
 		"videoQueue":      s.videoQueueState(),
 		"ingest":          s.ingestState(),
@@ -2253,7 +2256,7 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 	}
 }
 
-func (s *Server) stateWithMedia(r *http.Request, upnpResult upnp.Result, tunnelStatus map[string]interface{}, videoPlayer map[string]interface{}, imageURL, videoURL, hlsURL, shareURL, shareURLLabel, publicImageURL, publicVideoURL, publicHLSURL, localImageURL, previewImageURL string) map[string]interface{} {
+func (s *Server) stateWithMedia(r *http.Request, upnpResult upnp.Result, tunnelStatus map[string]interface{}, videoPlayer map[string]interface{}, obsStatus obsrtmp.Status, imageURL, videoURL, hlsURL, shareURL, shareURLLabel, publicImageURL, publicVideoURL, publicHLSURL, localImageURL, previewImageURL string) map[string]interface{} {
 	return map[string]interface{}{
 		"appName":         about.AppName,
 		"version":         about.Version,
@@ -2278,7 +2281,7 @@ func (s *Server) stateWithMedia(r *http.Request, upnpResult upnp.Result, tunnelS
 		"video":           videoPlayer["status"],
 		"videoPlayer":     videoPlayer,
 		"videoQuality":    s.videoQualityState(),
-		"obs":             s.obsState(),
+		"obs":             obsStatus,
 		"pairing":         s.pairingState(),
 		"videoQueue":      s.videoQueueState(),
 		"ingest":          s.ingestState(),
@@ -2541,6 +2544,11 @@ func urlForClipboard(state map[string]interface{}) string {
 }
 
 func primaryShareURL(state map[string]interface{}) (string, string) {
+	if obsStatus, ok := state["obs"].(obsrtmp.Status); ok &&
+		obsrtmp.NormalizeLatencyMode(obsStatus.Latency.Mode) == obsrtmp.LatencyModeRTSPT &&
+		strings.HasPrefix(obsStatus.RTSPTURL, "rtsp://") {
+		return obsStatus.RTSPTURL, "RTSP TCP URL"
+	}
 	if videoPlayer, ok := state["videoPlayer"].(map[string]interface{}); ok {
 		if enabled, _ := videoPlayer["enabled"].(bool); enabled {
 			if hlsURL, ok := state["hlsURL"].(string); ok && strings.HasPrefix(hlsURL, "http") {

@@ -211,6 +211,20 @@ func TestPrimaryShareURL(t *testing.T) {
 	if url != "https://example.com/image/current.png" || label != "ImagePad URL" {
 		t.Fatalf("share URL = %q (%s), want image", url, label)
 	}
+
+	url, label = primaryShareURL(map[string]interface{}{
+		"hlsURL": "https://example.com/stream/current.m3u8",
+		"obs": obsrtmp.Status{
+			Latency:  obsrtmp.NormalizeLatencyProfile(obsrtmp.LatencyModeRTSPT),
+			RTSPTURL: "rtsp://8.8.8.8:52000/obs_session",
+		},
+		"videoPlayer": map[string]interface{}{
+			"enabled": true,
+		},
+	})
+	if url != "rtsp://8.8.8.8:52000/obs_session" || label != "RTSP TCP URL" {
+		t.Fatalf("share URL = %q (%s), want RTSP TCP", url, label)
+	}
 }
 
 func TestStateExposesHLSURLOnlyAfterFirstSegment(t *testing.T) {
@@ -670,6 +684,34 @@ func TestChangingAwayFromRTSPClosesMapping(t *testing.T) {
 	}
 	if got := mapping.closeCalls.Load(); got != 1 {
 		t.Fatalf("mapping close calls = %d, want 1", got)
+	}
+}
+
+func TestRTSPUIUsesSharedURLAndRiskDialog(t *testing.T) {
+	mustContain := []string{
+		`<option value="rtspt">リアルタイム（RTSP TCP）</option>`,
+		`id="shareURL"`,
+		`data-copy="shareURL"`,
+		`id="rtspRiskDialog"`,
+		`role="alertdialog"`,
+		`リスクを理解して有効化`,
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(indexHTML, want) {
+			t.Fatalf("indexHTML missing %q", want)
+		}
+	}
+	mustNotContain := []string{
+		`id="obsRtspt"`,
+		`id="obsRtsptCopy"`,
+		`obsRtsptURL`,
+		`rtspRiskAccepted`,
+		`rtspRiskAcknowledged`,
+	}
+	for _, forbidden := range mustNotContain {
+		if strings.Contains(indexHTML, forbidden) {
+			t.Fatalf("indexHTML contains forbidden RTSP UI fragment %q", forbidden)
+		}
 	}
 }
 
