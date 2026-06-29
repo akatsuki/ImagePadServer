@@ -136,6 +136,21 @@ func TestMediaMTXRuntimeURLs(t *testing.T) {
 	}
 }
 
+func TestAllocMediaMTXPortsUsesEvenRTPAndAdjacentRTCP(t *testing.T) {
+	for i := 0; i < 10; i++ {
+		ports, err := allocMediaMTXPorts()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ports.RTP%2 != 0 || ports.RTCP != ports.RTP+1 {
+			t.Fatalf("public RTP/RTCP = %d/%d, want even RTP and adjacent RTCP", ports.RTP, ports.RTCP)
+		}
+		if ports.BackendRTP%2 != 0 || ports.BackendRTCP != ports.BackendRTP+1 {
+			t.Fatalf("backend RTP/RTCP = %d/%d, want even RTP and adjacent RTCP", ports.BackendRTP, ports.BackendRTCP)
+		}
+	}
+}
+
 func TestMediaMTXStartWaitsForHealth(t *testing.T) {
 	rt := testRuntime(defaultTestConfig())
 	proc := newFakeProcess()

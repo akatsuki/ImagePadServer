@@ -509,6 +509,38 @@ func freeLoopbackUDPPort() (int, error) {
 	return conn.LocalAddr().(*net.UDPAddr).Port, nil
 }
 
+func freeLoopbackUDPEvenPair(seen map[int]bool) (int, int, error) {
+	for attempts := 0; attempts < 100; attempts++ {
+		port, err := freeLoopbackUDPPort()
+		if err != nil {
+			return 0, 0, err
+		}
+		rtp := port
+		if rtp%2 != 0 {
+			rtp--
+		}
+		rtcp := rtp + 1
+		if rtp <= 0 || seen[rtp] || seen[rtcp] {
+			continue
+		}
+		rtpConn, err := net.ListenPacket("udp4", fmt.Sprintf("127.0.0.1:%d", rtp))
+		if err != nil {
+			continue
+		}
+		rtcpConn, err := net.ListenPacket("udp4", fmt.Sprintf("127.0.0.1:%d", rtcp))
+		if err != nil {
+			_ = rtpConn.Close()
+			continue
+		}
+		_ = rtcpConn.Close()
+		_ = rtpConn.Close()
+		seen[rtp] = true
+		seen[rtcp] = true
+		return rtp, rtcp, nil
+	}
+	return 0, 0, errors.New("allocate loopback UDP RTP/RTCP pair")
+}
+
 func allocMediaMTXPorts() (mediaMTXPorts, error) {
 	var ports mediaMTXPorts
 	seen := map[int]bool{}
@@ -526,19 +558,14 @@ func allocMediaMTXPorts() (mediaMTXPorts, error) {
 			break
 		}
 	}
-	for _, target := range []*int{&ports.RTP, &ports.RTCP, &ports.BackendRTP, &ports.BackendRTCP} {
-		for {
-			port, err := freeLoopbackUDPPort()
-			if err != nil {
-				return mediaMTXPorts{}, err
-			}
-			if seen[port] {
-				continue
-			}
-			seen[port] = true
-			*target = port
-			break
-		}
+	var err error
+	ports.RTP, ports.RTCP, err = freeLoopbackUDPEvenPair(seen)
+	if err != nil {
+		return mediaMTXPorts{}, err
+	}
+	ports.BackendRTP, ports.BackendRTCP, err = freeLoopbackUDPEvenPair(seen)
+	if err != nil {
+		return mediaMTXPorts{}, err
 	}
 	return ports, nil
 }
