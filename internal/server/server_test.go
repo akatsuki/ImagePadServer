@@ -33,6 +33,13 @@ func (f *fakeRTSPMapping) ExternalIP() string { return f.ip }
 func (f *fakeRTSPMapping) ExternalPort() int  { return f.port }
 func (f *fakeRTSPMapping) Close() error       { f.closeCalls.Add(1); return nil }
 
+type rtspMapCall struct {
+	protocol     string
+	internalPort int
+	externalPort int
+	description  string
+}
+
 func TestValidatePublicURLRejectsLocalhost(t *testing.T) {
 	if _, err := validatePublicURL("http://localhost/image.png"); err == nil {
 		t.Fatal("expected localhost URL to be rejected")
@@ -549,11 +556,15 @@ func TestRTSPReadyPublishesUPnPURL(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
-	mapping := &fakeRTSPMapping{ip: "8.8.8.8", port: 52000}
-	var mappedInternal, mappedExternal int
-	srv.mapRTSPPort = func(internalPort, externalPort int, description string) (rtspMappingHandle, upnp.Result) {
-		mappedInternal = internalPort
-		mappedExternal = externalPort
+	mappings := []*fakeRTSPMapping{
+		{ip: "8.8.8.8", port: 52000},
+		{ip: "8.8.8.8", port: 52001},
+		{ip: "8.8.8.8", port: 52002},
+	}
+	var calls []rtspMapCall
+	srv.mapRTSPPort = func(protocol string, internalPort, externalPort int, description string) (rtspMappingHandle, upnp.Result) {
+		calls = append(calls, rtspMapCall{protocol: protocol, internalPort: internalPort, externalPort: externalPort, description: description})
+		mapping := mappings[len(calls)-1]
 		return mapping, upnp.Result{OK: true, ExternalIP: mapping.ip}
 	}
 	var updatedSession, updatedURL, updatedMessage string
@@ -567,12 +578,24 @@ func TestRTSPReadyPublishesUPnPURL(t *testing.T) {
 	srv.handleRTSPReady(obsrtmp.RTSPEndpoint{
 		SessionID: "new-session",
 		Port:      49152,
+		RTPPort:   49153,
+		RTCPPort:  49154,
 		Path:      "obs_new-session",
 		LocalURL:  "rtsp://192.168.1.10:49152/obs_new-session",
 	})
 
-	if mappedInternal != 49152 || mappedExternal != 49152 {
-		t.Fatalf("mapped ports = %d/%d, want 49152/49152", mappedInternal, mappedExternal)
+	wantCalls := []rtspMapCall{
+		{protocol: "TCP", internalPort: 49152, externalPort: 49152, description: "ImagePadServer RTSP TCP"},
+		{protocol: "UDP", internalPort: 49153, externalPort: 49153, description: "ImagePadServer RTSP RTP"},
+		{protocol: "UDP", internalPort: 49154, externalPort: 49154, description: "ImagePadServer RTSP RTCP"},
+	}
+	if len(calls) != len(wantCalls) {
+		t.Fatalf("mapped calls = %#v, want %#v", calls, wantCalls)
+	}
+	for i, want := range wantCalls {
+		if calls[i] != want {
+			t.Fatalf("mapped call %d = %#v, want %#v", i, calls[i], want)
+		}
 	}
 	if got, want := updatedSession, "new-session"; got != want {
 		t.Fatalf("updated session = %q, want %q", got, want)
@@ -583,7 +606,7 @@ func TestRTSPReadyPublishesUPnPURL(t *testing.T) {
 	if !strings.Contains(updatedMessage, "UPnP") {
 		t.Fatalf("updated message = %q, want UPnP status", updatedMessage)
 	}
-	if srv.rtspMap != mapping || srv.rtspSessionID != "new-session" {
+	if srv.rtspMap == nil || srv.rtspSessionID != "new-session" {
 		t.Fatalf("stored mapping/session = %#v/%q", srv.rtspMap, srv.rtspSessionID)
 	}
 }
@@ -595,7 +618,7 @@ func TestRTSPReadyMappingFailureKeepsLANURL(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
-	srv.mapRTSPPort = func(int, int, string) (rtspMappingHandle, upnp.Result) {
+	srv.mapRTSPPort = func(string, int, int, string) (rtspMappingHandle, upnp.Result) {
 		return nil, upnp.Result{Message: "no UPnP gateway found"}
 	}
 	var updatedURL, updatedMessage string
@@ -631,7 +654,7 @@ func TestRTSPReadyRejectsCarrierNATAddress(t *testing.T) {
 	}
 	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
 	mapping := &fakeRTSPMapping{ip: "100.64.1.2", port: 49152}
-	srv.mapRTSPPort = func(int, int, string) (rtspMappingHandle, upnp.Result) {
+	srv.mapRTSPPort = func(string, int, int, string) (rtspMappingHandle, upnp.Result) {
 		return mapping, upnp.Result{OK: true, ExternalIP: mapping.ip}
 	}
 	var updatedURL, updatedMessage string

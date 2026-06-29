@@ -33,6 +33,7 @@ type gatewayService struct {
 type TCPMapping struct {
 	mu           sync.Mutex
 	service      gatewayService
+	protocol     string
 	externalPort int
 	internalPort int
 	externalIP   string
@@ -71,9 +72,10 @@ func (m *TCPMapping) Close() error {
 	}
 	m.closed = true
 	service := m.service
+	protocol := m.protocol
 	externalPort := m.externalPort
 	m.mu.Unlock()
-	return deletePortMapping(service, externalPort)
+	return deletePortMapping(service, protocol, externalPort)
 }
 
 func IsGloballyRoutableIPv4(raw string) bool {
@@ -103,9 +105,26 @@ func MapTCP(internalPort, externalPort int, description string) (*TCPMapping, Re
 }
 
 func mapTCPWithServices(services []gatewayService, internalPort, externalPort int, description string) (*TCPMapping, Result) {
+	return mapProtocolWithServices(services, "TCP", internalPort, externalPort, description)
+}
+
+func MapUDP(internalPort, externalPort int, description string) (*TCPMapping, Result) {
+	services, err := discoverServices()
+	if err != nil {
+		return nil, Result{Message: err.Error()}
+	}
+	return mapUDPWithServices(services, internalPort, externalPort, description)
+}
+
+func mapUDPWithServices(services []gatewayService, internalPort, externalPort int, description string) (*TCPMapping, Result) {
+	return mapProtocolWithServices(services, "UDP", internalPort, externalPort, description)
+}
+
+func mapProtocolWithServices(services []gatewayService, protocol string, internalPort, externalPort int, description string) (*TCPMapping, Result) {
 	if len(services) == 0 {
 		return nil, Result{Message: "no UPnP WAN connection service found"}
 	}
+	protocol = normalizeProtocol(protocol)
 
 	var failures []string
 	for _, svc := range services {
@@ -120,10 +139,11 @@ func mapTCPWithServices(services []gatewayService, internalPort, externalPort in
 			continue
 		}
 
-		result := tryMapWithService(svc, internalPort, externalPort, description)
+		result := tryMapWithService(svc, protocol, internalPort, externalPort, description)
 		if result.OK {
 			return &TCPMapping{
 				service:      svc,
+				protocol:     protocol,
 				externalPort: externalPort,
 				internalPort: internalPort,
 				externalIP:   result.ExternalIP,
@@ -133,6 +153,15 @@ func mapTCPWithServices(services []gatewayService, internalPort, externalPort in
 	}
 
 	return nil, Result{Message: "UPnP mapping failed: " + strings.Join(failures, " | ")}
+}
+
+func normalizeProtocol(protocol string) string {
+	switch strings.ToUpper(strings.TrimSpace(protocol)) {
+	case "UDP":
+		return "UDP"
+	default:
+		return "TCP"
+	}
 }
 
 func discoverServices() ([]gatewayService, error) {
@@ -246,46 +275,47 @@ func servicesFromDevice(deviceURL string) ([]gatewayService, error) {
 	return services, nil
 }
 
-func tryMapWithService(svc gatewayService, internalPort, externalPort int, description string) Result {
-	result := addPortMapping(svc, internalPort, externalPort, description, 0)
+func tryMapWithService(svc gatewayService, protocol string, internalPort, externalPort int, description string) Result {
+	result := addPortMapping(svc, protocol, internalPort, externalPort, description, 0)
 	if result.OK {
-		return enrichSuccess(result, svc, externalPort)
+		return enrichSuccess(result, svc, protocol, externalPort)
 	}
 
 	// Some routers reject an occupied mapping instead of replacing it.
-	_ = deletePortMapping(svc, externalPort)
-	result = addPortMapping(svc, internalPort, externalPort, description, 0)
+	_ = deletePortMapping(svc, protocol, externalPort)
+	result = addPortMapping(svc, protocol, internalPort, externalPort, description, 0)
 	if result.OK {
-		return enrichSuccess(result, svc, externalPort)
+		return enrichSuccess(result, svc, protocol, externalPort)
 	}
 
 	// A few routers dislike permanent leases. A 24 hour lease is a good fallback.
-	result = addPortMapping(svc, internalPort, externalPort, description, 86400)
+	result = addPortMapping(svc, protocol, internalPort, externalPort, description, 86400)
 	if result.OK {
-		return enrichSuccess(result, svc, externalPort)
+		return enrichSuccess(result, svc, protocol, externalPort)
 	}
 	return result
 }
 
-func enrichSuccess(result Result, svc gatewayService, port int) Result {
+func enrichSuccess(result Result, svc gatewayService, protocol string, port int) Result {
 	externalIP, _ := externalIPAddress(svc)
 	result.ExternalIP = externalIP
 	result.Gateway = shortHost(svc.DeviceURL)
 	result.Service = svc.ServiceType
 	if externalIP != "" {
-		result.Message = fmt.Sprintf("TCP port %d mapped by UPnP", port)
+		result.Message = fmt.Sprintf("%s port %d mapped by UPnP", protocol, port)
 	}
 	return result
 }
 
-func addPortMapping(svc gatewayService, internalPort, externalPort int, description string, leaseSeconds int) Result {
+func addPortMapping(svc gatewayService, protocol string, internalPort, externalPort int, description string, leaseSeconds int) Result {
+	protocol = normalizeProtocol(protocol)
 	body := fmt.Sprintf(`<?xml version="1.0"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
   <s:Body>
     <u:AddPortMapping xmlns:u="%s">
       <NewRemoteHost></NewRemoteHost>
       <NewExternalPort>%d</NewExternalPort>
-      <NewProtocol>TCP</NewProtocol>
+      <NewProtocol>%s</NewProtocol>
       <NewInternalPort>%d</NewInternalPort>
       <NewInternalClient>%s</NewInternalClient>
       <NewEnabled>1</NewEnabled>
@@ -293,29 +323,30 @@ func addPortMapping(svc gatewayService, internalPort, externalPort int, descript
       <NewLeaseDuration>%d</NewLeaseDuration>
     </u:AddPortMapping>
   </s:Body>
-</s:Envelope>`, svc.ServiceType, externalPort, internalPort, svc.LocalIP, xmlEscape(description), leaseSeconds)
+</s:Envelope>`, svc.ServiceType, externalPort, protocol, internalPort, svc.LocalIP, xmlEscape(description), leaseSeconds)
 
 	status, response, err := soap(svc, "AddPortMapping", body, 4096)
 	if err != nil {
 		return Result{Message: err.Error(), Gateway: shortHost(svc.DeviceURL), Service: svc.ServiceType}
 	}
 	if status >= 200 && status < 300 {
-		return Result{OK: true, Message: "TCP port mapped by UPnP", Gateway: shortHost(svc.DeviceURL), Service: svc.ServiceType}
+		return Result{OK: true, Message: protocol + " port mapped by UPnP", Gateway: shortHost(svc.DeviceURL), Service: svc.ServiceType}
 	}
 	return Result{Message: fmt.Sprintf("router rejected mapping: HTTP %d %s", status, faultSummary(response)), Gateway: shortHost(svc.DeviceURL), Service: svc.ServiceType}
 }
 
-func deletePortMapping(svc gatewayService, port int) error {
+func deletePortMapping(svc gatewayService, protocol string, port int) error {
+	protocol = normalizeProtocol(protocol)
 	body := fmt.Sprintf(`<?xml version="1.0"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
   <s:Body>
     <u:DeletePortMapping xmlns:u="%s">
       <NewRemoteHost></NewRemoteHost>
       <NewExternalPort>%d</NewExternalPort>
-      <NewProtocol>TCP</NewProtocol>
+      <NewProtocol>%s</NewProtocol>
     </u:DeletePortMapping>
   </s:Body>
-</s:Envelope>`, svc.ServiceType, port)
+</s:Envelope>`, svc.ServiceType, port, protocol)
 
 	status, _, err := soap(svc, "DeletePortMapping", body, 2048)
 	if err != nil {

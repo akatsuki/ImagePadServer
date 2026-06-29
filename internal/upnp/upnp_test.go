@@ -121,3 +121,49 @@ func TestMapTCPUsesDistinctInternalAndExternalPorts(t *testing.T) {
 		}
 	}
 }
+
+func TestMapUDPUsesUDPProtocolAndDeletesUDP(t *testing.T) {
+	var addBody, deleteBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		switch action := r.Header.Get("SOAPAction"); {
+		case strings.Contains(action, "#AddPortMapping"):
+			addBody = string(body)
+			w.WriteHeader(http.StatusOK)
+		case strings.Contains(action, "#GetExternalIPAddress"):
+			_, _ = io.WriteString(w, `<Envelope><Body><GetExternalIPAddressResponse><NewExternalIPAddress>8.8.4.4</NewExternalIPAddress></GetExternalIPAddressResponse></Body></Envelope>`)
+		case strings.Contains(action, "#DeletePortMapping"):
+			deleteBody = string(body)
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.Error(w, "unexpected action", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+
+	service := gatewayService{
+		DeviceURL:   server.URL,
+		ControlURL:  server.URL,
+		ServiceType: "urn:schemas-upnp-org:service:WANIPConnection:1",
+		LocalIP:     "192.168.1.20",
+	}
+	mapping, result := mapUDPWithServices([]gatewayService{service}, 49153, 52001, "ImagePadServer RTSP RTP")
+	if !result.OK || mapping == nil {
+		t.Fatalf("map result = %#v, mapping = %#v", result, mapping)
+	}
+	if err := mapping.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"<NewProtocol>UDP</NewProtocol>",
+		"<NewExternalPort>52001</NewExternalPort>",
+		"<NewInternalPort>49153</NewInternalPort>",
+	} {
+		if !strings.Contains(addBody, want) {
+			t.Fatalf("AddPortMapping body missing %q:\n%s", want, addBody)
+		}
+	}
+	if !strings.Contains(deleteBody, "<NewProtocol>UDP</NewProtocol>") {
+		t.Fatalf("DeletePortMapping body missing UDP protocol:\n%s", deleteBody)
+	}
+}

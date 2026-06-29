@@ -29,6 +29,8 @@ type RTSPEndpoint struct {
 	SessionID string
 	Host      string
 	Port      int
+	RTPPort   int
+	RTCPPort  int
 	Path      string
 	LocalURL  string
 }
@@ -524,6 +526,7 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 			PublishPass:   pass,
 			Ports:         ports,
 			AdvertiseHost: m.host,
+			DebugLogPath:  mediaMTXDebugLogPath(),
 		})
 		if err := runtime.start(ctx); err != nil {
 			cancel()
@@ -550,6 +553,8 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 				SessionID: id,
 				Host:      runtime.cfg.AdvertiseHost,
 				Port:      runtime.cfg.Ports.RTSP,
+				RTPPort:   runtime.cfg.Ports.RTP,
+				RTCPPort:  runtime.cfg.Ports.RTCP,
 				Path:      runtime.cfg.Path,
 				LocalURL:  rtsptURL,
 			}

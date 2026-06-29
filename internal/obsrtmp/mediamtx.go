@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"imagepadserver/internal/settings"
 )
 
 // mediaMTXPorts are the loopback management/HLS ports and the advertised RTSP
@@ -21,6 +23,8 @@ type mediaMTXPorts struct {
 	API  int
 	HLS  int
 	RTSP int
+	RTP  int
+	RTCP int
 }
 
 // mediaMTXSessionConfig describes a single OBS session's MediaMTX instance:
@@ -32,6 +36,7 @@ type mediaMTXSessionConfig struct {
 	PublishPass   string
 	Ports         mediaMTXPorts
 	AdvertiseHost string
+	DebugLogPath  string
 }
 
 // renderMediaMTXConfig renders a minimal MediaMTX YAML configuration. Only the
@@ -41,8 +46,13 @@ type mediaMTXSessionConfig struct {
 // loopback only.
 func renderMediaMTXConfig(cfg mediaMTXSessionConfig) string {
 	var b strings.Builder
-	b.WriteString("logLevel: error\n")
-	b.WriteString("logDestinations: [stdout]\n")
+	b.WriteString("logLevel: debug\n")
+	if cfg.DebugLogPath != "" {
+		b.WriteString("logDestinations: [stdout, file]\n")
+		fmt.Fprintf(&b, "logFile: %q\n", filepath.ToSlash(cfg.DebugLogPath))
+	} else {
+		b.WriteString("logDestinations: [stdout]\n")
+	}
 	b.WriteString("readTimeout: 10s\n")
 	b.WriteString("writeTimeout: 10s\n")
 
@@ -56,9 +66,11 @@ func renderMediaMTXConfig(cfg mediaMTXSessionConfig) string {
 	b.WriteString("moq: no\n")
 
 	b.WriteString("rtsp: yes\n")
-	b.WriteString("rtspTransports: [tcp]\n")
+	b.WriteString("rtspTransports: [tcp, udp]\n")
 	b.WriteString("rtspEncryption: \"no\"\n")
 	fmt.Fprintf(&b, "rtspAddress: :%d\n", cfg.Ports.RTSP)
+	fmt.Fprintf(&b, "rtpAddress: :%d\n", cfg.Ports.RTP)
+	fmt.Fprintf(&b, "rtcpAddress: :%d\n", cfg.Ports.RTCP)
 
 	b.WriteString("hls: yes\n")
 	fmt.Fprintf(&b, "hlsAddress: 127.0.0.1:%d\n", cfg.Ports.HLS)
@@ -485,12 +497,35 @@ func freeLoopbackPort() (int, error) {
 	return listener.Addr().(*net.TCPAddr).Port, nil
 }
 
+func freeLoopbackUDPPort() (int, error) {
+	conn, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close()
+	return conn.LocalAddr().(*net.UDPAddr).Port, nil
+}
+
 func allocMediaMTXPorts() (mediaMTXPorts, error) {
 	var ports mediaMTXPorts
 	seen := map[int]bool{}
 	for _, target := range []*int{&ports.API, &ports.HLS, &ports.RTSP} {
 		for {
 			port, err := freeLoopbackPort()
+			if err != nil {
+				return mediaMTXPorts{}, err
+			}
+			if seen[port] {
+				continue
+			}
+			seen[port] = true
+			*target = port
+			break
+		}
+	}
+	for _, target := range []*int{&ports.RTP, &ports.RTCP} {
+		for {
+			port, err := freeLoopbackUDPPort()
 			if err != nil {
 				return mediaMTXPorts{}, err
 			}
@@ -515,6 +550,10 @@ func mediaMTXCredential() (string, string, error) {
 		return "", "", err
 	}
 	return "obs-" + user[:8], pass, nil
+}
+
+func mediaMTXDebugLogPath() string {
+	return filepath.Join(settings.Dir(), "mediamtx-rtsp-debug.log")
 }
 
 // mediaMTXPathName derives a safe MediaMTX path name from a session id, keeping
