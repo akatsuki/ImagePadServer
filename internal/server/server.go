@@ -1205,7 +1205,6 @@ func (s *Server) obsRelayConfig(startReceiver bool) (map[string]interface{}, err
 	}
 	if startReceiver {
 		s.obs.Start()
-		s.obs.StartPublishing()
 	}
 	status := s.obs.Status()
 	serverAddress := strings.TrimRight(status.ServerAddress, "/")

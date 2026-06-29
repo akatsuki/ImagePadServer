@@ -227,6 +227,45 @@ func TestPrimaryShareURL(t *testing.T) {
 	}
 }
 
+func TestOBSRelayConfigStartsReceiverWithoutPublishing(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	if err := settings.Update(func(s *settings.Settings) error {
+		s.VideoPlayerEnabled = false
+		s.OBSLatencyMode = obsrtmp.LatencyModeRTSPT
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+	t.Cleanup(func() {
+		srv.StopOBSReceiver()
+		store.Reset()
+	})
+
+	body, err := srv.obsRelayConfig(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["publishing"] == true {
+		t.Fatalf("publishing = %v, want false before explicit start", body["publishing"])
+	}
+	status := srv.obs.Status()
+	if !status.Listening {
+		t.Fatal("OBS receiver should listen after relay config is requested")
+	}
+	if status.Publishing {
+		t.Fatal("OBS publishing must wait for /api/obs/start")
+	}
+	if !srv.videoPlayerEnabled() {
+		t.Fatal("relay config should still enable video player support")
+	}
+}
+
 func TestStateExposesHLSURLOnlyAfterFirstSegment(t *testing.T) {
 	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
 	if err := settings.Update(func(s *settings.Settings) error {
