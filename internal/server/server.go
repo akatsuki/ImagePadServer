@@ -1363,7 +1363,6 @@ func (s *Server) handleOBSLatency(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		var req struct {
 			Mode string `json:"mode"`
-			DVR  bool   `json:"dvr"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid OBS latency request", http.StatusBadRequest)
@@ -1372,7 +1371,7 @@ func (s *Server) handleOBSLatency(w http.ResponseWriter, r *http.Request) {
 		mode := obsrtmp.NormalizeLatencyMode(req.Mode)
 		if err := settings.Update(func(appSettings *settings.Settings) error {
 			appSettings.OBSLatencyMode = mode
-			appSettings.OBSDVREnabled = req.DVR
+			appSettings.OBSDVREnabled = false
 			return nil
 		}); err != nil {
 			http.Error(w, "failed to save settings", http.StatusInternalServerError)
@@ -2566,9 +2565,6 @@ func (s *Server) obsLatencyProfile() obsrtmp.LatencyProfile {
 		return obsrtmp.NormalizeLatencyProfile("auto")
 	}
 	profile := obsrtmp.ResolveLatencyProfile(appSettings.OBSLatencyMode, appSettings.NetworkUploadMbps)
-	if appSettings.OBSDVREnabled {
-		profile = obsrtmp.EnableDVR(profile)
-	}
 	return profile
 }
 

@@ -1018,7 +1018,6 @@ const indexHTML = `<!doctype html>
                   <option value="rtsp-ultra">超低遅延RTSP</option>
                   <option value="rtsp-realtime">リアルタイムRTSP</option>
                 </select>
-                <label><input id="obsDVRToggle" type="checkbox"> DVR 30min</label>
               </div>
             </div>
           </div>
@@ -1202,7 +1201,6 @@ const indexHTML = `<!doctype html>
     const obsKeyRotateButton = document.getElementById('obsKeyRotateButton');
     const obsLatencyMode = document.getElementById('obsLatencyMode');
     const obsLatencyStatus = document.getElementById('obsLatencyStatus');
-    const obsDVRToggle = document.getElementById('obsDVRToggle');
     const rtspRiskDialog = document.getElementById('rtspRiskDialog');
     const rtspRiskCancel = document.getElementById('rtspRiskCancel');
     const rtspRiskConfirm = document.getElementById('rtspRiskConfirm');
@@ -1811,11 +1809,9 @@ const indexHTML = `<!doctype html>
       const latency = data.latency || {};
       confirmedOBSLatencyMode = latency.mode || 'hls';
       if (obsLatencyMode) obsLatencyMode.value = confirmedOBSLatencyMode;
-      if (obsDVRToggle) obsDVRToggle.checked = !!latency.dvr;
       if (obsLatencyStatus) {
         const target = latency.target && latency.target !== 'auto' ? ' / ' + latency.target : '';
-        const dvr = latency.dvr ? ' / DVR 30min' : '';
-        obsLatencyStatus.textContent = (latency.label || latency.mode || 'hls') + target + dvr;
+        obsLatencyStatus.textContent = (latency.label || latency.mode || 'hls') + target;
         obsLatencyStatus.title = latency.message || '';
       }
       if (data.connected && data.publishing) {
@@ -2041,7 +2037,7 @@ const indexHTML = `<!doctype html>
     }
 
     async function copyStartedOBSURL(data) {
-      const url = data && (data.shareURL || data.hlsURL || data.publicHLSURL);
+      const url = data && data.obs && data.obs.rtsptURL ? data.obs.rtsptURL : data && (data.shareURL || data.hlsURL || data.publicHLSURL);
       if (!url || !(url.startsWith('http') || url.startsWith('rtsp://'))) {
         return;
       }
@@ -2355,17 +2351,13 @@ const indexHTML = `<!doctype html>
       }
       updateOBSLatency(requestedMode);
     });
-    obsDVRToggle.addEventListener('change', async () => {
-      updateOBSLatency(obsLatencyMode.value);
-    });
     async function updateOBSLatency(mode) {
       obsLatencyMode.disabled = true;
-      obsDVRToggle.disabled = true;
       try {
         const res = await fetch('/api/obs/latency', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mode: mode || obsLatencyMode.value, dvr: obsDVRToggle.checked })
+          body: JSON.stringify({ mode: mode || obsLatencyMode.value })
         });
         if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
@@ -2379,7 +2371,6 @@ const indexHTML = `<!doctype html>
         toast.textContent = error.message || 'Failed to update OBS latency mode';
       } finally {
         obsLatencyMode.disabled = false;
-        obsDVRToggle.disabled = false;
       }
     }
     function showRTSPRiskDialog() {

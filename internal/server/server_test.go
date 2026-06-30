@@ -557,8 +557,8 @@ func TestHandleOBSLatencyNormalizesStorage(t *testing.T) {
 	if appSettings.OBSLatencyMode != obsrtmp.LatencyModeRTSPLow {
 		t.Fatalf("OBSLatencyMode = %q, want %q", appSettings.OBSLatencyMode, obsrtmp.LatencyModeRTSPLow)
 	}
-	if !appSettings.OBSDVREnabled {
-		t.Fatal("expected DVR flag to be stored")
+	if appSettings.OBSDVREnabled {
+		t.Fatal("DVR flag should be ignored")
 	}
 }
 
@@ -816,11 +816,20 @@ func TestRTSPUIUsesSharedURLAndRiskDialog(t *testing.T) {
 		`obsRtsptURL`,
 		`rtspRiskAccepted`,
 		`rtspRiskAcknowledged`,
+		`obsDVRToggle`,
+		`DVR 30min`,
 	}
 	for _, forbidden := range mustNotContain {
 		if strings.Contains(indexHTML, forbidden) {
 			t.Fatalf("indexHTML contains forbidden RTSP UI fragment %q", forbidden)
 		}
+	}
+}
+
+func TestOBSStartCopyPrefersRTSPURL(t *testing.T) {
+	want := `const url = data && data.obs && data.obs.rtsptURL ? data.obs.rtsptURL : data && (data.shareURL || data.hlsURL || data.publicHLSURL);`
+	if !strings.Contains(indexHTML, want) {
+		t.Fatalf("copyStartedOBSURL should prefer RTSP URL. Missing %q", want)
 	}
 }
 
