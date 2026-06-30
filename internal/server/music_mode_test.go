@@ -115,14 +115,20 @@ func TestMusicModeRoutesPublishAndQueueURLsToAudioAcquirer(t *testing.T) {
 // works, not just an allowlist), and only when yt-dlp fails does the bounded
 // direct downloader run.
 func TestVideoModeTriesYTDLPThenDirect(t *testing.T) {
+	oldPage := pageMediaDownloader
+	oldDirect := directMediaDownloader
+	oldEnsureFFmpeg := ensureFFmpeg
+	t.Cleanup(func() {
+		pageMediaDownloader = oldPage
+		directMediaDownloader = oldDirect
+		ensureFFmpeg = oldEnsureFFmpeg
+	})
+	ensureFFmpeg = func() (string, error) {
+		return "", errors.New("ffmpeg route blocked")
+	}
+
 	t.Run("yt-dlp success skips direct", func(t *testing.T) {
 		_, mux := testServer(t, true)
-		oldPage := pageMediaDownloader
-		oldDirect := directMediaDownloader
-		defer func() {
-			pageMediaDownloader = oldPage
-			directMediaDownloader = oldDirect
-		}()
 		pageCalled := false
 		directCalled := false
 		pageMediaDownloader = func(string, string) (video.DownloadedMedia, error) {
@@ -150,12 +156,6 @@ func TestVideoModeTriesYTDLPThenDirect(t *testing.T) {
 		} {
 			t.Run(rawURL, func(t *testing.T) {
 				_, mux := testServer(t, true)
-				oldPage := pageMediaDownloader
-				oldDirect := directMediaDownloader
-				defer func() {
-					pageMediaDownloader = oldPage
-					directMediaDownloader = oldDirect
-				}()
 				pageCalled := false
 				directCalled := false
 				pageMediaDownloader = func(string, string) (video.DownloadedMedia, error) {
@@ -196,12 +196,6 @@ func TestVideoModeTriesYTDLPThenDirect(t *testing.T) {
 		} {
 			t.Run(rawURL, func(t *testing.T) {
 				_, mux := testServer(t, true)
-				oldPage := pageMediaDownloader
-				oldDirect := directMediaDownloader
-				defer func() {
-					pageMediaDownloader = oldPage
-					directMediaDownloader = oldDirect
-				}()
 				pageCalled := false
 				directCalled := false
 				pageMediaDownloader = func(string, string) (video.DownloadedMedia, error) {

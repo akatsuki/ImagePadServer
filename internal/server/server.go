@@ -39,7 +39,11 @@ const (
 	maxVideoUploadBytes = 2 << 30 // matches yt-dlp --max-filesize 2G
 )
 
-var pageMediaDownloader = video.DownloadMediaURL
+var (
+	pageMediaDownloader = video.DownloadMediaURL
+	networkMeasurer     = video.MeasureNetwork
+	ensureFFmpeg        = video.EnsureFFmpeg
+)
 
 type Server struct {
 	cfg   config.Config
@@ -849,7 +853,7 @@ func (s *Server) processVideoFileAndPublish(r *http.Request, sourcePath, name, p
 }
 
 func (s *Server) processVideoFileAndQueue(r *http.Request, sourcePath, name, providedThumbnail string) (map[string]interface{}, error) {
-	if _, err := video.EnsureFFmpeg(); err != nil {
+	if _, err := ensureFFmpeg(); err != nil {
 		return nil, err
 	}
 	thumbnail := s.useOrCreateVideoThumbnail(sourcePath, providedThumbnail)
@@ -1337,65 +1341,6 @@ func (s *Server) probeVideoDuration(path string) int {
 	return secs
 }
 
-func (s *Server) processSoundCloudFileAndPublish(r *http.Request, media video.DownloadedMedia) (map[string]interface{}, error) {
-	if _, err := video.EnsureFFmpeg(); err != nil {
-		return nil, err
-	}
-	thumbnail := ""
-	if media.ArtworkPath != "" {
-		thumbnail = s.createVideoThumbnail(media.ArtworkPath)
-	}
-	info := soundCloudCurrentInfo(media, "current-video"+filepath.Ext(media.SourcePath), thumbnail)
-	if stat, err := os.Stat(media.SourcePath); err == nil {
-		info.SizeBytes = stat.Size()
-	}
-	if prev := s.store.Current(); prev != nil && prev.ID != "" {
-		video.CancelConversion(s.store.Dir(), prev.ID)
-	}
-	if err := s.store.SetCurrentInfo(info); err != nil {
-		return nil, fmt.Errorf("failed to save media")
-	}
-	current := s.store.Current()
-	currentID := ""
-	if current != nil {
-		currentID = current.ID
-	}
-	artworkPath := media.ArtworkPath
-	if thumbnail != "" {
-		artworkPath = filepath.Join(s.store.Dir(), thumbnail)
-	}
-	s.enqueueSoundCloudConversion(media.SourcePath, artworkPath, currentID, media.Name)
-
-	state := s.state(r)
-	return s.withClipboardResult(state), nil
-}
-
-func (s *Server) processSoundCloudFileAndQueue(r *http.Request, media video.DownloadedMedia) (map[string]interface{}, error) {
-	if _, err := video.EnsureFFmpeg(); err != nil {
-		return nil, err
-	}
-	thumbnail := ""
-	if media.ArtworkPath != "" {
-		thumbnail = s.createVideoThumbnail(media.ArtworkPath)
-	}
-	info := soundCloudCurrentInfo(media, "queued-video"+filepath.Ext(media.SourcePath), thumbnail)
-	if stat, err := os.Stat(media.SourcePath); err == nil {
-		info.SizeBytes = stat.Size()
-	}
-	historyItem, err := s.store.AddHistory(media.SourcePath, info)
-	if err != nil {
-		return nil, fmt.Errorf("failed to add to history")
-	}
-	if path, _, ok := s.store.HistoryPath(historyItem.ID); ok {
-		artworkPath := media.ArtworkPath
-		if path, _, ok := s.store.HistoryThumbnailPath(historyItem.ID); ok {
-			artworkPath = path
-		}
-		s.enqueueSoundCloudConversion(path, artworkPath, historyItem.ID, historyItem.OriginalName)
-	}
-	return s.state(r), nil
-}
-
 func soundCloudCurrentInfo(media video.DownloadedMedia, publicName, thumbnail string) library.CurrentImage {
 	return library.CurrentImage{
 		Kind:         "video",
@@ -1406,16 +1351,6 @@ func soundCloudCurrentInfo(media video.DownloadedMedia, publicName, thumbnail st
 		OriginalName: media.Name,
 		Thumbnail:    thumbnail,
 	}
-}
-
-func (s *Server) enqueueSoundCloudConversion(audioPath, artworkPath, id, title string) {
-	input := video.AudioRenderInput{
-		SourcePath:  audioPath,
-		Kind:        video.SourceSoundCloud,
-		ArtworkPath: artworkPath,
-	}
-	jobID := video.EnqueueAudioForID(input, s.store.Dir(), id, title, s.musicQualityPreset())
-	s.watchConversion(jobID, id)
 }
 
 func (s *Server) watchConversion(jobID, mediaID string) {
@@ -1670,11 +1605,14 @@ func (s *Server) handleNetworkCheck(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	measurement := video.MeasureNetwork()
-	_ = settings.Update(func(appSettings *settings.Settings) error {
+	measurement := networkMeasurer()
+	if err := settings.Update(func(appSettings *settings.Settings) error {
 		appSettings.NetworkUploadMbps = measurement.UploadMbps
 		return nil
-	})
+	}); err != nil {
+		http.Error(w, "failed to save settings", http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, s.videoQualityState())
 }
 

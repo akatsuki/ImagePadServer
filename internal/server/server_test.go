@@ -666,6 +666,29 @@ func TestAutoQualityPrefersUploadBandwidth(t *testing.T) {
 	}
 }
 
+func TestHandleNetworkCheckSurfacesSettingsSaveFailure(t *testing.T) {
+	srv, mux := testServer(t, false)
+	defer srv.store.Reset()
+
+	oldMeasurer := networkMeasurer
+	t.Cleanup(func() { networkMeasurer = oldMeasurer })
+	networkMeasurer = func() video.NetworkMeasurement {
+		return video.NetworkMeasurement{UploadMbps: 12}
+	}
+
+	notDir := filepath.Join(t.TempDir(), "settings-as-file")
+	if err := os.WriteFile(notDir, []byte("not a directory"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("IMAGEPAD_DATA_DIR", notDir)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/network-check", nil)
+	rec := adminJSON(t, mux, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 when settings cannot be saved; body = %q", rec.Code, rec.Body.String())
+	}
+}
+
 func adminRequest(rawURL, remoteAddr string) *http.Request {
 	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
 	if err != nil {

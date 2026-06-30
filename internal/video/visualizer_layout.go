@@ -2,11 +2,9 @@ package video
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"image"
-	"image/color"
 	"image/png"
 	"math"
 	"os"
@@ -273,7 +271,7 @@ func alphaBounds(img image.Image) *image.Rectangle {
 
 // escapeDrawText escapes a string for use in an FFmpeg drawtext filter
 // expression.  The drawtext filter uses single-quote quoting rules in the
-// filter graph: literal single quotes are written as '\'' (close, escaped
+// filter graph: literal single quotes are written as '\” (close, escaped
 // literal, reopen).
 func escapeDrawText(s string) string {
 	// Replace backslashes first
@@ -281,32 +279,4 @@ func escapeDrawText(s string) string {
 	// Replace single quotes with the drawtext escape sequence
 	s = strings.ReplaceAll(s, "'", "'\\\\''")
 	return s
-}
-
-// ---------------------------------------------------------------------------
-// Color utilities (used by ASS generation)
-// ---------------------------------------------------------------------------
-
-// assColor converts a color.RGBA to an ASS-format colour string (&HAABBGGRR).
-func assColor(c color.RGBA) string {
-	return fmt.Sprintf("&H%02X%02X%02X%02X", c.A, c.B, c.G, c.R)
-}
-
-// ---------------------------------------------------------------------------
-// Generated-temp-dir helpers
-// ---------------------------------------------------------------------------
-
-// hideWindow hides the console window for a command (Windows no-op on other OS).
-// Declared here so the package can compile against the existing hide_windows.go.
-
-// CombinedOutputTrackedFFmpeg is declared in toolchain.go.
-
-// ---------------------------------------------------------------------------
-// Binary read helpers for ASS
-// ---------------------------------------------------------------------------
-
-func float64ToBytes(f float64) []byte {
-	b := make([]byte, 8)
-	binary.LittleEndian.PutUint64(b, math.Float64bits(f))
-	return b
 }

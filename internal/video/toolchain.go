@@ -79,7 +79,7 @@ func ffprobePath() (string, error) {
 	if local := localFFprobePath(); fileExists(local) {
 		return local, nil
 	}
-	return "", fmt.Errorf("ffprobe not found in bundle. %s You can also set IMAGEPAD_FFPROBE.", toolInstallHint("ffmpeg"))
+	return "", fmt.Errorf("ffprobe not found in bundle; %s; you can also set IMAGEPAD_FFPROBE", toolInstallHint("ffmpeg"))
 }
 
 func localFFprobePath() string {
@@ -143,7 +143,7 @@ func EnsureFFprobe() (string, error) {
 		return path, nil
 	}
 	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
-		return "", fmt.Errorf("ffprobe not found. %s You can also set IMAGEPAD_FFPROBE.", toolInstallHint("ffmpeg"))
+		return "", fmt.Errorf("ffprobe not found; %s; you can also set IMAGEPAD_FFPROBE", toolInstallHint("ffmpeg"))
 	}
 	if _, err := ffprobeBundleInstaller(); err != nil {
 		return "", fmt.Errorf("failed to acquire ffprobe: %w", err)
@@ -214,7 +214,7 @@ func ffmpegPath() (string, error) {
 	if higher := higherVersionFFmpegPath(); higher != "" {
 		return higher, nil
 	}
-	return "", fmt.Errorf("ffmpeg not found in bundle. %s You can also set IMAGEPAD_FFMPEG.", toolInstallHint("ffmpeg"))
+	return "", fmt.Errorf("ffmpeg not found in bundle; %s; you can also set IMAGEPAD_FFMPEG", toolInstallHint("ffmpeg"))
 }
 
 func ytdlpPath() (string, error) {
@@ -231,7 +231,7 @@ func ytdlpPath() (string, error) {
 	if higher := higherVersionToolPath("yt-dlp"); higher != "" {
 		return higher, nil
 	}
-	return "", fmt.Errorf("yt-dlp not found in bundle. %s You can also set IMAGEPAD_YTDLP.", toolInstallHint("yt-dlp"))
+	return "", fmt.Errorf("yt-dlp not found in bundle; %s; you can also set IMAGEPAD_YTDLP", toolInstallHint("yt-dlp"))
 }
 
 // binDir is the root tools directory (settings.Dir()/bin).
@@ -266,11 +266,11 @@ func ytdlpAssetName() string {
 func toolInstallHint(name string) string {
 	switch runtime.GOOS {
 	case "darwin":
-		return fmt.Sprintf("Install it with Homebrew (`brew install %s`) or add it to PATH.", name)
+		return fmt.Sprintf("install it with Homebrew (`brew install %s`) or add it to PATH", name)
 	case "linux":
-		return fmt.Sprintf("Install %s with your package manager or add it to PATH.", name)
+		return fmt.Sprintf("install %s with your package manager or add it to PATH", name)
 	default:
-		return fmt.Sprintf("Add %s to PATH.", name)
+		return fmt.Sprintf("add %s to PATH", name)
 	}
 }
 
@@ -283,7 +283,7 @@ func EnsureFFmpeg() (string, error) {
 		return ffmpeg, nil
 	}
 	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
-		return "", fmt.Errorf("FFmpeg not found. %s You can also set IMAGEPAD_FFMPEG.", toolInstallHint("ffmpeg"))
+		return "", fmt.Errorf("ffmpeg not found; %s; you can also set IMAGEPAD_FFMPEG", toolInstallHint("ffmpeg"))
 	}
 	ffmpegBundleMu.Lock()
 	defer ffmpegBundleMu.Unlock()
@@ -331,7 +331,7 @@ func EnsureYTDLP() (string, error) {
 		return exe, nil
 	}
 	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
-		return "", fmt.Errorf("yt-dlp not found. %s You can also set IMAGEPAD_YTDLP.", toolInstallHint("yt-dlp"))
+		return "", fmt.Errorf("yt-dlp not found; %s; you can also set IMAGEPAD_YTDLP", toolInstallHint("yt-dlp"))
 	}
 	// Serialize with EnsureLatestYTDLP: both write the same target path via
 	// downloadYTDLPWithChecksum, and the startup update goroutine can race a
@@ -563,10 +563,6 @@ func downloadDarwinFFmpeg() (string, error) {
 	return target, nil
 }
 
-func darwinFFmpegDownloadURL() (string, error) {
-	return darwinToolDownloadURL(runtime.GOARCH, "ffmpeg")
-}
-
 func darwinToolDownloadURL(arch, tool string) (string, error) {
 	if arch != "arm64" && arch != "amd64" {
 		return "", fmt.Errorf("automatic FFmpeg install is not available for darwin/%s", arch)
@@ -575,10 +571,6 @@ func darwinToolDownloadURL(arch, tool string) (string, error) {
 		return "", fmt.Errorf("unsupported Darwin FFmpeg tool %q", tool)
 	}
 	return fmt.Sprintf("https://ffmpeg.martin-riedl.de/redirect/latest/macos/%s/release/%s.zip", arch, tool), nil
-}
-
-func downloadDarwinYTDLP() (string, error) {
-	return downloadDarwinYTDLPWithChecksum("")
 }
 
 func downloadDarwinYTDLPWithChecksum(checksum string) (string, error) {
@@ -834,7 +826,7 @@ func extractNamedBinaryFromZip(zipPath, target, binaryName string) error {
 
 	for _, file := range reader.File {
 		name := strings.ReplaceAll(file.Name, "\\", "/")
-		if strings.ToLower(filepath.Base(name)) != strings.ToLower(binaryName) {
+		if !strings.EqualFold(filepath.Base(name), binaryName) {
 			continue
 		}
 		src, err := file.Open()

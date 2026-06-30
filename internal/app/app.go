@@ -178,7 +178,7 @@ func run(useNativeWindow bool) error {
 	srv.SetExitRequested(trayExitRequested)
 
 	go func() {
-		time.Sleep(300 * time.Millisecond)
+		waitForServerHealthy(localURL+"healthz", 2*time.Second)
 		if useNativeWindow {
 			_ = appwindow.Show(localURL)
 			return
@@ -343,7 +343,24 @@ func requestReconnect(reconnect chan<- struct{}) {
 }
 
 func serverIsHealthy(url string) bool {
-	client := http.Client{Timeout: 700 * time.Millisecond}
+	return serverIsHealthyWithin(url, 700*time.Millisecond)
+}
+
+func waitForServerHealthy(url string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if serverIsHealthyWithin(url, 100*time.Millisecond) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+func serverIsHealthyWithin(url string, timeout time.Duration) bool {
+	client := http.Client{Timeout: timeout}
 	resp, err := client.Get(url)
 	if err != nil {
 		return false

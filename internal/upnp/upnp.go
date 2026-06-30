@@ -5,7 +5,6 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"net/url"
@@ -145,7 +144,10 @@ func servicesFromDevice(deviceURL string) ([]gatewayService, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	data, err := ioutil.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("device description rejected: HTTP %d", resp.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
 	if err != nil {
 		return nil, err
 	}
@@ -295,7 +297,7 @@ func soap(svc gatewayService, action, body string, limit int64) (int, []byte, er
 		return 0, nil, err
 	}
 	defer resp.Body.Close()
-	data, _ := ioutil.ReadAll(io.LimitReader(resp.Body, limit))
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, limit))
 	return resp.StatusCode, data, nil
 }
 
@@ -354,14 +356,17 @@ func serviceRank(serviceType string) int {
 
 func absoluteURL(baseURL, ref string) string {
 	u, err := url.Parse(ref)
-	if err == nil && u.IsAbs() {
+	if err != nil {
+		return ref
+	}
+	if u.IsAbs() {
 		return ref
 	}
 	base, err := url.Parse(baseURL)
 	if err != nil {
 		return ref
 	}
-	return base.ResolveReference(&url.URL{Path: ref}).String()
+	return base.ResolveReference(u).String()
 }
 
 func localIPFor(remoteURL string) (string, error) {

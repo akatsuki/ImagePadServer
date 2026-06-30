@@ -557,19 +557,19 @@ func TestVisualizerFrameWithArtwork(t *testing.T) {
 
 	// 4. Spectrum bars at 4 s – check first bar bottom pixel.
 	//    First bar: X=443, bottom Y=488.
-	r, g, b, a = pixel(frame120, 443, 487)
+	_, _, _, a = pixel(frame120, 443, 487)
 	if a < 200 {
 		t.Errorf("spectrum bar at (443,487) alpha=%d, want >=200", a)
 	}
 
 	// 5. Progress marker at 0 s – left edge.
-	r, g, b, a = pixel(frame0, 64, 654)
+	_, _, _, a = pixel(frame0, 64, 654)
 	if a < 200 {
 		t.Errorf("progress marker at (64,654) in frame 0: alpha=%d, want >=200", a)
 	}
 
 	// 6. Progress marker at 4 s – expected X = 64 + 1000*4/10 = 464.
-	r, g, b, a = pixel(frame120, 464, 654)
+	_, _, _, a = pixel(frame120, 464, 654)
 	if a < 200 {
 		t.Errorf("progress marker at (464,654) in frame 4s: alpha=%d, want >=200", a)
 	}
@@ -647,13 +647,9 @@ func TestVisualizerFallbackNoArt(t *testing.T) {
 		t.Fatalf("expected %d bytes, got %d", 30*frameSize, buf.Len())
 	}
 
-	// Foreground mode should be valid.  Overlay may be 0 (no overlay needed)
-	// up to 255 (100 %).
+	// Foreground mode should be valid. Overlay may be 0 (no overlay needed).
 	if mode.PrimaryColor.A != 255 || mode.AccentColor.A != 255 {
 		t.Errorf("foregrounds must be opaque, got primary=%d accent=%d", mode.PrimaryColor.A, mode.AccentColor.A)
-	}
-	if mode.Overlay.A > 255 {
-		t.Errorf("overlay alpha %d > 255 (max)", mode.Overlay.A)
 	}
 
 	// Fallback tile centre should have non-zero colour from gradient/fingerprint.

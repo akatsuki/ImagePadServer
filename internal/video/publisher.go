@@ -1091,10 +1091,6 @@ func EndExternalHLS(outDir string, done chan struct{}) {
 	}
 }
 
-func isActive(outDir string) bool {
-	return isActiveForID(outDir, "")
-}
-
 func isActiveForID(outDir, id string) bool {
 	active, ok := activeHLS.Load(outDir)
 	if !ok {
@@ -1201,9 +1197,7 @@ func finalizeHLSPlaylist(outDir, id string) error {
 		return err
 	}
 	text := string(data)
-	if strings.Contains(text, "#EXT-X-PLAYLIST-TYPE:EVENT") {
-		text = strings.Replace(text, "#EXT-X-PLAYLIST-TYPE:EVENT", "#EXT-X-PLAYLIST-TYPE:VOD", 1)
-	}
+	text = strings.Replace(text, "#EXT-X-PLAYLIST-TYPE:EVENT", "#EXT-X-PLAYLIST-TYPE:VOD", 1)
 	if !strings.Contains(text, "#EXT-X-ENDLIST") {
 		if !strings.HasSuffix(text, "\n") {
 			text += "\n"
