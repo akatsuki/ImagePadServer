@@ -488,6 +488,11 @@ func TestProxyLLHLSGating(t *testing.T) {
 	if newTestManager(t, "llhls").ProxyLLHLS(rec, req, "x", "index.m3u8") {
 		t.Fatal("LLHLS with no active runtime must not proxy")
 	}
+	// RTSP modes also use MediaMTX HLS for local browser preview, but still
+	// require an active session/runtime.
+	if newTestManager(t, LatencyModeRTSPRealtime).ProxyLLHLS(rec, req, "x", "index.m3u8") {
+		t.Fatal("RTSP with no active runtime must not proxy")
+	}
 }
 
 // TestMediaMTXRuntimeBootsRealBinary starts the real, pinned MediaMTX with the

@@ -2150,15 +2150,15 @@ func (s *Server) serveLHLSArtifact(w http.ResponseWriter, r *http.Request, id st
 	return true
 }
 
-// serveLLHLSProxy forwards LL-HLS playlist/segment requests for the active OBS
-// session to its MediaMTX sidecar. It returns true when LL-HLS is the active
-// transport and the request was proxied, so the HLS-family handlers do not fall
-// back to the standard MPEG-TS path.
+// serveLLHLSProxy forwards MediaMTX-owned HLS playlist/segment requests for
+// the active OBS session. RTSP modes use this for browser-local preview while
+// keeping the copy/share URL as rtsp:// for VRChat.
 func (s *Server) serveLLHLSProxy(w http.ResponseWriter, r *http.Request, id string) bool {
 	if s.obs == nil {
 		return false
 	}
-	if obsrtmp.NormalizeLatencyMode(s.obs.Status().Latency.Mode) != obsrtmp.LatencyModeLLHLS {
+	transport := s.obs.Status().Latency.Transport
+	if transport != obsrtmp.LatencyModeLLHLS && transport != obsrtmp.LatencyModeRTSPT {
 		return false
 	}
 	name := filepath.Base(r.URL.Path)
@@ -2578,12 +2578,19 @@ func (s *Server) obsState() obsrtmp.Status {
 	}
 	status := s.obs.Status()
 	status.Capabilities = obsrtmp.LatencyCapabilities()
-	// RTSP has no browser-playable surface; its copyable rtsp:// URL is carried
-	// in status.RTSPTURL instead of a preview URL. HLS modes share /stream.
-	if status.MediaID != "" && status.Latency.Transport != obsrtmp.LatencyModeRTSPT {
-		status.PreviewURL = s.adminPath("/stream/" + url.PathEscape(status.MediaID) + "/" + video.PlaylistName(status.MediaID))
-	}
+	status.PreviewURL = obsPreviewURL(status, s.adminPath)
 	return status
+}
+
+func obsPreviewURL(status obsrtmp.Status, adminPath func(string) string) string {
+	if status.MediaID == "" {
+		return ""
+	}
+	path := "/stream/" + url.PathEscape(status.MediaID) + "/" + video.PlaylistName(status.MediaID)
+	if adminPath == nil {
+		return path
+	}
+	return adminPath(path)
 }
 
 func normalizeQualityMode(mode string) string {

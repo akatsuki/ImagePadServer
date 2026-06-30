@@ -916,6 +916,24 @@ func TestOBSLatencyAliasesAndCapabilitySurface(t *testing.T) {
 	}
 }
 
+func TestOBSPreviewURLUsesLocalHLSForRTSP(t *testing.T) {
+	status := obsrtmp.Status{
+		MediaID:  "rtsp-preview",
+		RTSPTURL: "rtsp://192.168.1.10:49152/obs_rtsp-preview",
+		Latency:  obsrtmp.NormalizeLatencyProfile(obsrtmp.LatencyModeRTSPRealtime),
+	}
+	got := obsPreviewURL(status, func(path string) string {
+		return "/admin" + path
+	})
+	want := "/admin/stream/rtsp-preview/current-rtsp-preview.m3u8"
+	if got != want {
+		t.Fatalf("preview URL = %q, want local HLS %q", got, want)
+	}
+	if strings.Contains(got, "192.168.") || strings.HasPrefix(got, "rtsp://") {
+		t.Fatalf("preview URL must not expose RTSP/LAN address: %q", got)
+	}
+}
+
 func TestPairingIssuesRelayDeviceAndSignedRelayAuthWorks(t *testing.T) {
 	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
 	store, err := library.NewStore(t.TempDir())

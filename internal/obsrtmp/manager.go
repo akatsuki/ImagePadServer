@@ -1023,12 +1023,13 @@ func (m *Manager) LHLSPublicFile(id, name string) (string, bool) {
 	return full, true
 }
 
-// ProxyLLHLS forwards a public LL-HLS request to the active session's MediaMTX
-// sidecar. It returns true when it has handled the request (LL-HLS is the
-// active transport and id is the connected session), so the HLS-family handlers
-// do not fall through to the standard MPEG-TS path.
+// ProxyLLHLS forwards a public HLS request to the active session's MediaMTX
+// sidecar. It returns true when MediaMTX owns the active transport and id is
+// the connected session, so the HLS-family handlers do not fall through to the
+// generated-file path.
 func (m *Manager) ProxyLLHLS(w http.ResponseWriter, r *http.Request, id, name string) bool {
-	if m.currentLatency().Transport != LatencyModeLLHLS {
+	transport := m.currentLatency().Transport
+	if transport != LatencyModeLLHLS && transport != LatencyModeRTSPT {
 		return false
 	}
 	m.mu.Lock()

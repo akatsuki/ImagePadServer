@@ -1354,7 +1354,7 @@ const indexHTML = `<!doctype html>
     }
 
     function renderPreview(data, nextCurrentID) {
-      if (uploadMode === 'obs' && data.obs && data.obs.connected && data.obs.previewURL) {
+      if (uploadMode === 'obs' && data.obs && data.obs.connected && isPlayablePreviewURL(data.obs.previewURL)) {
         const obsID = data.obs.mediaID || nextCurrentID;
         if (state.previewMode !== 'obs' || obsID !== state.obsPreviewID) {
           preview.classList.add('obs-preview');
@@ -1429,6 +1429,11 @@ const indexHTML = `<!doctype html>
         preview.appendChild(img);
         state.previewMode = 'image';
       }
+    }
+
+    function isPlayablePreviewURL(value) {
+      const url = String(value || '');
+      return !!url && !url.startsWith('rtsp://') && !url.startsWith('rtspt://');
     }
 
     function escapeHTML(value) {
