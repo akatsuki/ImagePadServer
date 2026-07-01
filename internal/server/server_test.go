@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -179,6 +180,43 @@ func TestPublicReadRules(t *testing.T) {
 	}
 }
 
+func TestHandleEventsSendsHeartbeat(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	previousHeartbeat := stateEventHeartbeatDelay
+	stateEventHeartbeatDelay = 50 * time.Millisecond
+	t.Cleanup(func() { stateEventHeartbeatDelay = previousHeartbeat })
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+	mux := http.NewServeMux()
+	srv.Register(mux)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := adminRequest("http://127.0.0.1:8080/api/events", "127.0.0.1:50000").WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		mux.ServeHTTP(rec, req)
+		close(done)
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(rec.Body.String(), "event: heartbeat") {
+			cancel()
+			<-done
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	t.Fatalf("SSE body missing heartbeat: %q", rec.Body.String())
+}
+
 func TestPrimaryShareURL(t *testing.T) {
 	url, label := primaryShareURL(map[string]interface{}{
 		"obsLatency": obsrtmp.NormalizeLatencyProfile(obsrtmp.LatencyModeRTSPT),
@@ -192,6 +230,19 @@ func TestPrimaryShareURL(t *testing.T) {
 	})
 	if url != "rtsp://8.8.8.8:52000/obs_session" || label != "RTSP TCP URL" {
 		t.Fatalf("share URL = %q (%s), want RTSP", url, label)
+	}
+
+	url, label = primaryShareURL(map[string]interface{}{
+		"obsLatency": obsrtmp.NormalizeLatencyProfile(obsrtmp.LatencyModeRTSPT),
+		"obs": obsrtmp.Status{
+			RTSPTURL: "",
+		},
+		"videoPlayer": map[string]interface{}{
+			"enabled": true,
+		},
+	})
+	if url != "" || label != "URL" {
+		t.Fatalf("share URL = %q (%s), want no URL before public RTSP is ready", url, label)
 	}
 
 	url, label = primaryShareURL(map[string]interface{}{
@@ -705,7 +756,7 @@ func TestRTSPReadyMappingFailureKeepsLANURL(t *testing.T) {
 		LocalURL:  "rtsp://192.168.1.10:49152/obs_session",
 	})
 
-	if got, want := updatedURL, "rtsp://192.168.1.10:49152/obs_session"; got != want {
+	if got, want := updatedURL, ""; got != want {
 		t.Fatalf("updated URL = %q, want %q", got, want)
 	}
 	if !strings.Contains(updatedMessage, "no UPnP gateway found") {
@@ -741,7 +792,7 @@ func TestRTSPReadyRejectsCarrierNATAddress(t *testing.T) {
 		LocalURL:  "rtsp://192.168.1.10:49152/obs_session",
 	})
 
-	if got, want := updatedURL, "rtsp://192.168.1.10:49152/obs_session"; got != want {
+	if got, want := updatedURL, ""; got != want {
 		t.Fatalf("updated URL = %q, want %q", got, want)
 	}
 	if !strings.Contains(updatedMessage, "CGNAT") {

@@ -1528,6 +1528,8 @@ const indexHTML = `<!doctype html>
     let localChangeChannel = null;
     let confirmedOBSLatencyMode = 'hls';
     let wingMode = 'history';
+    let pendingOBSAutoCopy = false;
+    let lastAutoCopiedOBSURL = '';
     const imageAccept = 'image/png,image/jpeg,image/gif,image/webp,image/bmp,image/tiff,image/svg+xml,image/x-sony-arw,image/x-canon-crw,image/x-canon-cr2,image/x-canon-cr3,image/x-panasonic-rw2,image/x-olympus-orf,image/x-fuji-raf,image/x-nikon-nef,image/x-nikon-nrw,image/x-sigma-x3f,image/x-adobe-dng,.jpg,.jpeg,.png,.gif,.webp,.bmp,.tif,.tiff,.svg,.arw,.srf,.sr2,.crw,.cr2,.cr3,.rw2,.raw,.orf,.raf,.nef,.nrw,.x3f,.dng';
     const mediaAccept = imageAccept + ',video/*,video/mp4,video/quicktime,video/webm,video/x-matroska,.mp4,.mov,.m4v,.webm,.mkv,.avi';
     const rawExtensions = new Set(['.arw', '.srf', '.sr2', '.crw', '.cr2', '.cr3', '.rw2', '.raw', '.orf', '.raf', '.nef', '.nrw', '.x3f', '.dng']);
@@ -1629,6 +1631,7 @@ const indexHTML = `<!doctype html>
       renderPreview(data, nextCurrentID);
       renderHistory(state.history, nextCurrentID);
       state.currentID = nextCurrentID;
+      maybeAutoCopyOBSURL(data);
 
       scheduleRefresh((data.ingest && data.ingest.active) || (data.video && data.video.active) || (data.obs && data.obs.connected) ? 750 : 2000);
     }
@@ -2298,9 +2301,9 @@ const indexHTML = `<!doctype html>
           const res = await fetch('/api/obs/start', { method: 'POST' });
           if (!res.ok) throw new Error(await res.text());
           const data = await res.json();
+          pendingOBSAutoCopy = true;
           applyState(data);
           setUploadMode('obs');
-          await copyStartedOBSURL(data);
           announceLocalChange();
           toast.textContent = data.obs && data.obs.connected ? 'OBS配信を公開しました' : 'OBS配信開始を予約しました';
         } catch (error) {
@@ -2376,19 +2379,52 @@ const indexHTML = `<!doctype html>
       return fetch(action === 'queue' ? '/api/upload-queue' : '/api/upload', { method: 'POST', body: formData });
     }
 
-    async function copyStartedOBSURL(data) {
-      const url = data && data.obs && data.obs.rtsptURL ? data.obs.rtsptURL : data && (data.shareURL || data.hlsURL || data.publicHLSURL);
-      if (!url || !(url.startsWith('http') || url.startsWith('rtsp://'))) {
+    function publicOBSRTSPURL(data) {
+      const url = data && data.obs && data.obs.rtsptURL ? String(data.obs.rtsptURL) : '';
+      if (!url.startsWith('rtsp://')) {
+        return '';
+      }
+      try {
+        const host = new URL(url).hostname;
+        if (/^(localhost|127\.|10\.|192\.168\.|169\.254\.|0\.0\.0\.0$)/i.test(host)) return '';
+        if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host)) return '';
+        if (/^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\./.test(host)) return '';
+      } catch (error) {
+        return '';
+      }
+      return url;
+    }
+
+    async function maybeAutoCopyOBSURL(data) {
+      if (!pendingOBSAutoCopy) {
         return;
       }
+      const url = publicOBSRTSPURL(data);
+      if (!url || url === lastAutoCopiedOBSURL) {
+        return;
+      }
+      pendingOBSAutoCopy = false;
+      lastAutoCopiedOBSURL = url;
       const source = document.getElementById('shareURL');
+      let browserCopied = false;
+      let pcCopied = false;
       try {
-        await copyText(url, source);
+        browserCopied = await copyText(url, source);
       } catch (error) {
       }
       try {
-        await copyURLOnPC('shareURL');
+        const pcResult = await copyURLOnPC('shareURL');
+        pcCopied = !!pcResult.pcClipboardCopied;
       } catch (error) {
+      }
+      if (pcCopied && browserCopied) {
+        toast.textContent = 'グローバルRTSP URLをコピーしました。PCにもコピー済みです';
+      } else if (pcCopied) {
+        toast.textContent = 'グローバルRTSP URLをPCにコピーしました';
+      } else if (browserCopied) {
+        toast.textContent = 'グローバルRTSP URLをこの端末にコピーしました';
+      } else {
+        toast.textContent = 'グローバルRTSP URLを表示しました。コピーできない場合は手動でコピーしてください';
       }
     }
 
@@ -3002,6 +3038,8 @@ const indexHTML = `<!doctype html>
       try {
         if ('EventSource' in window) {
           const stateEvents = new EventSource('/api/events');
+          stateEvents.onopen = () => scheduleRefresh(50);
+          stateEvents.onerror = () => scheduleRefresh(1000);
           stateEvents.addEventListener('state', () => scheduleRefresh(0));
         }
       } catch (error) {

@@ -45,7 +45,10 @@ var (
 	ensureFFmpeg        = video.EnsureFFmpeg
 )
 
-var stateEventThrottleDelay = 300 * time.Millisecond
+var (
+	stateEventThrottleDelay = 300 * time.Millisecond
+	stateEventHeartbeatDelay = 15 * time.Second
+)
 
 type Server struct {
 	cfg   config.Config
@@ -370,12 +373,12 @@ func (s *Server) handleRTSPReady(endpoint obsrtmp.RTSPEndpoint) {
 		if result.Message != "" {
 			message += ": " + result.Message
 		}
-		setURL(endpoint.SessionID, endpoint.LocalURL, message)
+		setURL(endpoint.SessionID, "", message)
 		return
 	}
 	if !upnp.IsGloballyRoutableIPv4(mapping.ExternalIP()) {
 		_ = mapping.Close()
-		setURL(endpoint.SessionID, endpoint.LocalURL,
+		setURL(endpoint.SessionID, "",
 			"RTSP is available on LAN/Tailscale; CGNAT or upstream NAT prevents direct publication.")
 		return
 	}
@@ -495,12 +498,18 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Connection", "keep-alive")
+	_, _ = io.WriteString(w, "retry: 1000\n")
 	_, _ = io.WriteString(w, "event: state\ndata: {}\n\n")
 	flusher.Flush()
+	heartbeat := time.NewTicker(stateEventHeartbeatDelay)
+	defer heartbeat.Stop()
 	for {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-heartbeat.C:
+			_, _ = io.WriteString(w, "event: heartbeat\ndata: {}\n\n")
+			flusher.Flush()
 		case _, ok := <-events:
 			if !ok {
 				return

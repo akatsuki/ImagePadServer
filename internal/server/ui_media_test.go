@@ -49,6 +49,19 @@ func TestUIGenericToastNotificationBar(t *testing.T) {
 	}
 }
 
+func TestUILiveSyncHandlesSSEReconnect(t *testing.T) {
+	html := getIndexHTML(t)
+	for _, want := range []string{
+		`stateEvents.onopen = () => scheduleRefresh(50)`,
+		`stateEvents.onerror = () => scheduleRefresh(1000)`,
+		`stateEvents.addEventListener('state', () => scheduleRefresh(0))`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("live sync reconnect handling missing %q", want)
+		}
+	}
+}
+
 func TestUIRendersIngestPhase(t *testing.T) {
 	html := getIndexHTML(t)
 	for _, want := range []string{"ingestPhase", "ダウンロード中", "解析中"} {
@@ -111,12 +124,18 @@ func TestOBSConnectionDetailsUIAndUnifiedRTSPURL(t *testing.T) {
 		`品質</th>`,
 		`推定ラグ</th>`,
 		`renderOBSConnections`,
-		`data.obs && data.obs.rtsptURL ? data.obs.rtsptURL`,
+		`const url = data && data.obs && data.obs.rtsptURL ? String(data.obs.rtsptURL) : ''`,
 		`最高画質HLS（10s+）`,
 		`高画質HLS（5s）`,
 		`低遅延RTSP（3-4s）`,
 		`超低遅延RTSP（1-2s）`,
 		`リアルタイムRTSP（0.5s+）`,
+		`pendingOBSAutoCopy = true`,
+		`function publicOBSRTSPURL(data)`,
+		`function maybeAutoCopyOBSURL(data)`,
+		`maybeAutoCopyOBSURL(data)`,
+		`copyURLOnPC('shareURL')`,
+		`グローバルRTSP URLをPCにコピーしました`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("OBS connection detail UI missing %q", want)

@@ -316,10 +316,12 @@ func (m *Manager) Restart(timeout time.Duration) {
 func (m *Manager) StartPublishing() bool {
 	var session *Session
 	var endpoint *RTSPEndpoint
+	started := false
 	m.mu.Lock()
 	m.status.Publishing = true
 	m.status.Message = "OBS publishing is armed. Waiting for a stream."
 	if m.current != nil && m.status.Connected {
+		started = true
 		if !m.current.Published {
 			m.current.Published = true
 			copy := *m.current
@@ -335,10 +337,10 @@ func (m *Manager) StartPublishing() bool {
 	if session != nil && m.cb.OnStart != nil {
 		m.cb.OnStart(*session)
 	}
-	if session != nil && endpoint != nil && m.cb.OnRTSPReady != nil {
+	if endpoint != nil && m.cb.OnRTSPReady != nil {
 		m.cb.OnRTSPReady(*endpoint)
 	}
-	return session != nil
+	return started
 }
 
 func (m *Manager) SetRTSPURL(sessionID, publicURL, message string) bool {
@@ -362,8 +364,8 @@ func (m *Manager) setRTSPEndpoint(endpoint RTSPEndpoint) bool {
 	}
 	copy := endpoint
 	m.rtspEndpoint = &copy
-	m.status.RTSPTURL = endpoint.LocalURL
-	m.status.Message = "RTSP TCP stream is ready."
+	m.status.RTSPTURL = ""
+	m.status.Message = "RTSP TCP stream is ready. Waiting for public RTSP publication."
 	publishing := m.status.Publishing
 	m.mu.Unlock()
 	if publishing && m.cb.OnRTSPReady != nil {

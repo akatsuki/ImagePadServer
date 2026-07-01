@@ -250,6 +250,41 @@ func TestStartPublishingReemitsReadyRTSPEndpoint(t *testing.T) {
 	}
 }
 
+func TestStartPublishingReemitsReadyRTSPEndpointForAlreadyPublishedSession(t *testing.T) {
+	manager := newTestManager(t, "rtspt")
+	endpoint := RTSPEndpoint{
+		SessionID: "current",
+		Host:      "192.168.1.20",
+		Port:      49152,
+		Path:      "obs_current",
+		LocalURL:  "rtsp://192.168.1.20:49152/obs_current",
+	}
+	manager.current = &Session{ID: "current", Published: true}
+	manager.status.Connected = true
+	manager.rtspEndpoint = &endpoint
+
+	var started []string
+	var ready []RTSPEndpoint
+	manager.cb = Callbacks{
+		OnStart: func(session Session) {
+			started = append(started, session.ID)
+		},
+		OnRTSPReady: func(got RTSPEndpoint) {
+			ready = append(ready, got)
+		},
+	}
+
+	if !manager.StartPublishing() {
+		t.Fatal("StartPublishing returned false")
+	}
+	if len(started) != 0 {
+		t.Fatalf("OnStart sessions = %#v, want no duplicate start", started)
+	}
+	if len(ready) != 1 || ready[0] != endpoint {
+		t.Fatalf("OnRTSPReady endpoints = %#v, want %#v", ready, endpoint)
+	}
+}
+
 func TestSetAndClearRTSPEndpointFollowCurrentSession(t *testing.T) {
 	manager := newTestManager(t, "rtspt")
 	manager.current = &Session{ID: "current"}
@@ -279,7 +314,7 @@ func TestSetAndClearRTSPEndpointFollowCurrentSession(t *testing.T) {
 	if manager.rtspEndpoint == nil || *manager.rtspEndpoint != endpoint {
 		t.Fatalf("stored endpoint = %#v, want %#v", manager.rtspEndpoint, endpoint)
 	}
-	if got, want := manager.status.RTSPTURL, endpoint.LocalURL; got != want {
+	if got, want := manager.status.RTSPTURL, ""; got != want {
 		t.Fatalf("RTSPTURL = %q, want %q", got, want)
 	}
 	if len(ready) != 1 || ready[0] != endpoint {
