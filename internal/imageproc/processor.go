@@ -17,7 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"imagepadserver/internal/video"
+	"imagepadserver/internal/toolchain"
 
 	"github.com/srwiley/oksvg"
 	"github.com/srwiley/rasterx"
@@ -35,6 +35,8 @@ type Options struct {
 	MaxDimension  int
 	Format        string
 	JPEGQuality   int
+	WebPQuality   int
+	PNGQuality    string
 	MaxInputBytes int64
 	MaxBytes      int64
 }
@@ -50,8 +52,10 @@ type Result struct {
 func DefaultOptions() Options {
 	return Options{
 		MaxDimension:  2048,
-		Format:        "jpeg",
-		JPEGQuality:   88,
+		Format:        "webp",
+		JPEGQuality:   85,
+		WebPQuality:   80,
+		PNGQuality:    "lossless",
 		MaxInputBytes: maxImageBytes,
 		MaxBytes:      30 << 20,
 	}
@@ -62,7 +66,13 @@ func Process(reader io.Reader, name string, outDir string, opts Options) (Result
 		opts.MaxDimension = 2048
 	}
 	if opts.JPEGQuality <= 0 || opts.JPEGQuality > 100 {
-		opts.JPEGQuality = 88
+		opts.JPEGQuality = 85
+	}
+	if opts.WebPQuality <= 0 || opts.WebPQuality > 100 {
+		opts.WebPQuality = 80
+	}
+	if opts.PNGQuality == "" {
+		opts.PNGQuality = "lossless"
 	}
 	if opts.MaxBytes <= 0 || opts.MaxBytes > maxImageBytes {
 		opts.MaxBytes = maxImageBytes
@@ -71,8 +81,12 @@ func Process(reader io.Reader, name string, outDir string, opts Options) (Result
 		opts.MaxInputBytes = maxImageBytes
 	}
 	opts.Format = strings.ToLower(opts.Format)
-	if opts.Format != "png" {
+	switch opts.Format {
+	case "jpeg", "jpg":
 		opts.Format = "jpeg"
+	case "png", "webp":
+	default:
+		opts.Format = "webp"
 	}
 
 	limited := io.LimitReader(reader, opts.MaxInputBytes+1)
@@ -101,34 +115,48 @@ func Process(reader io.Reader, name string, outDir string, opts Options) (Result
 	if opts.Format == "png" {
 		ext = ".png"
 		contentType = "image/png"
+	} else if opts.Format == "webp" {
+		ext = ".webp"
+		contentType = "image/webp"
 	}
 
 	path := filepath.Join(outDir, "processed"+ext)
-	var data []byte
-	if opts.Format == "png" {
+	switch opts.Format {
+	case "png":
 		var buf bytes.Buffer
-		if err := png.Encode(&buf, resized); err != nil {
+		enc := png.Encoder{CompressionLevel: png.BestCompression}
+		if err := enc.Encode(&buf, resized); err != nil {
 			return Result{}, err
 		}
-		data = buf.Bytes()
-	} else {
+		if int64(buf.Len()) > opts.MaxBytes {
+			return Result{}, fmt.Errorf("encoded image exceeds size limit of %d bytes", opts.MaxBytes)
+		}
+		if err := os.WriteFile(path, buf.Bytes(), 0600); err != nil {
+			return Result{}, err
+		}
+		if _, err := OptimizePNG(path, opts.PNGQuality); err != nil {
+			return Result{}, err
+		}
+	case "webp":
+		if err := EncodeWebP(resized, path, opts.WebPQuality); err != nil {
+			return Result{}, fmt.Errorf("webp encode: %w", err)
+		}
+		stat, err := os.Stat(path)
+		if err != nil {
+			return Result{}, err
+		}
+		if stat.Size() > opts.MaxBytes {
+			_ = os.Remove(path)
+			return Result{}, fmt.Errorf("encoded image exceeds size limit of %d bytes", opts.MaxBytes)
+		}
+	default:
 		encoded, err := encodeJPEGWithinLimit(flatten(resized), opts.JPEGQuality, opts.MaxBytes)
 		if err != nil {
 			return Result{}, err
 		}
-		data = encoded
-	}
-	if int64(len(data)) > opts.MaxBytes {
-		return Result{}, fmt.Errorf("encoded image exceeds size limit of %d bytes", opts.MaxBytes)
-	}
-
-	file, err := os.Create(path)
-	if err != nil {
-		return Result{}, err
-	}
-	defer file.Close()
-	if _, err := file.Write(data); err != nil {
-		return Result{}, err
+		if err := os.WriteFile(path, encoded, 0600); err != nil {
+			return Result{}, err
+		}
 	}
 
 	return Result{
@@ -183,7 +211,7 @@ var cameraRAWExtensions = map[string]struct{}{
 }
 
 func decodeCameraRAW(input []byte, name, outDir string, maxDimension int) (image.Image, error) {
-	ffmpeg, err := video.EnsureFFmpeg()
+	ffmpeg, err := toolchain.EnsureFFmpeg()
 	if err != nil {
 		return nil, fmt.Errorf("FFmpeg is required to convert camera RAW files: %w", err)
 	}
@@ -231,7 +259,7 @@ func decodeCameraRAW(input []byte, name, outDir string, maxDimension int) (image
 
 	cmd := exec.Command(ffmpeg, args...)
 	hideWindow(cmd)
-	output, err := video.CombinedOutputTrackedFFmpeg(cmd)
+	output, err := toolchain.CombinedOutputTrackedFFmpeg(cmd)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", err, trimCommandOutput(output))
 	}
@@ -525,9 +553,13 @@ func resizeToFit(src image.Image, maxDim int) image.Image {
 }
 
 func flatten(src image.Image) image.Image {
+	return flattenWithBackground(src, color.White)
+}
+
+func flattenWithBackground(src image.Image, bg color.Color) image.Image {
 	bounds := src.Bounds()
 	dst := image.NewRGBA(image.Rect(0, 0, bounds.Dx(), bounds.Dy()))
-	draw.Draw(dst, dst.Bounds(), image.NewUniform(color.White), image.Point{}, draw.Src)
+	draw.Draw(dst, dst.Bounds(), image.NewUniform(bg), image.Point{}, draw.Src)
 	draw.Draw(dst, dst.Bounds(), src, bounds.Min, draw.Over)
 	return dst
 }

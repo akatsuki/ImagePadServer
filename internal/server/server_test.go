@@ -96,6 +96,28 @@ func TestHandleFFmpegChecksConfiguredBinaryWithoutEnablingVideoMode(t *testing.T
 	}
 }
 
+func TestIndexAndStateRejectNonGET(t *testing.T) {
+	srv, mux := testServer(t, false)
+	defer srv.store.Reset()
+
+	for _, tc := range []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{name: "index post", method: http.MethodPost, path: "/"},
+		{name: "state post", method: http.MethodPost, path: "/api/state"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, nil)
+			rec := adminJSON(t, mux, req)
+			if rec.Code != http.StatusMethodNotAllowed {
+				t.Fatalf("status = %d, want 405; body = %q", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestIsHLSSegmentName(t *testing.T) {
 	valid := []string{"current0.ts", "current12.ts", "current1779424624066091600-24.ts", "current-242352fb7167ea14-1779429230673092900-60.ts"}
 	for _, name := range valid {
@@ -388,6 +410,68 @@ func TestBitrateOnlyPresetKeepsActiveResolution(t *testing.T) {
 	}
 }
 
+func TestQueueItemByID(t *testing.T) {
+	items := []video.QueueItem{
+		{ID: "old", Status: "done"},
+		{ID: "target", Status: "running"},
+	}
+	item, ok := queueItemByID(items, "target")
+	if !ok {
+		t.Fatal("expected target queue item to be found")
+	}
+	if item.Status != "running" {
+		t.Fatalf("status = %q, want running", item.Status)
+	}
+	if _, ok := queueItemByID(items, "pruned"); ok {
+		t.Fatal("expected missing queue item to be treated as pruned")
+	}
+}
+
+func TestImageQualityPresetOptions(t *testing.T) {
+	values := map[string]string{
+		"format":       "webp",
+		"quality":      "high",
+		"maxDimension": "1024",
+		"maxMB":        "10",
+	}
+	opts := optionsFromValues(func(key string) string { return values[key] })
+	if opts.Format != "webp" {
+		t.Fatalf("Format = %q, want webp", opts.Format)
+	}
+	if opts.JPEGQuality != 85 {
+		t.Fatalf("JPEGQuality = %d, want 85", opts.JPEGQuality)
+	}
+	if opts.WebPQuality != 80 {
+		t.Fatalf("WebPQuality = %d, want 80", opts.WebPQuality)
+	}
+	if opts.PNGQuality != "high" {
+		t.Fatalf("PNGQuality = %q, want high", opts.PNGQuality)
+	}
+	if opts.MaxDimension != 1024 {
+		t.Fatalf("MaxDimension = %d, want 1024", opts.MaxDimension)
+	}
+	if opts.MaxBytes != 10<<20 {
+		t.Fatalf("MaxBytes = %d, want %d", opts.MaxBytes, int64(10<<20))
+	}
+}
+
+func TestImageQualityNumericCompatibility(t *testing.T) {
+	values := map[string]string{
+		"format":  "jpeg",
+		"quality": "88",
+	}
+	opts := optionsFromValues(func(key string) string { return values[key] })
+	if opts.JPEGQuality != 88 {
+		t.Fatalf("JPEGQuality = %d, want 88", opts.JPEGQuality)
+	}
+	if opts.WebPQuality != 88 {
+		t.Fatalf("WebPQuality = %d, want 88", opts.WebPQuality)
+	}
+	if opts.PNGQuality != "lossless" {
+		t.Fatalf("PNGQuality = %q, want default lossless", opts.PNGQuality)
+	}
+}
+
 func TestOBSRelayConfigEnablesReceiverAndReturnsConnectionInfo(t *testing.T) {
 	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
 	store, err := library.NewStore(t.TempDir())
@@ -396,7 +480,7 @@ func TestOBSRelayConfigEnablesReceiverAndReturnsConnectionInfo(t *testing.T) {
 	}
 	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
 
-	body, err := srv.obsRelayConfig(false)
+	body, err := srv.obsRelayConfig(false, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -415,6 +499,53 @@ func TestOBSRelayConfigEnablesReceiverAndReturnsConnectionInfo(t *testing.T) {
 	}
 	if !appSettings.VideoPlayerEnabled {
 		t.Fatal("expected relay config request to enable video player support")
+	}
+}
+
+func TestOBSRelayConfigFromRelayDeviceDoesNotPersistVideoPlayerSetting(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	const clientID = "brs_test"
+	const clientSecret = "relay_secret"
+	if err := settings.Update(func(appSettings *settings.Settings) error {
+		appSettings.VideoPlayerEnabled = false
+		appSettings.RelayDevices = []settings.RelayDevice{{
+			ClientID:     clientID,
+			ClientSecret: clientSecret,
+			DeviceName:   "Relay PC",
+			Scope:        relayScope,
+			CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+		}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+	mux := http.NewServeMux()
+	srv.Register(mux)
+
+	req := signedRelayRequest(t, clientID, clientSecret, "relay-config-1")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %q", rec.Code, rec.Body.String())
+	}
+	var body map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if enabled, _ := body["videoPlayerEnabled"].(bool); !enabled {
+		t.Fatalf("videoPlayerEnabled response = %#v, want true for active receiver", body["videoPlayerEnabled"])
+	}
+	appSettings, err := settings.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if appSettings.VideoPlayerEnabled {
+		t.Fatal("relay-scoped device must not persist VideoPlayerEnabled")
 	}
 }
 

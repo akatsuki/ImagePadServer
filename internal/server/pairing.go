@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -124,7 +125,7 @@ func (s *Server) handlePairingConfirm(w http.ResponseWriter, r *http.Request) {
 	clientID := "brs_" + randomToken(18)
 	clientSecret := randomToken(32)
 	createdAt := now.UTC().Format(time.RFC3339)
-	if err := settings.Update(func(appSettings *settings.Settings) error {
+	if err := s.updateSettings(func(appSettings *settings.Settings) error {
 		appSettings.RelayDevices = append(appSettings.RelayDevices, settings.RelayDevice{
 			ClientID:     clientID,
 			ClientSecret: clientSecret,
@@ -169,10 +170,7 @@ func (s *Server) relayDeviceAllowed(r *http.Request) bool {
 	if at.Before(now.Add(-relayClockWindow)) || at.After(now.Add(relayClockWindow)) {
 		return false
 	}
-	appSettings, err := settings.Load()
-	if err != nil {
-		return false
-	}
+	appSettings := s.appSettings()
 	var device settings.RelayDevice
 	for _, candidate := range appSettings.RelayDevices {
 		if candidate.ClientID == clientID {
@@ -201,7 +199,7 @@ func (s *Server) relayDeviceAllowed(r *http.Request) bool {
 	if subtle.ConstantTimeCompare([]byte(signature), []byte(expected)) != 1 {
 		return false
 	}
-	_ = settings.Update(func(appSettings *settings.Settings) error {
+	if err := s.updateSettings(func(appSettings *settings.Settings) error {
 		for i := range appSettings.RelayDevices {
 			if appSettings.RelayDevices[i].ClientID == clientID {
 				appSettings.RelayDevices[i].LastSeenAt = now.UTC().Format(time.RFC3339)
@@ -209,7 +207,9 @@ func (s *Server) relayDeviceAllowed(r *http.Request) bool {
 			}
 		}
 		return nil
-	})
+	}); err != nil {
+		log.Printf("failed to update relay device last seen: %v", err)
+	}
 	return true
 }
 

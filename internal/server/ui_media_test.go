@@ -10,16 +10,33 @@ func getIndexHTML(t *testing.T) string {
 	return indexHTML
 }
 
-func TestUIContainsToolInstallOverlay(t *testing.T) {
+func TestUIContainsCommonDialogSurface(t *testing.T) {
 	html := getIndexHTML(t)
 	for _, want := range []string{
-		`id="toolInstallOverlay"`,
-		`id="toolInstallFill"`,
+		`id="appDialogRoot"`,
+		`function createDialogController(`,
+		`const dialog = createDialogController()`,
+		`dialog.confirm({`,
+		`dialog.showProgress('tool-install'`,
+		`dialog.showStatus('obs-status'`,
 		`updateToolInstall(data.toolInstall)`,
-		`function updateToolInstall(`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("served HTML missing %q", want)
+		}
+	}
+}
+
+func TestUIUsesCommonDialogInsteadOfBrowserConfirm(t *testing.T) {
+	html := getIndexHTML(t)
+	for _, forbidden := range []string{
+		`window.confirm(`,
+		`if (!confirm(`,
+		`id="toolInstallOverlay"`,
+		`id="toolInstallCard"`,
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("common dialog should replace %q", forbidden)
 		}
 	}
 }

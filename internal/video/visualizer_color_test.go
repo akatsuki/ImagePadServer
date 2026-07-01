@@ -81,17 +81,17 @@ func TestOKLCHHueRotation(t *testing.T) {
 
 func TestOKLCHChromaClamp(t *testing.T) {
 	tests := []struct {
-		input   float64
-		want    float64
+		input float64
+		want  float64
 	}{
-		{input: 0.01, want: 0.05},  // below min
-		{input: 0.30, want: 0.18},  // above max
-		{input: 0.10, want: 0.10},  // within range
-		{input: 0.05, want: 0.05},  // at min edge
-		{input: 0.18, want: 0.18},  // at max edge
-		{input: 0.00, want: 0.05},  // zero
-		{input: -0.1, want: 0.05},  // negative
-		{input: 1.00, want: 0.18},  // extreme high
+		{input: 0.01, want: 0.05}, // below min
+		{input: 0.30, want: 0.18}, // above max
+		{input: 0.10, want: 0.10}, // within range
+		{input: 0.05, want: 0.05}, // at min edge
+		{input: 0.18, want: 0.18}, // at max edge
+		{input: 0.00, want: 0.05}, // zero
+		{input: -0.1, want: 0.05}, // negative
+		{input: 1.00, want: 0.18}, // extreme high
 	}
 	for _, tt := range tests {
 		oklch := OKLCH{L: 0.5, C: tt.input, H: 180}

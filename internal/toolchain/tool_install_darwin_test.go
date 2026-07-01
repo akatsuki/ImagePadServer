@@ -1,7 +1,7 @@
 //go:build darwin
 // +build darwin
 
-package video
+package toolchain
 
 import (
 	"os"

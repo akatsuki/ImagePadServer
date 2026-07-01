@@ -1,6 +1,6 @@
 //go:build windows
 
-package video
+package toolchain
 
 import (
 	"os/exec"
@@ -14,4 +14,8 @@ const createNoWindow = 0x08000000
 
 func hideWindow(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: createNoWindow}
+}
+
+func HideWindow(cmd *exec.Cmd) {
+	hideWindow(cmd)
 }

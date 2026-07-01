@@ -12,12 +12,12 @@ import (
 	"sync"
 
 	"imagepadserver/internal/settings"
-	"imagepadserver/internal/video"
+	"imagepadserver/internal/toolchain"
 )
 
 var (
 	mediaMTXProcessRegistryMu sync.Mutex
-	killOwnedMediaMTX         = video.KillOwnedProcesses
+	killOwnedMediaMTX         = toolchain.KillOwnedProcesses
 )
 
 func CleanupStaleMediaMTX() (int, error) {

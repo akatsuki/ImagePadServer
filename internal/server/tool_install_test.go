@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"imagepadserver/internal/video"
+	"imagepadserver/internal/toolchain"
 )
 
 var errFakeInstall = errors.New("install failed")
@@ -40,7 +40,7 @@ func TestStartVideoToolInstallEnablesOnSuccess(t *testing.T) {
 	s.startVideoToolInstall()
 	waitFor(t, 2*time.Second, func() bool { return s.videoPlayerEnabled() })
 
-	if video.ToolInstallStatus().Failed {
+	if toolchain.ToolInstallStatus().Failed {
 		t.Fatal("tracker should not be failed on success")
 	}
 }

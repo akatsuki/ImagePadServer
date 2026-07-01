@@ -19,11 +19,13 @@ import (
 	"imagepadserver/internal/browser"
 	"imagepadserver/internal/config"
 	"imagepadserver/internal/discovery"
+	"imagepadserver/internal/imageproc"
 	"imagepadserver/internal/library"
 	"imagepadserver/internal/network"
 	"imagepadserver/internal/obsrtmp"
 	"imagepadserver/internal/server"
 	"imagepadserver/internal/settings"
+	"imagepadserver/internal/toolchain"
 	"imagepadserver/internal/tray"
 	"imagepadserver/internal/tunnel"
 	"imagepadserver/internal/video"
@@ -57,8 +59,8 @@ func Run() error {
 }
 
 var (
-	cleanupTrackedFFmpeg = video.CleanupTrackedFFmpeg
-	cleanupFFmpegOnPort  = video.KillFFmpegOnPort
+	cleanupTrackedFFmpeg = toolchain.CleanupTrackedFFmpeg
+	cleanupFFmpegOnPort  = toolchain.KillFFmpegOnPort
 	cleanupStaleMediaMTX = obsrtmp.CleanupStaleMediaMTX
 )
 
@@ -94,12 +96,13 @@ func run(useNativeWindow bool) error {
 	cleanupStaleHelpers(log.Printf)
 	go updateYTDLPOnStartup()
 	go func() {
-		video.ValidateInstalledTools()
+		toolchain.ValidateInstalledTools()
+		imageproc.ValidateImageTools()
 		if appSettings, err := settings.Load(); err == nil && appSettings.VideoPlayerEnabled {
-			if _, err := video.EnsureFFmpeg(); err != nil {
+			if _, err := toolchain.EnsureFFmpeg(); err != nil {
 				log.Printf("startup ffmpeg warm failed: %v", err)
 			}
-			if _, err := video.EnsureFFprobe(); err != nil {
+			if _, err := toolchain.EnsureFFprobe(); err != nil {
 				log.Printf("startup ffprobe warm failed: %v", err)
 			}
 		}
@@ -230,7 +233,7 @@ func run(useNativeWindow bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	srv.StopOBSReceiver()
-	if killed, err := video.CleanupTrackedFFmpeg(); err != nil {
+	if killed, err := toolchain.CleanupTrackedFFmpeg(); err != nil {
 		log.Printf("failed to stop FFmpeg processes during shutdown: %v", err)
 	} else if killed > 0 {
 		log.Printf("stopped %d FFmpeg process(es) during shutdown", killed)
@@ -244,7 +247,7 @@ func run(useNativeWindow bool) error {
 }
 
 func updateYTDLPOnStartup() {
-	path, updated, err := video.EnsureLatestYTDLP()
+	path, updated, err := toolchain.EnsureLatestYTDLP()
 	if err != nil {
 		log.Printf("yt-dlp update check failed: %v", err)
 		return
@@ -278,10 +281,12 @@ func measureNetworkOnce() {
 	if measurement.UploadMbps <= 0 {
 		return
 	}
-	_ = settings.Update(func(appSettings *settings.Settings) error {
+	if err := settings.Update(func(appSettings *settings.Settings) error {
 		appSettings.NetworkUploadMbps = measurement.UploadMbps
 		return nil
-	})
+	}); err != nil {
+		log.Printf("failed to save network measurement: %v", err)
+	}
 }
 
 func manageCloudflareTunnel(originURL string, srv *server.Server, tunnelMu *sync.Mutex, tunnelHandle **tunnel.Tunnel, reconnect <-chan struct{}, stop <-chan os.Signal) {

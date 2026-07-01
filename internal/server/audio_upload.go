@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"imagepadserver/internal/toolchain"
 	"imagepadserver/internal/video"
 )
 
@@ -78,7 +79,7 @@ func (s *Server) acquireDownloadedSoundCloud(ctx context.Context, media video.Do
 	if video.ClassifyMediaProbe(probe) != video.MediaAudio {
 		return video.AcquiredAudio{}, fmt.Errorf("SoundCloud download is not playable audio")
 	}
-	ffmpeg, err := video.EnsureFFmpeg()
+	ffmpeg, err := toolchain.EnsureFFmpeg()
 	if err != nil {
 		return video.AcquiredAudio{}, err
 	}
@@ -86,10 +87,10 @@ func (s *Server) acquireDownloadedSoundCloud(ctx context.Context, media video.Do
 	return soundCloudAcquiredFromProbe(media, probe, candidates), nil
 }
 
-var ensureFFprobePath = video.EnsureFFprobe
+var ensureFFprobePath = toolchain.EnsureFFprobe
 
 var musicURLAcquirer = func(ctx context.Context, s *Server, rawURL string) (video.AcquiredAudio, error) {
-	ytdlp, err := video.EnsureYTDLP()
+	ytdlp, err := toolchain.EnsureYTDLP()
 	if err != nil {
 		return video.AcquiredAudio{}, err
 	}
@@ -112,7 +113,7 @@ func (s *Server) acquireDownloadedMusic(ctx context.Context, audio video.Acquire
 	if video.ClassifyMediaProbe(probe) != video.MediaAudio {
 		return video.AcquiredAudio{}, fmt.Errorf("music download is not playable audio")
 	}
-	ffmpeg, err := video.EnsureFFmpeg()
+	ffmpeg, err := toolchain.EnsureFFmpeg()
 	if err != nil {
 		return video.AcquiredAudio{}, err
 	}
@@ -177,7 +178,7 @@ func (s *Server) acquireUploadedAudio(ctx context.Context, reader io.Reader, nam
 	meta := extractEmbeddedMetadata(probe)
 
 	// Extract embedded artwork (non-fatal on failure).
-	ffmpeg, err := video.EnsureFFmpeg()
+	ffmpeg, err := toolchain.EnsureFFmpeg()
 	if err != nil {
 		return video.AcquiredAudio{}, err
 	}

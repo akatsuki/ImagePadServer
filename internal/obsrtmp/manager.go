@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"imagepadserver/internal/toolchain"
 	"imagepadserver/internal/video"
 )
 
@@ -358,7 +359,7 @@ func (m *Manager) loop(ctx context.Context, done chan struct{}) {
 }
 
 func (m *Manager) runOne(parent context.Context) error {
-	ffmpeg, err := video.EnsureFFmpeg()
+	ffmpeg, err := toolchain.EnsureFFmpeg()
 	if err != nil {
 		return err
 	}
@@ -505,7 +506,7 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 		cancel()
 		return fmt.Errorf("failed to start OBS RTMP receiver: %w", err)
 	}
-	untrack := video.TrackStartedFFmpeg(cmd)
+	untrack := toolchain.TrackStartedFFmpeg(cmd)
 	errCh := make(chan error, 1)
 	waitDone := make(chan struct{})
 	go func() {

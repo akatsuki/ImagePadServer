@@ -1,20 +1,21 @@
 package server
 
 import (
+	"log"
 	"time"
 
 	"imagepadserver/internal/settings"
-	"imagepadserver/internal/video"
+	"imagepadserver/internal/toolchain"
 )
 
 // Seams for tests.
 var (
-	videoToolsReady  = video.ToolsReady
+	videoToolsReady  = toolchain.ToolsReady
 	ensureVideoTools = func() error {
-		if _, err := video.EnsureFFmpeg(); err != nil {
+		if _, err := toolchain.EnsureFFmpeg(); err != nil {
 			return err
 		}
-		_, err := video.EnsureFFprobe()
+		_, err := toolchain.EnsureFFprobe()
 		return err
 	}
 	// videoToolInstallBackoff is the wait between retry rounds; overridable in tests.
@@ -53,12 +54,12 @@ func (s *Server) startVideoToolInstall() {
 		const maxRounds = 4
 		for round := 0; round < maxRounds; round++ {
 			if videoToolsReady() {
-				video.ClearToolInstallStatus()
+				toolchain.ClearToolInstallStatus()
 				s.commitVideoPlayerEnabled()
 				return
 			}
 			if err := ensureVideoTools(); err == nil {
-				video.ClearToolInstallStatus()
+				toolchain.ClearToolInstallStatus()
 				s.commitVideoPlayerEnabled()
 				return
 			}
@@ -68,21 +69,26 @@ func (s *Server) startVideoToolInstall() {
 			time.Sleep(videoToolInstallBackoff(round))
 		}
 		// Exhausted: ensure the toggle is reverted to OFF.
-		_ = settings.Update(func(a *settings.Settings) error {
+		if err := s.updateSettings(func(a *settings.Settings) error {
 			a.VideoPlayerEnabled = false
 			a.MusicModeEnabled = false
 			return nil
-		})
+		}); err != nil {
+			log.Printf("failed to revert video-player settings after tool install failure: %v", err)
+		}
 	}()
 }
 
 // commitVideoPlayerEnabled persists video-player ON and runs the same
 // side-effects the synchronous toggle did.
 func (s *Server) commitVideoPlayerEnabled() {
-	_ = settings.Update(func(a *settings.Settings) error {
+	if err := s.updateSettings(func(a *settings.Settings) error {
 		a.VideoPlayerEnabled = true
 		return nil
-	})
+	}); err != nil {
+		log.Printf("failed to persist video-player settings after tool install: %v", err)
+		return
+	}
 	if imagePath, current, ok := s.store.CurrentPath(); ok {
 		s.enqueueStillConversion(imagePath, current.ID, current.OriginalName)
 	}

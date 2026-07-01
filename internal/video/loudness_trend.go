@@ -178,7 +178,7 @@ func gaussianSmooth(input [1000]float64, windowSize int) [1000]float64 {
 	center := windowSize / 2
 	for i := 0; i < windowSize; i++ {
 		x := float64(i - center)
-		kernel[i] = math.Exp(-x*x / (2 * sigma * sigma))
+		kernel[i] = math.Exp(-x * x / (2 * sigma * sigma))
 		kernelSum += kernel[i]
 	}
 	for i := range kernel {
