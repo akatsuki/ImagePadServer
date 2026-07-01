@@ -27,6 +27,7 @@ func TestUploadURLReportsDownloadingPhase(t *testing.T) {
 	defer func() { musicURLAcquirer = oldMusic }()
 	release := make(chan struct{})
 	reached := make(chan struct{})
+	done := make(chan struct{})
 	musicURLAcquirer = func(context.Context, *Server, string) (video.AcquiredAudio, error) {
 		close(reached)
 		<-release
@@ -34,6 +35,7 @@ func TestUploadURLReportsDownloadingPhase(t *testing.T) {
 	}
 
 	go func() {
+		defer close(done)
 		req := httptest.NewRequest(http.MethodPost, "/api/upload-url", strings.NewReader(`{"url":"https://www.youtube.com/watch?v=test"}`))
 		adminJSON(t, mux, req)
 	}()
@@ -42,6 +44,7 @@ func TestUploadURLReportsDownloadingPhase(t *testing.T) {
 	stateReq := httptest.NewRequest(http.MethodGet, "/api/state", nil)
 	rec := adminJSON(t, mux, stateReq)
 	close(release)
+	<-done
 
 	var st map[string]interface{}
 	if err := json.Unmarshal(rec.Body.Bytes(), &st); err != nil {

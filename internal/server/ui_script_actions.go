@@ -47,19 +47,31 @@ const uiScriptActions = `    document.getElementById('refreshButton').addEventLi
       });
     }
     obsLatencyMode.addEventListener('change', async () => {
+      if (obsLatencyMode.value && obsLatencyMode.value.startsWith('rtsp-')) {
+        const accepted = await dialog.confirm({
+          title: 'RTSP公開モード',
+          message: 'RTSPはPC向けの低遅延モードです。ルーターのUPnP設定やネットワーク環境によって外部公開できない場合があります。',
+          confirmText: '切り替え',
+          danger: true
+        });
+        if (!accepted) {
+          applyOBS(state.obs);
+          return;
+        }
+      }
       updateOBSLatency();
     });
-    obsDVRToggle.addEventListener('change', async () => {
+    if (obsDVRToggle) obsDVRToggle.addEventListener('change', async () => {
       updateOBSLatency();
     });
     async function updateOBSLatency() {
       obsLatencyMode.disabled = true;
-      obsDVRToggle.disabled = true;
+      if (obsDVRToggle) obsDVRToggle.disabled = true;
       try {
         const res = await fetch('/api/obs/latency', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mode: obsLatencyMode.value, dvr: obsDVRToggle.checked })
+          body: JSON.stringify({ mode: obsLatencyMode.value, dvr: false })
         });
         if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
@@ -73,7 +85,7 @@ const uiScriptActions = `    document.getElementById('refreshButton').addEventLi
         toast.textContent = error.message || 'Failed to update OBS latency mode';
       } finally {
         obsLatencyMode.disabled = false;
-        obsDVRToggle.disabled = false;
+        if (obsDVRToggle) obsDVRToggle.disabled = false;
       }
     }
     document.getElementById('tunnelReconnectButton').addEventListener('click', async () => {

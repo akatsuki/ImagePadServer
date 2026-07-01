@@ -356,12 +356,10 @@ const uiScriptRender = `    function renderHistory(items, currentID) {
       if (obsDVRToggle) obsDVRToggle.checked = !!latency.dvr;
       if (obsLatencyStatus) {
         const target = latency.target && latency.target !== 'auto' ? ' / ' + latency.target : '';
-        const dvr = latency.dvr ? ' / DVR 30min' : '';
-        obsLatencyStatus.textContent = (latency.label || latency.mode || 'hls') + target + dvr;
+        obsLatencyStatus.textContent = (latency.label || latency.mode || 'hls') + target;
         obsLatencyStatus.title = latency.message || '';
       }
-      // RTSPT has no browser preview: surface its copyable URL only once the
-      // session is ready (rtsptURL is set by the server after readiness).
+      // RTSP modes surface a copyable URL once the session is ready.
       const obsRtspt = document.getElementById('obsRtspt');
       const obsRtsptURL = document.getElementById('obsRtsptURL');
       if (obsRtspt && obsRtsptURL) {

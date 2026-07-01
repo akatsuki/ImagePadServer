@@ -69,6 +69,12 @@ type Server struct {
 
 	settingsMu    sync.RWMutex
 	settingsCache *settings.Settings
+
+	rtspMap       rtspMappingHandle
+	rtspSessionID string
+	rtspReadySeq  uint64
+	mapRTSPPort   rtspPortMapper
+	setRTSPURL    func(sessionID, publicURL, message string) bool
 }
 
 func New(cfg config.Config, store *library.Store, imageURLBase string) *Server {
@@ -99,9 +105,22 @@ func New(cfg config.Config, store *library.Store, imageURLBase string) *Server {
 		relayNonces:    make(map[string]time.Time),
 	}
 	srv.obs = obsrtmp.New(store.Dir(), advertisedHost, 1935, obsStreamKey, srv.videoQualityPreset, srv.obsLatencyProfile, obsrtmp.Callbacks{
-		OnStart: srv.handleOBSStreamStart,
-		OnDone:  srv.handleOBSStreamDone,
+		OnStart:     srv.handleOBSStreamStart,
+		OnDone:      srv.handleOBSStreamDone,
+		OnRTSPReady: srv.handleRTSPReady,
+		OnRTSPDone:  srv.handleRTSPDone,
 	})
+	srv.mapRTSPPort = func(protocol string, internalPort, externalPort int, description string) (rtspMappingHandle, upnp.Result) {
+		var mapping *upnp.TCPMapping
+		var result upnp.Result
+		if strings.EqualFold(protocol, "UDP") {
+			mapping, result = upnp.MapUDP(internalPort, externalPort, description)
+		} else {
+			mapping, result = upnp.MapTCP(internalPort, externalPort, description)
+		}
+		return mapping, result
+	}
+	srv.setRTSPURL = srv.obs.SetRTSPURL
 	return srv
 }
 
@@ -159,6 +178,7 @@ func (s *Server) SetTunnelStatus(ok bool, baseURL, message string) {
 }
 
 func (s *Server) StopOBSReceiver() {
+	s.closeRTSPMapping("")
 	if s.obs != nil {
 		s.obs.StopAndWait(8 * time.Second)
 	}

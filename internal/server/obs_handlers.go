@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -24,6 +25,7 @@ func (s *Server) SyncOBSReceiver() {
 		s.obs.Start()
 		return
 	}
+	s.closeRTSPMapping("")
 	s.obs.Stop()
 }
 
@@ -185,13 +187,48 @@ func (s *Server) handleOBSKey(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "OBS receiver is unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	key, err := settings.RotateOBSStreamKey()
+	var req struct {
+		StreamKey string `json:"streamKey"`
+	}
+	key := ""
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+			http.Error(w, "invalid OBS stream key request", http.StatusBadRequest)
+			return
+		}
+		key = strings.TrimSpace(req.StreamKey)
+	}
+	var err error
+	if key != "" {
+		if err := validateOBSStreamKey(key); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		err = settings.SetOBSStreamKey(key)
+	} else {
+		key, err = settings.RotateOBSStreamKey()
+	}
 	if err != nil {
 		http.Error(w, "failed to update OBS stream key", http.StatusInternalServerError)
 		return
 	}
 	s.obs.SetStreamKey(key, 8*time.Second)
 	writeJSON(w, s.state(r))
+}
+
+func validateOBSStreamKey(key string) error {
+	if key == "" {
+		return fmt.Errorf("OBS Stream Key is required")
+	}
+	if len(key) > 128 {
+		return fmt.Errorf("OBS Stream Key must be 128 characters or fewer")
+	}
+	for _, r := range key {
+		if r <= 0x20 || r == '/' || r == '\\' || r == '?' || r == '#' {
+			return fmt.Errorf("OBS Stream Key contains unsupported characters")
+		}
+	}
+	return nil
 }
 
 func (s *Server) handleOBSLatency(w http.ResponseWriter, r *http.Request) {
@@ -210,7 +247,7 @@ func (s *Server) handleOBSLatency(w http.ResponseWriter, r *http.Request) {
 		mode := obsrtmp.NormalizeLatencyMode(req.Mode)
 		if err := s.updateSettings(func(appSettings *settings.Settings) error {
 			appSettings.OBSLatencyMode = mode
-			appSettings.OBSDVREnabled = req.DVR
+			appSettings.OBSDVREnabled = false
 			return nil
 		}); err != nil {
 			http.Error(w, "failed to save settings", http.StatusInternalServerError)

@@ -29,7 +29,7 @@ func TestOBSPublicStreamHTTPAcceptance(t *testing.T) {
 		t.Skip("set IMAGEPAD_OBS_HTTP_TEST=1 (and IMAGEPAD_FFMPEG) to run the OBS HTTP acceptance test")
 	}
 
-	for _, mode := range []string{"hls", "lhls"} {
+	for _, mode := range []string{obsrtmp.LatencyModeHLSHigh, obsrtmp.LatencyModeHLS} {
 		t.Run(mode, func(t *testing.T) {
 			srv, mux := testServer(t, true)
 			ffmpeg := strings.TrimSpace(os.Getenv("IMAGEPAD_FFMPEG"))
@@ -134,22 +134,9 @@ func getStream(t *testing.T, mux *http.ServeMux, path string) streamResp {
 	return streamResp{code: rec.Code, header: rec.Header(), body: rec.Body.Bytes()}
 }
 
-// resolveSegment returns a segment/chunk filename to fetch. For LHLS it first
-// loads a media playlist (which must advertise #EXT-X-PREFETCH) and confirms a
-// live chunk is referenced; for HLS it reads the first .ts entry.
+// resolveSegment returns a segment filename to fetch from an HLS playlist.
 func resolveSegment(t *testing.T, mux *http.ServeMux, id, mode, master string) string {
 	t.Helper()
-	if mode == "lhls" {
-		media := getStream(t, mux, "/stream/"+id+"/"+firstURI(master, ".m3u8"))
-		text := string(media.body)
-		if !strings.Contains(text, "#EXT-X-PREFETCH") {
-			t.Fatalf("LHLS media playlist missing #EXT-X-PREFETCH:\n%s", text)
-		}
-		if seg := firstURI(text, ".m4s"); seg != "" {
-			return seg
-		}
-		t.Fatalf("LHLS media playlist has no segment:\n%s", text)
-	}
 	if seg := firstURI(master, ".ts"); seg != "" {
 		return seg
 	}

@@ -322,6 +322,17 @@ func hardwareBitrateCeiling(preset QualityPreset) []string {
 	return a
 }
 
+func ScaleBitrateForStreaming(value string, multiplier int) string {
+	if value == "" || multiplier <= 1 {
+		return value
+	}
+	bps := parseBitrateToBps(value)
+	if bps <= 0 {
+		return value
+	}
+	return fmt.Sprintf("%dk", (bps/1000)*multiplier)
+}
+
 func itoa(v int) string {
 	if v == 0 {
 		return "0"

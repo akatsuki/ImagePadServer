@@ -112,17 +112,17 @@ const uiBodyMarkup = `<body>
                   <span id="obsLatencyStatus">auto</span>
                 </div>
                 <select id="obsLatencyMode" aria-label="OBS latency mode">
+                  <option value="hls-high">安定重視（HLS High）</option>
                   <option value="hls">通常遅延（HLS）</option>
-                  <option value="lhls">低遅延（LHLS, 実験）</option>
-                  <option value="llhls">超低遅延（LL-HLS, 実験）</option>
-                  <option value="rtspt">リアルタイム（RTSPT, PC専用）</option>
+                  <option value="rtsp-low">低遅延（RTSP）</option>
+                  <option value="rtsp-ultra">超低遅延（RTSP）</option>
+                  <option value="rtsp-realtime">リアルタイム（RTSP）</option>
                 </select>
-                <label><input id="obsDVRToggle" type="checkbox"> DVR 30min</label>
                 <div id="obsRtspt" class="obs-rtspt" style="display:none">
-                  <strong>RTSPT URL</strong>
+                  <strong>RTSP URL</strong>
                   <code id="obsRtsptURL"></code>
                   <button id="obsRtsptCopy" type="button">コピー</button>
-                  <span class="hint">PC専用。ブラウザプレビュー非対応のためURLをコピーして再生してください。</span>
+                  <span class="hint">PC専用。ブラウザプレビュー非対応の環境ではURLをコピーして再生してください。</span>
                 </div>
               </div>
             </div>

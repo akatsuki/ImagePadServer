@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -70,8 +71,9 @@ func defaultTestConfig() mediaMTXSessionConfig {
 		Path:          "obs_session",
 		PublishUser:   "pub",
 		PublishPass:   "secret",
-		Ports:         mediaMTXPorts{API: 9997, HLS: 8888, RTSP: 8554},
+		Ports:         mediaMTXPorts{API: 9997, HLS: 8888, RTSP: 8554, RTP: 8556, RTCP: 8557, BackendRTSP: 18554, BackendRTP: 18556, BackendRTCP: 18557},
 		AdvertiseHost: "192.168.1.50",
+		DebugLogPath:  `C:\ImagePadServer\mediamtx-rtsp-debug.log`,
 	}
 }
 
@@ -82,12 +84,17 @@ func TestRenderMediaMTXConfigDisablesAndRestricts(t *testing.T) {
 		"webrtc: no",
 		"srt: no",
 		"moq: no",
+		"logLevel: debug",
+		"logDestinations: [stdout, file]",
+		`logFile: "C:/ImagePadServer/mediamtx-rtsp-debug.log"`,
 		"rtsp: yes",
-		"rtspTransports: [tcp]",
+		"rtspTransports: [tcp, udp]",
 		"apiAddress: 127.0.0.1:9997",
 		"hlsAddress: 127.0.0.1:8888",
 		"hlsVariant: lowLatency",
-		"rtspAddress: :8554",
+		"rtspAddress: 127.0.0.1:18554",
+		"rtpAddress: 127.0.0.1:18556",
+		"rtcpAddress: 127.0.0.1:18557",
 		"user: pub",
 		"pass: secret",
 		"path: obs_session",
@@ -102,24 +109,64 @@ func TestRenderMediaMTXConfigDisablesAndRestricts(t *testing.T) {
 	}
 }
 
-func TestRenderMediaMTXConfigAllowsPrivateNetworkReaders(t *testing.T) {
+func TestRenderMediaMTXConfigAllowsExternalReadersOnRandomPath(t *testing.T) {
 	out := renderMediaMTXConfig(defaultTestConfig())
-	readUser := "  - user: any\n    ips: ['127.0.0.1/32', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '100.64.0.0/10']\n"
+	readUser := "  - user: any\n    permissions:\n      - action: read\n        path: obs_session\n      - action: playback\n        path: obs_session\n"
 	if !strings.Contains(out, readUser) {
-		t.Fatalf("read user is not available to private-network clients:\n%s", out)
+		t.Fatalf("external path-scoped read permission missing:\n%s", out)
+	}
+	if strings.Contains(out, "ips: ['127.0.0.1/32', '10.0.0.0/8'") {
+		t.Fatalf("read permission remains private-network-only:\n%s", out)
+	}
+	apiUser := "  - user: any\n    ips: ['127.0.0.1/32']\n    permissions:\n      - action: api\n"
+	if !strings.Contains(out, apiUser) {
+		t.Fatalf("loopback API permission missing:\n%s", out)
+	}
+}
+
+func TestRenderMediaMTXConfigCanPersistRTSPHLSRemux(t *testing.T) {
+	cfg := defaultTestConfig()
+	cfg.HLSVariant = "mpegts"
+	cfg.HLSAlwaysRemux = true
+	cfg.HLSDirectory = `C:\ImagePadServer\rtsp-hls`
+
+	out := renderMediaMTXConfig(cfg)
+	for _, want := range []string{
+		"hlsVariant: mpegts",
+		"hlsAlwaysRemux: yes",
+		`hlsDirectory: "C:/ImagePadServer/rtsp-hls"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("config missing %q:\n%s", want, out)
+		}
 	}
 }
 
 func TestMediaMTXRuntimeURLs(t *testing.T) {
 	rt := testRuntime(defaultTestConfig())
-	if got, want := rt.publishURL(), "rtsp://pub:secret@127.0.0.1:8554/obs_session"; got != want {
+	if got, want := rt.publishURL(), "rtsp://pub:secret@127.0.0.1:18554/obs_session"; got != want {
 		t.Fatalf("publishURL = %q, want %q", got, want)
 	}
 	if got, want := rt.hlsBaseURL(), "http://127.0.0.1:8888/obs_session"; got != want {
 		t.Fatalf("hlsBaseURL = %q, want %q", got, want)
 	}
-	if got, want := rt.rtsptURL(), "rtspt://192.168.1.50:8554/obs_session"; got != want {
-		t.Fatalf("rtsptURL = %q, want %q", got, want)
+	if got, want := rt.rtspURL(), "rtsp://192.168.1.50:8554/obs_session"; got != want {
+		t.Fatalf("rtspURL = %q, want %q", got, want)
+	}
+}
+
+func TestAllocMediaMTXPortsUsesEvenRTPAndAdjacentRTCP(t *testing.T) {
+	for i := 0; i < 10; i++ {
+		ports, err := allocMediaMTXPorts()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ports.RTP%2 != 0 || ports.RTCP != ports.RTP+1 {
+			t.Fatalf("public RTP/RTCP = %d/%d, want even RTP and adjacent RTCP", ports.RTP, ports.RTCP)
+		}
+		if ports.BackendRTP%2 != 0 || ports.BackendRTCP != ports.BackendRTP+1 {
+			t.Fatalf("backend RTP/RTCP = %d/%d, want even RTP and adjacent RTCP", ports.BackendRTP, ports.BackendRTCP)
+		}
 	}
 }
 
@@ -332,7 +379,7 @@ func TestLLHLSMediaReadyRequiresAllTags(t *testing.T) {
 }
 
 func TestFFmpegRTSPArgsPublishOverTCP(t *testing.T) {
-	manager := newTestManager(t, "rtspt")
+	manager := newTestManager(t, LatencyModeRTSPRealtime)
 	url := "rtsp://pub:secret@127.0.0.1:8554/obs_session"
 	args := manager.ffmpegRTSPArgs("media123", "recording.mp4", url, video.ResolveQuality("720", 0), video.CPUVideoEncoder(video.EncoderLowLatency))
 
@@ -345,8 +392,78 @@ func TestFFmpegRTSPArgsPublishOverTCP(t *testing.T) {
 	if !containsSubsequence(args, []string{"-c:v", "libx264"}) {
 		t.Fatalf("expected re-encode to H.264: %s", strings.Join(args, " "))
 	}
+	if got := valueAfter(args, "-b:v"); got != "7500k" {
+		t.Fatalf("realtime RTSP -b:v = %q, want 7500k\nargs: %s", got, strings.Join(args, " "))
+	}
 	if !containsSubsequence(args, []string{url, "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy", "-movflags", "+faststart", "recording.mp4"}) {
 		t.Fatalf("expected separate stream-copy MP4 recording after the RTSP output: %s", strings.Join(args, " "))
+	}
+}
+
+func TestFFmpegRTSPArgsUseModeSpecificBitrateAndGOP(t *testing.T) {
+	tests := []struct {
+		mode    string
+		wantBV  string
+		wantGOP string
+	}{
+		{mode: LatencyModeRTSPLow, wantBV: "2500k", wantGOP: "60"},
+		{mode: LatencyModeRTSPUltra, wantBV: "5000k", wantGOP: "30"},
+		{mode: LatencyModeRTSPRealtime, wantBV: "7500k", wantGOP: "15"},
+	}
+	for _, tc := range tests {
+		manager := newTestManager(t, tc.mode)
+		args := manager.ffmpegRTSPArgs("media123", "recording.mp4", "rtsp://127.0.0.1/live", video.ResolveQuality("720", 0), video.CPUVideoEncoder(manager.currentLatency().encoderPurpose()))
+		if got := valueAfter(args, "-b:v"); got != tc.wantBV {
+			t.Fatalf("%s -b:v = %q, want %q\nargs: %s", tc.mode, got, tc.wantBV, strings.Join(args, " "))
+		}
+		if got := valueAfter(args, "-g"); got != tc.wantGOP {
+			t.Fatalf("%s -g = %q, want %q\nargs: %s", tc.mode, got, tc.wantGOP, strings.Join(args, " "))
+		}
+	}
+}
+
+func TestImportMediaMTXHLSRewritesPlaylistForHistory(t *testing.T) {
+	outDir := t.TempDir()
+	hlsDir := filepath.Join(t.TempDir(), "hls")
+	pathDir := filepath.Join(hlsDir, "obs_media123")
+	if err := os.MkdirAll(pathDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	playlist := "#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:1.0,\nsegment0.ts\n#EXTINF:1.0,\nsegment1.ts?cache=1\n"
+	if err := os.WriteFile(filepath.Join(pathDir, "index.m3u8"), []byte(playlist), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"segment0.ts", "segment1.ts"} {
+		if err := os.WriteFile(filepath.Join(pathDir, name), []byte(name), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	files, err := importMediaMTXHLS(outDir, "media123", hlsDir, "obs_media123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 3 {
+		t.Fatalf("files = %#v, want playlist plus two segments", files)
+	}
+
+	data, err := os.ReadFile(filepath.Join(outDir, video.PlaylistName("media123")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "#EXT-X-ENDLIST") {
+		t.Fatalf("playlist missing ENDLIST:\n%s", text)
+	}
+	if strings.Contains(text, "segment0.ts") || strings.Contains(text, "?cache=1") {
+		t.Fatalf("playlist was not rewritten to generated segment names:\n%s", text)
+	}
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(line, "current-media123-") && strings.HasSuffix(line, ".ts") {
+			if _, err := os.Stat(filepath.Join(outDir, line)); err != nil {
+				t.Fatalf("rewritten segment %s missing: %v", line, err)
+			}
+		}
 	}
 }
 
@@ -370,6 +487,11 @@ func TestProxyLLHLSGating(t *testing.T) {
 	// LL-HLS mode but no active session/runtime: not proxied.
 	if newTestManager(t, "llhls").ProxyLLHLS(rec, req, "x", "index.m3u8") {
 		t.Fatal("LLHLS with no active runtime must not proxy")
+	}
+	// RTSP modes also use MediaMTX HLS for local browser preview, but still
+	// require an active session/runtime.
+	if newTestManager(t, LatencyModeRTSPRealtime).ProxyLLHLS(rec, req, "x", "index.m3u8") {
+		t.Fatal("RTSP with no active runtime must not proxy")
 	}
 }
 
