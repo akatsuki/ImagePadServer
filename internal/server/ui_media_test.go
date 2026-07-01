@@ -62,6 +62,20 @@ func TestUILiveSyncHandlesSSEReconnect(t *testing.T) {
 	}
 }
 
+func TestUIShowsRTSPPublicationFailureWithoutCopyingMessage(t *testing.T) {
+	html := getIndexHTML(t)
+	for _, want := range []string{
+		`function shareURLDisplayText(data)`,
+		`公開URLは未取得です: `,
+		`if (id === 'shareURL')`,
+		`text = state.shareURL || ''`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("RTSP publication failure display/copy guard missing %q", want)
+		}
+	}
+}
+
 func TestUIRendersIngestPhase(t *testing.T) {
 	html := getIndexHTML(t)
 	for _, want := range []string{"ingestPhase", "ダウンロード中", "解析中"} {

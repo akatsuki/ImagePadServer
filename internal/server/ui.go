@@ -1618,7 +1618,7 @@ const indexHTML = `<!doctype html>
       state.musicModeEnabled = !!(data.videoPlayer && data.videoPlayer.musicModeEnabled);
       document.getElementById('phoneURL').textContent = data.phoneURL;
       document.getElementById('phoneURLMobile').textContent = data.phoneURL;
-      document.getElementById('shareURL').textContent = data.shareURL || '公開URLは未取得です';
+      document.getElementById('shareURL').textContent = shareURLDisplayText(data);
       document.getElementById('shareURLLabel').textContent = data.shareURLLabel || 'URL';
       document.getElementById('videoStatus').textContent = videoText(data.video);
       updateMobileProgress(data);
@@ -1637,6 +1637,16 @@ const indexHTML = `<!doctype html>
       maybeAutoCopyOBSURL(data);
 
       scheduleRefresh((data.ingest && data.ingest.active) || (data.video && data.video.active) || (data.obs && data.obs.connected) ? 750 : 2000);
+    }
+
+    function shareURLDisplayText(data) {
+      if (data && data.shareURL) return data.shareURL;
+      const label = data && data.shareURLLabel ? String(data.shareURLLabel) : '';
+      const message = data && data.obs && data.obs.message ? String(data.obs.message) : '';
+      if (label === 'RTSP TCP URL' && message) {
+        return '公開URLは未取得です: ' + message;
+      }
+      return '公開URLは未取得です';
     }
 
     function resetOBSPreview() {
@@ -2654,6 +2664,9 @@ const indexHTML = `<!doctype html>
       const id = target.getAttribute('data-copy');
       const source = document.getElementById(id);
       let text = source.textContent;
+      if (id === 'shareURL') {
+        text = state.shareURL || '';
+      }
       if (id === 'obsStreamKey' && state.obs && state.obs.streamKey) {
         text = state.obs.streamKey;
       }

@@ -181,7 +181,55 @@ func discoverServices() ([]gatewayService, error) {
 }
 
 func discoverLocations() ([]string, error) {
-	conn, err := net.ListenPacket("udp4", ":0")
+	candidates := ssdpBindIPs()
+	if len(candidates) == 0 {
+		candidates = []net.IP{nil}
+	}
+	type result struct {
+		locations []string
+		err       error
+	}
+	results := make(chan result, len(candidates))
+	for _, candidate := range candidates {
+		ip := candidate
+		go func() {
+			locations, err := discoverLocationsFrom(ip)
+			results <- result{locations: locations, err: err}
+		}()
+	}
+
+	seen := map[string]bool{}
+	var locations []string
+	var failures []string
+	for range candidates {
+		got := <-results
+		if got.err != nil {
+			failures = append(failures, got.err.Error())
+			continue
+		}
+		for _, location := range got.locations {
+			if location == "" || seen[location] {
+				continue
+			}
+			seen[location] = true
+			locations = append(locations, location)
+		}
+	}
+	if len(locations) == 0 {
+		if len(failures) > 0 {
+			return nil, fmt.Errorf("no UPnP gateway found: %s", strings.Join(failures, " | "))
+		}
+		return nil, fmt.Errorf("no UPnP gateway found")
+	}
+	return locations, nil
+}
+
+func discoverLocationsFrom(bindIP net.IP) ([]string, error) {
+	address := ":0"
+	if bindIP != nil {
+		address = net.JoinHostPort(bindIP.String(), "0")
+	}
+	conn, err := net.ListenPacket("udp4", address)
 	if err != nil {
 		return nil, err
 	}
@@ -227,9 +275,76 @@ func discoverLocations() ([]string, error) {
 		locations = append(locations, location)
 	}
 	if len(locations) == 0 {
-		return nil, fmt.Errorf("no UPnP gateway found")
+		if bindIP != nil {
+			return nil, fmt.Errorf("%s: no UPnP gateway found", bindIP.String())
+		}
+		return nil, fmt.Errorf("default route: no UPnP gateway found")
 	}
 	return locations, nil
+}
+
+func ssdpBindIPs() []net.IP {
+	var result []net.IP
+	seen := map[string]bool{}
+	add := func(ip net.IP) {
+		if ip == nil {
+			if !seen[""] {
+				seen[""] = true
+				result = append(result, nil)
+			}
+			return
+		}
+		ip = ip.To4()
+		if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
+			return
+		}
+		key := ip.String()
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		result = append(result, append(net.IP(nil), ip...))
+	}
+	if routeIP := defaultRouteIPv4(); routeIP != nil {
+		add(routeIP)
+	}
+	ifaces, err := net.Interfaces()
+	if err == nil {
+		for _, iface := range ifaces {
+			if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+				continue
+			}
+			addrs, err := iface.Addrs()
+			if err != nil {
+				continue
+			}
+			for _, addr := range addrs {
+				var ip net.IP
+				switch v := addr.(type) {
+				case *net.IPNet:
+					ip = v.IP
+				case *net.IPAddr:
+					ip = v.IP
+				}
+				add(ip)
+			}
+		}
+	}
+	add(nil)
+	return result
+}
+
+func defaultRouteIPv4() net.IP {
+	conn, err := net.Dial("udp4", "8.8.8.8:80")
+	if err != nil {
+		return nil
+	}
+	defer conn.Close()
+	local, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok || local.IP == nil {
+		return nil
+	}
+	return local.IP.To4()
 }
 
 func servicesFromDevice(deviceURL string) ([]gatewayService, error) {
