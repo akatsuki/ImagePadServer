@@ -1618,8 +1618,7 @@ const indexHTML = `<!doctype html>
       state.musicModeEnabled = !!(data.videoPlayer && data.videoPlayer.musicModeEnabled);
       document.getElementById('phoneURL').textContent = data.phoneURL;
       document.getElementById('phoneURLMobile').textContent = data.phoneURL;
-      document.getElementById('shareURL').textContent = shareURLDisplayText(data);
-      document.getElementById('shareURLLabel').textContent = data.shareURLLabel || 'URL';
+      renderShareURL(state);
       document.getElementById('videoStatus').textContent = videoText(data.video);
       updateMobileProgress(data);
       updateToolInstall(data.toolInstall);
@@ -1637,6 +1636,20 @@ const indexHTML = `<!doctype html>
       maybeAutoCopyOBSURL(data);
 
       scheduleRefresh((data.ingest && data.ingest.active) || (data.video && data.video.active) || (data.obs && data.obs.connected) ? 750 : 2000);
+    }
+
+    function renderShareURL(data) {
+      const view = shareURLForCurrentMode(data);
+      document.getElementById('shareURL').textContent = shareURLDisplayText(view);
+      document.getElementById('shareURLLabel').textContent = view.shareURLLabel || 'URL';
+    }
+
+    function shareURLForCurrentMode(data) {
+      const label = data && data.shareURLLabel ? String(data.shareURLLabel) : '';
+      if (uploadMode !== 'obs' && label === 'RTSP TCP URL') {
+        return { shareURL: '', shareURLLabel: 'URL' };
+      }
+      return data || {};
     }
 
     function shareURLDisplayText(data) {
@@ -2421,6 +2434,7 @@ const indexHTML = `<!doctype html>
       uploadButton.hidden = false;
       queueUploadButton.hidden = obsMode || !state.videoPlayerEnabled;
       uploadButton.textContent = linkMode ? 'リンクから変換して公開' : '変換して公開';
+      renderShareURL(state);
       applyOBSProtection();
       applyOBS(state.obs);
       if (linkMode) {
@@ -2649,12 +2663,24 @@ const indexHTML = `<!doctype html>
         if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
         applyState(data);
+        applyHistoryTargetMode(data);
         announceLocalChange();
         toast.textContent = data.clipboardCopied ? '履歴から公開し、URLをPCにコピーしました' : '履歴から復元しました';
       } catch (error) {
         toast.textContent = error.message || '履歴の復元に失敗しました';
       } finally {
         historyActionInFlight = false;
+      }
+    }
+
+    function applyHistoryTargetMode(data) {
+      const mode = data && data.historyTargetMode ? String(data.historyTargetMode) : '';
+      if (mode === 'obs') {
+        setUploadMode('obs');
+      } else if (mode === 'link') {
+        setUploadMode('link');
+      } else if (mode === 'file') {
+        setUploadMode('file');
       }
     }
 
@@ -2665,7 +2691,7 @@ const indexHTML = `<!doctype html>
       const source = document.getElementById(id);
       let text = source.textContent;
       if (id === 'shareURL') {
-        text = state.shareURL || '';
+        text = shareURLForCurrentMode(state).shareURL || '';
       }
       if (id === 'obsStreamKey' && state.obs && state.obs.streamKey) {
         text = state.obs.streamKey;

@@ -221,7 +221,8 @@ func TestPrimaryShareURL(t *testing.T) {
 	url, label := primaryShareURL(map[string]interface{}{
 		"obsLatency": obsrtmp.NormalizeLatencyProfile(obsrtmp.LatencyModeRTSPT),
 		"obs": obsrtmp.Status{
-			RTSPTURL: "rtsp://8.8.8.8:52000/obs_session",
+			Connected: true,
+			RTSPTURL:  "rtsp://8.8.8.8:52000/obs_session",
 		},
 		"imageURL": "https://example.com/image/current.png",
 		"videoPlayer": map[string]interface{}{
@@ -235,7 +236,8 @@ func TestPrimaryShareURL(t *testing.T) {
 	url, label = primaryShareURL(map[string]interface{}{
 		"obsLatency": obsrtmp.NormalizeLatencyProfile(obsrtmp.LatencyModeRTSPT),
 		"obs": obsrtmp.Status{
-			RTSPTURL: "",
+			Connected: true,
+			RTSPTURL:  "",
 		},
 		"videoPlayer": map[string]interface{}{
 			"enabled": true,
@@ -248,7 +250,8 @@ func TestPrimaryShareURL(t *testing.T) {
 	url, label = primaryShareURL(map[string]interface{}{
 		"obsLatency": obsrtmp.NormalizeLatencyProfile(obsrtmp.LatencyModeRTSPT),
 		"obs": obsrtmp.Status{
-			RTSPTURL: "",
+			Connected: true,
+			RTSPTURL:  "",
 		},
 		"hlsURL": "https://example.com/stream/abc123/current-abc123.m3u8",
 		"videoPlayer": map[string]interface{}{
@@ -257,6 +260,21 @@ func TestPrimaryShareURL(t *testing.T) {
 	})
 	if url != "" || label != "RTSP TCP URL" {
 		t.Fatalf("share URL = %q (%s), want no HLS fallback before public RTSP is ready", url, label)
+	}
+
+	url, label = primaryShareURL(map[string]interface{}{
+		"obsLatency": obsrtmp.NormalizeLatencyProfile(obsrtmp.LatencyModeRTSPT),
+		"obs": obsrtmp.Status{
+			Connected: false,
+			RTSPTURL:  "",
+		},
+		"hlsURL": "https://example.com/stream/abc123/current-abc123.m3u8",
+		"videoPlayer": map[string]interface{}{
+			"enabled": true,
+		},
+	})
+	if url != "https://example.com/stream/abc123/current-abc123.m3u8" || label != "HLS URL" {
+		t.Fatalf("share URL = %q (%s), want recorded HLS after RTSP session ends", url, label)
 	}
 
 	url, label = primaryShareURL(map[string]interface{}{
@@ -398,6 +416,75 @@ func TestHistorySelectReturnsClipboardURL(t *testing.T) {
 	}
 	if _, ok := state["clipboardCopied"].(bool); !ok {
 		t.Fatalf("clipboardCopied missing or wrong type: %#v", state["clipboardCopied"])
+	}
+}
+
+func TestHistorySelectReturnsRecordedHLSForOBSHistoryEvenWhenRTSPModeSelected(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	t.Setenv("IMAGEPAD_FFMPEG", slowFFmpegPath(t))
+	if err := settings.Update(func(s *settings.Settings) error {
+		s.VideoPlayerEnabled = true
+		s.OBSLatencyMode = obsrtmp.LatencyModeRTSPRealtime
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(t.TempDir(), "obs.mp4")
+	if err := os.WriteFile(source, []byte("mp4"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.AddHistory(source, library.CurrentImage{
+		Kind:         "video",
+		SourceKind:   "obs",
+		PublicName:   "obs-session.mp4",
+		ContentType:  "video/mp4",
+		OriginalName: "OBS session",
+		Converted:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	convertedDir := filepath.Join(filepath.Dir(store.Dir()), "converted", item.ID)
+	if err := os.MkdirAll(convertedDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	playlist := video.PlaylistName(item.ID)
+	if err := os.WriteFile(filepath.Join(convertedDir, playlist), []byte("#EXTM3U\n#EXTINF:1,\ncurrent-"+item.ID+"-000.ts\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(convertedDir, "current-"+item.ID+"-000.ts"), []byte("segment"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+	srv.SetTunnelStatus(true, "https://example.trycloudflare.com", "connected")
+	mux := http.NewServeMux()
+	srv.Register(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/history/select", strings.NewReader(fmt.Sprintf(`{"id":%q}`, item.ID)))
+	rec := adminJSON(t, mux, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %q", rec.Code, rec.Body.String())
+	}
+	var state map[string]interface{}
+	if err := json.NewDecoder(rec.Body).Decode(&state); err != nil {
+		t.Fatal(err)
+	}
+	shareURL, _ := state["shareURL"].(string)
+	if !strings.Contains(shareURL, "/stream/"+item.ID+"/") || !strings.HasPrefix(shareURL, "https://example.trycloudflare.com/") {
+		t.Fatalf("shareURL = %q, want public recorded HLS URL", shareURL)
+	}
+	if got, _ := state["shareURLLabel"].(string); got != "HLS URL" {
+		t.Fatalf("shareURLLabel = %q, want HLS URL", got)
+	}
+	if got, _ := state["copiedURL"].(string); got != shareURL {
+		t.Fatalf("copiedURL = %q, want shareURL %q", got, shareURL)
+	}
+	if got, _ := state["historyTargetMode"].(string); got != "obs" {
+		t.Fatalf("historyTargetMode = %q, want obs", got)
 	}
 }
 
@@ -568,6 +655,8 @@ func TestApplyOBSPreviewURLIncludesRTSPTransport(t *testing.T) {
 
 	applyOBSPreviewURL(&status, func(path string) string {
 		return "http://127.0.0.1:8080" + path
+	}, func(id, name string) bool {
+		return id == "rtsp-session" && name == video.PlaylistName("rtsp-session")
 	})
 
 	want := "http://127.0.0.1:8080/stream/rtsp-session/" + video.PlaylistName("rtsp-session")
@@ -583,6 +672,24 @@ func TestApplyOBSPreviewURLIncludesRTSPTransport(t *testing.T) {
 	}
 	if !sawHLSPreview {
 		t.Fatalf("connection rows = %#v, want HLS Preview row", rows)
+	}
+}
+
+func TestApplyOBSPreviewURLWaitsForReadableHLS(t *testing.T) {
+	status := obsrtmp.Status{
+		Connected: true,
+		MediaID:   "rtsp-session",
+		Latency:   obsrtmp.NormalizeLatencyProfile(obsrtmp.LatencyModeRTSPRealtime),
+	}
+
+	applyOBSPreviewURL(&status, func(path string) string {
+		return "http://127.0.0.1:8080" + path
+	}, func(id, name string) bool {
+		return false
+	})
+
+	if status.PreviewURL != "" {
+		t.Fatalf("PreviewURL = %q, want empty until HLS is readable", status.PreviewURL)
 	}
 }
 

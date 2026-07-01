@@ -1057,6 +1057,24 @@ func (m *Manager) ProxyLLHLS(w http.ResponseWriter, r *http.Request, id, name st
 	return true
 }
 
+func (m *Manager) HLSPreviewReady(id, name string) bool {
+	transport := m.currentLatency().Transport
+	if transport == LatencyModeLLHLS || transport == LatencyModeRTSPT {
+		m.mu.Lock()
+		runtime := m.mtx
+		active := m.current != nil && m.current.ID == id
+		m.mu.Unlock()
+		if !active || runtime == nil {
+			return false
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+		defer cancel()
+		return runtime.hlsArtifactReady(ctx, name)
+	}
+	path := filepath.Join(m.outDir, video.PlaylistName(id))
+	return fileExists(path)
+}
+
 func EnableDVR(profile LatencyProfile) LatencyProfile {
 	profile = normalizeLatencyProfile(profile)
 	if profile.DVRListSize != "" {

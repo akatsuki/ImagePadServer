@@ -46,7 +46,7 @@ var (
 )
 
 var (
-	stateEventThrottleDelay = 300 * time.Millisecond
+	stateEventThrottleDelay  = 300 * time.Millisecond
 	stateEventHeartbeatDelay = 15 * time.Second
 )
 
@@ -1231,6 +1231,7 @@ func (s *Server) handleOBSStreamStart(session obsrtmp.Session) {
 	info := library.CurrentImage{
 		ID:           session.ID,
 		Kind:         "video",
+		SourceKind:   "obs",
 		FileName:     filepath.Base(session.Recording),
 		PublicName:   "obs-" + session.ID + ".mp4",
 		ContentType:  "video/mp4",
@@ -1246,6 +1247,7 @@ func (s *Server) handleOBSStreamDone(session obsrtmp.Session) {
 	info := library.CurrentImage{
 		ID:           session.ID,
 		Kind:         "video",
+		SourceKind:   "obs",
 		FileName:     filepath.Base(session.Recording),
 		PublicName:   "obs-" + session.ID + ".mp4",
 		ContentType:  "video/mp4",
@@ -1257,6 +1259,7 @@ func (s *Server) handleOBSStreamDone(session obsrtmp.Session) {
 	}
 	info.ID = session.ID
 	info.Kind = "video"
+	info.SourceKind = "obs"
 	info.FileName = filepath.Base(session.Recording)
 	info.PublicName = "obs-" + session.ID + ".mp4"
 	info.ContentType = "video/mp4"
@@ -1575,7 +1578,9 @@ func (s *Server) handleHistorySelect(w http.ResponseWriter, r *http.Request) {
 	}
 	current := s.store.Current()
 	if current != nil && current.Converted {
-		writeJSON(w, s.withClipboardResult(s.state(r)))
+		state := s.withClipboardResult(s.state(r))
+		state["historyTargetMode"] = historyTargetMode(*current)
+		writeJSON(w, state)
 		return
 	}
 	if path, current, ok := s.store.CurrentPath(); ok && s.videoPlayerEnabled() {
@@ -1597,7 +1602,11 @@ func (s *Server) handleHistorySelect(w http.ResponseWriter, r *http.Request) {
 			s.enqueueStillConversion(path, current.ID, current.OriginalName)
 		}
 	}
-	writeJSON(w, s.withClipboardResult(s.state(r)))
+	state := s.withClipboardResult(s.state(r))
+	if current := s.store.Current(); current != nil {
+		state["historyTargetMode"] = historyTargetMode(*current)
+	}
+	writeJSON(w, state)
 }
 
 func (s *Server) enqueueHistoryItem(id string) error {
@@ -2481,6 +2490,8 @@ func (s *Server) historyState() []map[string]interface{} {
 		result = append(result, map[string]interface{}{
 			"id":           item.ID,
 			"kind":         item.Kind,
+			"sourceKind":   item.SourceKind,
+			"targetMode":   historyTargetMode(item.CurrentImage),
 			"title":        title,
 			"width":        item.Width,
 			"height":       item.Height,
@@ -2493,6 +2504,19 @@ func (s *Server) historyState() []map[string]interface{} {
 		})
 	}
 	return result
+}
+
+func historyTargetMode(item library.CurrentImage) string {
+	switch {
+	case item.SourceKind == "obs" || strings.HasPrefix(item.PublicName, "obs-"):
+		return "obs"
+	case item.SourceKind == "soundcloud" || item.SourceKind == "local_audio" || item.SourceKind == "remote_audio":
+		return "link"
+	case item.SourceKind != "":
+		return "link"
+	default:
+		return "file"
+	}
 }
 
 func (s *Server) videoQueueState() []map[string]interface{} {
@@ -2630,16 +2654,20 @@ func (s *Server) obsState() obsrtmp.Status {
 	}
 	status := s.obs.Status()
 	status.Capabilities = obsrtmp.LatencyCapabilities()
-	applyOBSPreviewURL(&status, s.adminPath)
+	applyOBSPreviewURL(&status, s.adminPath, s.obs.HLSPreviewReady)
 	status.Connections = obsConnectionRows(status)
 	return status
 }
 
-func applyOBSPreviewURL(status *obsrtmp.Status, adminPath func(string) string) {
+func applyOBSPreviewURL(status *obsrtmp.Status, adminPath func(string) string, ready func(id, name string) bool) {
 	if status == nil || strings.TrimSpace(status.MediaID) == "" || adminPath == nil {
 		return
 	}
-	status.PreviewURL = adminPath("/stream/" + url.PathEscape(status.MediaID) + "/" + video.PlaylistName(status.MediaID))
+	name := video.PlaylistName(status.MediaID)
+	if ready != nil && !ready(status.MediaID, name) {
+		return
+	}
+	status.PreviewURL = adminPath("/stream/" + url.PathEscape(status.MediaID) + "/" + name)
 }
 
 func obsConnectionRows(status obsrtmp.Status) []obsrtmp.ConnectionStatus {
@@ -2799,7 +2827,8 @@ func urlForClipboard(state map[string]interface{}) string {
 func primaryShareURL(state map[string]interface{}) (string, string) {
 	obsLatency, _ := state["obsLatency"].(obsrtmp.LatencyProfile)
 	if obsStatus, ok := state["obs"].(obsrtmp.Status); ok &&
-		activeOBSLatency(obsLatency, obsStatus).Transport == obsrtmp.LatencyModeRTSPT {
+		activeOBSLatency(obsLatency, obsStatus).Transport == obsrtmp.LatencyModeRTSPT &&
+		(obsStatus.Connected || obsStatus.Publishing) {
 		if strings.HasPrefix(obsStatus.RTSPTURL, "rtsp://") {
 			return obsStatus.RTSPTURL, "RTSP TCP URL"
 		}

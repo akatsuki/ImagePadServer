@@ -394,6 +394,24 @@ func (r *mediaMTXRuntime) proxyHLS(w http.ResponseWriter, req *http.Request, nam
 	_, _ = io.Copy(w, resp.Body)
 }
 
+func (r *mediaMTXRuntime) hlsArtifactReady(ctx context.Context, name string) bool {
+	if r == nil {
+		return false
+	}
+	target := r.hlsBaseURL() + "/" + name
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return false
+	}
+	resp, err := r.httpClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	return resp.StatusCode >= 200 && resp.StatusCode < 300
+}
+
 func importMediaMTXHLS(outDir, id, hlsDir, pathName string) ([]string, error) {
 	playlistPath, baseDir, err := findMediaMTXPlaylist(hlsDir, pathName)
 	if err != nil {

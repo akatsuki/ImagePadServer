@@ -62,13 +62,56 @@ func TestUILiveSyncHandlesSSEReconnect(t *testing.T) {
 	}
 }
 
+func TestUIHistoryPublishNavigatesToSourceMode(t *testing.T) {
+	html := getIndexHTML(t)
+	for _, want := range []string{
+		`function applyHistoryTargetMode(data)`,
+		`const mode = data && data.historyTargetMode ? String(data.historyTargetMode) : ''`,
+		`setUploadMode('obs')`,
+		`setUploadMode('link')`,
+		`setUploadMode('file')`,
+		`applyHistoryTargetMode(data)`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("history publish navigation missing %q", want)
+		}
+	}
+}
+
+func TestUIModeSwitchRefreshesShareURLDisplay(t *testing.T) {
+	html := getIndexHTML(t)
+	for _, want := range []string{
+		`function renderShareURL(data)`,
+		`function shareURLForCurrentMode(data)`,
+		`if (uploadMode !== 'obs' && label === 'RTSP TCP URL')`,
+		`return { shareURL: '', shareURLLabel: 'URL' }`,
+		`const view = shareURLForCurrentMode(data)`,
+		`text = shareURLForCurrentMode(state).shareURL || ''`,
+		`renderShareURL(state)`,
+		`setUploadMode('file')`,
+		`setUploadMode('link')`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("mode switch share URL reset missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		`state.shareURL = ''`,
+		`state.shareURLLabel = 'URL'`,
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("mode switch must not destroy saved OBS share URL: %q", forbidden)
+		}
+	}
+}
+
 func TestUIShowsRTSPPublicationFailureWithoutCopyingMessage(t *testing.T) {
 	html := getIndexHTML(t)
 	for _, want := range []string{
 		`function shareURLDisplayText(data)`,
 		`公開URLは未取得です: `,
 		`if (id === 'shareURL')`,
-		`text = state.shareURL || ''`,
+		`text = shareURLForCurrentMode(state).shareURL || ''`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("RTSP publication failure display/copy guard missing %q", want)
