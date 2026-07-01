@@ -1,0 +1,46 @@
+package server
+
+import "net/http"
+
+func (s *Server) Register(mux *http.ServeMux) {
+	mux.HandleFunc("/", s.admin(s.handleIndex))
+	mux.HandleFunc("/api/state", s.admin(s.handleState))
+	mux.HandleFunc("/api/tunnel/reconnect", s.admin(s.handleTunnelReconnect))
+	mux.HandleFunc("/api/quit", s.admin(s.handleQuit))
+	mux.HandleFunc("/api/upload", s.admin(s.handleUpload))
+	mux.HandleFunc("/api/upload-queue", s.admin(s.handleUploadQueue))
+	mux.HandleFunc("/api/upload-url", s.admin(s.handleUploadURL))
+	mux.HandleFunc("/api/upload-url-queue", s.admin(s.handleUploadURLQueue))
+	mux.HandleFunc("/api/clear", s.admin(s.handleClear))
+	mux.HandleFunc("/api/pairing/request", s.handlePairingRequest)
+	mux.HandleFunc("/api/pairing/confirm", s.handlePairingConfirm)
+	mux.HandleFunc("/api/obs/relay-config", s.handleOBSRelayConfig)
+	mux.HandleFunc("/api/obs/start", s.admin(s.handleOBSStart))
+	mux.HandleFunc("/api/obs/end", s.admin(s.handleOBSEnd))
+	mux.HandleFunc("/api/obs/key", s.admin(s.handleOBSKey))
+	mux.HandleFunc("/api/obs/latency", s.admin(s.handleOBSLatency))
+	mux.HandleFunc("/api/history", s.admin(s.handleHistory))
+	mux.HandleFunc("/api/history/favorite", s.admin(s.handleHistoryFavorite))
+	mux.HandleFunc("/api/history/queue", s.admin(s.handleHistoryQueue))
+	mux.HandleFunc("/api/history/select", s.admin(s.handleHistorySelect))
+	mux.HandleFunc("/api/copy-url", s.admin(s.handleCopyURL))
+	mux.HandleFunc("/api/about", s.admin(s.handleAbout))
+	mux.HandleFunc("/api/update-check", s.admin(s.handleUpdateCheck))
+	// SteamVR integration is frozen indefinitely. Keep internal/steamvr as an
+	// archived asset, but do not expose its management API.
+	mux.HandleFunc("/api/video-player", s.admin(s.handleVideoPlayer))
+	mux.HandleFunc("/api/music-mode", s.admin(s.handleMusicMode))
+	mux.HandleFunc("/api/ffmpeg", s.admin(s.handleFFmpeg))
+	mux.HandleFunc("/api/video-quality", s.admin(s.handleVideoQuality))
+	mux.HandleFunc("/api/network-check", s.admin(s.handleNetworkCheck))
+	mux.HandleFunc("/qr/phone.png", s.admin(s.handlePhoneQR))
+	mux.HandleFunc("/history/", s.admin(s.handleHistoryMedia))
+	mux.HandleFunc("/image/current", s.handleCurrentImage)
+	mux.HandleFunc("/image/current.png", s.handleCurrentImage)
+	mux.HandleFunc("/image/current.jpg", s.handleCurrentImage)
+	mux.HandleFunc("/video/current.mp4", s.handleCurrentVideo)
+	mux.HandleFunc("/stream/current.m3u8", s.handleCurrentHLS)
+	mux.HandleFunc("/stream/", s.handleStream)
+	mux.HandleFunc("/favicon.ico", s.handleFavicon)
+	mux.HandleFunc("/healthz", s.handleHealth)
+}

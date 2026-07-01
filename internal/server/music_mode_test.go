@@ -27,6 +27,7 @@ func TestUploadURLReportsDownloadingPhase(t *testing.T) {
 	defer func() { musicURLAcquirer = oldMusic }()
 	release := make(chan struct{})
 	reached := make(chan struct{})
+	done := make(chan struct{})
 	musicURLAcquirer = func(context.Context, *Server, string) (video.AcquiredAudio, error) {
 		close(reached)
 		<-release
@@ -34,6 +35,7 @@ func TestUploadURLReportsDownloadingPhase(t *testing.T) {
 	}
 
 	go func() {
+		defer close(done)
 		req := httptest.NewRequest(http.MethodPost, "/api/upload-url", strings.NewReader(`{"url":"https://www.youtube.com/watch?v=test"}`))
 		adminJSON(t, mux, req)
 	}()
@@ -42,6 +44,7 @@ func TestUploadURLReportsDownloadingPhase(t *testing.T) {
 	stateReq := httptest.NewRequest(http.MethodGet, "/api/state", nil)
 	rec := adminJSON(t, mux, stateReq)
 	close(release)
+	<-done
 
 	var st map[string]interface{}
 	if err := json.Unmarshal(rec.Body.Bytes(), &st); err != nil {
@@ -115,68 +118,76 @@ func TestMusicModeRoutesPublishAndQueueURLsToAudioAcquirer(t *testing.T) {
 // works, not just an allowlist), and only when yt-dlp fails does the bounded
 // direct downloader run.
 func TestVideoModeTriesYTDLPThenDirect(t *testing.T) {
-	t.Run("yt-dlp success skips direct", func(t *testing.T) {
-		_, mux := testServer(t, true)
-		oldPage := pageMediaDownloader
-		oldDirect := directMediaDownloader
-		defer func() {
-			pageMediaDownloader = oldPage
-			directMediaDownloader = oldDirect
-		}()
-		pageCalled := false
-		directCalled := false
-		pageMediaDownloader = func(string, string) (video.DownloadedMedia, error) {
-			pageCalled = true
-			// Succeed at the download; later processing may fail, but direct
-			// must not be attempted.
-			return video.DownloadedMedia{SourcePath: filepath.Join(t.TempDir(), "missing.mp4"), Name: "x.mp4"}, nil
-		}
-		directMediaDownloader = func(context.Context, string, string, func(context.Context, string) (video.MediaProbe, error)) (downloadedRemoteMedia, error) {
-			directCalled = true
-			return downloadedRemoteMedia{}, errors.New("direct route selected")
-		}
-
-		req := httptest.NewRequest(http.MethodPost, "/api/upload-url", strings.NewReader(`{"url":"https://x.com/u/status/1/video/1"}`))
-		adminJSON(t, mux, req)
-		if !pageCalled || directCalled {
-			t.Fatalf("pageCalled=%v directCalled=%v, want yt-dlp tried and direct skipped", pageCalled, directCalled)
-		}
+	oldPage := pageMediaDownloader
+	oldDirect := directMediaDownloader
+	oldEnsureFFmpeg := ensureFFmpeg
+	t.Cleanup(func() {
+		pageMediaDownloader = oldPage
+		directMediaDownloader = oldDirect
+		ensureFFmpeg = oldEnsureFFmpeg
 	})
+	ensureFFmpeg = func() (string, error) {
+		return "", errors.New("ffmpeg route blocked")
+	}
 
-	t.Run("yt-dlp failure falls back to direct for non-page URLs", func(t *testing.T) {
-		for _, rawURL := range []string{
-			"https://example.com/clip.mp4",
-			"https://example.com/song",
-		} {
-			t.Run(rawURL, func(t *testing.T) {
+	t.Run("yt-dlp success skips direct", func(t *testing.T) {
+		for _, endpoint := range []string{"/api/upload-url", "/api/upload-url-queue"} {
+			t.Run(endpoint, func(t *testing.T) {
 				_, mux := testServer(t, true)
-				oldPage := pageMediaDownloader
-				oldDirect := directMediaDownloader
-				defer func() {
-					pageMediaDownloader = oldPage
-					directMediaDownloader = oldDirect
-				}()
 				pageCalled := false
 				directCalled := false
 				pageMediaDownloader = func(string, string) (video.DownloadedMedia, error) {
 					pageCalled = true
-					return video.DownloadedMedia{}, errors.New("yt-dlp route failed")
+					// Succeed at the download; later processing may fail, but direct
+					// must not be attempted.
+					return video.DownloadedMedia{SourcePath: filepath.Join(t.TempDir(), "missing.mp4"), Name: "x.mp4"}, nil
 				}
 				directMediaDownloader = func(context.Context, string, string, func(context.Context, string) (video.MediaProbe, error)) (downloadedRemoteMedia, error) {
 					directCalled = true
-					return downloadedRemoteMedia{}, errors.New("direct route failed")
+					return downloadedRemoteMedia{}, errors.New("direct route selected")
 				}
 
-				req := httptest.NewRequest(http.MethodPost, "/api/upload-url", strings.NewReader(`{"url":"`+rawURL+`"}`))
-				rec := adminJSON(t, mux, req)
-				if rec.Code != http.StatusBadRequest {
-					t.Fatalf("status=%d body=%q, want 400", rec.Code, rec.Body.String())
+				req := httptest.NewRequest(http.MethodPost, endpoint, strings.NewReader(`{"url":"https://x.com/u/status/1/video/1"}`))
+				adminJSON(t, mux, req)
+				if !pageCalled || directCalled {
+					t.Fatalf("pageCalled=%v directCalled=%v, want yt-dlp tried and direct skipped", pageCalled, directCalled)
 				}
-				if !pageCalled || !directCalled {
-					t.Fatalf("pageCalled=%v directCalled=%v, want both (yt-dlp first, then direct fallback)", pageCalled, directCalled)
-				}
-				if !strings.Contains(rec.Body.String(), "yt-dlp route failed") {
-					t.Fatalf("body %q should surface the yt-dlp error", rec.Body.String())
+			})
+		}
+	})
+
+	t.Run("yt-dlp failure falls back to direct for non-page URLs", func(t *testing.T) {
+		for _, endpoint := range []string{"/api/upload-url", "/api/upload-url-queue"} {
+			t.Run(endpoint, func(t *testing.T) {
+				for _, rawURL := range []string{
+					"https://example.com/clip.mp4",
+					"https://example.com/song",
+				} {
+					t.Run(rawURL, func(t *testing.T) {
+						_, mux := testServer(t, true)
+						pageCalled := false
+						directCalled := false
+						pageMediaDownloader = func(string, string) (video.DownloadedMedia, error) {
+							pageCalled = true
+							return video.DownloadedMedia{}, errors.New("yt-dlp route failed")
+						}
+						directMediaDownloader = func(context.Context, string, string, func(context.Context, string) (video.MediaProbe, error)) (downloadedRemoteMedia, error) {
+							directCalled = true
+							return downloadedRemoteMedia{}, errors.New("direct route failed")
+						}
+
+						req := httptest.NewRequest(http.MethodPost, endpoint, strings.NewReader(`{"url":"`+rawURL+`"}`))
+						rec := adminJSON(t, mux, req)
+						if rec.Code != http.StatusBadRequest {
+							t.Fatalf("status=%d body=%q, want 400", rec.Code, rec.Body.String())
+						}
+						if !pageCalled || !directCalled {
+							t.Fatalf("pageCalled=%v directCalled=%v, want both (yt-dlp first, then direct fallback)", pageCalled, directCalled)
+						}
+						if !strings.Contains(rec.Body.String(), "yt-dlp route failed") {
+							t.Fatalf("body %q should surface the yt-dlp error", rec.Body.String())
+						}
+					})
 				}
 			})
 		}
@@ -188,44 +199,69 @@ func TestVideoModeTriesYTDLPThenDirect(t *testing.T) {
 		// error is surfaced instead of a misleading ffprobe "Invalid data
 		// found" on saved HTML. (SoundCloud is handled by an earlier branch
 		// and never reaches this fallback site.)
-		for _, rawURL := range []string{
-			"https://www.youtube.com/watch?v=test",
-			"https://youtu.be/abc123",
-			"https://x.com/u/status/1/video/1",
-			"https://twitter.com/u/status/1",
-		} {
-			t.Run(rawURL, func(t *testing.T) {
+		for _, endpoint := range []string{"/api/upload-url", "/api/upload-url-queue"} {
+			t.Run(endpoint, func(t *testing.T) {
+				for _, rawURL := range []string{
+					"https://www.youtube.com/watch?v=test",
+					"https://youtu.be/abc123",
+					"https://x.com/u/status/1/video/1",
+					"https://twitter.com/u/status/1",
+				} {
+					t.Run(rawURL, func(t *testing.T) {
+						_, mux := testServer(t, true)
+						pageCalled := false
+						directCalled := false
+						pageMediaDownloader = func(string, string) (video.DownloadedMedia, error) {
+							pageCalled = true
+							return video.DownloadedMedia{}, errors.New("yt-dlp route failed")
+						}
+						directMediaDownloader = func(context.Context, string, string, func(context.Context, string) (video.MediaProbe, error)) (downloadedRemoteMedia, error) {
+							directCalled = true
+							return downloadedRemoteMedia{}, errors.New("direct route failed")
+						}
+
+						req := httptest.NewRequest(http.MethodPost, endpoint, strings.NewReader(`{"url":"`+rawURL+`"}`))
+						rec := adminJSON(t, mux, req)
+						if rec.Code != http.StatusBadRequest {
+							t.Fatalf("status=%d body=%q, want 400", rec.Code, rec.Body.String())
+						}
+						if !pageCalled {
+							t.Fatalf("pageCalled=%v, want yt-dlp tried", pageCalled)
+						}
+						if directCalled {
+							t.Fatalf("directCalled=%v, want direct skipped for page URL", directCalled)
+						}
+						if !strings.Contains(rec.Body.String(), "yt-dlp route failed") {
+							t.Fatalf("body %q should surface the yt-dlp error directly", rec.Body.String())
+						}
+					})
+				}
+			})
+		}
+	})
+
+	t.Run("SoundCloud page URLs use page downloader for publish and queue", func(t *testing.T) {
+		for _, endpoint := range []string{"/api/upload-url", "/api/upload-url-queue"} {
+			t.Run(endpoint, func(t *testing.T) {
 				_, mux := testServer(t, true)
-				oldPage := pageMediaDownloader
-				oldDirect := directMediaDownloader
-				defer func() {
-					pageMediaDownloader = oldPage
-					directMediaDownloader = oldDirect
-				}()
 				pageCalled := false
 				directCalled := false
 				pageMediaDownloader = func(string, string) (video.DownloadedMedia, error) {
 					pageCalled = true
-					return video.DownloadedMedia{}, errors.New("yt-dlp route failed")
+					return video.DownloadedMedia{}, errors.New("soundcloud route selected")
 				}
 				directMediaDownloader = func(context.Context, string, string, func(context.Context, string) (video.MediaProbe, error)) (downloadedRemoteMedia, error) {
 					directCalled = true
-					return downloadedRemoteMedia{}, errors.New("direct route failed")
+					return downloadedRemoteMedia{}, errors.New("direct route selected")
 				}
 
-				req := httptest.NewRequest(http.MethodPost, "/api/upload-url", strings.NewReader(`{"url":"`+rawURL+`"}`))
+				req := httptest.NewRequest(http.MethodPost, endpoint, strings.NewReader(`{"url":"https://soundcloud.com/artist/track"}`))
 				rec := adminJSON(t, mux, req)
-				if rec.Code != http.StatusBadRequest {
-					t.Fatalf("status=%d body=%q, want 400", rec.Code, rec.Body.String())
+				if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "soundcloud route selected") {
+					t.Fatalf("status/body = %d %q, want SoundCloud route error", rec.Code, rec.Body.String())
 				}
-				if !pageCalled {
-					t.Fatalf("pageCalled=%v, want yt-dlp tried", pageCalled)
-				}
-				if directCalled {
-					t.Fatalf("directCalled=%v, want direct skipped for page URL", directCalled)
-				}
-				if !strings.Contains(rec.Body.String(), "yt-dlp route failed") {
-					t.Fatalf("body %q should surface the yt-dlp error directly", rec.Body.String())
+				if !pageCalled || directCalled {
+					t.Fatalf("pageCalled=%v directCalled=%v, want SoundCloud page downloader only", pageCalled, directCalled)
 				}
 			})
 		}

@@ -7,9 +7,15 @@ import (
 	"image/jpeg"
 	"image/png"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 )
+
+func TestMain(m *testing.M) {
+	_ = os.Setenv("IMAGEPAD_SKIP_IMAGE_TOOL_DOWNLOAD", "1")
+	os.Exit(m.Run())
+}
 
 func TestProcessResizesToVRChatLimit(t *testing.T) {
 	src := image.NewRGBA(image.Rect(0, 0, 3000, 1200))
@@ -26,6 +32,7 @@ func TestProcessResizesToVRChatLimit(t *testing.T) {
 
 	dir := t.TempDir()
 	opts := DefaultOptions()
+	opts.Format = "jpeg"
 	opts.MaxDimension = 2048
 	opts.MaxBytes = 30 << 20
 	result, err := Process(&input, "large.png", dir, opts)
@@ -57,6 +64,15 @@ func TestDefaultOptionsAllow8KUploads(t *testing.T) {
 	if opts.MaxBytes != 30<<20 {
 		t.Fatalf("MaxBytes = %d, want %d", opts.MaxBytes, int64(30<<20))
 	}
+	if opts.Format != "webp" {
+		t.Fatalf("Format = %q, want webp", opts.Format)
+	}
+	if opts.WebPQuality != 80 {
+		t.Fatalf("WebPQuality = %d, want 80", opts.WebPQuality)
+	}
+	if opts.PNGQuality != "lossless" {
+		t.Fatalf("PNGQuality = %q, want lossless", opts.PNGQuality)
+	}
 }
 
 func TestProcessSupportsLargeMaxDimension(t *testing.T) {
@@ -73,6 +89,7 @@ func TestProcessSupportsLargeMaxDimension(t *testing.T) {
 	}
 
 	opts := DefaultOptions()
+	opts.Format = "jpeg"
 	opts.MaxDimension = 5000
 	opts.MaxBytes = 60 << 20
 	result, err := Process(&input, "wide.png", t.TempDir(), opts)
@@ -149,6 +166,7 @@ func TestProcessAppliesEXIFOrientation(t *testing.T) {
 	input := jpegWithOrientation(jpegData.Bytes(), 6)
 
 	opts := DefaultOptions()
+	opts.Format = "jpeg"
 	opts.MaxDimension = 2048
 	result, err := Process(bytes.NewReader(input), "iphone.jpg", t.TempDir(), opts)
 	if err != nil {
@@ -173,6 +191,76 @@ func TestProcessRasterizesSVG(t *testing.T) {
 	}
 	if result.ContentType != "image/png" {
 		t.Fatalf("content type = %s, want image/png", result.ContentType)
+	}
+}
+
+func TestProcessWebP(t *testing.T) {
+	ffmpeg := os.Getenv("IMAGEPAD_FFMPEG")
+	if ffmpeg == "" {
+		var err error
+		ffmpeg, err = exec.LookPath("ffmpeg")
+		if err != nil {
+			t.Skip("ffmpeg not available for WebP encode test")
+		}
+		t.Setenv("IMAGEPAD_FFMPEG", ffmpeg)
+	}
+
+	src := image.NewNRGBA(image.Rect(0, 0, 24, 24))
+	for y := 0; y < 24; y++ {
+		for x := 0; x < 24; x++ {
+			src.Set(x, y, color.NRGBA{R: 20, G: 160, B: 80, A: 255})
+		}
+	}
+	var input bytes.Buffer
+	if err := png.Encode(&input, src); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := DefaultOptions()
+	opts.Format = "webp"
+	opts.WebPQuality = 80
+	result, err := Process(&input, "sample.png", t.TempDir(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ContentType != "image/webp" {
+		t.Fatalf("content type = %s, want image/webp", result.ContentType)
+	}
+	if !strings.HasSuffix(result.PublicName, ".webp") {
+		t.Fatalf("public name = %q, want .webp suffix", result.PublicName)
+	}
+	if stat, err := os.Stat(result.Path); err != nil || stat.Size() == 0 {
+		t.Fatalf("webp output stat = %v, err = %v", stat, err)
+	}
+}
+
+func TestOptimizePNGNoTools(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("IMAGEPAD_PNGQUANT", "")
+	t.Setenv("IMAGEPAD_OXIPNG", "")
+	src := image.NewRGBA(image.Rect(0, 0, 16, 16))
+	path := t.TempDir() + string(os.PathSeparator) + "sample.png"
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := png.Encode(file, src); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := OptimizePNG(path, "lossless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got > before.Size() {
+		t.Fatalf("size = %d, want <= original %d", got, before.Size())
 	}
 }
 

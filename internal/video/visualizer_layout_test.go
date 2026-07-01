@@ -17,14 +17,14 @@ func TestLayoutForSize_720p(t *testing.T) {
 		t.Fatalf("LayoutForSize(1280,720) = %v", err)
 	}
 	want := VisualizerLayout{
-		Artwork:   Rect{X: 96, Y: 152, W: 288, H: 288},
-		Title:     Rect{X: 432, Y: 152, W: 752, H: 58},
-		Artist:    Rect{X: 432, Y: 224, W: 752, H: 34},
-		Album:     Rect{X: 432, Y: 264, W: 752, H: 30},
-		Spectrum:  Rect{X: 432, Y: 320, W: 752, H: 168},
-		Loudness:  Rect{X: 64, Y: 548, W: 1000, H: 80},
-		Progress:  Rect{X: 64, Y: 650, W: 1000, H: 8},
-		Time:      Rect{X: 1088, Y: 632, W: 128, H: 32},
+		Artwork:  Rect{X: 96, Y: 152, W: 288, H: 288},
+		Title:    Rect{X: 432, Y: 152, W: 752, H: 58},
+		Artist:   Rect{X: 432, Y: 224, W: 752, H: 34},
+		Album:    Rect{X: 432, Y: 264, W: 752, H: 30},
+		Spectrum: Rect{X: 432, Y: 320, W: 752, H: 168},
+		Loudness: Rect{X: 64, Y: 548, W: 1000, H: 80},
+		Progress: Rect{X: 64, Y: 650, W: 1000, H: 8},
+		Time:     Rect{X: 1088, Y: 632, W: 128, H: 32},
 	}
 	if got != want {
 		t.Fatalf("LayoutForSize(1280,720)\ngot:  %+v\nwant: %+v", got, want)
@@ -38,14 +38,14 @@ func TestLayoutForSize_1080p(t *testing.T) {
 	}
 	// Scale factor = 1920/1280 = 1.5
 	want := VisualizerLayout{
-		Artwork:   Rect{X: 144, Y: 228, W: 432, H: 432},
-		Title:     Rect{X: 648, Y: 228, W: 1128, H: 87},
-		Artist:    Rect{X: 648, Y: 336, W: 1128, H: 51},
-		Album:     Rect{X: 648, Y: 396, W: 1128, H: 45},
-		Spectrum:  Rect{X: 648, Y: 480, W: 1128, H: 252},
-		Loudness:  Rect{X: 96, Y: 822, W: 1500, H: 120},
-		Progress:  Rect{X: 96, Y: 975, W: 1500, H: 12},
-		Time:      Rect{X: 1632, Y: 948, W: 192, H: 48},
+		Artwork:  Rect{X: 144, Y: 228, W: 432, H: 432},
+		Title:    Rect{X: 648, Y: 228, W: 1128, H: 87},
+		Artist:   Rect{X: 648, Y: 336, W: 1128, H: 51},
+		Album:    Rect{X: 648, Y: 396, W: 1128, H: 45},
+		Spectrum: Rect{X: 648, Y: 480, W: 1128, H: 252},
+		Loudness: Rect{X: 96, Y: 822, W: 1500, H: 120},
+		Progress: Rect{X: 96, Y: 975, W: 1500, H: 12},
+		Time:     Rect{X: 1632, Y: 948, W: 192, H: 48},
 	}
 	if got != want {
 		t.Fatalf("LayoutForSize(1920,1080)\ngot:  %+v\nwant: %+v", got, want)
@@ -59,14 +59,14 @@ func TestLayoutForSize_360p(t *testing.T) {
 	}
 	// Scale factor = 640/1280 = 0.5
 	want := VisualizerLayout{
-		Artwork:   Rect{X: 48, Y: 76, W: 144, H: 144},
-		Title:     Rect{X: 216, Y: 76, W: 376, H: 29},
-		Artist:    Rect{X: 216, Y: 112, W: 376, H: 17},
-		Album:     Rect{X: 216, Y: 132, W: 376, H: 15},
-		Spectrum:  Rect{X: 216, Y: 160, W: 376, H: 84},
-		Loudness:  Rect{X: 32, Y: 274, W: 500, H: 40},
-		Progress:  Rect{X: 32, Y: 325, W: 500, H: 4},
-		Time:      Rect{X: 544, Y: 316, W: 64, H: 16},
+		Artwork:  Rect{X: 48, Y: 76, W: 144, H: 144},
+		Title:    Rect{X: 216, Y: 76, W: 376, H: 29},
+		Artist:   Rect{X: 216, Y: 112, W: 376, H: 17},
+		Album:    Rect{X: 216, Y: 132, W: 376, H: 15},
+		Spectrum: Rect{X: 216, Y: 160, W: 376, H: 84},
+		Loudness: Rect{X: 32, Y: 274, W: 500, H: 40},
+		Progress: Rect{X: 32, Y: 325, W: 500, H: 4},
+		Time:     Rect{X: 544, Y: 316, W: 64, H: 16},
 	}
 	if got != want {
 		t.Fatalf("LayoutForSize(640,360)\ngot:  %+v\nwant: %+v", got, want)

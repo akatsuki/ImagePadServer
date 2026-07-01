@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"imagepadserver/internal/library"
+	"imagepadserver/internal/toolchain"
 	"imagepadserver/internal/video"
 )
 
@@ -14,7 +15,19 @@ import (
 // the audio as the current publication with metadata, enqueues audio conversion,
 // and returns the full server state.
 func (s *Server) processAudioFileAndPublish(r *http.Request, acquired video.AcquiredAudio) (map[string]interface{}, error) {
-	if _, err := video.EnsureFFmpeg(); err != nil {
+	return s.processAudioFile(r, acquired, uploadURLPublish)
+}
+
+// processAudioFileAndQueue resolves audio metadata, selects artwork, saves
+// the audio to history with metadata, enqueues audio conversion, and returns
+// the server state.
+func (s *Server) processAudioFileAndQueue(r *http.Request, acquired video.AcquiredAudio) (map[string]interface{}, error) {
+	return s.processAudioFile(r, acquired, uploadURLQueue)
+}
+
+func (s *Server) processAudioFile(r *http.Request, acquired video.AcquiredAudio, action uploadURLAction) (map[string]interface{}, error) {
+	ffmpegPath, err := toolchain.EnsureFFmpeg()
+	if err != nil {
 		return nil, err
 	}
 
@@ -33,12 +46,18 @@ func (s *Server) processAudioFileAndPublish(r *http.Request, acquired video.Acqu
 		thumbnail = s.createVideoThumbnail(artworkPath)
 	}
 
+	s.setIngest(ingestAnalyzing, meta.Title)
+	analysis, err := video.AnalyzeAudioForKind(r.Context(), ffmpegPath, acquired.SourcePath, acquired.Kind)
+	if err != nil {
+		return nil, fmt.Errorf("analyze audio: %w", err)
+	}
+
 	sourceKind := string(acquired.Kind)
 	info := library.CurrentImage{
 		Kind:         "video",
 		SourceKind:   sourceKind,
 		FileName:     filepath.Base(acquired.SourcePath),
-		PublicName:   "current-video" + filepath.Ext(acquired.SourcePath),
+		PublicName:   videoPublicName(acquired.SourcePath, action),
 		ContentType:  audioContentType(acquired.SourcePath),
 		OriginalName: acquired.SourceName,
 		Thumbnail:    thumbnail,
@@ -50,96 +69,30 @@ func (s *Server) processAudioFileAndPublish(r *http.Request, acquired video.Acqu
 		info.SizeBytes = stat.Size()
 	}
 
-	// Cancel any in-flight conversion for the previous media.
-	if prev := s.store.Current(); prev != nil && prev.ID != "" {
-		video.CancelConversion(s.store.Dir(), prev.ID)
-	}
-
-	if err := s.store.SetCurrentInfo(info); err != nil {
-		return nil, fmt.Errorf("failed to save media")
-	}
-
-	current := s.store.Current()
-	currentID := ""
-	if current != nil {
-		currentID = current.ID
-	}
-
-	// Resolve final artwork path — prefer the generated thumbnail.
-	usedArtwork := artworkPath
-	if thumbnail != "" {
-		usedArtwork = filepath.Join(s.store.Dir(), thumbnail)
-	}
-
-	ffmpegPath, err := video.EnsureFFmpeg()
-	if err != nil {
-		return nil, err
-	}
-	s.setIngest(ingestAnalyzing, meta.Title)
-	analysis, err := video.AnalyzeAudioForKind(r.Context(), ffmpegPath, acquired.SourcePath, acquired.Kind)
-	if err != nil {
-		return nil, fmt.Errorf("analyze audio: %w", err)
-	}
-
-	input := video.AudioRenderInput{
-		SourcePath:  acquired.SourcePath,
-		Kind:        acquired.Kind,
-		Metadata:    meta,
-		ArtworkPath: usedArtwork,
-		Analysis:    analysis,
-	}
-
-	s.enqueueAudioConversion(input, currentID, acquired.SourceName)
-
-	state := s.state(r)
-	return s.withClipboardResult(state), nil
-}
-
-// processAudioFileAndQueue resolves audio metadata, selects artwork, saves
-// the audio to history with metadata, enqueues audio conversion, and returns
-// the server state.
-func (s *Server) processAudioFileAndQueue(r *http.Request, acquired video.AcquiredAudio) (map[string]interface{}, error) {
-	if _, err := video.EnsureFFmpeg(); err != nil {
-		return nil, err
-	}
-
-	// Resolve metadata using source-specific precedence rules.
-	meta := video.ResolveAudioMetadata(acquired.Kind, acquired.SourceName, acquired.EmbeddedMetadata, acquired.SoundCloudMetadata)
-
-	// Select best artwork from embedded candidates or SoundCloud.
-	artworkPath, err := video.SelectArtwork(acquired.EmbeddedArtwork, acquired.SoundCloudArtworkPath, acquired.Kind)
-	if err != nil {
-		return nil, fmt.Errorf("select artwork: %w", err)
-	}
-
-	// Generate thumbnail from artwork for history/display.
-	thumbnail := ""
-	if artworkPath != "" {
-		thumbnail = s.createVideoThumbnail(artworkPath)
-	}
-
-	ffmpegPath2, err := video.EnsureFFmpeg()
-	if err != nil {
-		return nil, err
-	}
-	s.setIngest(ingestAnalyzing, meta.Title)
-	analysis, err := video.AnalyzeAudioForKind(r.Context(), ffmpegPath2, acquired.SourcePath, acquired.Kind)
-	if err != nil {
-		return nil, fmt.Errorf("analyze audio: %w", err)
-	}
-
-	sourceKind := string(acquired.Kind)
-	info := library.CurrentImage{
-		Kind:         "video",
-		SourceKind:   sourceKind,
-		FileName:     filepath.Base(acquired.SourcePath),
-		PublicName:   "queued-video" + filepath.Ext(acquired.SourcePath),
-		ContentType:  audioContentType(acquired.SourcePath),
-		OriginalName: acquired.SourceName,
-		Thumbnail:    thumbnail,
-		Title:        meta.Title,
-		Artist:       meta.Artist,
-		Album:        meta.Album,
+	if action == uploadURLPublish {
+		if prev := s.store.Current(); prev != nil && prev.ID != "" {
+			video.CancelConversion(s.store.Dir(), prev.ID)
+		}
+		if err := s.store.SetCurrentInfo(info); err != nil {
+			return nil, fmt.Errorf("failed to save media")
+		}
+		currentID := ""
+		if current := s.store.Current(); current != nil {
+			currentID = current.ID
+		}
+		usedArtwork := artworkPath
+		if thumbnail != "" {
+			usedArtwork = filepath.Join(s.store.Dir(), thumbnail)
+		}
+		input := video.AudioRenderInput{
+			SourcePath:  acquired.SourcePath,
+			Kind:        acquired.Kind,
+			Metadata:    meta,
+			ArtworkPath: usedArtwork,
+			Analysis:    analysis,
+		}
+		s.enqueueAudioConversion(input, currentID, acquired.SourceName)
+		return s.withClipboardResult(s.state(r)), nil
 	}
 
 	historyItem, err := s.store.AddHistory(acquired.SourcePath, info)

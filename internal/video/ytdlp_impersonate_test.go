@@ -88,16 +88,16 @@ func TestYouTubeAttemptsForceMultiClient(t *testing.T) {
 
 func TestIsPageMediaURL(t *testing.T) {
 	cases := map[string]bool{
-		"https://www.youtube.com/watch?v=x":        true,
-		"https://youtu.be/x":                       true,
-		"https://music.youtube.com/watch?v=x":      true,
-		"https://soundcloud.com/a/b":               true,
-		"https://on.soundcloud.com/abc":            true,
-		"https://x.com/u/status/1/video/1":         true,
-		"https://twitter.com/u/status/1":           true,
-		"https://example.com/clip.mp4":             false,
-		"https://cdn.example.com/video.mp4":        false,
-		"https://example.com/some-page":            false,
+		"https://www.youtube.com/watch?v=x":   true,
+		"https://youtu.be/x":                  true,
+		"https://music.youtube.com/watch?v=x": true,
+		"https://soundcloud.com/a/b":          true,
+		"https://on.soundcloud.com/abc":       true,
+		"https://x.com/u/status/1/video/1":    true,
+		"https://twitter.com/u/status/1":      true,
+		"https://example.com/clip.mp4":        false,
+		"https://cdn.example.com/video.mp4":   false,
+		"https://example.com/some-page":       false,
 	}
 	for url, want := range cases {
 		if got := IsPageMediaURL(url); got != want {

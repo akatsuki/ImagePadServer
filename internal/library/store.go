@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -158,8 +157,11 @@ func (s *Store) SetCurrent(srcPath string, info CurrentImage) error {
 	}
 
 	s.mu.Lock()
+	if err := s.addHistoryLocked(info, dstPath); err != nil {
+		s.mu.Unlock()
+		return err
+	}
 	s.current = &info
-	_ = s.addHistoryLocked(info, dstPath)
 	s.mu.Unlock()
 	return s.save()
 }
@@ -315,9 +317,6 @@ func (s *Store) SetFavorite(id string, favorite bool) error {
 			_ = os.RemoveAll(filepath.Join(s.favoriteDir, "converted", s.history[i].ID))
 			s.history[i].Favorite = false
 			s.history[i].Persistent = false
-			if _, err := os.Stat(filepath.Join(s.dir, s.history[i].HistoryFileName)); err != nil {
-				s.history = append(s.history[:i], s.history[i+1:]...)
-			}
 		}
 		return s.saveFavoritesLocked()
 	}
@@ -425,7 +424,12 @@ func (s *Store) saveCurrentLocked() error {
 	if err != nil {
 		return err
 	}
-	return ioutil.WriteFile(filepath.Join(s.dir, "state.json"), data, 0600)
+	data = append(data, '\n')
+	tmpPath := filepath.Join(s.dir, "state.json.tmp")
+	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, filepath.Join(s.dir, "state.json"))
 }
 
 func (s *Store) addHistoryLocked(info CurrentImage, srcPath string) error {
@@ -476,6 +480,9 @@ func (s *Store) pruneHistoryLocked(limit int) {
 			continue
 		}
 		_ = os.Remove(filepath.Join(s.dir, item.HistoryFileName))
+		if item.Thumbnail != "" {
+			_ = os.Remove(filepath.Join(s.dir, item.Thumbnail))
+		}
 	}
 	s.history = kept
 }
@@ -534,22 +541,6 @@ func (s *Store) saveFavoritesLocked() error {
 		return err
 	}
 	return os.Rename(tmpPath, filepath.Join(s.favoriteDir, "favorites.json"))
-}
-
-func (s *Store) load() error {
-	data, err := ioutil.ReadFile(filepath.Join(s.dir, "state.json"))
-	if err != nil {
-		return err
-	}
-	var current CurrentImage
-	if err := json.Unmarshal(data, &current); err != nil {
-		return err
-	}
-	if _, err := os.Stat(filepath.Join(s.dir, current.FileName)); err != nil {
-		return err
-	}
-	s.current = &current
-	return nil
 }
 
 func copyFile(dst, src string) error {

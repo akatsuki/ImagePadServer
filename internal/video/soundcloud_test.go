@@ -44,8 +44,6 @@ func TestIsSoundCloudURL(t *testing.T) {
 	}
 }
 
-
-
 func TestGenerateSoundCloudFallbackArtwork_Valid(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "fallback.png")

@@ -57,6 +57,11 @@ func isSoundCloudURL(rawURL string) bool {
 	}
 }
 
+// IsSoundCloudURL reports whether rawURL points at a supported SoundCloud host.
+func IsSoundCloudURL(rawURL string) bool {
+	return isSoundCloudURL(rawURL)
+}
+
 // isTwitterURL reports whether rawURL points at X/Twitter.
 func isTwitterURL(rawURL string) bool {
 	u, err := url.Parse(rawURL)

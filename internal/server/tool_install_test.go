@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"imagepadserver/internal/video"
+	"imagepadserver/internal/toolchain"
 )
 
 var errFakeInstall = errors.New("install failed")
@@ -40,7 +40,7 @@ func TestStartVideoToolInstallEnablesOnSuccess(t *testing.T) {
 	s.startVideoToolInstall()
 	waitFor(t, 2*time.Second, func() bool { return s.videoPlayerEnabled() })
 
-	if video.ToolInstallStatus().Failed {
+	if toolchain.ToolInstallStatus().Failed {
 		t.Fatal("tracker should not be failed on success")
 	}
 }
@@ -62,6 +62,30 @@ func TestStartVideoToolInstallRevertsOnFailure(t *testing.T) {
 
 	if s.videoPlayerEnabled() {
 		t.Fatal("video player must stay OFF after install failure")
+	}
+}
+
+func TestStartVideoToolInstallSkipsTrailingBackoff(t *testing.T) {
+	s, _ := testServer(t, false)
+	prevReady, prevEnsure, prevBackoff := videoToolsReady, ensureVideoTools, videoToolInstallBackoff
+	t.Cleanup(func() {
+		videoToolsReady = prevReady
+		ensureVideoTools = prevEnsure
+		videoToolInstallBackoff = prevBackoff
+	})
+	videoToolsReady = func() bool { return false }
+	ensureVideoTools = func() error { return errFakeInstall }
+	var sleeps int
+	videoToolInstallBackoff = func(int) time.Duration {
+		sleeps++
+		return 0
+	}
+
+	s.startVideoToolInstall()
+	waitFor(t, 2*time.Second, func() bool { return !s.toolInstallingNow() })
+
+	if sleeps != 3 {
+		t.Fatalf("backoff calls = %d, want 3 between 4 attempts", sleeps)
 	}
 }
 

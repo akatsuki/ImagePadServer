@@ -1,6 +1,7 @@
 package library
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -43,6 +44,51 @@ func TestStoreResetClearsCurrent(t *testing.T) {
 	}
 	if store.Current() != nil {
 		t.Fatal("expected current image to be cleared after reset")
+	}
+}
+
+func TestSaveCurrentLockedWritesTempBeforeReplace(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetCurrentInfo(CurrentImage{
+		FileName:    "current.jpg",
+		PublicName:  "current.jpg",
+		ContentType: "image/jpeg",
+		SizeBytes:   11,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(dir, "state.json")
+	before, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var beforeImage CurrentImage
+	if err := json.Unmarshal(before, &beforeImage); err != nil {
+		t.Fatal(err)
+	}
+	if beforeImage.SizeBytes != 11 {
+		t.Fatalf("initial SizeBytes = %d, want 11", beforeImage.SizeBytes)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "state.json.tmp"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateCurrentSize(42); err == nil {
+		t.Fatal("expected temp write failure")
+	}
+	after, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var afterImage CurrentImage
+	if err := json.Unmarshal(after, &afterImage); err != nil {
+		t.Fatal(err)
+	}
+	if afterImage.SizeBytes != 11 {
+		t.Fatalf("state.json was partially replaced; SizeBytes = %d, want 11", afterImage.SizeBytes)
 	}
 }
 
@@ -253,5 +299,110 @@ func TestHistoryPreservesAudioMetadata(t *testing.T) {
 	}
 	if history[0].Title != "History Title" {
 		t.Fatalf("history Title = %q, want History Title", history[0].Title)
+	}
+}
+
+func TestSetCurrentReturnsHistoryCopyError(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(dir, "source.jpg")
+	if err := os.WriteFile(source, []byte("image"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	err = store.SetCurrent(source, CurrentImage{
+		PublicName:  "current.jpg",
+		ContentType: "image/jpeg",
+		Thumbnail:   "missing-thumb.jpg",
+	})
+	if err == nil {
+		t.Fatal("expected missing thumbnail copy to fail")
+	}
+}
+
+func TestUnfavoriteDoesNotRemoveHistoryWhenWorkingFileWasPruned(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(dir, "source.jpg")
+	if err := os.WriteFile(source, []byte("image"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.AddHistory(source, CurrentImage{
+		PublicName:  "source.jpg",
+		ContentType: "image/jpeg",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetFavorite(item.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range store.History() {
+		if h.ID == item.ID {
+			_ = os.Remove(filepath.Join(dir, h.HistoryFileName))
+			break
+		}
+	}
+	if err := store.SetFavorite(item.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range store.History() {
+		if h.ID == item.ID {
+			if h.Favorite || h.Persistent {
+				t.Fatalf("favorite flags not cleared: %#v", h)
+			}
+			return
+		}
+	}
+	t.Fatal("history item was removed by unfavorite")
+}
+
+func TestPruneHistoryRemovesThumbnail(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var prunedThumbnail string
+	for i := 0; i < 41; i++ {
+		source := filepath.Join(dir, "source.jpg")
+		if err := os.WriteFile(source, []byte("image"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		thumb := filepath.Join(dir, "thumb.jpg")
+		if err := os.WriteFile(thumb, []byte("thumb"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		item, err := store.AddHistory(source, CurrentImage{
+			PublicName:  "source.jpg",
+			ContentType: "image/jpeg",
+			Thumbnail:   "thumb.jpg",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			for _, h := range store.History() {
+				if h.ID == item.ID {
+					prunedThumbnail = h.Thumbnail
+					break
+				}
+			}
+		}
+	}
+	for _, entry := range store.History() {
+		if entry.Thumbnail != "" {
+			if _, err := os.Stat(filepath.Join(dir, entry.Thumbnail)); err != nil {
+				t.Fatalf("kept thumbnail missing: %v", err)
+			}
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, prunedThumbnail)); !os.IsNotExist(err) {
+		t.Fatalf("expected pruned history thumbnail to be removed, err=%v", err)
 	}
 }

@@ -126,6 +126,18 @@ func RotateOBSStreamKey() (string, error) {
 	return token, nil
 }
 
+func SetOBSStreamKey(key string) error {
+	fileMu.Lock()
+	defer fileMu.Unlock()
+
+	settings, err := loadUnlocked()
+	if err != nil {
+		return err
+	}
+	settings.OBSStreamKey = key
+	return saveUnlocked(settings)
+}
+
 func loadUnlocked() (Settings, error) {
 	var settings Settings
 	data, err := os.ReadFile(path())

@@ -16,6 +16,7 @@ import (
 
 	"imagepadserver/internal/config"
 	"imagepadserver/internal/library"
+	"imagepadserver/internal/obsrtmp"
 	"imagepadserver/internal/settings"
 	"imagepadserver/internal/video"
 )
@@ -92,6 +93,28 @@ func TestHandleFFmpegChecksConfiguredBinaryWithoutEnablingVideoMode(t *testing.T
 	}
 	if srv.videoPlayerEnabled() {
 		t.Fatal("expected FFmpeg check not to enable video player mode")
+	}
+}
+
+func TestIndexAndStateRejectNonGET(t *testing.T) {
+	srv, mux := testServer(t, false)
+	defer srv.store.Reset()
+
+	for _, tc := range []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{name: "index post", method: http.MethodPost, path: "/"},
+		{name: "state post", method: http.MethodPost, path: "/api/state"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, nil)
+			rec := adminJSON(t, mux, req)
+			if rec.Code != http.StatusMethodNotAllowed {
+				t.Fatalf("status = %d, want 405; body = %q", rec.Code, rec.Body.String())
+			}
+		})
 	}
 }
 
@@ -387,6 +410,68 @@ func TestBitrateOnlyPresetKeepsActiveResolution(t *testing.T) {
 	}
 }
 
+func TestQueueItemByID(t *testing.T) {
+	items := []video.QueueItem{
+		{ID: "old", Status: "done"},
+		{ID: "target", Status: "running"},
+	}
+	item, ok := queueItemByID(items, "target")
+	if !ok {
+		t.Fatal("expected target queue item to be found")
+	}
+	if item.Status != "running" {
+		t.Fatalf("status = %q, want running", item.Status)
+	}
+	if _, ok := queueItemByID(items, "pruned"); ok {
+		t.Fatal("expected missing queue item to be treated as pruned")
+	}
+}
+
+func TestImageQualityPresetOptions(t *testing.T) {
+	values := map[string]string{
+		"format":       "webp",
+		"quality":      "high",
+		"maxDimension": "1024",
+		"maxMB":        "10",
+	}
+	opts := optionsFromValues(func(key string) string { return values[key] })
+	if opts.Format != "webp" {
+		t.Fatalf("Format = %q, want webp", opts.Format)
+	}
+	if opts.JPEGQuality != 85 {
+		t.Fatalf("JPEGQuality = %d, want 85", opts.JPEGQuality)
+	}
+	if opts.WebPQuality != 80 {
+		t.Fatalf("WebPQuality = %d, want 80", opts.WebPQuality)
+	}
+	if opts.PNGQuality != "high" {
+		t.Fatalf("PNGQuality = %q, want high", opts.PNGQuality)
+	}
+	if opts.MaxDimension != 1024 {
+		t.Fatalf("MaxDimension = %d, want 1024", opts.MaxDimension)
+	}
+	if opts.MaxBytes != 10<<20 {
+		t.Fatalf("MaxBytes = %d, want %d", opts.MaxBytes, int64(10<<20))
+	}
+}
+
+func TestImageQualityNumericCompatibility(t *testing.T) {
+	values := map[string]string{
+		"format":  "jpeg",
+		"quality": "88",
+	}
+	opts := optionsFromValues(func(key string) string { return values[key] })
+	if opts.JPEGQuality != 88 {
+		t.Fatalf("JPEGQuality = %d, want 88", opts.JPEGQuality)
+	}
+	if opts.WebPQuality != 88 {
+		t.Fatalf("WebPQuality = %d, want 88", opts.WebPQuality)
+	}
+	if opts.PNGQuality != "lossless" {
+		t.Fatalf("PNGQuality = %q, want default lossless", opts.PNGQuality)
+	}
+}
+
 func TestOBSRelayConfigEnablesReceiverAndReturnsConnectionInfo(t *testing.T) {
 	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
 	store, err := library.NewStore(t.TempDir())
@@ -395,7 +480,7 @@ func TestOBSRelayConfigEnablesReceiverAndReturnsConnectionInfo(t *testing.T) {
 	}
 	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
 
-	body, err := srv.obsRelayConfig(false)
+	body, err := srv.obsRelayConfig(false, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -414,6 +499,191 @@ func TestOBSRelayConfigEnablesReceiverAndReturnsConnectionInfo(t *testing.T) {
 	}
 	if !appSettings.VideoPlayerEnabled {
 		t.Fatal("expected relay config request to enable video player support")
+	}
+}
+
+func TestOBSRelayConfigFromRelayDeviceDoesNotPersistVideoPlayerSetting(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	const clientID = "brs_test"
+	const clientSecret = "relay_secret"
+	if err := settings.Update(func(appSettings *settings.Settings) error {
+		appSettings.VideoPlayerEnabled = false
+		appSettings.RelayDevices = []settings.RelayDevice{{
+			ClientID:     clientID,
+			ClientSecret: clientSecret,
+			DeviceName:   "Relay PC",
+			Scope:        relayScope,
+			CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+		}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+	mux := http.NewServeMux()
+	srv.Register(mux)
+
+	req := signedRelayRequest(t, clientID, clientSecret, "relay-config-1")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %q", rec.Code, rec.Body.String())
+	}
+	var body map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if enabled, _ := body["videoPlayerEnabled"].(bool); !enabled {
+		t.Fatalf("videoPlayerEnabled response = %#v, want true for active receiver", body["videoPlayerEnabled"])
+	}
+	appSettings, err := settings.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if appSettings.VideoPlayerEnabled {
+		t.Fatal("relay-scoped device must not persist VideoPlayerEnabled")
+	}
+}
+
+func TestHandleOBSLatencyNormalizesStorage(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+	srv.obs = nil
+
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8080/api/obs/latency", strings.NewReader(`{"mode":"  low  ","dvr":true}`))
+	req.RemoteAddr = "127.0.0.1:50000"
+	rec := httptest.NewRecorder()
+	srv.admin(srv.handleOBSLatency)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q", rec.Code, rec.Body.String())
+	}
+	appSettings, err := settings.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if appSettings.OBSLatencyMode != obsrtmp.LatencyModeRTSPLow {
+		t.Fatalf("OBSLatencyMode = %q, want %q", appSettings.OBSLatencyMode, obsrtmp.LatencyModeRTSPLow)
+	}
+	if appSettings.OBSDVREnabled {
+		t.Fatal("DVR flag should not be stored")
+	}
+}
+
+func TestOBSStateIncludesLatencyCapabilities(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+
+	status := srv.obsState()
+	if len(status.Capabilities) != 5 {
+		t.Fatalf("capabilities len = %d, want 5", len(status.Capabilities))
+	}
+	got := map[string]obsrtmp.LatencyCapability{}
+	for _, capability := range status.Capabilities {
+		got[capability.Mode] = capability
+	}
+
+	for _, mode := range []string{obsrtmp.LatencyModeHLSHigh, obsrtmp.LatencyModeHLS, obsrtmp.LatencyModeRTSPLow, obsrtmp.LatencyModeRTSPUltra, obsrtmp.LatencyModeRTSPRealtime} {
+		if _, ok := got[mode]; !ok {
+			t.Fatalf("missing capability for mode %q", mode)
+		}
+	}
+	if got[obsrtmp.LatencyModeRTSPLow].Label != "低遅延RTSP" || got[obsrtmp.LatencyModeRTSPLow].Experimental {
+		t.Fatalf("RTSP low capability = %#v, want production RTSP label", got[obsrtmp.LatencyModeRTSPLow])
+	}
+	if got[obsrtmp.LatencyModeRTSPRealtime].Transport != obsrtmp.LatencyModeRTSPT {
+		t.Fatalf("RTSP realtime capability = %#v, want RTSP realtime transport", got[obsrtmp.LatencyModeRTSPRealtime])
+	}
+}
+
+func TestOBSEntryPlaylistAliasDoesNotRewriteChildPlaylists(t *testing.T) {
+	id := "abc123"
+	for _, name := range []string{"current.m3u8", video.PlaylistName(id), ".", "/"} {
+		if !isOBSEntryPlaylistAlias(id, name) {
+			t.Errorf("entry alias %q was not recognized", name)
+		}
+	}
+	for _, name := range []string{"media_0.m3u8", "stream.m3u8", "index.m3u8"} {
+		if isOBSEntryPlaylistAlias(id, name) {
+			t.Errorf("child playlist %q was incorrectly treated as an entry alias", name)
+		}
+	}
+}
+
+func TestOBSLatencyAliasesAndCapabilitySurface(t *testing.T) {
+	// Legacy aliases (and whitespace/case) normalize onto the canonical
+	// transports without ever inventing a new one.
+	aliases := map[string]string{
+		"auto":   obsrtmp.LatencyModeHLS,
+		"normal": obsrtmp.LatencyModeHLS,
+		"low":    obsrtmp.LatencyModeRTSPLow,
+		"ultra":  obsrtmp.LatencyModeRTSPUltra,
+		" HLS ":  obsrtmp.LatencyModeHLS,
+		"RTSPT":  obsrtmp.LatencyModeRTSPRealtime,
+		"bogus":  obsrtmp.LatencyModeHLS,
+	}
+	for in, want := range aliases {
+		if got := obsrtmp.NormalizeLatencyMode(in); got != want {
+			t.Fatalf("NormalizeLatencyMode(%q) = %q, want %q", in, got, want)
+		}
+	}
+
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+
+	caps := map[string]obsrtmp.LatencyCapability{}
+	for _, c := range srv.obsState().Capabilities {
+		caps[c.Mode] = c
+	}
+	experimental := map[string]bool{
+		obsrtmp.LatencyModeHLSHigh:      false,
+		obsrtmp.LatencyModeHLS:          false,
+		obsrtmp.LatencyModeRTSPLow:      false,
+		obsrtmp.LatencyModeRTSPUltra:    false,
+		obsrtmp.LatencyModeRTSPRealtime: false,
+	}
+	expectedTransport := map[string]string{
+		obsrtmp.LatencyModeHLSHigh:      obsrtmp.LatencyModeHLS,
+		obsrtmp.LatencyModeHLS:          obsrtmp.LatencyModeHLS,
+		obsrtmp.LatencyModeRTSPLow:      obsrtmp.LatencyModeRTSPT,
+		obsrtmp.LatencyModeRTSPUltra:    obsrtmp.LatencyModeRTSPT,
+		obsrtmp.LatencyModeRTSPRealtime: obsrtmp.LatencyModeRTSPT,
+	}
+	for mode, exp := range experimental {
+		c, ok := caps[mode]
+		if !ok {
+			t.Fatalf("missing capability for mode %q", mode)
+		}
+		if !c.Available || !c.Selectable {
+			t.Fatalf("%s capability must be available and selectable: %#v", mode, c)
+		}
+		if c.Experimental != exp {
+			t.Fatalf("%s experimental = %v, want %v", mode, c.Experimental, exp)
+		}
+		if c.Transport != expectedTransport[mode] {
+			t.Fatalf("%s transport = %q, want %q", mode, c.Transport, expectedTransport[mode])
+		}
+	}
+
+	// With no active session, no transport leaks a preview URL.
+	if url := srv.obsState().PreviewURL; url != "" {
+		t.Fatalf("idle state should expose no preview URL, got %q", url)
 	}
 }
 
@@ -530,6 +800,29 @@ func TestAutoQualityPrefersUploadBandwidth(t *testing.T) {
 	preset = video.ResolveQualityForUpload("auto", 20, 0)
 	if preset.Effective != "1080" {
 		t.Fatalf("effective = %s, want download fallback", preset.Effective)
+	}
+}
+
+func TestHandleNetworkCheckSurfacesSettingsSaveFailure(t *testing.T) {
+	srv, mux := testServer(t, false)
+	defer srv.store.Reset()
+
+	oldMeasurer := networkMeasurer
+	t.Cleanup(func() { networkMeasurer = oldMeasurer })
+	networkMeasurer = func() video.NetworkMeasurement {
+		return video.NetworkMeasurement{UploadMbps: 12}
+	}
+
+	notDir := filepath.Join(t.TempDir(), "settings-as-file")
+	if err := os.WriteFile(notDir, []byte("not a directory"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("IMAGEPAD_DATA_DIR", notDir)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/network-check", nil)
+	rec := adminJSON(t, mux, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 when settings cannot be saved; body = %q", rec.Code, rec.Body.String())
 	}
 }
 

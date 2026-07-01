@@ -8,6 +8,21 @@ Target latency under discussion: 0.1-0.3 seconds end-to-end inside VRChat.
 
 Hard requirement: the same approach must work on standalone VR headsets running VRChat for Android/Quest, not only PCVR.
 
+## 実装状況（2026-06 更新）
+
+4 つの配信方式を実装しました（プラン `docs/superpowers/plans/2026-06-29-obs-latency-presets-llhls.md`、設計記録 `docs/OBS_LATENCY_PROTOCOL_DECISION.md`）。
+
+- **HLS** — 標準 MPEG-TS HLS（従来経路）。
+- **LHLS（実験）** — community LHLS（fMP4 + `#EXT-X-PREFETCH`）。FFmpeg の DASH muxer をループバック専用 HTTP sink に流す。`internal/obsrtmp/lhls_sink.go`。
+- **LL-HLS（実験）** — Apple LL-HLS。アプリ所有の MediaMTX サイドカー経由でプロキシ。`internal/obsrtmp/mediamtx.go`。
+- **RTSPT（PC専用）** — 同じ MediaMTX サイドカーの RTSP/TCP 読み出し。`rtspt://` URL を配布。
+
+注意:
+
+- **LHLS と LL-HLS は実験的**です。ブラウザ／VRChat 実機での受け入れ確認（プラン Task 7）が済むまで実験扱いを外しません。
+- セグメント長やパート長などの設定値から**実測遅延を断定しません**。実遅延は経路・プレーヤー・回線依存で、上記の目標値は議論上の目標にすぎません。
+- 選択した方式のまま配信し、別方式への無言のフォールバックは行いません。
+
 ## Current evidence
 
 ### VRChat video player constraints

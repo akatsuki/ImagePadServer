@@ -302,8 +302,8 @@ func TestGaussianTrend(t *testing.T) {
 
 	t.Run("duration-based window narrows for longer tracks", func(t *testing.T) {
 		// Shorter tracks get a wider kernel in samples → more smoothing
-		shortWin := trendWindowSize(10)   // half-duration = 5s → 501 samples
-		longWin := trendWindowSize(240)    // 8s window → 33 samples
+		shortWin := trendWindowSize(10) // half-duration = 5s → 501 samples
+		longWin := trendWindowSize(240) // 8s window → 33 samples
 		if shortWin <= longWin {
 			t.Fatalf("expected shorter track to have larger window, short=%d long=%d",
 				shortWin, longWin)
@@ -326,7 +326,7 @@ func TestGaussianTrend(t *testing.T) {
 		leftEnv[0] = 1
 		rightEnv[999] = 1
 
-		leftGot := SmoothLoudnessTrend(leftEnv, 240)  // window=33
+		leftGot := SmoothLoudnessTrend(leftEnv, 240) // window=33
 		rightGot := SmoothLoudnessTrend(rightEnv, 240)
 
 		// Check symmetry for the first 33 indices (one full kernel half-width)

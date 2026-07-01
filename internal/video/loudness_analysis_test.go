@@ -25,10 +25,10 @@ func TestRelativeLoudnessFloorBoundary(t *testing.T) {
 	// peak = 1.0 → peakDB = 0
 	// 36 dB below = -36 dBFS → RMS = 10^(-36/20) ≈ 0.0158489
 	var rms [1000]float64
-	rms[0] = 1.0            // peak
-	rms[1] = 0.0158489319   // exactly -36 dB from peak
-	rms[2] = 0.01           // below -36 dB
-	rms[3] = 0.001          // far below
+	rms[0] = 1.0          // peak
+	rms[1] = 0.0158489319 // exactly -36 dB from peak
+	rms[2] = 0.01         // below -36 dB
+	rms[3] = 0.001        // far below
 	got := normalizeRelativeLoudness(rms)
 	if got[0] != 1.0 {
 		t.Fatalf("peak: got %v, want 1.0", got[0])

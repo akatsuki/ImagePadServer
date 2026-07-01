@@ -130,6 +130,8 @@ type vrEvent struct {
 
 var overlayFont *opentype.Font
 
+var procRtlMoveMemory = syscall.NewLazyDLL("kernel32.dll").NewProc("RtlMoveMemory")
+
 // Start initializes the optional Windows SteamVR dashboard overlay.
 func Start(cfg Config) error {
 	dllPath, err := openVRDLLPath()
@@ -168,13 +170,23 @@ func Start(cfg Config) error {
 		return errors.New("OpenVR IVROverlay interface was nil")
 	}
 
-	table := (*[96]uintptr)(unsafe.Pointer(overlayTablePtr))
-	session, err := newOverlaySession(cfg, table)
+	table := copyOpenVROverlayTable(overlayTablePtr)
+	session, err := newOverlaySession(cfg, &table)
 	if err != nil {
 		return err
 	}
 	go session.run()
 	return nil
+}
+
+func copyOpenVROverlayTable(src uintptr) [96]uintptr {
+	var table [96]uintptr
+	procRtlMoveMemory.Call(
+		uintptr(unsafe.Pointer(&table[0])),
+		src,
+		unsafe.Sizeof(table),
+	)
+	return table
 }
 
 func newOverlaySession(cfg Config, table *[96]uintptr) (*overlaySession, error) {

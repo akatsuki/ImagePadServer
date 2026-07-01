@@ -19,10 +19,13 @@ import (
 	"imagepadserver/internal/browser"
 	"imagepadserver/internal/config"
 	"imagepadserver/internal/discovery"
+	"imagepadserver/internal/imageproc"
 	"imagepadserver/internal/library"
 	"imagepadserver/internal/network"
+	"imagepadserver/internal/obsrtmp"
 	"imagepadserver/internal/server"
 	"imagepadserver/internal/settings"
+	"imagepadserver/internal/toolchain"
 	"imagepadserver/internal/tray"
 	"imagepadserver/internal/tunnel"
 	"imagepadserver/internal/video"
@@ -55,6 +58,30 @@ func Run() error {
 	return run(false)
 }
 
+var (
+	cleanupTrackedFFmpeg = toolchain.CleanupTrackedFFmpeg
+	cleanupFFmpegOnPort  = toolchain.KillFFmpegOnPort
+	cleanupStaleMediaMTX = obsrtmp.CleanupStaleMediaMTX
+)
+
+func cleanupStaleHelpers(logf func(string, ...any)) {
+	if killed, err := cleanupTrackedFFmpeg(); err != nil {
+		logf("failed to clean up stale FFmpeg processes: %v", err)
+	} else if killed > 0 {
+		logf("stopped %d stale FFmpeg process(es) from a previous ImagePadServer run", killed)
+	}
+	if killed, err := cleanupFFmpegOnPort(1935); err != nil {
+		logf("failed to clean up stale FFmpeg on OBS RTMP port 1935: %v", err)
+	} else if killed > 0 {
+		logf("stopped %d stale FFmpeg process(es) holding OBS RTMP port 1935", killed)
+	}
+	if killed, err := cleanupStaleMediaMTX(); err != nil {
+		logf("failed to clean up stale MediaMTX processes: %v", err)
+	} else if killed > 0 {
+		logf("stopped %d stale MediaMTX process(es) from a previous ImagePadServer run", killed)
+	}
+}
+
 func run(useNativeWindow bool) error {
 	cfg := config.FromEnv()
 	localURL := cfg.URLForHost("127.0.0.1")
@@ -66,19 +93,16 @@ func run(useNativeWindow bool) error {
 		return nil
 	}
 
-	if killed, err := video.CleanupTrackedFFmpeg(); err != nil {
-		log.Printf("failed to clean up stale FFmpeg processes: %v", err)
-	} else if killed > 0 {
-		log.Printf("stopped %d stale FFmpeg process(es) from a previous ImagePadServer run", killed)
-	}
+	cleanupStaleHelpers(log.Printf)
 	go updateYTDLPOnStartup()
 	go func() {
-		video.ValidateInstalledTools()
+		toolchain.ValidateInstalledTools()
+		imageproc.ValidateImageTools()
 		if appSettings, err := settings.Load(); err == nil && appSettings.VideoPlayerEnabled {
-			if _, err := video.EnsureFFmpeg(); err != nil {
+			if _, err := toolchain.EnsureFFmpeg(); err != nil {
 				log.Printf("startup ffmpeg warm failed: %v", err)
 			}
-			if _, err := video.EnsureFFprobe(); err != nil {
+			if _, err := toolchain.EnsureFFprobe(); err != nil {
 				log.Printf("startup ffprobe warm failed: %v", err)
 			}
 		}
@@ -157,7 +181,7 @@ func run(useNativeWindow bool) error {
 	srv.SetExitRequested(trayExitRequested)
 
 	go func() {
-		time.Sleep(300 * time.Millisecond)
+		waitForServerHealthy(localURL+"healthz", 2*time.Second)
 		if useNativeWindow {
 			_ = appwindow.Show(localURL)
 			return
@@ -209,7 +233,7 @@ func run(useNativeWindow bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	srv.StopOBSReceiver()
-	if killed, err := video.CleanupTrackedFFmpeg(); err != nil {
+	if killed, err := toolchain.CleanupTrackedFFmpeg(); err != nil {
 		log.Printf("failed to stop FFmpeg processes during shutdown: %v", err)
 	} else if killed > 0 {
 		log.Printf("stopped %d FFmpeg process(es) during shutdown", killed)
@@ -223,7 +247,7 @@ func run(useNativeWindow bool) error {
 }
 
 func updateYTDLPOnStartup() {
-	path, updated, err := video.EnsureLatestYTDLP()
+	path, updated, err := toolchain.EnsureLatestYTDLP()
 	if err != nil {
 		log.Printf("yt-dlp update check failed: %v", err)
 		return
@@ -257,10 +281,12 @@ func measureNetworkOnce() {
 	if measurement.UploadMbps <= 0 {
 		return
 	}
-	_ = settings.Update(func(appSettings *settings.Settings) error {
+	if err := settings.Update(func(appSettings *settings.Settings) error {
 		appSettings.NetworkUploadMbps = measurement.UploadMbps
 		return nil
-	})
+	}); err != nil {
+		log.Printf("failed to save network measurement: %v", err)
+	}
 }
 
 func manageCloudflareTunnel(originURL string, srv *server.Server, tunnelMu *sync.Mutex, tunnelHandle **tunnel.Tunnel, reconnect <-chan struct{}, stop <-chan os.Signal) {
@@ -322,7 +348,24 @@ func requestReconnect(reconnect chan<- struct{}) {
 }
 
 func serverIsHealthy(url string) bool {
-	client := http.Client{Timeout: 700 * time.Millisecond}
+	return serverIsHealthyWithin(url, 700*time.Millisecond)
+}
+
+func waitForServerHealthy(url string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if serverIsHealthyWithin(url, 100*time.Millisecond) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+func serverIsHealthyWithin(url string, timeout time.Duration) bool {
+	client := http.Client{Timeout: timeout}
 	resp, err := client.Get(url)
 	if err != nil {
 		return false

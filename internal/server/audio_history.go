@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"imagepadserver/internal/library"
+	"imagepadserver/internal/toolchain"
 	"imagepadserver/internal/video"
 )
 
@@ -13,7 +14,7 @@ import (
 // constructs a fully populated AudioRenderInput for the conversion pipeline.
 // Returns an error if EnsureFFmpeg, AnalyzeAudio, or analysis with zero frames fails.
 func (s *Server) audioRenderInputForStored(ctx context.Context, path string, item library.CurrentImage) (video.AudioRenderInput, error) {
-	ffmpegPath, err := video.EnsureFFmpeg()
+	ffmpegPath, err := toolchain.EnsureFFmpeg()
 	if err != nil {
 		return video.AudioRenderInput{}, err
 	}
