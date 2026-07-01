@@ -83,11 +83,13 @@ func TestRenderMediaMTXConfigDisablesAndRestricts(t *testing.T) {
 		"srt: no",
 		"moq: no",
 		"rtsp: yes",
-		"rtspTransports: [tcp]",
+		"rtspTransports: [tcp, udp]",
 		"apiAddress: 127.0.0.1:9997",
 		"hlsAddress: 127.0.0.1:8888",
 		"hlsVariant: lowLatency",
-		"rtspAddress: :8554",
+		"rtspAddress: 127.0.0.1:8554",
+		"rtpAddress: 127.0.0.1:0",
+		"rtcpAddress: 127.0.0.1:0",
 		"user: pub",
 		"pass: secret",
 		"path: obs_session",
@@ -102,11 +104,18 @@ func TestRenderMediaMTXConfigDisablesAndRestricts(t *testing.T) {
 	}
 }
 
-func TestRenderMediaMTXConfigAllowsPrivateNetworkReaders(t *testing.T) {
+func TestRenderMediaMTXConfigRestrictsAnonymousReadersToOwnedPath(t *testing.T) {
 	out := renderMediaMTXConfig(defaultTestConfig())
-	readUser := "  - user: any\n    ips: ['127.0.0.1/32', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '100.64.0.0/10']\n"
-	if !strings.Contains(out, readUser) {
-		t.Fatalf("read user is not available to private-network clients:\n%s", out)
+	for _, want := range []string{
+		"  - user: any\n    permissions:\n      - action: read\n        path: obs_session\n",
+		"      - action: playback\n        path: obs_session\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("anonymous read permissions are not path-limited, missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "10.0.0.0/8") || strings.Contains(out, "192.168.0.0/16") {
+		t.Fatalf("anonymous read user should not grant broad private-network access:\n%s", out)
 	}
 }
 
@@ -118,8 +127,8 @@ func TestMediaMTXRuntimeURLs(t *testing.T) {
 	if got, want := rt.hlsBaseURL(), "http://127.0.0.1:8888/obs_session"; got != want {
 		t.Fatalf("hlsBaseURL = %q, want %q", got, want)
 	}
-	if got, want := rt.rtsptURL(), "rtspt://192.168.1.50:8554/obs_session"; got != want {
-		t.Fatalf("rtsptURL = %q, want %q", got, want)
+	if got, want := rt.rtspURL(), "rtsp://192.168.1.50:8554/obs_session"; got != want {
+		t.Fatalf("rtspURL = %q, want %q", got, want)
 	}
 }
 

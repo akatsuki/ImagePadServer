@@ -24,6 +24,31 @@ func TestUIContainsToolInstallOverlay(t *testing.T) {
 	}
 }
 
+func TestUIGenericToastNotificationBar(t *testing.T) {
+	html := getIndexHTML(t)
+	for _, want := range []string{
+		`id="toast" role="status"`,
+		`id="toastMessage"`,
+		`id="toastCopyButton"`,
+		`id="toastCloseButton"`,
+		`.toast.active`,
+		`.toast.error`,
+		`.toast.error .toast-actions`,
+		`function showToast(`,
+		`function buildErrorReport(`,
+		`connections: Array.isArray(obs.connections) ? obs.connections : []`,
+		`lastToastErrorReport`,
+		`Object.defineProperty(toast, 'textContent'`,
+		`body.pairing-active .toast`,
+		`document.body.classList.toggle('pairing-active'`,
+		`showToast(syncFailureMessage(error), { error: true })`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("generic toast notification bar missing %q", want)
+		}
+	}
+}
+
 func TestUIRendersIngestPhase(t *testing.T) {
 	html := getIndexHTML(t)
 	for _, want := range []string{"ingestPhase", "ダウンロード中", "解析中"} {
@@ -70,6 +95,46 @@ func TestMusicModeUIIsNestedUnderVideoPlayerMode(t *testing.T) {
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("music mode UI is missing %q", want)
+		}
+	}
+}
+
+func TestOBSConnectionDetailsUIAndUnifiedRTSPURL(t *testing.T) {
+	html := getIndexHTML(t)
+	for _, want := range []string{
+		`id="obsLatencyDetailButton"`,
+		`id="obsConnectionsDialog"`,
+		`IP</th>`,
+		`プロトコル</th>`,
+		`機種</th>`,
+		`状態</th>`,
+		`品質</th>`,
+		`推定ラグ</th>`,
+		`renderOBSConnections`,
+		`data.obs && data.obs.rtsptURL ? data.obs.rtsptURL`,
+		`最高画質HLS（10s+）`,
+		`高画質HLS（5s）`,
+		`低遅延RTSP（3-4s）`,
+		`超低遅延RTSP（1-2s）`,
+		`リアルタイムRTSP（0.5s+）`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("OBS connection detail UI missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		`id="obsRtspt"`,
+		`id="obsRtsptURL"`,
+		`id="obsRtsptCopy"`,
+		`id="obsLatencyStatus"`,
+		`id="obsDVRToggle"`,
+		`DVR 30min`,
+		`低遅延（LHLS, 実験）`,
+		`超低遅延（LL-HLS, 実験）`,
+		`リアルタイム（RTSPT, PC専用）`,
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("old dedicated RTSPT URL UI remains: %q", forbidden)
 		}
 	}
 }

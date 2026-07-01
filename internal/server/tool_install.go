@@ -42,12 +42,14 @@ func (s *Server) startVideoToolInstall() {
 	}
 	s.toolInstalling = true
 	s.toolInstallMu.Unlock()
+	s.broadcastStateChanged()
 
 	go func() {
 		defer func() {
 			s.toolInstallMu.Lock()
 			s.toolInstalling = false
 			s.toolInstallMu.Unlock()
+			s.broadcastStateChanged()
 		}()
 
 		const maxRounds = 4
@@ -62,6 +64,7 @@ func (s *Server) startVideoToolInstall() {
 				s.commitVideoPlayerEnabled()
 				return
 			}
+			s.broadcastStateChangedThrottled()
 			if round == maxRounds-1 {
 				break
 			}

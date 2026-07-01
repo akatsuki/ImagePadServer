@@ -307,6 +307,28 @@ const indexHTML = `<!doctype html>
       text-align: right;
       overflow-wrap: anywhere;
     }
+    .pill.obs-status-pill {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      align-items: center;
+    }
+    .pill.obs-status-pill span {
+      text-align: right;
+    }
+    .pill-action {
+      min-height: 24px;
+      padding: 0 8px;
+      border: 1px solid #bdd7d0;
+      background: rgba(255, 255, 255, 0.58);
+      color: #21443d;
+      font-size: 11px;
+      font-weight: 800;
+      box-shadow: none;
+    }
+    .pill-action:hover {
+      background: #fff;
+      transform: none;
+    }
     .toggle-row {
       display: grid;
       grid-template-columns: minmax(0, 1fr) 46px;
@@ -473,6 +495,27 @@ const indexHTML = `<!doctype html>
     .tool-install-title { font-weight: 800; color: #21443d; }
     .tool-install-detail { color: var(--muted); font-size: 13px; font-weight: 700; }
     .tool-install-card.failed .tool-install-title { color: #b3261e; }
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 10000;
+      display: grid;
+      place-items: center;
+      padding: 18px;
+      background: rgba(23, 32, 42, .46);
+    }
+    .modal-backdrop[hidden] { display: none; }
+    .modal-card {
+      max-width: min(92vw, 720px);
+      max-height: min(88vh, 720px);
+      overflow: auto;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 16px;
+      box-shadow: 0 18px 50px rgba(0,0,0,0.25);
+    }
+    .modal-card h2 { margin-bottom: 6px; }
     .actions {
       display: flex;
       flex-wrap: wrap;
@@ -504,6 +547,67 @@ const indexHTML = `<!doctype html>
       min-width: 34px;
       padding: 0;
       font-size: 15px;
+    }
+    .obs-latency-actions {
+      display: block;
+    }
+    .obs-latency-actions select {
+      width: 100%;
+    }
+    .obs-connections-card { width: min(100%, 760px); }
+    .connection-table-wrap {
+      overflow-x: auto;
+      border: 1px solid #d9e6e0;
+      border-radius: 12px;
+    }
+    .connection-table {
+      width: 100%;
+      min-width: 640px;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    .connection-table th,
+    .connection-table td {
+      padding: 10px 12px;
+      border-bottom: 1px solid #e7f0ec;
+      text-align: left;
+      white-space: nowrap;
+    }
+    .connection-table th {
+      background: #f4faf7;
+      color: #24483f;
+      font-weight: 800;
+    }
+    .connection-table tbody tr:last-child td { border-bottom: 0; }
+    .connection-empty { color: var(--muted); text-align: center; }
+    .lag-cell {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 150px;
+    }
+    .lag-bar {
+      width: 96px;
+      height: 10px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: #e8eee9;
+    }
+    .lag-bar-fill {
+      display: block;
+      height: 100%;
+      min-width: 8px;
+      border-radius: inherit;
+    }
+    .lag-good { background: #159947; }
+    .lag-ok { background: #78b92e; }
+    .lag-warn { background: #d99116; }
+    .lag-bad { background: #c3422f; }
+    .lag-value {
+      min-width: 38px;
+      font-variant-numeric: tabular-nums;
+      font-weight: 800;
+      color: #23443d;
     }
     .link-input-row {
       display: flex;
@@ -693,10 +797,60 @@ const indexHTML = `<!doctype html>
       display: block;
     }
     .toast {
-      min-height: 18px;
-      color: var(--accent);
-      font-weight: 700;
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      z-index: 30;
+      width: min(420px, calc(100vw - 36px));
+      min-height: 0;
+      padding: 12px 14px;
+      border: 1px solid #bdd7d0;
+      border-left: 5px solid var(--accent);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, .96);
+      color: #21443d;
+      font-weight: 800;
       font-size: 13px;
+      line-height: 1.45;
+      box-shadow: 0 14px 40px rgba(0, 0, 0, .20);
+      opacity: 0;
+      transform: translateY(12px);
+      pointer-events: none;
+      transition: opacity .16s ease, transform .16s ease, bottom .16s ease;
+    }
+    .toast.active {
+      opacity: 1;
+      transform: translateY(0);
+      pointer-events: auto;
+    }
+    .toast.error {
+      border-left-color: var(--accent-2);
+      color: #7f2a1c;
+    }
+    .toast-message {
+      overflow-wrap: anywhere;
+    }
+    .toast-actions {
+      display: none;
+      justify-content: flex-end;
+      gap: 6px;
+      margin-top: 10px;
+    }
+    .toast.error .toast-actions {
+      display: flex;
+    }
+    .toast-action {
+      min-height: 28px;
+      padding: 0 10px;
+      border: 1px solid rgba(127, 42, 28, .24);
+      background: rgba(255, 255, 255, .76);
+      color: #7f2a1c;
+      font-size: 12px;
+      font-weight: 900;
+    }
+    .toast-close {
+      min-width: 30px;
+      padding: 0;
     }
     .pairing-panel {
       display: none;
@@ -712,6 +866,9 @@ const indexHTML = `<!doctype html>
     }
     .pairing-panel.active {
       display: block;
+    }
+    body.pairing-active .toast {
+      bottom: 210px;
     }
     .pairing-title {
       margin: 0 0 6px;
@@ -855,6 +1012,11 @@ const indexHTML = `<!doctype html>
         display: grid;
       }
     }
+    @media (max-width: 720px) {
+      body.pairing-active .toast {
+        bottom: 230px;
+      }
+    }
     @media (max-width: 720px) and (pointer: coarse) {
       .phone-connect {
         display: none;
@@ -969,24 +1131,19 @@ const indexHTML = `<!doctype html>
                   <button type="button" class="secondary" id="obsKeyRotateButton">更新</button>
                 </div>
               </div>
-              <div class="pill"><strong>OBS</strong><span id="obsStatus">確認中</span></div>
+              <div class="pill obs-status-pill"><strong>OBS</strong><span id="obsStatus">確認中</span><button type="button" class="pill-action" id="obsLatencyDetailButton">接続詳細</button></div>
               <div class="urlbox">
                 <div>
                   <strong>OBS Latency</strong>
-                  <span id="obsLatencyStatus">auto</span>
                 </div>
-                <select id="obsLatencyMode" aria-label="OBS latency mode">
-                  <option value="hls">通常遅延（HLS）</option>
-                  <option value="lhls">低遅延（LHLS, 実験）</option>
-                  <option value="llhls">超低遅延（LL-HLS, 実験）</option>
-                  <option value="rtspt">リアルタイム（RTSPT, PC専用）</option>
-                </select>
-                <label><input id="obsDVRToggle" type="checkbox"> DVR 30min</label>
-                <div id="obsRtspt" class="obs-rtspt" style="display:none">
-                  <strong>RTSPT URL</strong>
-                  <code id="obsRtsptURL"></code>
-                  <button id="obsRtsptCopy" type="button">コピー</button>
-                  <span class="hint">PC専用。ブラウザプレビュー非対応のためURLをコピーして再生してください。</span>
+                <div class="obs-latency-actions">
+                  <select id="obsLatencyMode" aria-label="OBS latency mode">
+                    <option value="hls-high">最高画質HLS（10s+）</option>
+                    <option value="hls">高画質HLS（5s）</option>
+                    <option value="rtsp-low">低遅延RTSP（3-4s）</option>
+                    <option value="rtsp-ultra">超低遅延RTSP（1-2s）</option>
+                    <option value="rtsp-realtime">リアルタイムRTSP（0.5s+）</option>
+                  </select>
                 </div>
               </div>
             </div>
@@ -1001,7 +1158,13 @@ const indexHTML = `<!doctype html>
             <button id="uploadButton" type="submit" name="uploadAction" value="publish">変換して公開</button>
             <button id="queueUploadButton" type="submit" class="secondary" name="uploadAction" value="queue">動画変換へ</button>
           </div>
-          <div class="toast" id="toast"></div>
+          <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true">
+            <div class="toast-message" id="toastMessage"></div>
+            <div class="toast-actions" id="toastActions">
+              <button type="button" class="toast-action" id="toastCopyButton">診断情報をコピー</button>
+              <button type="button" class="toast-action toast-close" id="toastCloseButton" aria-label="通知を閉じる">×</button>
+            </div>
+          </div>
           <div class="mobile-progress" id="mobileProgress">
             <div id="mobileProgressText">変換中</div>
             <div class="progress-track" aria-label="変換進捗">
@@ -1068,6 +1231,58 @@ const indexHTML = `<!doctype html>
       <div class="tool-install-detail" id="toolInstallDetail"></div>
     </div>
   </div>
+  <div class="modal-backdrop" id="rtspRiskDialog" hidden>
+    <section class="modal-card" role="alertdialog" aria-modal="true" aria-labelledby="rtspRiskTitle" aria-describedby="rtspRiskDescription">
+      <h2 id="rtspRiskTitle">RTSPを外部公開します</h2>
+      <div id="rtspRiskDescription">
+        <p>リアルタイム系RTSPは UPnP とグローバルIPを使って、VRChat から直接到達できるURLを作成します。</p>
+        <ul>
+          <li>ルーターに一時的なポート開放を要求します。</li>
+          <li>生成されたURLを知っている相手は配信中の映像へ接続できます。</li>
+          <li>配信終了時にポート開放は閉じますが、ネットワーク環境によって失敗する場合があります。</li>
+        </ul>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="secondary" id="rtspRiskCancel">キャンセル</button>
+        <button type="button" class="warn" id="rtspRiskConfirm">リスクを理解して有効化</button>
+      </div>
+    </section>
+  </div>
+  <div class="modal-backdrop" id="obsKeyRiskDialog" hidden>
+    <section class="modal-card" role="alertdialog" aria-modal="true" aria-labelledby="obsKeyRiskTitle" aria-describedby="obsKeyRiskDescription">
+      <h2 id="obsKeyRiskTitle">OBS Stream Keyを変更します</h2>
+      <div id="obsKeyRiskDescription">
+        <p>Stream Key を変更すると、同じキーを知るOBS/中継元だけがこの受信口へ配信できます。</p>
+        <ul>
+          <li>変更後はOBS側の設定も同じ値へ差し替えてください。</li>
+          <li>第三者に推測されにくい長いキーを使ってください。</li>
+          <li>保存されたキーは次回起動時も維持されます。</li>
+        </ul>
+      </div>
+      <label><span>新しい Stream Key</span><input id="obsKeyEditInput" type="text" autocomplete="off" spellcheck="false"></label>
+      <div class="modal-actions">
+        <button type="button" class="secondary" id="obsKeyRiskCancel">キャンセル</button>
+        <button type="button" class="warn" id="obsKeyRiskConfirm">変更して保存</button>
+      </div>
+    </section>
+  </div>
+  <div class="modal-backdrop" id="obsConnectionsDialog" hidden>
+    <section class="modal-card obs-connections-card" role="dialog" aria-modal="true" aria-labelledby="obsConnectionsTitle" aria-describedby="obsConnectionsDescription">
+      <h2 id="obsConnectionsTitle">OBS接続詳細</h2>
+      <p id="obsConnectionsDescription">推定ラグはプロファイル、プロトコル、表示経路からの見積もりです。VRChat内の最終表示遅延とは異なる場合があります。</p>
+      <div class="connection-table-wrap">
+        <table class="connection-table">
+          <thead><tr><th>IP</th><th>プロトコル</th><th>機種</th><th>状態</th><th>品質</th><th>推定ラグ</th></tr></thead>
+          <tbody id="obsConnectionsTableBody">
+            <tr><td colspan="6" class="connection-empty">接続なし</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="actions">
+        <button type="button" class="secondary" id="obsConnectionsClose">閉じる</button>
+      </div>
+    </section>
+  </div>
   <div class="pairing-panel" id="pairingPanel" role="status" aria-live="polite">
     <p class="pairing-title">BrowserRelayStreamer pairing code</p>
     <strong class="pairing-pin" id="pairingPin">0000</strong>
@@ -1097,6 +1312,159 @@ const indexHTML = `<!doctype html>
     };
 
     const toast = document.getElementById('toast');
+    const toastMessage = document.getElementById('toastMessage');
+    const toastCopyButton = document.getElementById('toastCopyButton');
+    const toastCloseButton = document.getElementById('toastCloseButton');
+    const toastTextDescriptor = Object.getOwnPropertyDescriptor(Node.prototype, 'textContent');
+    let toastTimer = null;
+    let toastInternalUpdate = false;
+    let lastToastErrorReport = '';
+    function writeToastText(text) {
+      if (!toastMessage && !toast) return;
+      toastInternalUpdate = true;
+      const target = toastMessage || toast;
+      if (toastTextDescriptor && toastTextDescriptor.set) {
+        toastTextDescriptor.set.call(target, text);
+      } else {
+        target.innerText = text;
+      }
+      toastInternalUpdate = false;
+    }
+    function showToast(message, options = {}) {
+      if (!toast) return;
+      const text = String(message || '');
+      const visible = text.trim() !== '';
+      const isError = !!options.error;
+      clearTimeout(toastTimer);
+      writeToastText(text);
+      if (!visible) {
+        toast.classList.remove('active', 'error');
+        delete toast.dataset.error;
+        lastToastErrorReport = '';
+        return;
+      }
+      toast.classList.add('active');
+      toast.classList.toggle('error', isError);
+      if (isError) {
+        toast.dataset.error = '1';
+        lastToastErrorReport = buildErrorReport(text, options.context || null);
+      } else {
+        delete toast.dataset.error;
+        lastToastErrorReport = '';
+      }
+      const timeout = options.timeout === undefined ? (isError ? 0 : 4200) : options.timeout;
+      if (timeout > 0) {
+        toastTimer = setTimeout(() => showToast('', { timeout: 0 }), timeout);
+      }
+    }
+    function hideToast() {
+      showToast('', { timeout: 0 });
+    }
+    function isToastErrorMessage(value) {
+      const text = String(value || '');
+      return /失敗|Failed|Error|error|NetworkError|使えません|ありません|確認してください/.test(text);
+    }
+    if (toast && toastTextDescriptor && toastTextDescriptor.set && toastTextDescriptor.get) {
+      Object.defineProperty(toast, 'textContent', {
+        get() { return toastTextDescriptor.get.call(toastMessage || this); },
+        set(value) {
+          if (toastInternalUpdate) {
+            if (toastMessage) {
+              toastTextDescriptor.set.call(toastMessage, value);
+            } else {
+              toastTextDescriptor.set.call(this, value);
+            }
+            return;
+          }
+          showToast(value, { error: this.dataset.error === '1' || isToastErrorMessage(value) });
+        }
+      });
+    }
+    function buildErrorReport(message, context) {
+      const obs = state.obs || {};
+      const latency = obs.latency || {};
+      const current = state.current || (Array.isArray(state.history) ? state.history.find((item) => item && item.id === state.currentID) : null) || {};
+      const report = {
+        app: 'ImagePadServer',
+        generatedAt: new Date().toISOString(),
+        pageURL: window.location.href,
+        userAgent: navigator.userAgent,
+        visibility: document.visibilityState,
+        online: navigator.onLine,
+        uploadMode,
+        wingMode,
+        error: {
+          message: message,
+          context: context || null
+        },
+        currentMedia: {
+          id: state.currentID || '',
+          name: current.name || '',
+          kind: current.kind || '',
+          mime: current.mime || '',
+          url: current.url || ''
+        },
+        urls: {
+          imageURL: state.imageURL || '',
+          videoURL: state.videoURL || '',
+          hlsURL: state.hlsURL || '',
+          shareURL: state.shareURL || '',
+          shareURLLabel: state.shareURLLabel || '',
+          phoneURL: state.phoneURL || '',
+          localImageURL: state.localImageURL || '',
+          previewImageURL: state.previewImageURL || '',
+          publicImageURL: state.publicImageURL || ''
+        },
+        preview: {
+          mode: state.previewMode || '',
+          obsPreviewID: state.obsPreviewID || ''
+        },
+        ingest: state.ingest || null,
+        video: state.video || null,
+        videoQuality: state.videoQuality || null,
+        toolInstall: state.toolInstall || null,
+        pairing: state.pairing || null,
+        obs: {
+          available: !!obs.available,
+          connected: !!obs.connected,
+          publishing: !!obs.publishing,
+          serverAddress: obs.serverAddress || '',
+          previewURL: obs.previewURL || '',
+          publicHLSURL: obs.publicHLSURL || '',
+          rtsptURL: obs.rtsptURL || '',
+          latency: {
+            mode: latency.mode || '',
+            label: latency.label || '',
+            target: latency.target || '',
+            message: latency.message || ''
+          },
+          connections: Array.isArray(obs.connections) ? obs.connections : []
+        }
+      };
+      return JSON.stringify(report, null, 2);
+    }
+    async function copyToastErrorReport() {
+      if (!lastToastErrorReport) return;
+      const original = toastCopyButton ? toastCopyButton.textContent : '';
+      try {
+        await copyText(lastToastErrorReport, toastMessage || toast);
+        if (toastCopyButton) {
+          toastCopyButton.textContent = 'コピーしました';
+          setTimeout(() => { toastCopyButton.textContent = original || '診断情報をコピー'; }, 1500);
+        }
+      } catch (error) {
+        if (toastCopyButton) {
+          toastCopyButton.textContent = 'コピー失敗';
+          setTimeout(() => { toastCopyButton.textContent = original || '診断情報をコピー'; }, 1500);
+        }
+      }
+    }
+    if (toastCopyButton) {
+      toastCopyButton.addEventListener('click', copyToastErrorReport);
+    }
+    if (toastCloseButton) {
+      toastCloseButton.addEventListener('click', hideToast);
+    }
     const uploadForm = document.getElementById('uploadForm');
     const uploadButton = document.getElementById('uploadButton');
     const queueUploadButton = document.getElementById('queueUploadButton');
@@ -1135,8 +1503,17 @@ const indexHTML = `<!doctype html>
     const clearButton = document.getElementById('clearButton');
     const obsKeyRotateButton = document.getElementById('obsKeyRotateButton');
     const obsLatencyMode = document.getElementById('obsLatencyMode');
-    const obsLatencyStatus = document.getElementById('obsLatencyStatus');
-    const obsDVRToggle = document.getElementById('obsDVRToggle');
+    const obsLatencyDetailButton = document.getElementById('obsLatencyDetailButton');
+    const rtspRiskDialog = document.getElementById('rtspRiskDialog');
+    const rtspRiskCancel = document.getElementById('rtspRiskCancel');
+    const rtspRiskConfirm = document.getElementById('rtspRiskConfirm');
+    const obsKeyRiskDialog = document.getElementById('obsKeyRiskDialog');
+    const obsKeyRiskCancel = document.getElementById('obsKeyRiskCancel');
+    const obsKeyRiskConfirm = document.getElementById('obsKeyRiskConfirm');
+    const obsKeyEditInput = document.getElementById('obsKeyEditInput');
+    const obsConnectionsDialog = document.getElementById('obsConnectionsDialog');
+    const obsConnectionsClose = document.getElementById('obsConnectionsClose');
+    const obsConnectionsTableBody = document.getElementById('obsConnectionsTableBody');
     const pairingPanel = document.getElementById('pairingPanel');
     const pairingPin = document.getElementById('pairingPin');
     const pairingDetail = document.getElementById('pairingDetail');
@@ -1149,6 +1526,7 @@ const indexHTML = `<!doctype html>
     let refreshAgain = false;
     let lastAppliedStateSeq = 0;
     let localChangeChannel = null;
+    let confirmedOBSLatencyMode = 'hls';
     let wingMode = 'history';
     const imageAccept = 'image/png,image/jpeg,image/gif,image/webp,image/bmp,image/tiff,image/svg+xml,image/x-sony-arw,image/x-canon-crw,image/x-canon-cr2,image/x-canon-cr3,image/x-panasonic-rw2,image/x-olympus-orf,image/x-fuji-raf,image/x-nikon-nef,image/x-nikon-nrw,image/x-sigma-x3f,image/x-adobe-dng,.jpg,.jpeg,.png,.gif,.webp,.bmp,.tif,.tiff,.svg,.arw,.srf,.sr2,.crw,.cr2,.cr3,.rw2,.raw,.orf,.raf,.nef,.nrw,.x3f,.dng';
     const mediaAccept = imageAccept + ',video/*,video/mp4,video/quicktime,video/webm,video/x-matroska,.mp4,.mov,.m4v,.webm,.mkv,.avi';
@@ -1196,14 +1574,12 @@ const indexHTML = `<!doctype html>
         if (seq === lastAppliedStateSeq) {
           applyState(data);
           if (toast && toast.dataset.error === '1') {
-            toast.textContent = '';
-            delete toast.dataset.error;
+            hideToast();
           }
         }
       } catch (error) {
         if (toast && !document.hidden) {
-          toast.textContent = syncFailureMessage(error);
-          toast.dataset.error = '1';
+          showToast(syncFailureMessage(error), { error: true });
         }
       } finally {
         refreshInFlight = false;
@@ -1224,11 +1600,15 @@ const indexHTML = `<!doctype html>
       state.localImageURL = data.localImageURL;
       state.previewImageURL = data.previewImageURL;
       state.publicImageURL = data.publicImageURL;
+      state.current = data.current || null;
       state.history = data.history || [];
       state.videoQueue = data.videoQueue || [];
       state.videoQuality = data.videoQuality;
+      state.ingest = data.ingest || null;
+      state.video = data.video || null;
       state.obs = data.obs || null;
       state.pairing = data.pairing || null;
+      state.toolInstall = data.toolInstall || null;
       state.videoPlayerEnabled = !!(data.videoPlayer && data.videoPlayer.enabled);
       state.musicModeEnabled = !!(data.videoPlayer && data.videoPlayer.musicModeEnabled);
       document.getElementById('phoneURL').textContent = data.phoneURL;
@@ -1268,8 +1648,10 @@ const indexHTML = `<!doctype html>
     }
 
     function applyPairing(pairing) {
+      const active = !!(pairing && pairing.active && pairing.pin);
+      document.body.classList.toggle('pairing-active', active);
       if (!pairingPanel || !pairingPin || !pairingDetail) return;
-      if (!pairing || !pairing.active || !pairing.pin) {
+      if (!active) {
         pairingPanel.classList.remove('active');
         return;
       }
@@ -1724,33 +2106,15 @@ const indexHTML = `<!doctype html>
         server.textContent = 'RTMP receiver is unavailable';
         key.textContent = '-';
         status.textContent = 'unavailable';
-        if (obsLatencyStatus) obsLatencyStatus.textContent = 'unavailable';
+        renderOBSConnections([]);
         return;
       }
       server.textContent = data.serverAddress || 'RTMP receiver is stopped';
       key.textContent = obsKeyVisible ? (data.streamKey || '-') : maskSecret(data.streamKey);
       const latency = data.latency || {};
-      if (obsLatencyMode) obsLatencyMode.value = latency.mode || 'hls';
-      if (obsDVRToggle) obsDVRToggle.checked = !!latency.dvr;
-      if (obsLatencyStatus) {
-        const target = latency.target && latency.target !== 'auto' ? ' / ' + latency.target : '';
-        const dvr = latency.dvr ? ' / DVR 30min' : '';
-        obsLatencyStatus.textContent = (latency.label || latency.mode || 'hls') + target + dvr;
-        obsLatencyStatus.title = latency.message || '';
-      }
-      // RTSPT has no browser preview: surface its copyable URL only once the
-      // session is ready (rtsptURL is set by the server after readiness).
-      const obsRtspt = document.getElementById('obsRtspt');
-      const obsRtsptURL = document.getElementById('obsRtsptURL');
-      if (obsRtspt && obsRtsptURL) {
-        if (data.rtsptURL) {
-          obsRtsptURL.textContent = data.rtsptURL;
-          obsRtspt.style.display = '';
-        } else {
-          obsRtsptURL.textContent = '';
-          obsRtspt.style.display = 'none';
-        }
-      }
+      confirmedOBSLatencyMode = latency.mode || 'hls';
+      if (obsLatencyMode) obsLatencyMode.value = confirmedOBSLatencyMode;
+      renderOBSConnections(data.connections || []);
       if (data.connected && data.publishing) {
         status.textContent = 'publishing / HLS event';
       } else if (data.connected) {
@@ -1760,6 +2124,45 @@ const indexHTML = `<!doctype html>
       } else {
         status.textContent = data.message || 'stopped';
       }
+    }
+
+    function renderOBSConnections(rows) {
+      if (!obsConnectionsTableBody) return;
+      const list = Array.isArray(rows) ? rows : [];
+      if (!list.length) {
+        obsConnectionsTableBody.innerHTML = '<tr><td colspan="6" class="connection-empty">接続なし</td></tr>';
+        return;
+      }
+      obsConnectionsTableBody.innerHTML = list.map((row) => {
+        const lag = Number(row.lagSeconds || 0);
+        const level = normalizeLagLevel(row.lagLevel, lag);
+        const width = Math.max(8, Math.min(100, (lag / 12) * 100));
+        const note = row.note ? ' title="' + escapeHTML(row.note) + '"' : '';
+        return '<tr' + note + '>' +
+          '<td>' + escapeHTML(row.ip || '-') + '</td>' +
+          '<td>' + escapeHTML(row.protocol || '-') + '</td>' +
+          '<td>' + escapeHTML(row.device || '-') + '</td>' +
+          '<td>' + escapeHTML(row.state || '-') + '</td>' +
+          '<td>' + escapeHTML(row.quality || '-') + '</td>' +
+          '<td><div class="lag-cell"><div class="lag-bar" aria-hidden="true"><span class="lag-bar-fill lag-' + level + '" style="width:' + width.toFixed(0) + '%"></span></div><span class="lag-value">' + formatLagSeconds(lag) + '</span></div></td>' +
+          '</tr>';
+      }).join('');
+    }
+
+    function normalizeLagLevel(level, seconds) {
+      const value = String(level || '').toLowerCase();
+      if (['good', 'ok', 'warn', 'bad'].includes(value)) return value;
+      if (seconds <= 1.2) return 'good';
+      if (seconds <= 2.5) return 'ok';
+      if (seconds <= 5) return 'warn';
+      return 'bad';
+    }
+
+    function formatLagSeconds(seconds) {
+      if (!Number.isFinite(seconds) || seconds <= 0) return '-';
+      if (seconds < 1) return seconds.toFixed(1) + 's';
+      if (Math.abs(seconds - Math.round(seconds)) < 0.05) return String(Math.round(seconds)) + 's';
+      return seconds.toFixed(1).replace(/\.0$/, '') + 's';
     }
 
     function maskSecret(value) {
@@ -1974,8 +2377,8 @@ const indexHTML = `<!doctype html>
     }
 
     async function copyStartedOBSURL(data) {
-      const url = data && (data.shareURL || data.hlsURL || data.publicHLSURL);
-      if (!url || !url.startsWith('http')) {
+      const url = data && data.obs && data.obs.rtsptURL ? data.obs.rtsptURL : data && (data.shareURL || data.hlsURL || data.publicHLSURL);
+      if (!url || !(url.startsWith('http') || url.startsWith('rtsp://'))) {
         return;
       }
       const source = document.getElementById('shareURL');
@@ -2261,53 +2664,46 @@ const indexHTML = `<!doctype html>
       button.setAttribute('aria-label', button.title);
       applyOBS(state.obs);
     });
-    obsKeyRotateButton.addEventListener('click', async () => {
-      if (!window.confirm('OBSのStream Keyを更新します。OBS側のキーも差し替える必要があります。よろしいですか？')) {
-        return;
-      }
-      obsKeyRotateButton.disabled = true;
-      toast.textContent = 'OBS Stream Keyを更新中...';
-      try {
-        const res = await fetch('/api/obs/key', { method: 'POST' });
-        if (!res.ok) throw new Error(await res.text());
-        const data = await res.json();
-        applyState(data);
-        announceLocalChange();
-        toast.textContent = 'OBS Stream Keyを更新しました';
-      } catch (error) {
-        toast.textContent = error.message || 'OBS Stream Keyの更新に失敗しました';
-      } finally {
-        obsKeyRotateButton.disabled = false;
-      }
-    });
-    const obsRtsptCopyBtn = document.getElementById('obsRtsptCopy');
-    if (obsRtsptCopyBtn) {
-      obsRtsptCopyBtn.addEventListener('click', async () => {
-        const url = (document.getElementById('obsRtsptURL') || {}).textContent || '';
-        if (!url) return;
-        try {
-          await navigator.clipboard.writeText(url);
-          obsRtsptCopyBtn.textContent = 'コピーしました';
-          setTimeout(() => { obsRtsptCopyBtn.textContent = 'コピー'; }, 1500);
-        } catch (e) {
-          obsRtsptCopyBtn.textContent = 'コピー失敗';
+    const obsStreamKeyElement = document.getElementById('obsStreamKey');
+    const requestOBSKeyChange = async () => {
+      const nextKey = await showOBSKeyRiskDialog();
+      if (!nextKey) return;
+      await updateOBSStreamKey(nextKey);
+    };
+    if (obsStreamKeyElement) {
+      obsStreamKeyElement.addEventListener('click', requestOBSKeyChange);
+      obsStreamKeyElement.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          requestOBSKeyChange();
         }
       });
     }
+    obsKeyRotateButton.addEventListener('click', requestOBSKeyChange);
     obsLatencyMode.addEventListener('change', async () => {
-      updateOBSLatency();
+      const requestedMode = obsLatencyMode.value;
+      if (requestedMode.startsWith('rtsp-') && !String(confirmedOBSLatencyMode || '').startsWith('rtsp-')) {
+        const accepted = await showRTSPRiskDialog();
+        if (!accepted) {
+          obsLatencyMode.value = confirmedOBSLatencyMode;
+          return;
+        }
+      }
+      updateOBSLatency(requestedMode);
     });
-    obsDVRToggle.addEventListener('change', async () => {
-      updateOBSLatency();
-    });
-    async function updateOBSLatency() {
+    if (obsLatencyDetailButton) {
+      obsLatencyDetailButton.addEventListener('click', async () => {
+        await refreshState();
+        showOBSConnectionsDialog();
+      });
+    }
+    async function updateOBSLatency(mode) {
       obsLatencyMode.disabled = true;
-      obsDVRToggle.disabled = true;
       try {
         const res = await fetch('/api/obs/latency', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mode: obsLatencyMode.value, dvr: obsDVRToggle.checked })
+          body: JSON.stringify({ mode: mode || obsLatencyMode.value })
         });
         if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
@@ -2321,8 +2717,144 @@ const indexHTML = `<!doctype html>
         toast.textContent = error.message || 'Failed to update OBS latency mode';
       } finally {
         obsLatencyMode.disabled = false;
-        obsDVRToggle.disabled = false;
       }
+    }
+    function showRTSPRiskDialog() {
+      if (!rtspRiskDialog || !rtspRiskCancel || !rtspRiskConfirm) {
+        return Promise.resolve(false);
+      }
+      return new Promise((resolve) => {
+        let settled = false;
+        const finish = (accepted) => {
+          if (settled) return;
+          settled = true;
+          rtspRiskDialog.hidden = true;
+          rtspRiskDialog.removeEventListener('click', onBackdrop);
+          rtspRiskCancel.removeEventListener('click', onCancel);
+          rtspRiskConfirm.removeEventListener('click', onConfirm);
+          document.removeEventListener('keydown', onKeyDown);
+          if (obsLatencyMode) obsLatencyMode.focus();
+          resolve(accepted);
+        };
+        const onCancel = () => finish(false);
+        const onConfirm = () => finish(true);
+        const onBackdrop = (event) => {
+          if (event.target === rtspRiskDialog) finish(false);
+        };
+        const onKeyDown = (event) => {
+          if (event.key === 'Escape') finish(false);
+        };
+        rtspRiskDialog.hidden = false;
+        rtspRiskDialog.addEventListener('click', onBackdrop);
+        rtspRiskCancel.addEventListener('click', onCancel);
+        rtspRiskConfirm.addEventListener('click', onConfirm);
+        document.addEventListener('keydown', onKeyDown);
+        rtspRiskConfirm.focus();
+      });
+    }
+    function showOBSKeyRiskDialog() {
+      if (!obsKeyRiskDialog || !obsKeyRiskCancel || !obsKeyRiskConfirm || !obsKeyEditInput) {
+        return Promise.resolve('');
+      }
+      obsKeyEditInput.value = (state.obs && state.obs.streamKey) || '';
+      return new Promise((resolve) => {
+        let settled = false;
+        const finish = (value) => {
+          if (settled) return;
+          settled = true;
+          obsKeyRiskDialog.hidden = true;
+          obsKeyRiskDialog.removeEventListener('click', onBackdrop);
+          obsKeyRiskCancel.removeEventListener('click', onCancel);
+          obsKeyRiskConfirm.removeEventListener('click', onConfirm);
+          obsKeyEditInput.removeEventListener('keydown', onInputKeyDown);
+          document.removeEventListener('keydown', onKeyDown);
+          const key = document.getElementById('obsStreamKey');
+          if (key) key.focus();
+          resolve(value);
+        };
+        const validate = () => {
+          const value = obsKeyEditInput.value.trim();
+          if (!value) {
+            toast.textContent = 'OBS Stream Keyを入力してください';
+            obsKeyEditInput.focus();
+            return '';
+          }
+          if (/[\\/\s?#]/.test(value)) {
+            toast.textContent = 'OBS Stream Keyに空白、/、\\\\、?、# は使えません';
+            obsKeyEditInput.focus();
+            return '';
+          }
+          return value;
+        };
+        const onCancel = () => finish('');
+        const onConfirm = () => {
+          const value = validate();
+          if (value) finish(value);
+        };
+        const onBackdrop = (event) => {
+          if (event.target === obsKeyRiskDialog) finish('');
+        };
+        const onKeyDown = (event) => {
+          if (event.key === 'Escape') finish('');
+        };
+        const onInputKeyDown = (event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            onConfirm();
+          }
+        };
+        obsKeyRiskDialog.hidden = false;
+        obsKeyRiskDialog.addEventListener('click', onBackdrop);
+        obsKeyRiskCancel.addEventListener('click', onCancel);
+        obsKeyRiskConfirm.addEventListener('click', onConfirm);
+        obsKeyEditInput.addEventListener('keydown', onInputKeyDown);
+        document.addEventListener('keydown', onKeyDown);
+        obsKeyEditInput.focus();
+        obsKeyEditInput.select();
+      });
+    }
+    async function updateOBSStreamKey(streamKey) {
+      obsKeyRotateButton.disabled = true;
+      toast.textContent = 'OBS Stream Keyを保存中...';
+      try {
+        const res = await fetch('/api/obs/key', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ streamKey })
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        obsKeyVisible = true;
+        applyState(data);
+        announceLocalChange();
+        toast.textContent = 'OBS Stream Keyを保存しました。OBS側の設定も同じ値へ変更してください';
+      } catch (error) {
+        toast.textContent = error.message || 'OBS Stream Keyの保存に失敗しました';
+      } finally {
+        obsKeyRotateButton.disabled = false;
+      }
+    }
+    function showOBSConnectionsDialog() {
+      if (!obsConnectionsDialog || !obsConnectionsClose) return;
+      const close = () => {
+        obsConnectionsDialog.hidden = true;
+        obsConnectionsDialog.removeEventListener('click', onBackdrop);
+        obsConnectionsClose.removeEventListener('click', close);
+        document.removeEventListener('keydown', onKeyDown);
+        if (obsLatencyDetailButton) obsLatencyDetailButton.focus();
+      };
+      const onBackdrop = (event) => {
+        if (event.target === obsConnectionsDialog) close();
+      };
+      const onKeyDown = (event) => {
+        if (event.key === 'Escape') close();
+      };
+      renderOBSConnections((state.obs && state.obs.connections) || []);
+      obsConnectionsDialog.hidden = false;
+      obsConnectionsDialog.addEventListener('click', onBackdrop);
+      obsConnectionsClose.addEventListener('click', close);
+      document.addEventListener('keydown', onKeyDown);
+      obsConnectionsClose.focus();
     }
     document.getElementById('tunnelReconnectButton').addEventListener('click', async () => {
       const button = document.getElementById('tunnelReconnectButton');
@@ -2464,6 +2996,13 @@ const indexHTML = `<!doctype html>
         if ('BroadcastChannel' in window) {
           localChangeChannel = new BroadcastChannel('imagepad-state');
           localChangeChannel.onmessage = () => scheduleRefresh(100);
+        }
+      } catch (error) {
+      }
+      try {
+        if ('EventSource' in window) {
+          const stateEvents = new EventSource('/api/events');
+          stateEvents.addEventListener('state', () => scheduleRefresh(0));
         }
       } catch (error) {
       }

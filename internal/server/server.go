@@ -45,6 +45,8 @@ var (
 	ensureFFmpeg        = video.EnsureFFmpeg
 )
 
+var stateEventThrottleDelay = 300 * time.Millisecond
+
 type Server struct {
 	cfg   config.Config
 	store *library.Store
@@ -67,6 +69,58 @@ type Server struct {
 
 	toolInstallMu  sync.Mutex
 	toolInstalling bool
+	rtspMap        rtspMappingHandle
+	rtspSessionID  string
+	rtspReadySeq   uint64
+	mapRTSPPort    rtspPortMapper
+	setRTSPURL     func(sessionID, publicURL, message string) bool
+	eventMu        sync.Mutex
+	stateEvents    map[chan struct{}]struct{}
+	lastStateEvent time.Time
+	stateEventDue  bool
+}
+
+type rtspMappingHandle interface {
+	ExternalIP() string
+	ExternalPort() int
+	Close() error
+}
+
+type rtspPortMapper func(protocol string, internalPort, externalPort int, description string) (rtspMappingHandle, upnp.Result)
+
+type rtspMappingSet struct {
+	control rtspMappingHandle
+	owned   []rtspMappingHandle
+}
+
+func (m *rtspMappingSet) ExternalIP() string {
+	if m == nil || m.control == nil {
+		return ""
+	}
+	return m.control.ExternalIP()
+}
+
+func (m *rtspMappingSet) ExternalPort() int {
+	if m == nil || m.control == nil {
+		return 0
+	}
+	return m.control.ExternalPort()
+}
+
+func (m *rtspMappingSet) Close() error {
+	if m == nil {
+		return nil
+	}
+	var firstErr error
+	for _, mapping := range m.owned {
+		if mapping == nil {
+			continue
+		}
+		if err := mapping.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 func New(cfg config.Config, store *library.Store, imageURLBase string) *Server {
@@ -95,17 +149,32 @@ func New(cfg config.Config, store *library.Store, imageURLBase string) *Server {
 		adminToken:     adminToken,
 		pairings:       make(map[string]pairingRequest),
 		relayNonces:    make(map[string]time.Time),
+		stateEvents:    make(map[chan struct{}]struct{}),
 	}
 	srv.obs = obsrtmp.New(store.Dir(), advertisedHost, 1935, obsStreamKey, srv.videoQualityPreset, srv.obsLatencyProfile, obsrtmp.Callbacks{
-		OnStart: srv.handleOBSStreamStart,
-		OnDone:  srv.handleOBSStreamDone,
+		OnStart:     srv.handleOBSStreamStart,
+		OnDone:      srv.handleOBSStreamDone,
+		OnRTSPReady: srv.handleRTSPReady,
+		OnRTSPDone:  srv.handleRTSPDone,
 	})
+	srv.mapRTSPPort = func(protocol string, internalPort, externalPort int, description string) (rtspMappingHandle, upnp.Result) {
+		var mapping *upnp.TCPMapping
+		var result upnp.Result
+		if strings.EqualFold(protocol, "UDP") {
+			mapping, result = upnp.MapUDP(internalPort, externalPort, description)
+		} else {
+			mapping, result = upnp.MapTCP(internalPort, externalPort, description)
+		}
+		return mapping, result
+	}
+	srv.setRTSPURL = srv.obs.SetRTSPURL
 	return srv
 }
 
 func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/", s.admin(s.handleIndex))
 	mux.HandleFunc("/api/state", s.admin(s.handleState))
+	mux.HandleFunc("/api/events", s.admin(s.handleEvents))
 	mux.HandleFunc("/api/tunnel/reconnect", s.admin(s.handleTunnelReconnect))
 	mux.HandleFunc("/api/quit", s.admin(s.handleQuit))
 	mux.HandleFunc("/api/upload", s.admin(s.handleUpload))
@@ -186,7 +255,6 @@ func (s *Server) SetExitRequested(fn func()) {
 
 func (s *Server) SetTunnelStatus(ok bool, baseURL, message string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if ok {
 		s.tunnelURLBase = strings.TrimRight(baseURL, "/") + "/"
 	} else {
@@ -196,6 +264,72 @@ func (s *Server) SetTunnelStatus(ok bool, baseURL, message string) {
 		"ok":      ok,
 		"url":     s.tunnelURLBase,
 		"message": message,
+	}
+	s.mu.Unlock()
+	s.broadcastStateChanged()
+}
+
+func (s *Server) subscribeStateEvents() (<-chan struct{}, func()) {
+	ch := make(chan struct{}, 1)
+	s.eventMu.Lock()
+	if s.stateEvents == nil {
+		s.stateEvents = make(map[chan struct{}]struct{})
+	}
+	s.stateEvents[ch] = struct{}{}
+	s.eventMu.Unlock()
+	unsubscribe := func() {
+		s.eventMu.Lock()
+		if _, ok := s.stateEvents[ch]; ok {
+			delete(s.stateEvents, ch)
+			close(ch)
+		}
+		s.eventMu.Unlock()
+	}
+	return ch, unsubscribe
+}
+
+func (s *Server) broadcastStateChanged() {
+	s.eventMu.Lock()
+	defer s.eventMu.Unlock()
+	s.lastStateEvent = time.Now()
+	s.broadcastStateChangedLocked()
+}
+
+func (s *Server) broadcastStateChangedThrottled() {
+	s.eventMu.Lock()
+	now := time.Now()
+	elapsed := now.Sub(s.lastStateEvent)
+	if s.lastStateEvent.IsZero() || elapsed >= stateEventThrottleDelay {
+		s.lastStateEvent = now
+		s.stateEventDue = false
+		s.broadcastStateChangedLocked()
+		s.eventMu.Unlock()
+		return
+	}
+	if s.stateEventDue {
+		s.eventMu.Unlock()
+		return
+	}
+	s.stateEventDue = true
+	delay := stateEventThrottleDelay - elapsed
+	s.eventMu.Unlock()
+	time.AfterFunc(delay, func() {
+		s.eventMu.Lock()
+		if s.stateEventDue {
+			s.stateEventDue = false
+			s.lastStateEvent = time.Now()
+			s.broadcastStateChangedLocked()
+		}
+		s.eventMu.Unlock()
+	})
+}
+
+func (s *Server) broadcastStateChangedLocked() {
+	for ch := range s.stateEvents {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -207,12 +341,122 @@ func (s *Server) SyncOBSReceiver() {
 		s.obs.Start()
 		return
 	}
+	s.closeRTSPMapping("")
 	s.obs.Stop()
 }
 
 func (s *Server) StopOBSReceiver() {
+	s.closeRTSPMapping("")
 	if s.obs != nil {
 		s.obs.StopAndWait(8 * time.Second)
+	}
+}
+
+func (s *Server) handleRTSPReady(endpoint obsrtmp.RTSPEndpoint) {
+	defer s.broadcastStateChanged()
+	s.mu.Lock()
+	s.rtspReadySeq++
+	seq := s.rtspReadySeq
+	mapPort := s.mapRTSPPort
+	setURL := s.setRTSPURL
+	s.mu.Unlock()
+
+	if mapPort == nil || setURL == nil {
+		return
+	}
+	mapping, result := mapRTSPCompatibilityPorts(mapPort, endpoint)
+	if mapping == nil || !result.OK {
+		message := "RTSP is available on LAN/Tailscale; UPnP publication failed"
+		if result.Message != "" {
+			message += ": " + result.Message
+		}
+		setURL(endpoint.SessionID, endpoint.LocalURL, message)
+		return
+	}
+	if !upnp.IsGloballyRoutableIPv4(mapping.ExternalIP()) {
+		_ = mapping.Close()
+		setURL(endpoint.SessionID, endpoint.LocalURL,
+			"RTSP is available on LAN/Tailscale; CGNAT or upstream NAT prevents direct publication.")
+		return
+	}
+
+	s.mu.Lock()
+	if seq != s.rtspReadySeq {
+		s.mu.Unlock()
+		_ = mapping.Close()
+		return
+	}
+	previous := s.rtspMap
+	s.rtspMap = mapping
+	s.rtspSessionID = endpoint.SessionID
+	s.mu.Unlock()
+	if previous != nil {
+		_ = previous.Close()
+	}
+
+	publicURL := fmt.Sprintf("rtsp://%s:%d/%s", mapping.ExternalIP(), mapping.ExternalPort(), endpoint.Path)
+	if !setURL(endpoint.SessionID, publicURL,
+		"RTSP TCP/UDP is published through UPnP at "+mapping.ExternalIP()+".") {
+		s.closeRTSPMapping(endpoint.SessionID)
+	}
+}
+
+func mapRTSPCompatibilityPorts(mapPort rtspPortMapper, endpoint obsrtmp.RTSPEndpoint) (rtspMappingHandle, upnp.Result) {
+	type requestedMapping struct {
+		protocol    string
+		internal    int
+		external    int
+		description string
+	}
+	requests := []requestedMapping{
+		{protocol: "TCP", internal: endpoint.Port, external: endpoint.Port, description: "ImagePadServer RTSP TCP"},
+	}
+	if endpoint.RTPPort > 0 {
+		requests = append(requests, requestedMapping{protocol: "UDP", internal: endpoint.RTPPort, external: endpoint.RTPPort, description: "ImagePadServer RTSP RTP"})
+	}
+	if endpoint.RTCPPort > 0 {
+		requests = append(requests, requestedMapping{protocol: "UDP", internal: endpoint.RTCPPort, external: endpoint.RTCPPort, description: "ImagePadServer RTSP RTCP"})
+	}
+
+	var owned []rtspMappingHandle
+	for i, request := range requests {
+		mapping, result := mapPort(request.protocol, request.internal, request.external, request.description)
+		if mapping == nil || !result.OK {
+			for _, previous := range owned {
+				_ = previous.Close()
+			}
+			return nil, result
+		}
+		owned = append(owned, mapping)
+		if i == 0 && !upnp.IsGloballyRoutableIPv4(mapping.ExternalIP()) {
+			return &rtspMappingSet{control: mapping, owned: owned}, result
+		}
+	}
+	return &rtspMappingSet{control: owned[0], owned: owned}, upnp.Result{
+		OK:         true,
+		Message:    "RTSP TCP/UDP ports mapped by UPnP",
+		ExternalIP: owned[0].ExternalIP(),
+	}
+}
+
+func (s *Server) handleRTSPDone(sessionID string) {
+	s.closeRTSPMapping(sessionID)
+	s.broadcastStateChanged()
+}
+
+func (s *Server) closeRTSPMapping(sessionID string) {
+	s.mu.Lock()
+	if sessionID != "" && s.rtspSessionID != sessionID {
+		s.mu.Unlock()
+		return
+	}
+	mapping := s.rtspMap
+	s.rtspMap = nil
+	s.rtspSessionID = ""
+	s.rtspReadySeq++
+	s.mu.Unlock()
+	if mapping != nil {
+		_ = mapping.Close()
 	}
 }
 
@@ -234,6 +478,37 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 	writeJSON(w, s.state(r))
+}
+
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming is unsupported", http.StatusInternalServerError)
+		return
+	}
+	events, unsubscribe := s.subscribeStateEvents()
+	defer unsubscribe()
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Connection", "keep-alive")
+	_, _ = io.WriteString(w, "event: state\ndata: {}\n\n")
+	flusher.Flush()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case _, ok := <-events:
+			if !ok {
+				return
+			}
+			_, _ = io.WriteString(w, "event: state\ndata: {}\n\n")
+			flusher.Flush()
+		}
+	}
 }
 
 func (s *Server) handleTunnelReconnect(w http.ResponseWriter, r *http.Request) {
@@ -289,6 +564,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	defer s.broadcastStateChanged()
 	if err := r.ParseMultipartForm(uploadMemoryLimit()); err != nil {
 		http.Error(w, "failed to parse upload", http.StatusBadRequest)
 		return
@@ -314,6 +590,7 @@ func (s *Server) handleUploadQueue(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	defer s.broadcastStateChanged()
 	if err := r.ParseMultipartForm(uploadMemoryLimit()); err != nil {
 		http.Error(w, "failed to parse upload", http.StatusBadRequest)
 		return
@@ -339,6 +616,7 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	defer s.broadcastStateChanged()
 
 	var req struct {
 		URL          string `json:"url"`
@@ -508,6 +786,7 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	defer s.broadcastStateChanged()
 
 	var req struct {
 		URL          string `json:"url"`
@@ -944,6 +1223,7 @@ func (s *Server) handleOBSStreamStart(session obsrtmp.Session) {
 		OriginalName: session.Title,
 	}
 	_ = s.store.SetCurrentInfoWithID(info)
+	s.broadcastStateChanged()
 }
 
 func (s *Server) handleOBSStreamDone(session obsrtmp.Session) {
@@ -977,6 +1257,7 @@ func (s *Server) handleOBSStreamDone(session obsrtmp.Session) {
 			_ = s.store.MarkConverted(session.ID, files)
 		}
 	}
+	s.broadcastStateChanged()
 }
 
 func (s *Server) withClipboardResult(state map[string]interface{}) map[string]interface{} {
@@ -1044,6 +1325,7 @@ func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	defer s.broadcastStateChanged()
 	if err := s.store.Clear(); err != nil {
 		http.Error(w, "failed to clear image", http.StatusInternalServerError)
 		return
@@ -1056,6 +1338,7 @@ func (s *Server) handleOBSEnd(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	defer s.broadcastStateChanged()
 	if !s.videoPlayerEnabled() {
 		http.Error(w, "video player support is disabled", http.StatusBadRequest)
 		return
@@ -1073,6 +1356,7 @@ func (s *Server) handleOBSStart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	defer s.broadcastStateChanged()
 	if !s.videoPlayerEnabled() {
 		http.Error(w, "video player support is disabled", http.StatusBadRequest)
 		return
@@ -1140,12 +1424,27 @@ func (s *Server) handleOBSKey(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	defer s.broadcastStateChanged()
 	if s.obs == nil {
 		http.Error(w, "OBS receiver is unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	key, err := settings.RotateOBSStreamKey()
-	if err != nil {
+	var req struct {
+		StreamKey string `json:"streamKey"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid OBS stream key request", http.StatusBadRequest)
+		return
+	}
+	key := strings.TrimSpace(req.StreamKey)
+	if key == "" || strings.ContainsAny(key, "\\/ \t\r\n?#") {
+		http.Error(w, "invalid OBS stream key", http.StatusBadRequest)
+		return
+	}
+	if err := settings.Update(func(appSettings *settings.Settings) error {
+		appSettings.OBSStreamKey = key
+		return nil
+	}); err != nil {
 		http.Error(w, "failed to update OBS stream key", http.StatusInternalServerError)
 		return
 	}
@@ -1158,6 +1457,7 @@ func (s *Server) handleOBSLatency(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		writeJSON(w, s.obsState())
 	case http.MethodPost:
+		defer s.broadcastStateChanged()
 		var req struct {
 			Mode string `json:"mode"`
 			DVR  bool   `json:"dvr"`
@@ -1169,7 +1469,7 @@ func (s *Server) handleOBSLatency(w http.ResponseWriter, r *http.Request) {
 		mode := obsrtmp.NormalizeLatencyMode(req.Mode)
 		if err := settings.Update(func(appSettings *settings.Settings) error {
 			appSettings.OBSLatencyMode = mode
-			appSettings.OBSDVREnabled = req.DVR
+			appSettings.OBSDVREnabled = false
 			return nil
 		}); err != nil {
 			http.Error(w, "failed to save settings", http.StatusInternalServerError)
@@ -1197,6 +1497,7 @@ func (s *Server) handleHistoryFavorite(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	defer s.broadcastStateChanged()
 	var req struct {
 		ID       string `json:"id"`
 		Favorite bool   `json:"favorite"`
@@ -1217,6 +1518,7 @@ func (s *Server) handleHistoryQueue(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	defer s.broadcastStateChanged()
 	var req struct {
 		ID string `json:"id"`
 	}
@@ -1245,6 +1547,7 @@ func (s *Server) handleHistorySelect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	defer s.broadcastStateChanged()
 	var req struct {
 		ID string `json:"id"`
 	}
@@ -1381,10 +1684,13 @@ func (s *Server) watchConversion(jobID, mediaID string) {
 							_ = s.store.UpdateHistorySize(mediaID, convertedSize)
 							_ = s.store.MarkConverted(mediaID, files)
 						}
+						s.broadcastStateChanged()
 						return
 					case "error", "canceled":
+						s.broadcastStateChanged()
 						return
 					}
+					s.broadcastStateChangedThrottled()
 				}
 			}
 		}
@@ -1479,6 +1785,7 @@ func (s *Server) handleVideoPlayer(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		writeJSON(w, s.videoPlayerState())
 	case http.MethodPost:
+		defer s.broadcastStateChanged()
 		var req struct {
 			Enabled bool `json:"enabled"`
 		}
@@ -1521,6 +1828,7 @@ func (s *Server) handleMusicMode(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		writeJSON(w, s.videoPlayerState())
 	case http.MethodPost:
+		defer s.broadcastStateChanged()
 		var req struct {
 			Enabled bool `json:"enabled"`
 		}
@@ -1579,6 +1887,7 @@ func (s *Server) handleVideoQuality(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		writeJSON(w, s.videoQualityState())
 	case http.MethodPost:
+		defer s.broadcastStateChanged()
 		var req struct {
 			Mode string `json:"mode"`
 		}
@@ -1605,6 +1914,7 @@ func (s *Server) handleNetworkCheck(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	defer s.broadcastStateChanged()
 	measurement := networkMeasurer()
 	if err := settings.Update(func(appSettings *settings.Settings) error {
 		appSettings.NetworkUploadMbps = measurement.UploadMbps
@@ -2000,6 +2310,7 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 	s.mu.RUnlock()
 
 	localImageURL := ""
+	obsStatus := s.obsState()
 	imageURLBase := s.imageURLBase
 	if tunnelURLBase != "" {
 		imageURLBase = tunnelURLBase
@@ -2045,8 +2356,10 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 			"hlsURL":        hlsURL,
 			"localImageURL": localImageURL,
 			"videoPlayer":   videoPlayer,
+			"obs":           obsStatus,
+			"obsLatency":    s.obsLatencyProfile(),
 		})
-		return s.stateWithMedia(r, upnpResult, tunnelStatus, videoPlayer, imageURL, videoURL, hlsURL, shareURL, shareURLLabel, publicImageURL, publicVideoURL, publicHLSURL, localImageURL, previewImageURL)
+		return s.stateWithMedia(r, upnpResult, tunnelStatus, videoPlayer, obsStatus, imageURL, videoURL, hlsURL, shareURL, shareURLLabel, publicImageURL, publicVideoURL, publicHLSURL, localImageURL, previewImageURL)
 	}
 	if imageURL == "" {
 		imageURL = ""
@@ -2061,6 +2374,8 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 		"hlsURL":        hlsURL,
 		"localImageURL": localImageURL,
 		"videoPlayer":   videoPlayer,
+		"obs":           obsStatus,
+		"obsLatency":    s.obsLatencyProfile(),
 	})
 
 	return map[string]interface{}{
@@ -2087,7 +2402,7 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 		"video":           videoPlayer["status"],
 		"videoPlayer":     videoPlayer,
 		"videoQuality":    s.videoQualityState(),
-		"obs":             s.obsState(),
+		"obs":             obsStatus,
 		"pairing":         s.pairingState(),
 		"videoQueue":      s.videoQueueState(),
 		"ingest":          s.ingestState(),
@@ -2098,7 +2413,7 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 	}
 }
 
-func (s *Server) stateWithMedia(r *http.Request, upnpResult upnp.Result, tunnelStatus map[string]interface{}, videoPlayer map[string]interface{}, imageURL, videoURL, hlsURL, shareURL, shareURLLabel, publicImageURL, publicVideoURL, publicHLSURL, localImageURL, previewImageURL string) map[string]interface{} {
+func (s *Server) stateWithMedia(r *http.Request, upnpResult upnp.Result, tunnelStatus map[string]interface{}, videoPlayer map[string]interface{}, obsStatus obsrtmp.Status, imageURL, videoURL, hlsURL, shareURL, shareURLLabel, publicImageURL, publicVideoURL, publicHLSURL, localImageURL, previewImageURL string) map[string]interface{} {
 	return map[string]interface{}{
 		"appName":         about.AppName,
 		"version":         about.Version,
@@ -2123,7 +2438,7 @@ func (s *Server) stateWithMedia(r *http.Request, upnpResult upnp.Result, tunnelS
 		"video":           videoPlayer["status"],
 		"videoPlayer":     videoPlayer,
 		"videoQuality":    s.videoQualityState(),
-		"obs":             s.obsState(),
+		"obs":             obsStatus,
 		"pairing":         s.pairingState(),
 		"videoQueue":      s.videoQueueState(),
 		"ingest":          s.ingestState(),
@@ -2301,14 +2616,96 @@ func (s *Server) obsState() obsrtmp.Status {
 	}
 	status := s.obs.Status()
 	status.Capabilities = obsrtmp.LatencyCapabilities()
-	// RTSPT has no browser-playable surface; its copyable rtspt:// URL is carried
-	// in status.RTSPTURL instead of a preview URL. Every HLS-family mode (HLS,
-	// LHLS, LL-HLS) shares the same /stream entry; the handlers route by the
-	// active transport.
-	if status.MediaID != "" && obsrtmp.NormalizeLatencyMode(status.Latency.Mode) != obsrtmp.LatencyModeRTSPT {
-		status.PreviewURL = s.adminPath("/stream/" + url.PathEscape(status.MediaID) + "/" + video.PlaylistName(status.MediaID))
-	}
+	applyOBSPreviewURL(&status, s.adminPath)
+	status.Connections = obsConnectionRows(status)
 	return status
+}
+
+func applyOBSPreviewURL(status *obsrtmp.Status, adminPath func(string) string) {
+	if status == nil || strings.TrimSpace(status.MediaID) == "" || adminPath == nil {
+		return
+	}
+	status.PreviewURL = adminPath("/stream/" + url.PathEscape(status.MediaID) + "/" + video.PlaylistName(status.MediaID))
+}
+
+func obsConnectionRows(status obsrtmp.Status) []obsrtmp.ConnectionStatus {
+	if !status.Connected || strings.TrimSpace(status.MediaID) == "" {
+		return nil
+	}
+	rows := make([]obsrtmp.ConnectionStatus, 0, 2)
+	if strings.TrimSpace(status.RTSPTURL) != "" {
+		lag := estimateRTSPLagSeconds(status.Latency)
+		rows = append(rows, obsrtmp.ConnectionStatus{
+			IP:         hostFromStreamURL(status.RTSPTURL),
+			Protocol:   "RTSP/TCP",
+			Device:     "Unknown",
+			State:      "接続中",
+			Quality:    "良好",
+			LagSeconds: lag,
+			LagLevel:   obsLagLevel(lag),
+			Note:       "RTSP/TCP経路のプロファイル推定です",
+		})
+	}
+	if strings.TrimSpace(status.PreviewURL) != "" {
+		lag := estimateHLSPreviewLagSeconds(status.Latency)
+		rows = append(rows, obsrtmp.ConnectionStatus{
+			IP:         "local",
+			Protocol:   "HLS Preview",
+			Device:     "Browser",
+			State:      "接続中",
+			Quality:    "通常",
+			LagSeconds: lag,
+			LagLevel:   obsLagLevel(lag),
+			Note:       "管理画面プレビュー用のローカルHLSです",
+		})
+	}
+	return rows
+}
+
+func hostFromStreamURL(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Hostname() == "" {
+		return "unknown"
+	}
+	return parsed.Hostname()
+}
+
+func estimateRTSPLagSeconds(profile obsrtmp.LatencyProfile) float64 {
+	switch profile.Mode {
+	case obsrtmp.LatencyModeRTSPRealtime:
+		return 0.8
+	case obsrtmp.LatencyModeRTSPUltra:
+		return 1.5
+	case obsrtmp.LatencyModeRTSPLow:
+		return 3.5
+	case obsrtmp.LatencyModeHLS:
+		return 5
+	case obsrtmp.LatencyModeHLSHigh:
+		return 10
+	default:
+		return 4
+	}
+}
+
+func estimateHLSPreviewLagSeconds(profile obsrtmp.LatencyProfile) float64 {
+	lag := estimateRTSPLagSeconds(profile) + 1.7
+	if lag < 2.5 {
+		return 2.5
+	}
+	return lag
+}
+
+func obsLagLevel(seconds float64) string {
+	switch {
+	case seconds <= 1.2:
+		return "good"
+	case seconds <= 2.5:
+		return "ok"
+	case seconds <= 5:
+		return "warn"
+	default:
+		return "bad"
+	}
 }
 
 func normalizeQualityMode(mode string) string {
@@ -2386,6 +2783,12 @@ func urlForClipboard(state map[string]interface{}) string {
 }
 
 func primaryShareURL(state map[string]interface{}) (string, string) {
+	obsLatency, _ := state["obsLatency"].(obsrtmp.LatencyProfile)
+	if obsStatus, ok := state["obs"].(obsrtmp.Status); ok &&
+		activeOBSLatency(obsLatency, obsStatus).Transport == obsrtmp.LatencyModeRTSPT &&
+		strings.HasPrefix(obsStatus.RTSPTURL, "rtsp://") {
+		return obsStatus.RTSPTURL, "RTSP TCP URL"
+	}
 	if videoPlayer, ok := state["videoPlayer"].(map[string]interface{}); ok {
 		if enabled, _ := videoPlayer["enabled"].(bool); enabled {
 			if hlsURL, ok := state["hlsURL"].(string); ok && strings.HasPrefix(hlsURL, "http") {
@@ -2406,6 +2809,13 @@ func primaryShareURL(state map[string]interface{}) (string, string) {
 		return localURL, "Local URL"
 	}
 	return "", "URL"
+}
+
+func activeOBSLatency(selected obsrtmp.LatencyProfile, status obsrtmp.Status) obsrtmp.LatencyProfile {
+	if selected.Mode != "" {
+		return selected
+	}
+	return status.Latency
 }
 
 func urlForCopyTarget(state map[string]interface{}, target string) string {

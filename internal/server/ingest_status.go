@@ -31,6 +31,7 @@ func (s *Server) tryBeginIngest(phase, title string) bool {
 	s.ingest.active = true
 	s.ingest.phase = phase
 	s.ingest.title = title
+	go s.broadcastStateChanged()
 	return true
 }
 
@@ -40,6 +41,7 @@ func (s *Server) setIngest(phase, title string) {
 	s.ingest.phase = phase
 	s.ingest.title = title
 	s.ingest.mu.Unlock()
+	s.broadcastStateChanged()
 }
 
 func (s *Server) clearIngest() {
@@ -48,6 +50,7 @@ func (s *Server) clearIngest() {
 	s.ingest.phase = ""
 	s.ingest.title = ""
 	s.ingest.mu.Unlock()
+	s.broadcastStateChanged()
 }
 
 func (s *Server) ingestState() map[string]interface{} {
