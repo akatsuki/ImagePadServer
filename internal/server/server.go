@@ -356,17 +356,22 @@ func (s *Server) StopOBSReceiver() {
 }
 
 func (s *Server) handleRTSPReady(endpoint obsrtmp.RTSPEndpoint) {
-	defer s.broadcastStateChanged()
 	s.mu.Lock()
 	s.rtspReadySeq++
 	seq := s.rtspReadySeq
 	mapPort := s.mapRTSPPort
 	setURL := s.setRTSPURL
 	s.mu.Unlock()
+	s.broadcastStateChanged()
 
 	if mapPort == nil || setURL == nil {
 		return
 	}
+	go s.publishRTSPReady(endpoint, seq, mapPort, setURL)
+}
+
+func (s *Server) publishRTSPReady(endpoint obsrtmp.RTSPEndpoint, seq uint64, mapPort rtspPortMapper, setURL func(sessionID, publicURL, message string) bool) {
+	defer s.broadcastStateChanged()
 	mapping, result := mapRTSPCompatibilityPorts(mapPort, endpoint)
 	if mapping == nil || !result.OK {
 		message := "RTSP is available on LAN/Tailscale; UPnP publication failed"
@@ -2794,9 +2799,11 @@ func urlForClipboard(state map[string]interface{}) string {
 func primaryShareURL(state map[string]interface{}) (string, string) {
 	obsLatency, _ := state["obsLatency"].(obsrtmp.LatencyProfile)
 	if obsStatus, ok := state["obs"].(obsrtmp.Status); ok &&
-		activeOBSLatency(obsLatency, obsStatus).Transport == obsrtmp.LatencyModeRTSPT &&
-		strings.HasPrefix(obsStatus.RTSPTURL, "rtsp://") {
-		return obsStatus.RTSPTURL, "RTSP TCP URL"
+		activeOBSLatency(obsLatency, obsStatus).Transport == obsrtmp.LatencyModeRTSPT {
+		if strings.HasPrefix(obsStatus.RTSPTURL, "rtsp://") {
+			return obsStatus.RTSPTURL, "RTSP TCP URL"
+		}
+		return "", "RTSP TCP URL"
 	}
 	if videoPlayer, ok := state["videoPlayer"].(map[string]interface{}); ok {
 		if enabled, _ := videoPlayer["enabled"].(bool); enabled {

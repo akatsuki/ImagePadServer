@@ -241,8 +241,22 @@ func TestPrimaryShareURL(t *testing.T) {
 			"enabled": true,
 		},
 	})
-	if url != "" || label != "URL" {
+	if url != "" || label != "RTSP TCP URL" {
 		t.Fatalf("share URL = %q (%s), want no URL before public RTSP is ready", url, label)
+	}
+
+	url, label = primaryShareURL(map[string]interface{}{
+		"obsLatency": obsrtmp.NormalizeLatencyProfile(obsrtmp.LatencyModeRTSPT),
+		"obs": obsrtmp.Status{
+			RTSPTURL: "",
+		},
+		"hlsURL": "https://example.com/stream/abc123/current-abc123.m3u8",
+		"videoPlayer": map[string]interface{}{
+			"enabled": true,
+		},
+	})
+	if url != "" || label != "RTSP TCP URL" {
+		t.Fatalf("share URL = %q (%s), want no HLS fallback before public RTSP is ready", url, label)
 	}
 
 	url, label = primaryShareURL(map[string]interface{}{
@@ -670,6 +684,54 @@ type rtspMapCall struct {
 	description  string
 }
 
+func waitForRTSPReadyTest(t *testing.T, done <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for RTSP publication update")
+	}
+}
+
+func TestRTSPReadyDoesNotBlockOnUPnPMapping(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	srv.mapRTSPPort = func(string, int, int, string) (rtspMappingHandle, upnp.Result) {
+		close(entered)
+		<-release
+		return nil, upnp.Result{Message: "mapping released"}
+	}
+	srv.setRTSPURL = func(string, string, string) bool { return true }
+	defer close(release)
+
+	returned := make(chan struct{})
+	go func() {
+		srv.handleRTSPReady(obsrtmp.RTSPEndpoint{
+			SessionID: "session",
+			Port:      49152,
+			Path:      "obs_session",
+		})
+		close(returned)
+	}()
+
+	select {
+	case <-returned:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("handleRTSPReady blocked on UPnP mapping")
+	}
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("UPnP mapping did not start asynchronously")
+	}
+}
+
 func TestRTSPReadyPublishesUPnPURL(t *testing.T) {
 	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
 	store, err := library.NewStore(t.TempDir())
@@ -689,10 +751,15 @@ func TestRTSPReadyPublishesUPnPURL(t *testing.T) {
 		return mapping, upnp.Result{OK: true, ExternalIP: mapping.ip}
 	}
 	var updatedSession, updatedURL, updatedMessage string
+	updated := make(chan struct{}, 1)
 	srv.setRTSPURL = func(sessionID, publicURL, message string) bool {
 		updatedSession = sessionID
 		updatedURL = publicURL
 		updatedMessage = message
+		select {
+		case updated <- struct{}{}:
+		default:
+		}
 		return true
 	}
 
@@ -704,6 +771,7 @@ func TestRTSPReadyPublishesUPnPURL(t *testing.T) {
 		Path:      "obs_new-session",
 		LocalURL:  "rtsp://192.168.1.10:49152/obs_new-session",
 	})
+	waitForRTSPReadyTest(t, updated)
 
 	wantCalls := []rtspMapCall{
 		{protocol: "TCP", internalPort: 49152, externalPort: 49152, description: "ImagePadServer RTSP TCP"},
@@ -743,9 +811,14 @@ func TestRTSPReadyMappingFailureKeepsLANURL(t *testing.T) {
 		return nil, upnp.Result{Message: "no UPnP gateway found"}
 	}
 	var updatedURL, updatedMessage string
+	updated := make(chan struct{}, 1)
 	srv.setRTSPURL = func(_ string, publicURL, message string) bool {
 		updatedURL = publicURL
 		updatedMessage = message
+		select {
+		case updated <- struct{}{}:
+		default:
+		}
 		return true
 	}
 
@@ -755,6 +828,7 @@ func TestRTSPReadyMappingFailureKeepsLANURL(t *testing.T) {
 		Path:      "obs_session",
 		LocalURL:  "rtsp://192.168.1.10:49152/obs_session",
 	})
+	waitForRTSPReadyTest(t, updated)
 
 	if got, want := updatedURL, ""; got != want {
 		t.Fatalf("updated URL = %q, want %q", got, want)
@@ -779,9 +853,14 @@ func TestRTSPReadyRejectsCarrierNATAddress(t *testing.T) {
 		return mapping, upnp.Result{OK: true, ExternalIP: mapping.ip}
 	}
 	var updatedURL, updatedMessage string
+	updated := make(chan struct{}, 1)
 	srv.setRTSPURL = func(_ string, publicURL, message string) bool {
 		updatedURL = publicURL
 		updatedMessage = message
+		select {
+		case updated <- struct{}{}:
+		default:
+		}
 		return true
 	}
 
@@ -791,6 +870,7 @@ func TestRTSPReadyRejectsCarrierNATAddress(t *testing.T) {
 		Path:      "obs_session",
 		LocalURL:  "rtsp://192.168.1.10:49152/obs_session",
 	})
+	waitForRTSPReadyTest(t, updated)
 
 	if got, want := updatedURL, ""; got != want {
 		t.Fatalf("updated URL = %q, want %q", got, want)

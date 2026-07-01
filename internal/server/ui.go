@@ -1288,6 +1288,7 @@ const indexHTML = `<!doctype html>
     <strong class="pairing-pin" id="pairingPin">0000</strong>
     <p class="pairing-detail" id="pairingDetail">Enter this code on the other computer.</p>
   </div>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js" defer></script>
   <script>
     const state = {
       imageURL: {{printf "%q" .imageURL}},
@@ -1308,6 +1309,7 @@ const indexHTML = `<!doctype html>
       pairing: null,
       currentID: "",
       obsPreviewID: "",
+      obsPreviewURL: "",
       previewMode: "empty"
     };
 
@@ -1530,6 +1532,7 @@ const indexHTML = `<!doctype html>
     let wingMode = 'history';
     let pendingOBSAutoCopy = false;
     let lastAutoCopiedOBSURL = '';
+    let obsPreviewHLS = null;
     const imageAccept = 'image/png,image/jpeg,image/gif,image/webp,image/bmp,image/tiff,image/svg+xml,image/x-sony-arw,image/x-canon-crw,image/x-canon-cr2,image/x-canon-cr3,image/x-panasonic-rw2,image/x-olympus-orf,image/x-fuji-raf,image/x-nikon-nef,image/x-nikon-nrw,image/x-sigma-x3f,image/x-adobe-dng,.jpg,.jpeg,.png,.gif,.webp,.bmp,.tif,.tiff,.svg,.arw,.srf,.sr2,.crw,.cr2,.cr3,.rw2,.raw,.orf,.raf,.nef,.nrw,.x3f,.dng';
     const mediaAccept = imageAccept + ',video/*,video/mp4,video/quicktime,video/webm,video/x-matroska,.mp4,.mov,.m4v,.webm,.mkv,.avi';
     const rawExtensions = new Set(['.arw', '.srf', '.sr2', '.crw', '.cr2', '.cr3', '.rw2', '.raw', '.orf', '.raf', '.nef', '.nrw', '.x3f', '.dng']);
@@ -1637,6 +1640,7 @@ const indexHTML = `<!doctype html>
     }
 
     function resetOBSPreview() {
+      destroyOBSPreviewHLS();
       if (state.previewMode === 'obs') {
         const video = preview.querySelector('video');
         if (video) {
@@ -1648,6 +1652,34 @@ const indexHTML = `<!doctype html>
       }
       state.previewMode = 'obs-restarting';
       state.obsPreviewID = "";
+      state.obsPreviewURL = "";
+    }
+
+    function destroyOBSPreviewHLS() {
+      if (!obsPreviewHLS) return;
+      try {
+        obsPreviewHLS.destroy();
+      } catch (error) {
+      }
+      obsPreviewHLS = null;
+    }
+
+    function attachHLSPreview(video, src) {
+      destroyOBSPreviewHLS();
+      if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = src;
+        return true;
+      }
+      if (window.Hls && window.Hls.isSupported()) {
+        obsPreviewHLS = new window.Hls({
+          lowLatencyMode: true,
+          backBufferLength: 30
+        });
+        obsPreviewHLS.loadSource(src);
+        obsPreviewHLS.attachMedia(video);
+        return true;
+      }
+      return false;
     }
 
     function applyPairing(pairing) {
@@ -1667,24 +1699,36 @@ const indexHTML = `<!doctype html>
     function renderPreview(data, nextCurrentID) {
       if (uploadMode === 'obs' && data.obs && data.obs.connected && data.obs.previewURL) {
         const obsID = data.obs.mediaID || nextCurrentID;
-        if (state.previewMode !== 'obs' || obsID !== state.obsPreviewID) {
+        if (state.previewMode !== 'obs' || obsID !== state.obsPreviewID || data.obs.previewURL !== state.obsPreviewURL) {
           preview.classList.add('obs-preview');
           preview.innerHTML = '';
           const video = document.createElement('video');
-          video.src = data.obs.previewURL;
           video.controls = true;
           video.autoplay = true;
           video.muted = true;
           video.playsInline = true;
-          preview.appendChild(video);
+          if (attachHLSPreview(video, data.obs.previewURL)) {
+            preview.appendChild(video);
+          } else {
+            const link = document.createElement('a');
+            link.href = data.obs.previewURL;
+            link.textContent = 'HLSプレビューを開く';
+            link.target = '_blank';
+            link.rel = 'noreferrer';
+            preview.innerHTML = '<div class="empty">このブラウザではHLSプレビューを直接再生できません。</div>';
+            preview.appendChild(link);
+          }
           state.previewMode = 'obs';
           state.obsPreviewID = obsID;
+          state.obsPreviewURL = data.obs.previewURL;
         }
         state.currentID = obsID;
         return;
       }
+      destroyOBSPreviewHLS();
       preview.classList.remove('obs-preview');
       state.obsPreviewID = "";
+      state.obsPreviewURL = "";
       if (!data.current) {
         if (state.previewMode !== 'empty') {
           preview.innerHTML = '<div class="empty">まだ画像が選択されていません</div>';
