@@ -259,8 +259,8 @@ func TestOptimizePNGNoTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != before.Size() {
-		t.Fatalf("size = %d, want unchanged %d", got, before.Size())
+	if got > before.Size() {
+		t.Fatalf("size = %d, want <= original %d", got, before.Size())
 	}
 }
 

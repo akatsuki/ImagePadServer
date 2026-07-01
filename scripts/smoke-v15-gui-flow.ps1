@@ -52,7 +52,7 @@ try {
   if (-not $final.current.id) { throw "state has no current media" }
   if (-not $final.history -or $final.history.Count -lt 1) { throw "state has no history" }
   if (-not $final.videoPlayer.enabled) { throw "video player did not stay enabled" }
-  if ($final.obs.latency.mode -ne "lhls") { throw "OBS latency did not update to lhls" }
+  if ($final.obs.latency.mode -ne "rtsp-low") { throw "OBS latency did not update to rtsp-low" }
   $favoriteCount = @($final.history | Where-Object { $_.favorite }).Count
   if ($favoriteCount -lt 1) { throw "state has no favorite item" }
 

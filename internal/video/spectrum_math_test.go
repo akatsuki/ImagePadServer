@@ -183,7 +183,7 @@ func TestNormalizeSpectrumTrackBelowFloorIsZero(t *testing.T) {
 	}
 }
 
-func TestReleaseFraction(t *testing.T) {
+func TestReleaseFractionLegacyCoverage(t *testing.T) {
 	t.Run("at zero returns one", func(t *testing.T) {
 		got := releaseFraction(0)
 		if got != 1.0 {
@@ -254,7 +254,7 @@ func TestReleaseFraction(t *testing.T) {
 	})
 }
 
-func TestApplySpectrumMotion(t *testing.T) {
+func TestApplySpectrumMotionLegacyCoverage(t *testing.T) {
 	t.Run("empty input returns empty", func(t *testing.T) {
 		got := applySpectrumMotion(nil, 30.0)
 		if got != nil {
