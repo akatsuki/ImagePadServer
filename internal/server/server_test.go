@@ -22,6 +22,7 @@ import (
 	"imagepadserver/internal/settings"
 	"imagepadserver/internal/upnp"
 	"imagepadserver/internal/video"
+	"imagepadserver/internal/ytdlpauth"
 )
 
 func TestValidatePublicURLRejectsLocalhost(t *testing.T) {
@@ -75,6 +76,20 @@ func TestRemoteFileNameInfersRAWExtensions(t *testing.T) {
 	u = mustURL("https://example.com/raw")
 	if got := remoteFileName(u, "image/x-nikon-nef"); got != "raw.nef" {
 		t.Fatalf("remoteFileName = %q, want raw.nef", got)
+	}
+}
+
+func TestRemoteFileNameInfersModernImageExtensions(t *testing.T) {
+	u := mustURL("https://example.com/image")
+	for contentType, want := range map[string]string{
+		"image/avif": "image.avif",
+		"image/heic": "image.heic",
+		"image/heif": "image.heif",
+		"image/jxl":  "image.jxl",
+	} {
+		if got := remoteFileName(u, contentType); got != want {
+			t.Fatalf("remoteFileName(%q) = %q, want %q", contentType, got, want)
+		}
 	}
 }
 
@@ -219,6 +234,7 @@ func TestHandleEventsSendsHeartbeat(t *testing.T) {
 
 func TestPrimaryShareURL(t *testing.T) {
 	url, label := primaryShareURL(map[string]interface{}{
+		"shareMode":  "obs",
 		"obsLatency": obsrtmp.NormalizeLatencyProfile(obsrtmp.LatencyModeRTSPT),
 		"obs": obsrtmp.Status{
 			Connected: true,
@@ -234,6 +250,7 @@ func TestPrimaryShareURL(t *testing.T) {
 	}
 
 	url, label = primaryShareURL(map[string]interface{}{
+		"shareMode":  "obs",
 		"obsLatency": obsrtmp.NormalizeLatencyProfile(obsrtmp.LatencyModeRTSPT),
 		"obs": obsrtmp.Status{
 			Connected: true,
@@ -243,11 +260,12 @@ func TestPrimaryShareURL(t *testing.T) {
 			"enabled": true,
 		},
 	})
-	if url != "" || label != "RTSP TCP URL" {
+	if url != "" || label != "URL" {
 		t.Fatalf("share URL = %q (%s), want no URL before public RTSP is ready", url, label)
 	}
 
 	url, label = primaryShareURL(map[string]interface{}{
+		"shareMode":  "link",
 		"obsLatency": obsrtmp.NormalizeLatencyProfile(obsrtmp.LatencyModeRTSPT),
 		"obs": obsrtmp.Status{
 			Connected: true,
@@ -258,11 +276,28 @@ func TestPrimaryShareURL(t *testing.T) {
 			"enabled": true,
 		},
 	})
-	if url != "" || label != "RTSP TCP URL" {
-		t.Fatalf("share URL = %q (%s), want no HLS fallback before public RTSP is ready", url, label)
+	if url != "https://example.com/stream/abc123/current-abc123.m3u8" || label != "HLS URL" {
+		t.Fatalf("share URL = %q (%s), want link-mode HLS while public RTSP is not ready", url, label)
 	}
 
 	url, label = primaryShareURL(map[string]interface{}{
+		"shareMode":  "obs",
+		"obsLatency": obsrtmp.NormalizeLatencyProfile(obsrtmp.LatencyModeRTSPT),
+		"obs": obsrtmp.Status{
+			Connected: true,
+			RTSPTURL:  "",
+		},
+		"hlsURL": "https://example.com/stream/abc123/current-abc123.m3u8",
+		"videoPlayer": map[string]interface{}{
+			"enabled": true,
+		},
+	})
+	if url != "" || label != "URL" {
+		t.Fatalf("share URL = %q (%s), want OBS mode to wait for RTSP instead of HLS", url, label)
+	}
+
+	url, label = primaryShareURL(map[string]interface{}{
+		"shareMode":  "link",
 		"obsLatency": obsrtmp.NormalizeLatencyProfile(obsrtmp.LatencyModeRTSPT),
 		"obs": obsrtmp.Status{
 			Connected: false,
@@ -278,9 +313,10 @@ func TestPrimaryShareURL(t *testing.T) {
 	}
 
 	url, label = primaryShareURL(map[string]interface{}{
-		"imageURL": "https://example.com/image/current.png",
-		"videoURL": "https://example.com/video/current.mp4",
-		"hlsURL":   "https://example.com/stream/abc123/current-abc123.m3u8",
+		"shareMode": "file",
+		"imageURL":  "https://example.com/image/current.png",
+		"videoURL":  "https://example.com/video/current.mp4",
+		"hlsURL":    "https://example.com/stream/abc123/current-abc123.m3u8",
 		"videoPlayer": map[string]interface{}{
 			"enabled": true,
 		},
@@ -290,7 +326,8 @@ func TestPrimaryShareURL(t *testing.T) {
 	}
 
 	url, label = primaryShareURL(map[string]interface{}{
-		"imageURL": "https://example.com/image/current.png",
+		"shareMode": "file",
+		"imageURL":  "https://example.com/image/current.png",
 		"videoPlayer": map[string]interface{}{
 			"enabled": false,
 		},
@@ -672,6 +709,35 @@ func TestApplyOBSPreviewURLIncludesRTSPTransport(t *testing.T) {
 	}
 	if !sawHLSPreview {
 		t.Fatalf("connection rows = %#v, want HLS Preview row", rows)
+	}
+}
+
+func TestMergeOBSConnectionRowsPrefersRealReadersAndKeepsPreview(t *testing.T) {
+	realRows := []obsrtmp.ConnectionStatus{{
+		IP:       "192.0.2.88",
+		Protocol: "RTSP/TCP",
+		State:    "接続中",
+	}}
+	syntheticRows := []obsrtmp.ConnectionStatus{
+		{IP: "8.8.8.8", Protocol: "RTSP/TCP", State: "接続中"},
+		{IP: "local", Protocol: "HLS Preview", State: "接続中"},
+	}
+
+	rows := mergeOBSConnectionRows(realRows, syntheticRows)
+
+	if len(rows) != 2 {
+		t.Fatalf("rows len = %d, want real reader plus preview: %#v", len(rows), rows)
+	}
+	if rows[0].IP != "192.0.2.88" {
+		t.Fatalf("first row = %#v, want real reader", rows[0])
+	}
+	if rows[1].Protocol != "HLS Preview" {
+		t.Fatalf("second row = %#v, want preview row", rows[1])
+	}
+	for _, row := range rows {
+		if row.IP == "8.8.8.8" {
+			t.Fatalf("synthetic RTSP row leaked into real rows: %#v", rows)
+		}
 	}
 }
 
@@ -1098,6 +1164,57 @@ func TestVideoURLDownloadError(t *testing.T) {
 	}
 }
 
+func TestUIKeepsActionErrorToastAcrossSuccessfulStateRefresh(t *testing.T) {
+	if !strings.Contains(indexHTML, "toast.dataset.errorSource === 'sync'") {
+		t.Fatal("state refresh success should only hide sync error toasts")
+	}
+	if !strings.Contains(indexHTML, "showToast(syncFailureMessage(error), { error: true, source: 'sync' })") {
+		t.Fatal("state refresh failures should mark their toasts as sync errors")
+	}
+}
+
+func TestYTDLPLoginAndCookieDeleteAPI(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	srv, mux := testServer(t, false)
+	defer srv.store.Reset()
+
+	oldLauncher := ytdlpLoginLauncher
+	defer func() { ytdlpLoginLauncher = oldLauncher }()
+	launched := false
+	ytdlpLoginLauncher = func() error {
+		launched = true
+		if err := os.MkdirAll(filepath.Dir(ytdlpauth.CookieFilePath()), 0700); err != nil {
+			return err
+		}
+		return os.WriteFile(ytdlpauth.CookieFilePath(), []byte("# Netscape HTTP Cookie File\n"), 0600)
+	}
+
+	req := adminRequest("http://127.0.0.1:8080/api/ytdlp/login", "127.0.0.1:1234")
+	req.Method = http.MethodPost
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login status = %d body=%q", rec.Code, rec.Body.String())
+	}
+	if !launched {
+		t.Fatal("expected login launcher to run")
+	}
+	if !strings.Contains(rec.Body.String(), `"saved":true`) {
+		t.Fatalf("login body = %q, want saved true", rec.Body.String())
+	}
+
+	req = adminRequest("http://127.0.0.1:8080/api/ytdlp/cookies", "127.0.0.1:1234")
+	req.Method = http.MethodDelete
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete status = %d body=%q", rec.Code, rec.Body.String())
+	}
+	if ytdlpauth.Status().Saved {
+		t.Fatal("cookie delete API should remove saved cookies")
+	}
+}
+
 func TestSoundCloudCurrentInfoUsesVideoPresentationAndSoundCloudSource(t *testing.T) {
 	media := video.DownloadedMedia{
 		SourcePath: "track.m4a",
@@ -1202,4 +1319,59 @@ func slowFFmpegPath(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return path
+}
+func TestOptionsFromValuesQualityPresets(t *testing.T) {
+	values := url.Values{
+		"format":       {"webp"},
+		"quality":      {"high"},
+		"maxDimension": {"4096"},
+		"maxMB":        {"60"},
+	}
+	opts := optionsFromValues(values.Get)
+	if opts.Format != "webp" {
+		t.Fatalf("Format = %q, want webp", opts.Format)
+	}
+	if opts.JPEGQuality != 85 {
+		t.Fatalf("JPEGQuality = %d, want 85", opts.JPEGQuality)
+	}
+	if opts.WebPQuality != 80 {
+		t.Fatalf("WebPQuality = %d, want 80", opts.WebPQuality)
+	}
+	if opts.PNGQuality != "high" {
+		t.Fatalf("PNGQuality = %q, want high", opts.PNGQuality)
+	}
+	if opts.MaxDimension != 4096 {
+		t.Fatalf("MaxDimension = %d, want 4096", opts.MaxDimension)
+	}
+	if opts.MaxBytes != 60<<20 {
+		t.Fatalf("MaxBytes = %d, want %d", opts.MaxBytes, int64(60<<20))
+	}
+}
+
+func TestOptionsFromValuesLegacyJPEGQuality(t *testing.T) {
+	values := url.Values{"quality": {"88"}}
+	opts := optionsFromValues(values.Get)
+	if opts.JPEGQuality != 88 {
+		t.Fatalf("JPEGQuality = %d, want 88", opts.JPEGQuality)
+	}
+	if opts.WebPQuality != 80 {
+		t.Fatalf("WebPQuality = %d, want default 80", opts.WebPQuality)
+	}
+	if opts.PNGQuality != "lossless" {
+		t.Fatalf("PNGQuality = %q, want default lossless", opts.PNGQuality)
+	}
+}
+
+func TestOptionsFromValuesPNGLossless(t *testing.T) {
+	values := url.Values{
+		"format":  {"png"},
+		"quality": {"lossless"},
+	}
+	opts := optionsFromValues(values.Get)
+	if opts.Format != "png" {
+		t.Fatalf("Format = %q, want png", opts.Format)
+	}
+	if opts.PNGQuality != "lossless" {
+		t.Fatalf("PNGQuality = %q, want lossless", opts.PNGQuality)
+	}
 }

@@ -51,7 +51,7 @@ func isImageOrRAWName(name string) bool {
 		return true
 	}
 	switch ext {
-	case ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", ".tif", ".svg":
+	case ".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".heic", ".heif", ".jxl", ".bmp", ".tiff", ".tif", ".svg":
 		return true
 	}
 	return false

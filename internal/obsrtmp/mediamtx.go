@@ -2,6 +2,7 @@ package obsrtmp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -410,6 +411,183 @@ func (r *mediaMTXRuntime) hlsArtifactReady(ctx context.Context, name string) boo
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 	return resp.StatusCode >= 200 && resp.StatusCode < 300
+}
+
+type mediaMTXConnectionKind string
+
+const (
+	mediaMTXConnectionKindRTSP mediaMTXConnectionKind = "rtsp"
+	mediaMTXConnectionKindHLS  mediaMTXConnectionKind = "hls"
+)
+
+type mediaMTXConnectionList struct {
+	Items []mediaMTXConnectionItem `json:"items"`
+}
+
+type mediaMTXConnectionItem struct {
+	RemoteAddr string `json:"remoteAddr"`
+	State      string `json:"state"`
+	Path       string `json:"path"`
+	Transport  string `json:"transport"`
+	UserAgent  string `json:"userAgent"`
+}
+
+func (r *mediaMTXRuntime) connectionRows(ctx context.Context, path string, profile LatencyProfile) []ConnectionStatus {
+	if r == nil || strings.TrimSpace(path) == "" {
+		return nil
+	}
+	endpoints := []struct {
+		path string
+		kind mediaMTXConnectionKind
+	}{
+		{path: "/v3/rtspsessions/list", kind: mediaMTXConnectionKindRTSP},
+		{path: "/v3/hlssessions/list", kind: mediaMTXConnectionKindHLS},
+	}
+	var rows []ConnectionStatus
+	seen := map[string]bool{}
+	for _, endpoint := range endpoints {
+		body, ok := r.fetchAPI(ctx, endpoint.path)
+		if !ok {
+			continue
+		}
+		for _, row := range mediaMTXConnectionRowsFromList(body, path, endpoint.kind, profile) {
+			key := row.Protocol + "\x00" + row.IP
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			rows = append(rows, row)
+		}
+	}
+	return rows
+}
+
+func (r *mediaMTXRuntime) fetchAPI(ctx context.Context, path string) ([]byte, bool) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.apiBaseURL()+path, nil)
+	if err != nil {
+		return nil, false
+	}
+	resp, err := r.httpClient.Do(req)
+	if err != nil {
+		return nil, false
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return nil, false
+	}
+	return data, true
+}
+
+func mediaMTXConnectionRowsFromList(body []byte, path string, kind mediaMTXConnectionKind, profile LatencyProfile) []ConnectionStatus {
+	var list mediaMTXConnectionList
+	if err := json.Unmarshal(body, &list); err != nil {
+		return nil
+	}
+	path = strings.TrimSpace(path)
+	rows := make([]ConnectionStatus, 0, len(list.Items))
+	for _, item := range list.Items {
+		if path != "" && strings.TrimSpace(item.Path) != path {
+			continue
+		}
+		if kind == mediaMTXConnectionKindRTSP && !strings.EqualFold(strings.TrimSpace(item.State), "read") {
+			continue
+		}
+		host := mediaMTXRemoteHost(item.RemoteAddr)
+		if host == "" {
+			continue
+		}
+		rows = append(rows, mediaMTXConnectionRow(host, item, kind, profile))
+	}
+	return rows
+}
+
+func mediaMTXConnectionRow(host string, item mediaMTXConnectionItem, kind mediaMTXConnectionKind, profile LatencyProfile) ConnectionStatus {
+	protocol := "RTSP"
+	quality := "良好"
+	lag := mediaMTXEstimateRTSPLagSeconds(profile)
+	note := "MediaMTXのRTSP読者セッションです"
+	if strings.EqualFold(strings.TrimSpace(item.Transport), "tcp") {
+		protocol = "RTSP/TCP"
+	}
+	if kind == mediaMTXConnectionKindHLS {
+		protocol = "HLS"
+		quality = "通常"
+		lag = mediaMTXEstimateHLSLagSeconds(profile)
+		note = "MediaMTXのHLS読者セッションです"
+	}
+	return ConnectionStatus{
+		IP:         host,
+		Protocol:   protocol,
+		Device:     mediaMTXDeviceLabel(item.UserAgent),
+		State:      "接続中",
+		Quality:    quality,
+		LagSeconds: lag,
+		LagLevel:   mediaMTXLagLevel(lag),
+		Note:       note,
+	}
+}
+
+func mediaMTXRemoteHost(remoteAddr string) string {
+	remoteAddr = strings.TrimSpace(remoteAddr)
+	if remoteAddr == "" {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err == nil {
+		return host
+	}
+	return remoteAddr
+}
+
+func mediaMTXDeviceLabel(userAgent string) string {
+	ua := strings.TrimSpace(userAgent)
+	if ua == "" {
+		return "Unknown"
+	}
+	lower := strings.ToLower(ua)
+	if strings.Contains(lower, "mozilla/") {
+		return "Browser"
+	}
+	return ua
+}
+
+func mediaMTXEstimateRTSPLagSeconds(profile LatencyProfile) float64 {
+	switch profile.Mode {
+	case LatencyModeRTSPRealtime:
+		return 0.8
+	case LatencyModeRTSPUltra:
+		return 1.5
+	case LatencyModeRTSPLow:
+		return 3.5
+	case LatencyModeHLS:
+		return 5
+	case LatencyModeHLSHigh:
+		return 10
+	default:
+		return 4
+	}
+}
+
+func mediaMTXEstimateHLSLagSeconds(profile LatencyProfile) float64 {
+	lag := mediaMTXEstimateRTSPLagSeconds(profile) + 1.7
+	if lag < 2.5 {
+		return 2.5
+	}
+	return lag
+}
+
+func mediaMTXLagLevel(seconds float64) string {
+	switch {
+	case seconds <= 1.2:
+		return "good"
+	case seconds <= 2.5:
+		return "ok"
+	case seconds <= 5:
+		return "warn"
+	default:
+		return "bad"
+	}
 }
 
 func importMediaMTXHLS(outDir, id, hlsDir, pathName string) ([]string, error) {

@@ -22,12 +22,51 @@ type Result struct {
 	Service    string `json:"service,omitempty"`
 }
 
+type DiscoveryMode string
+
+const (
+	DiscoveryLegacy DiscoveryMode = "legacy"
+	DiscoveryRace   DiscoveryMode = "race"
+)
+
+type BenchmarkOptions struct {
+	Mode         DiscoveryMode
+	Protocol     string
+	InternalPort int
+	ExternalPort int
+	Description  string
+}
+
+type BenchmarkResult struct {
+	OK                bool
+	Message           string
+	Mode              DiscoveryMode
+	Protocol          string
+	DiscoverySource   string
+	DiscoveryDuration time.Duration
+	MappingDuration   time.Duration
+	CleanupDuration   time.Duration
+	TotalDuration     time.Duration
+	ExternalIP        string
+	Gateway           string
+	Service           string
+	CleanupError      string
+}
+
 type gatewayService struct {
 	DeviceURL   string
 	ControlURL  string
 	ServiceType string
 	LocalIP     string
 }
+
+var (
+	serviceDiscovererLegacy = discoverServicesLegacy
+	serviceDiscovererRace   = discoverServicesRace
+
+	discoverLocationsFunc              = discoverLocations
+	discoverGatewayLocationsDirectFunc = discoverGatewayLocationsDirect
+)
 
 type TCPMapping struct {
 	mu           sync.Mutex
@@ -96,7 +135,7 @@ func TryMapTCP(port int, description string) Result {
 }
 
 func MapTCP(internalPort, externalPort int, description string) (*TCPMapping, Result) {
-	services, err := discoverServices()
+	services, _, err := serviceDiscovererRace()
 	if err != nil {
 		return nil, Result{Message: err.Error()}
 	}
@@ -104,7 +143,7 @@ func MapTCP(internalPort, externalPort int, description string) (*TCPMapping, Re
 }
 
 func MapUDP(internalPort, externalPort int, description string) (*TCPMapping, Result) {
-	services, err := discoverServices()
+	services, _, err := serviceDiscovererRace()
 	if err != nil {
 		return nil, Result{Message: err.Error()}
 	}
@@ -155,11 +194,97 @@ func normalizeProtocol(protocol string) string {
 	}
 }
 
-func discoverServices() ([]gatewayService, error) {
-	locations, err := discoverLocations()
-	if err != nil {
-		return nil, err
+func BenchmarkMapping(options BenchmarkOptions) BenchmarkResult {
+	start := time.Now()
+	mode := options.Mode
+	if mode == "" {
+		mode = DiscoveryRace
 	}
+	protocol := normalizeProtocol(options.Protocol)
+	if options.InternalPort <= 0 || options.ExternalPort <= 0 {
+		return BenchmarkResult{
+			Message:       "internal and external ports are required",
+			Mode:          mode,
+			Protocol:      protocol,
+			TotalDuration: elapsedSince(start),
+		}
+	}
+	description := strings.TrimSpace(options.Description)
+	if description == "" {
+		description = "ImagePadServer UPnP benchmark"
+	}
+
+	discoverStart := time.Now()
+	services, source, err := discoverServicesForMode(mode)
+	discoveryDuration := elapsedSince(discoverStart)
+	if err != nil {
+		return BenchmarkResult{
+			Message:           err.Error(),
+			Mode:              mode,
+			Protocol:          protocol,
+			DiscoverySource:   source,
+			DiscoveryDuration: discoveryDuration,
+			TotalDuration:     elapsedSince(start),
+		}
+	}
+
+	mapStart := time.Now()
+	mapping, result := mapProtocolWithServices(services, protocol, options.InternalPort, options.ExternalPort, description)
+	mappingDuration := elapsedSince(mapStart)
+
+	bench := BenchmarkResult{
+		OK:                result.OK,
+		Message:           result.Message,
+		Mode:              mode,
+		Protocol:          protocol,
+		DiscoverySource:   source,
+		DiscoveryDuration: discoveryDuration,
+		MappingDuration:   mappingDuration,
+		ExternalIP:        result.ExternalIP,
+		Gateway:           result.Gateway,
+		Service:           result.Service,
+	}
+	if mapping != nil {
+		cleanupStart := time.Now()
+		if err := mapping.Close(); err != nil {
+			bench.CleanupError = err.Error()
+		}
+		bench.CleanupDuration = elapsedSince(cleanupStart)
+	}
+	bench.TotalDuration = elapsedSince(start)
+	return bench
+}
+
+func elapsedSince(start time.Time) time.Duration {
+	elapsed := time.Since(start)
+	if elapsed <= 0 {
+		return time.Nanosecond
+	}
+	return elapsed
+}
+
+func discoverServicesForMode(mode DiscoveryMode) ([]gatewayService, string, error) {
+	switch mode {
+	case DiscoveryLegacy:
+		return serviceDiscovererLegacy()
+	default:
+		return serviceDiscovererRace()
+	}
+}
+
+func discoverServicesLegacy() ([]gatewayService, string, error) {
+	return discoverServicesWith(func() ([]string, string, error) {
+		locations, err := discoverLocationsFunc()
+		return locations, "legacy-ssdp", err
+	})
+}
+
+func discoverServicesRace() ([]gatewayService, string, error) {
+	return discoverServicesWith(discoverGatewayLocationsRace)
+}
+
+func discoverServicesWith(discover func() ([]string, string, error)) ([]gatewayService, string, error) {
+	locations, source, discoveryErr := discover()
 
 	var services []gatewayService
 	var failures []string
@@ -172,12 +297,195 @@ func discoverServices() ([]gatewayService, error) {
 		services = append(services, found...)
 	}
 	if len(services) == 0 && len(failures) > 0 {
-		return nil, fmt.Errorf("no usable UPnP service: %s", strings.Join(failures, " | "))
+		message := "no usable UPnP service: " + strings.Join(failures, " | ")
+		if discoveryErr != nil {
+			message += " | discovery: " + discoveryErr.Error()
+		}
+		return nil, source, fmt.Errorf("%s", message)
+	}
+	if len(services) == 0 && discoveryErr != nil {
+		return nil, source, discoveryErr
 	}
 	sort.SliceStable(services, func(i, j int) bool {
 		return serviceRank(services[i].ServiceType) < serviceRank(services[j].ServiceType)
 	})
-	return dedupeServices(services), nil
+	return dedupeServices(services), source, nil
+}
+
+func discoverGatewayLocations() ([]string, error) {
+	locations, _, err := discoverGatewayLocationsRace()
+	return locations, err
+}
+
+func discoverGatewayLocationsRace() ([]string, string, error) {
+	type discoveryResult struct {
+		locations []string
+		source    string
+		err       error
+	}
+	results := make(chan discoveryResult, 2)
+	go func() {
+		locations, err := discoverGatewayLocationsDirectFunc()
+		results <- discoveryResult{locations: locations, source: "direct-preset", err: err}
+	}()
+	go func() {
+		locations, err := discoverLocationsFunc()
+		results <- discoveryResult{locations: locations, source: "ssdp", err: err}
+	}()
+
+	var failures []string
+	for i := 0; i < 2; i++ {
+		result := <-results
+		if result.err == nil && len(result.locations) > 0 {
+			return result.locations, result.source, nil
+		}
+		if result.err != nil {
+			failures = append(failures, result.source+": "+result.err.Error())
+		} else {
+			failures = append(failures, result.source+": no UPnP gateway found")
+		}
+	}
+	if len(failures) > 0 {
+		return nil, "", fmt.Errorf("no UPnP gateway found (%s)", strings.Join(failures, " | "))
+	}
+	return nil, "", fmt.Errorf("no UPnP gateway found")
+}
+
+func discoverGatewayLocationsDirect() ([]string, error) {
+	gateways := inferredGatewayIPs()
+	if len(gateways) == 0 {
+		return nil, fmt.Errorf("no private IPv4 gateway candidates")
+	}
+	client := &http.Client{Timeout: 900 * time.Millisecond}
+	var locations []string
+	var failures []string
+	for _, gateway := range gateways {
+		found := false
+		for _, candidate := range gatewayDescriptionCandidates(gateway.String()) {
+			if hasUPnPWANService(client, candidate) {
+				locations = append(locations, candidate)
+				found = true
+				break
+			}
+		}
+		if !found {
+			failures = append(failures, gateway.String()+": no device description")
+		}
+	}
+	if len(locations) == 0 {
+		return nil, fmt.Errorf("%s", strings.Join(failures, " | "))
+	}
+	return locations, nil
+}
+
+func hasUPnPWANService(client *http.Client, location string) bool {
+	resp, err := client.Get(location)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return false
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+	if err != nil {
+		return false
+	}
+	var doc deviceRoot
+	if err := xml.Unmarshal(data, &doc); err != nil {
+		return false
+	}
+	for _, svc := range collectServices(doc.Device) {
+		if isWANService(svc.ServiceType) && svc.ControlURL != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func gatewayDescriptionCandidates(host string) []string {
+	ports := []string{"1900", "5000", "49152", "80"}
+	paths := []string{
+		"/rootDesc.xml",
+		"/desc.xml",
+		"/igd.xml",
+		"/InternetGatewayDevice.xml",
+		"/tbifn/rootDesc.xml",
+	}
+	var out []string
+	for _, port := range ports {
+		for _, path := range paths {
+			out = append(out, "http://"+net.JoinHostPort(host, port)+path)
+		}
+	}
+	return out
+}
+
+func inferredGatewayIPs() []net.IP {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var gateways []net.IP
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			ip, ipNet := ipAndNetwork(addr)
+			if ip == nil || ipNet == nil || !ip.IsPrivate() {
+				continue
+			}
+			gateway := firstUsableIPv4(ipNet)
+			if gateway == nil || gateway.Equal(ip) {
+				continue
+			}
+			key := gateway.String()
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			gateways = append(gateways, gateway)
+		}
+	}
+	return gateways
+}
+
+func ipAndNetwork(addr net.Addr) (net.IP, *net.IPNet) {
+	switch v := addr.(type) {
+	case *net.IPNet:
+		ip := v.IP.To4()
+		if ip == nil {
+			return nil, nil
+		}
+		return ip, v
+	case *net.IPAddr:
+		return v.IP.To4(), nil
+	default:
+		return nil, nil
+	}
+}
+
+func firstUsableIPv4(network *net.IPNet) net.IP {
+	base := network.IP.To4()
+	if base == nil {
+		return nil
+	}
+	mask := network.Mask
+	if len(mask) != net.IPv4len {
+		return nil
+	}
+	gateway := make(net.IP, net.IPv4len)
+	for i := range gateway {
+		gateway[i] = base[i] & mask[i]
+	}
+	gateway[3]++
+	return gateway
 }
 
 func discoverLocations() ([]string, error) {

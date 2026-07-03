@@ -11,6 +11,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"io"
+	"log"
 	"math"
 	"os"
 	"os/exec"
@@ -35,6 +36,8 @@ type Options struct {
 	MaxDimension  int
 	Format        string
 	JPEGQuality   int
+	WebPQuality   int
+	PNGQuality    string
 	MaxInputBytes int64
 	MaxBytes      int64
 }
@@ -50,8 +53,10 @@ type Result struct {
 func DefaultOptions() Options {
 	return Options{
 		MaxDimension:  2048,
-		Format:        "jpeg",
-		JPEGQuality:   88,
+		Format:        "webp",
+		JPEGQuality:   85,
+		WebPQuality:   80,
+		PNGQuality:    "lossless",
 		MaxInputBytes: maxImageBytes,
 		MaxBytes:      30 << 20,
 	}
@@ -62,7 +67,13 @@ func Process(reader io.Reader, name string, outDir string, opts Options) (Result
 		opts.MaxDimension = 2048
 	}
 	if opts.JPEGQuality <= 0 || opts.JPEGQuality > 100 {
-		opts.JPEGQuality = 88
+		opts.JPEGQuality = 85
+	}
+	if opts.WebPQuality <= 0 || opts.WebPQuality > 100 {
+		opts.WebPQuality = 80
+	}
+	if opts.PNGQuality == "" {
+		opts.PNGQuality = "lossless"
 	}
 	if opts.MaxBytes <= 0 || opts.MaxBytes > maxImageBytes {
 		opts.MaxBytes = maxImageBytes
@@ -71,7 +82,11 @@ func Process(reader io.Reader, name string, outDir string, opts Options) (Result
 		opts.MaxInputBytes = maxImageBytes
 	}
 	opts.Format = strings.ToLower(opts.Format)
-	if opts.Format != "png" {
+	switch opts.Format {
+	case "jpg":
+		opts.Format = "jpeg"
+	case "jpeg", "png", "webp":
+	default:
 		opts.Format = "jpeg"
 	}
 
@@ -98,37 +113,51 @@ func Process(reader io.Reader, name string, outDir string, opts Options) (Result
 
 	ext := ".jpg"
 	contentType := "image/jpeg"
-	if opts.Format == "png" {
+	switch opts.Format {
+	case "png":
 		ext = ".png"
 		contentType = "image/png"
+	case "webp":
+		ext = ".webp"
+		contentType = "image/webp"
 	}
 
 	path := filepath.Join(outDir, "processed"+ext)
-	var data []byte
-	if opts.Format == "png" {
+	switch opts.Format {
+	case "png":
 		var buf bytes.Buffer
-		if err := png.Encode(&buf, resized); err != nil {
+		enc := png.Encoder{CompressionLevel: png.BestCompression}
+		if err := enc.Encode(&buf, resized); err != nil {
 			return Result{}, err
 		}
-		data = buf.Bytes()
-	} else {
+		if int64(buf.Len()) > opts.MaxBytes {
+			return Result{}, fmt.Errorf("encoded image exceeds size limit of %d bytes", opts.MaxBytes)
+		}
+		if err := os.WriteFile(path, buf.Bytes(), 0600); err != nil {
+			return Result{}, err
+		}
+		if _, err := OptimizePNG(path, opts.PNGQuality); err != nil {
+			log.Printf("png optimize: %v", err)
+		}
+	case "webp":
+		if err := EncodeWebP(resized, path, opts.WebPQuality); err != nil {
+			return Result{}, fmt.Errorf("webp encode: %w", err)
+		}
+	default:
 		encoded, err := encodeJPEGWithinLimit(flatten(resized), opts.JPEGQuality, opts.MaxBytes)
 		if err != nil {
 			return Result{}, err
 		}
-		data = encoded
+		if err := os.WriteFile(path, encoded, 0600); err != nil {
+			return Result{}, err
+		}
 	}
-	if int64(len(data)) > opts.MaxBytes {
-		return Result{}, fmt.Errorf("encoded image exceeds size limit of %d bytes", opts.MaxBytes)
-	}
-
-	file, err := os.Create(path)
+	info, err := os.Stat(path)
 	if err != nil {
 		return Result{}, err
 	}
-	defer file.Close()
-	if _, err := file.Write(data); err != nil {
-		return Result{}, err
+	if info.Size() > opts.MaxBytes {
+		return Result{}, fmt.Errorf("encoded image exceeds size limit of %d bytes", opts.MaxBytes)
 	}
 
 	return Result{
@@ -145,18 +174,29 @@ func decodeImage(input []byte, name, outDir string, maxDimension int) (image.Ima
 		img, err := rasterizeSVG(input)
 		return img, "svg", err
 	}
+	if IsCameraRAWName(name) {
+		rawImg, rawErr := decodeCameraRAW(input, name, outDir, maxDimension)
+		if rawErr == nil {
+			return rawImg, "raw", nil
+		}
+		img, format, err := image.Decode(bytes.NewReader(input))
+		if err != nil {
+			return nil, "", fmt.Errorf("%w; camera RAW fallback failed: %v", err, rawErr)
+		}
+		return img, format, nil
+	}
 	img, format, err := image.Decode(bytes.NewReader(input))
 	if err == nil {
 		return img, format, nil
 	}
-	if !IsCameraRAWName(name) {
-		return nil, "", err
+	if isModernCompressedImageName(name) {
+		modernImg, modernErr := decodeModernCompressedImage(input, name, outDir, maxDimension)
+		if modernErr != nil {
+			return nil, "", fmt.Errorf("%w; modern image fallback failed: %v", err, modernErr)
+		}
+		return modernImg, "modern", nil
 	}
-	rawImg, rawErr := decodeCameraRAW(input, name, outDir, maxDimension)
-	if rawErr != nil {
-		return nil, "", fmt.Errorf("%w; camera RAW fallback failed: %v", err, rawErr)
-	}
-	return rawImg, "raw", nil
+	return nil, "", err
 }
 
 func IsCameraRAWName(name string) bool {
@@ -183,6 +223,10 @@ var cameraRAWExtensions = map[string]struct{}{
 }
 
 func decodeCameraRAW(input []byte, name, outDir string, maxDimension int) (image.Image, error) {
+	if img, ok, err := decodeEmbeddedRAWPreview(input); ok || err != nil {
+		return img, err
+	}
+
 	ffmpeg, err := video.EnsureFFmpeg()
 	if err != nil {
 		return nil, fmt.Errorf("FFmpeg is required to convert camera RAW files: %w", err)

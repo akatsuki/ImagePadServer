@@ -116,10 +116,12 @@ func TestMusicModeRoutesPublishAndQueueURLsToAudioAcquirer(t *testing.T) {
 // direct downloader run.
 func TestVideoModeTriesYTDLPThenDirect(t *testing.T) {
 	oldPage := pageMediaDownloader
+	oldHLS := pageHLSMediaDownloader
 	oldDirect := directMediaDownloader
 	oldEnsureFFmpeg := ensureFFmpeg
 	t.Cleanup(func() {
 		pageMediaDownloader = oldPage
+		pageHLSMediaDownloader = oldHLS
 		directMediaDownloader = oldDirect
 		ensureFFmpeg = oldEnsureFFmpeg
 	})
@@ -179,6 +181,31 @@ func TestVideoModeTriesYTDLPThenDirect(t *testing.T) {
 					t.Fatalf("body %q should surface the yt-dlp error", rec.Body.String())
 				}
 			})
+		}
+	})
+
+	t.Run("yt-dlp failure tries page HLS before direct for unknown pages", func(t *testing.T) {
+		_, mux := testServer(t, true)
+		pageCalled := false
+		hlsCalled := false
+		directCalled := false
+		pageMediaDownloader = func(string, string) (video.DownloadedMedia, error) {
+			pageCalled = true
+			return video.DownloadedMedia{}, errors.New("yt-dlp route failed")
+		}
+		pageHLSMediaDownloader = func(context.Context, string, string) (video.DownloadedMedia, error) {
+			hlsCalled = true
+			return video.DownloadedMedia{SourcePath: filepath.Join(t.TempDir(), "missing.mp4"), Name: "hls.mp4"}, nil
+		}
+		directMediaDownloader = func(context.Context, string, string, func(context.Context, string) (video.MediaProbe, error)) (downloadedRemoteMedia, error) {
+			directCalled = true
+			return downloadedRemoteMedia{}, errors.New("direct route selected")
+		}
+
+		req := httptest.NewRequest(http.MethodPost, "/api/upload-url", strings.NewReader(`{"url":"https://example.com/watch/123"}`))
+		adminJSON(t, mux, req)
+		if !pageCalled || !hlsCalled || directCalled {
+			t.Fatalf("pageCalled=%v hlsCalled=%v directCalled=%v, want yt-dlp then HLS and direct skipped", pageCalled, hlsCalled, directCalled)
 		}
 	})
 

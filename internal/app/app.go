@@ -19,6 +19,7 @@ import (
 	"imagepadserver/internal/browser"
 	"imagepadserver/internal/config"
 	"imagepadserver/internal/discovery"
+	"imagepadserver/internal/imageproc"
 	"imagepadserver/internal/library"
 	"imagepadserver/internal/network"
 	"imagepadserver/internal/obsrtmp"
@@ -95,6 +96,7 @@ func run(useNativeWindow bool) error {
 	go updateYTDLPOnStartup()
 	go func() {
 		video.ValidateInstalledTools()
+		imageproc.ValidateImageTools()
 		if appSettings, err := settings.Load(); err == nil && appSettings.VideoPlayerEnabled {
 			if _, err := video.EnsureFFmpeg(); err != nil {
 				log.Printf("startup ffmpeg warm failed: %v", err)

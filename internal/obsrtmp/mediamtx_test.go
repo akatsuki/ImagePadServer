@@ -326,6 +326,127 @@ func TestMediaMTXProxyCancellationReturnsBadGateway(t *testing.T) {
 	}
 }
 
+func TestMediaMTXConnectionRowsFromRTSPSessions(t *testing.T) {
+	body := []byte(`{
+		"itemCount": 2,
+		"items": [
+			{
+				"id": "reader-1",
+				"remoteAddr": "192.0.2.44:53123",
+				"state": "read",
+				"path": "obs_live",
+				"transport": "tcp",
+				"userAgent": "VRChat/2026"
+			},
+			{
+				"id": "publisher",
+				"remoteAddr": "127.0.0.1:50000",
+				"state": "publish",
+				"path": "obs_live"
+			}
+		]
+	}`)
+
+	rows := mediaMTXConnectionRowsFromList(body, "obs_live", mediaMTXConnectionKindRTSP, NormalizeLatencyProfile("rtsp-realtime"))
+
+	if len(rows) != 1 {
+		t.Fatalf("rows len = %d, want 1: %#v", len(rows), rows)
+	}
+	row := rows[0]
+	if row.IP != "192.0.2.44" {
+		t.Fatalf("IP = %q, want reader host", row.IP)
+	}
+	if row.Protocol != "RTSP/TCP" {
+		t.Fatalf("Protocol = %q, want RTSP/TCP", row.Protocol)
+	}
+	if row.Device != "VRChat/2026" {
+		t.Fatalf("Device = %q, want user agent", row.Device)
+	}
+	if row.State != "接続中" || row.Quality != "良好" || row.LagLevel != "good" {
+		t.Fatalf("unexpected row state: %#v", row)
+	}
+}
+
+func TestMediaMTXConnectionRowsFromHLSSessions(t *testing.T) {
+	body := []byte(`{
+		"itemCount": 2,
+		"items": [
+			{
+				"id": "hls-1",
+				"remoteAddr": "198.51.100.20:44300",
+				"path": "obs_live",
+				"userAgent": "Mozilla/5.0"
+			},
+			{
+				"id": "other",
+				"remoteAddr": "203.0.113.9:44301",
+				"path": "obs_other",
+				"userAgent": "Mozilla/5.0"
+			}
+		]
+	}`)
+
+	rows := mediaMTXConnectionRowsFromList(body, "obs_live", mediaMTXConnectionKindHLS, NormalizeLatencyProfile("llhls"))
+
+	if len(rows) != 1 {
+		t.Fatalf("rows len = %d, want 1: %#v", len(rows), rows)
+	}
+	row := rows[0]
+	if row.IP != "198.51.100.20" {
+		t.Fatalf("IP = %q, want HLS reader host", row.IP)
+	}
+	if row.Protocol != "HLS" {
+		t.Fatalf("Protocol = %q, want HLS", row.Protocol)
+	}
+	if row.Device != "Browser" {
+		t.Fatalf("Device = %q, want browser classification", row.Device)
+	}
+	if row.LagSeconds <= 0 || row.LagLevel == "" {
+		t.Fatalf("lag metadata not populated: %#v", row)
+	}
+}
+
+func TestManagerConnectionRowsQueriesActiveMediaMTX(t *testing.T) {
+	var requested []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requested = append(requested, r.URL.Path)
+		switch r.URL.Path {
+		case "/v3/rtspsessions/list":
+			_, _ = w.Write([]byte(`{"items":[{"remoteAddr":"192.0.2.70:50100","state":"read","path":"obs_session","transport":"tcp"}]}`))
+		case "/v3/hlssessions/list":
+			_, _ = w.Write([]byte(`{"items":[]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	rt := testRuntime(defaultTestConfig())
+	rt.httpClient = upstream.Client()
+	_, port := splitHostPortForTest(t, strings.TrimPrefix(upstream.URL, "http://"))
+	rt.cfg.Ports.API = port
+	rt.cfg.Path = "obs_session"
+
+	manager := newTestManager(t, LatencyModeRTSPRealtime)
+	manager.mu.Lock()
+	manager.status.Connected = true
+	manager.current = &Session{ID: "session"}
+	manager.mtx = rt
+	manager.mu.Unlock()
+
+	rows := manager.ConnectionRows(500 * time.Millisecond)
+
+	if len(rows) != 1 {
+		t.Fatalf("rows len = %d, want 1: %#v", len(rows), rows)
+	}
+	if rows[0].IP != "192.0.2.70" || rows[0].Protocol != "RTSP/TCP" {
+		t.Fatalf("unexpected row: %#v", rows[0])
+	}
+	if got := strings.Join(requested, ","); !strings.Contains(got, "/v3/rtspsessions/list") {
+		t.Fatalf("MediaMTX API was not queried for RTSP sessions: %v", requested)
+	}
+}
+
 func TestLLHLSMediaReadyRequiresAllTags(t *testing.T) {
 	full := "#EXTM3U\n#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES\n#EXT-X-PART-INF:PART-TARGET=0.2\n" +
 		"#EXT-X-MAP:URI=\"init.mp4\"\n#EXT-X-PART:DURATION=0.2,URI=\"p.mp4\"\n#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"p2.mp4\"\n"

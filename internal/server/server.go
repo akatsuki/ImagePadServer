@@ -31,6 +31,7 @@ import (
 	"imagepadserver/internal/settings"
 	"imagepadserver/internal/upnp"
 	"imagepadserver/internal/video"
+	"imagepadserver/internal/ytdlpauth"
 )
 
 const (
@@ -40,9 +41,14 @@ const (
 )
 
 var (
-	pageMediaDownloader = video.DownloadMediaURL
-	networkMeasurer     = video.MeasureNetwork
-	ensureFFmpeg        = video.EnsureFFmpeg
+	pageMediaDownloader    = video.DownloadMediaURL
+	pageHLSMediaDownloader = downloadPageHLSMedia
+	networkMeasurer        = video.MeasureNetwork
+	ensureFFmpeg           = video.EnsureFFmpeg
+	ytdlpLoginLauncher     = func() error {
+		_, err := ytdlpauth.LaunchLoginAndSave(context.Background())
+		return err
+	}
 )
 
 var (
@@ -180,10 +186,13 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/events", s.admin(s.handleEvents))
 	mux.HandleFunc("/api/tunnel/reconnect", s.admin(s.handleTunnelReconnect))
 	mux.HandleFunc("/api/quit", s.admin(s.handleQuit))
+	mux.HandleFunc("/api/ytdlp/login", s.admin(s.handleYTDLPLogin))
+	mux.HandleFunc("/api/ytdlp/cookies", s.admin(s.handleYTDLPCookies))
 	mux.HandleFunc("/api/upload", s.admin(s.handleUpload))
 	mux.HandleFunc("/api/upload-queue", s.admin(s.handleUploadQueue))
 	mux.HandleFunc("/api/upload-url", s.admin(s.handleUploadURL))
 	mux.HandleFunc("/api/upload-url-queue", s.admin(s.handleUploadURLQueue))
+	mux.HandleFunc("/api/browser-media-candidates", s.admin(s.handleBrowserMediaCandidates))
 	mux.HandleFunc("/api/clear", s.admin(s.handleClear))
 	mux.HandleFunc("/api/pairing/request", s.handlePairingRequest)
 	mux.HandleFunc("/api/pairing/confirm", s.handlePairingConfirm)
@@ -547,6 +556,35 @@ func (s *Server) handleTunnelReconnect(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handleYTDLPLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := ytdlpLoginLauncher(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.broadcastStateChanged()
+	writeJSON(w, ytdlpauth.Status())
+}
+
+func (s *Server) handleYTDLPCookies(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, ytdlpauth.Status())
+	case http.MethodDelete:
+		if err := ytdlpauth.DeleteCookies(); err != nil {
+			http.Error(w, "failed to delete yt-dlp cookies", http.StatusInternalServerError)
+			return
+		}
+		s.broadcastStateChanged()
+		writeJSON(w, ytdlpauth.Status())
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
 func (s *Server) handleQuit(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -666,7 +704,12 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 
 		// Preserve SoundCloud-page detection (uses yt-dlp).
 		if isSoundCloudURL(req.URL) {
-			media, err := video.DownloadMediaURL(req.URL, s.store.Dir())
+			var media video.DownloadedMedia
+			err := s.withYTDLPIngestProgress(func() error {
+				var downloadErr error
+				media, downloadErr = video.DownloadMediaURL(req.URL, s.store.Dir())
+				return downloadErr
+			})
 			if err != nil {
 				http.Error(w, videoURLDownloadError(err), http.StatusBadRequest)
 				return
@@ -688,7 +731,12 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if s.musicModeEnabled() {
-			acquired, err := musicURLAcquirer(r.Context(), s, req.URL)
+			var acquired video.AcquiredAudio
+			err := s.withYTDLPIngestProgress(func() error {
+				var acquireErr error
+				acquired, acquireErr = musicURLAcquirer(r.Context(), s, req.URL)
+				return acquireErr
+			})
 			if err != nil {
 				http.Error(w, videoURLDownloadError(err), http.StatusBadRequest)
 				return
@@ -706,7 +754,12 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 		// Try yt-dlp first — it handles YouTube, X/Twitter, niconico and many
 		// other video pages. If it cannot handle the URL, fall back to the
 		// bounded SSRF-safe direct downloader for direct media file links.
-		ytMedia, ytdlpErr := pageMediaDownloader(req.URL, s.store.Dir())
+		var ytMedia video.DownloadedMedia
+		ytdlpErr := s.withYTDLPIngestProgress(func() error {
+			var downloadErr error
+			ytMedia, downloadErr = pageMediaDownloader(req.URL, s.store.Dir())
+			return downloadErr
+		})
 		if ytdlpErr == nil {
 			state, err := s.processVideoFileAndPublish(r, ytMedia.SourcePath, ytMedia.Name, ytMedia.ThumbnailPath)
 			if err != nil {
@@ -728,11 +781,29 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		var hlsErr error
+		var hlsMedia video.DownloadedMedia
+		hlsErr = s.withYTDLPIngestProgress(func() error {
+			var downloadErr error
+			hlsMedia, downloadErr = pageHLSMediaDownloader(r.Context(), req.URL, s.store.Dir())
+			return downloadErr
+		})
+		if hlsErr == nil {
+			state, err := s.processVideoFileAndPublish(r, hlsMedia.SourcePath, hlsMedia.Name, hlsMedia.ThumbnailPath)
+			if err != nil {
+				os.Remove(hlsMedia.SourcePath)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, state)
+			return
+		}
+
 		// Fallback: bounded SSRF-safe downloader. Redirects are revalidated and
 		// the completed bytes are classified by ffprobe.
 		media, err := s.downloadDirectMedia(r.Context(), req.URL)
 		if err != nil {
-			http.Error(w, videoURLDownloadError(combineURLErrors(ytdlpErr, err)), http.StatusBadRequest)
+			http.Error(w, videoURLDownloadError(combineURLErrors(combineURLErrors(ytdlpErr, hlsErr), err)), http.StatusBadRequest)
 			return
 		}
 		probe := media.Probe
@@ -834,7 +905,12 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 
 		// Preserve SoundCloud-page detection (uses yt-dlp).
 		if isSoundCloudURL(req.URL) {
-			media, err := video.DownloadMediaURL(req.URL, s.store.Dir())
+			var media video.DownloadedMedia
+			err := s.withYTDLPIngestProgress(func() error {
+				var downloadErr error
+				media, downloadErr = video.DownloadMediaURL(req.URL, s.store.Dir())
+				return downloadErr
+			})
 			if err != nil {
 				http.Error(w, videoURLDownloadError(err), http.StatusBadRequest)
 				return
@@ -856,7 +932,12 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if s.musicModeEnabled() {
-			acquired, err := musicURLAcquirer(r.Context(), s, req.URL)
+			var acquired video.AcquiredAudio
+			err := s.withYTDLPIngestProgress(func() error {
+				var acquireErr error
+				acquired, acquireErr = musicURLAcquirer(r.Context(), s, req.URL)
+				return acquireErr
+			})
 			if err != nil {
 				http.Error(w, videoURLDownloadError(err), http.StatusBadRequest)
 				return
@@ -873,7 +954,12 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 
 		// Try yt-dlp first (YouTube, X/Twitter, niconico, …); fall back to the
 		// bounded SSRF-safe direct downloader for direct media file links.
-		ytMedia, ytdlpErr := pageMediaDownloader(req.URL, s.store.Dir())
+		var ytMedia video.DownloadedMedia
+		ytdlpErr := s.withYTDLPIngestProgress(func() error {
+			var downloadErr error
+			ytMedia, downloadErr = pageMediaDownloader(req.URL, s.store.Dir())
+			return downloadErr
+		})
 		if ytdlpErr == nil {
 			state, err := s.processVideoFileAndQueue(r, ytMedia.SourcePath, ytMedia.Name, ytMedia.ThumbnailPath)
 			if err != nil {
@@ -894,9 +980,27 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		var hlsErr error
+		var hlsMedia video.DownloadedMedia
+		hlsErr = s.withYTDLPIngestProgress(func() error {
+			var downloadErr error
+			hlsMedia, downloadErr = pageHLSMediaDownloader(r.Context(), req.URL, s.store.Dir())
+			return downloadErr
+		})
+		if hlsErr == nil {
+			state, err := s.processVideoFileAndQueue(r, hlsMedia.SourcePath, hlsMedia.Name, hlsMedia.ThumbnailPath)
+			if err != nil {
+				os.Remove(hlsMedia.SourcePath)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, state)
+			return
+		}
+
 		media, err := s.downloadDirectMedia(r.Context(), req.URL)
 		if err != nil {
-			http.Error(w, videoURLDownloadError(combineURLErrors(ytdlpErr, err)), http.StatusBadRequest)
+			http.Error(w, videoURLDownloadError(combineURLErrors(combineURLErrors(ytdlpErr, hlsErr), err)), http.StatusBadRequest)
 			return
 		}
 		probe := media.Probe
@@ -1297,14 +1401,38 @@ func (s *Server) clearPublication() {
 	_ = s.store.Clear()
 }
 
+var qualityPresetToJPEG = map[string]int{
+	"highest": 95,
+	"high":    85,
+	"medium":  75,
+	"low":     60,
+	"lowest":  45,
+}
+
+var qualityPresetToWebP = map[string]int{
+	"highest": 90,
+	"high":    80,
+	"medium":  70,
+	"low":     55,
+	"lowest":  40,
+}
+
 func optionsFromValues(value func(string) string) imageproc.Options {
 	opts := imageproc.DefaultOptions()
 	if v := value("format"); v != "" {
 		opts.Format = v
 	}
 	if v := value("quality"); v != "" {
-		if q, err := strconv.Atoi(v); err == nil {
+		if q, ok := qualityPresetToJPEG[v]; ok {
 			opts.JPEGQuality = q
+			opts.PNGQuality = v
+		} else if v == "lossless" {
+			opts.PNGQuality = v
+		} else if q, err := strconv.Atoi(v); err == nil {
+			opts.JPEGQuality = q
+		}
+		if q, ok := qualityPresetToWebP[v]; ok {
+			opts.WebPQuality = q
 		}
 	}
 	if v := value("maxDimension"); v != "" {
@@ -1783,6 +1911,7 @@ func (s *Server) handleCopyURL(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		Target string `json:"target"`
+		Mode   string `json:"mode"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid copy request", http.StatusBadRequest)
@@ -1790,6 +1919,9 @@ func (s *Server) handleCopyURL(w http.ResponseWriter, r *http.Request) {
 	}
 
 	state := s.state(r)
+	if req.Mode == "obs" || req.Mode == "link" || req.Mode == "file" {
+		state["shareMode"] = req.Mode
+	}
 	copiedURL := urlForCopyTarget(state, req.Target)
 	if copiedURL == "" {
 		http.Error(w, "no URL available to copy", http.StatusBadRequest)
@@ -2345,7 +2477,9 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 	publicImageURL := ""
 	publicVideoURL := ""
 	publicHLSURL := ""
+	var currentMedia *library.CurrentImage
 	if current := s.store.Current(); current != nil {
+		currentMedia = current
 		videoPlayer := s.videoPlayerStateForID(current.ID)
 		if current.Kind != "video" {
 			imagePath := imageURLPath(current)
@@ -2399,6 +2533,7 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 		"videoPlayer":   videoPlayer,
 		"obs":           obsStatus,
 		"obsLatency":    s.obsLatencyProfile(),
+		"current":       currentMedia,
 	})
 
 	return map[string]interface{}{
@@ -2428,6 +2563,7 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 		"obs":             obsStatus,
 		"pairing":         s.pairingState(),
 		"videoQueue":      s.videoQueueState(),
+		"ytdlpAuth":       ytdlpauth.Status(),
 		"ingest":          s.ingestState(),
 		"toolInstall":     video.ToolInstallStatus(),
 		"current":         s.store.Current(),
@@ -2464,6 +2600,7 @@ func (s *Server) stateWithMedia(r *http.Request, upnpResult upnp.Result, tunnelS
 		"obs":             obsStatus,
 		"pairing":         s.pairingState(),
 		"videoQueue":      s.videoQueueState(),
+		"ytdlpAuth":       ytdlpauth.Status(),
 		"ingest":          s.ingestState(),
 		"toolInstall":     video.ToolInstallStatus(),
 		"current":         s.store.Current(),
@@ -2655,7 +2792,8 @@ func (s *Server) obsState() obsrtmp.Status {
 	status := s.obs.Status()
 	status.Capabilities = obsrtmp.LatencyCapabilities()
 	applyOBSPreviewURL(&status, s.adminPath, s.obs.HLSPreviewReady)
-	status.Connections = obsConnectionRows(status)
+	syntheticRows := obsConnectionRows(status)
+	status.Connections = mergeOBSConnectionRows(s.obs.ConnectionRows(250*time.Millisecond), syntheticRows)
 	return status
 }
 
@@ -2700,6 +2838,20 @@ func obsConnectionRows(status obsrtmp.Status) []obsrtmp.ConnectionStatus {
 			LagLevel:   obsLagLevel(lag),
 			Note:       "管理画面プレビュー用のローカルHLSです",
 		})
+	}
+	return rows
+}
+
+func mergeOBSConnectionRows(realRows, syntheticRows []obsrtmp.ConnectionStatus) []obsrtmp.ConnectionStatus {
+	if len(realRows) == 0 {
+		return syntheticRows
+	}
+	rows := make([]obsrtmp.ConnectionStatus, 0, len(realRows)+len(syntheticRows))
+	rows = append(rows, realRows...)
+	for _, row := range syntheticRows {
+		if row.Protocol == "HLS Preview" {
+			rows = append(rows, row)
+		}
 	}
 	return rows
 }
@@ -2825,6 +2977,41 @@ func urlForClipboard(state map[string]interface{}) string {
 }
 
 func primaryShareURL(state map[string]interface{}) (string, string) {
+	switch shareModeFromState(state) {
+	case "obs":
+		return obsShareURL(state)
+	case "link":
+		return mediaShareURL(state)
+	case "file":
+		return fileShareURL(state)
+	default:
+		return mediaShareURL(state)
+	}
+}
+
+func shareModeFromState(state map[string]interface{}) string {
+	if mode, _ := state["shareMode"].(string); mode == "obs" || mode == "link" || mode == "file" {
+		return mode
+	}
+	if mode, _ := state["historyTargetMode"].(string); mode == "link" || mode == "file" {
+		return mode
+	}
+	if current, _ := state["current"].(*library.CurrentImage); current != nil {
+		mode := historyTargetMode(*current)
+		if mode != "obs" {
+			return mode
+		}
+	}
+	if current, _ := state["current"].(library.CurrentImage); current.ID != "" {
+		mode := historyTargetMode(current)
+		if mode != "obs" {
+			return mode
+		}
+	}
+	return ""
+}
+
+func obsShareURL(state map[string]interface{}) (string, string) {
 	obsLatency, _ := state["obsLatency"].(obsrtmp.LatencyProfile)
 	if obsStatus, ok := state["obs"].(obsrtmp.Status); ok &&
 		activeOBSLatency(obsLatency, obsStatus).Transport == obsrtmp.LatencyModeRTSPT &&
@@ -2832,8 +3019,25 @@ func primaryShareURL(state map[string]interface{}) (string, string) {
 		if strings.HasPrefix(obsStatus.RTSPTURL, "rtsp://") {
 			return obsStatus.RTSPTURL, "RTSP TCP URL"
 		}
-		return "", "RTSP TCP URL"
 	}
+	return "", "URL"
+}
+
+func mediaShareURL(state map[string]interface{}) (string, string) {
+	if videoPlayer, ok := state["videoPlayer"].(map[string]interface{}); ok {
+		if enabled, _ := videoPlayer["enabled"].(bool); enabled {
+			if hlsURL, ok := state["hlsURL"].(string); ok && strings.HasPrefix(hlsURL, "http") {
+				return hlsURL, "HLS URL"
+			}
+			if videoURL, ok := state["videoURL"].(string); ok && strings.HasPrefix(videoURL, "http") {
+				return videoURL, "MP4 URL"
+			}
+		}
+	}
+	return fileShareURL(state)
+}
+
+func fileShareURL(state map[string]interface{}) (string, string) {
 	if videoPlayer, ok := state["videoPlayer"].(map[string]interface{}); ok {
 		if enabled, _ := videoPlayer["enabled"].(bool); enabled {
 			if hlsURL, ok := state["hlsURL"].(string); ok && strings.HasPrefix(hlsURL, "http") {

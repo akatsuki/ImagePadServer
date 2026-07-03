@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -19,9 +20,10 @@ import (
 
 func TestMediaMTXResolutionOrder(t *testing.T) {
 	root := t.TempDir()
-	envPath := writeMediaMTXExecutable(t, filepath.Join(root, "env", "mediamtx.exe"))
-	bundledPath := writeMediaMTXExecutable(t, filepath.Join(root, "bundle", mediaMTXVersion, "mediamtx.exe"))
-	managedPath := writeMediaMTXExecutable(t, filepath.Join(root, "managed", mediaMTXVersion, "mediamtx.exe"))
+	executable := mediaMTXExecutableName()
+	envPath := writeMediaMTXExecutable(t, filepath.Join(root, "env", executable))
+	bundledPath := writeMediaMTXExecutable(t, filepath.Join(root, "bundle", mediaMTXVersion, executable))
+	managedPath := writeMediaMTXExecutable(t, filepath.Join(root, "managed", mediaMTXVersion, executable))
 	writeMediaMTXMarker(t, filepath.Dir(managedPath), mediaMTXArchiveSHA256)
 
 	m := testMediaMTXManager(root)
@@ -57,13 +59,13 @@ func TestMediaMTXResolutionOrder(t *testing.T) {
 func TestMediaMTXRejectsMissingOverrideAndManagedChecksumMismatch(t *testing.T) {
 	root := t.TempDir()
 	m := testMediaMTXManager(root)
-	m.getenv = func(string) string { return filepath.Join(root, "missing.exe") }
+	m.getenv = func(string) string { return filepath.Join(root, mediaMTXExecutableName()) }
 	if _, err := m.resolve(); err == nil {
 		t.Fatal("missing IMAGEPAD_MEDIAMTX override was accepted")
 	}
 
 	m.getenv = func(string) string { return "" }
-	managedPath := writeMediaMTXExecutable(t, filepath.Join(m.managedRoot, mediaMTXVersion, "mediamtx.exe"))
+	managedPath := writeMediaMTXExecutable(t, filepath.Join(m.managedRoot, mediaMTXVersion, mediaMTXExecutableName()))
 	writeMediaMTXMarker(t, filepath.Dir(managedPath), "wrong-checksum")
 	if _, err := m.resolve(); err == nil {
 		t.Fatal("managed install with mismatched checksum marker was accepted")
@@ -84,12 +86,14 @@ func TestMediaMTXVersionOutputRequiresExactPinnedVersion(t *testing.T) {
 }
 
 func TestMediaMTXInstallExtractsAllowlistAndReusesValidInstall(t *testing.T) {
+	skipIfAutomaticMediaMTXInstallUnsupported(t)
+
 	archive := mediaMTXArchive(t, map[string][]byte{
-		"mediamtx.exe":     []byte("exe"),
-		"mediamtx.yml":     []byte("config"),
-		"LICENSE":          []byte("license"),
-		"README.md":        []byte("must not extract"),
-		"nested/extra.txt": []byte("must not extract"),
+		mediaMTXExecutableName(): []byte("exe"),
+		"mediamtx.yml":           []byte("config"),
+		"LICENSE":                []byte("license"),
+		"README.md":              []byte("must not extract"),
+		"nested/extra.txt":       []byte("must not extract"),
 	})
 	sum := sha256.Sum256(archive)
 	var requests atomic.Int32
@@ -108,7 +112,7 @@ func TestMediaMTXInstallExtractsAllowlistAndReusesValidInstall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensure MediaMTX: %v", err)
 	}
-	for _, name := range []string{"mediamtx.exe", "mediamtx.yml", "LICENSE"} {
+	for _, name := range []string{mediaMTXExecutableName(), "mediamtx.yml", "LICENSE"} {
 		if _, err := os.Stat(filepath.Join(filepath.Dir(path), name)); err != nil {
 			t.Fatalf("required file %s missing: %v", name, err)
 		}
@@ -129,10 +133,12 @@ func TestMediaMTXInstallExtractsAllowlistAndReusesValidInstall(t *testing.T) {
 }
 
 func TestMediaMTXInstallSerializesConcurrentCallers(t *testing.T) {
+	skipIfAutomaticMediaMTXInstallUnsupported(t)
+
 	archive := mediaMTXArchive(t, map[string][]byte{
-		"mediamtx.exe": []byte("exe"),
-		"mediamtx.yml": []byte("config"),
-		"LICENSE":      []byte("license"),
+		mediaMTXExecutableName(): []byte("exe"),
+		"mediamtx.yml":           []byte("config"),
+		"LICENSE":                []byte("license"),
 	})
 	sum := sha256.Sum256(archive)
 	var requests atomic.Int32
@@ -195,8 +201,8 @@ func TestMediaMTXInstallCleansUpFailures(t *testing.T) {
 			})}
 		}},
 		{name: "invalid zip", body: []byte("not-a-zip")},
-		{name: "checksum mismatch", body: mediaMTXArchive(t, map[string][]byte{"mediamtx.exe": []byte("exe")}), sha256: mediaMTXArchiveSHA256},
-		{name: "read-only destination", body: mediaMTXArchive(t, map[string][]byte{"mediamtx.exe": []byte("exe"), "mediamtx.yml": []byte("config"), "LICENSE": []byte("license")}), prepare: func(m *mediaMTXToolManager) {
+		{name: "checksum mismatch", body: mediaMTXArchive(t, map[string][]byte{mediaMTXExecutableName(): []byte("exe")}), sha256: mediaMTXArchiveSHA256},
+		{name: "read-only destination", body: mediaMTXArchive(t, map[string][]byte{mediaMTXExecutableName(): []byte("exe"), "mediamtx.yml": []byte("config"), "LICENSE": []byte("license")}), prepare: func(m *mediaMTXToolManager) {
 			m.mkdirAll = func(string, os.FileMode) error { return os.ErrPermission }
 		}},
 	}
@@ -263,6 +269,13 @@ func testMediaMTXManager(root string) *mediaMTXToolManager {
 		mkdirAll:  os.MkdirAll,
 		rename:    os.Rename,
 		removeAll: os.RemoveAll,
+	}
+}
+
+func skipIfAutomaticMediaMTXInstallUnsupported(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "windows" || runtime.GOARCH != "amd64" {
+		t.Skipf("automatic MediaMTX installation is unsupported on %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
 }
 

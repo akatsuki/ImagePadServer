@@ -161,9 +161,9 @@ var latencyProfiles = map[string]LatencyProfile{
 		FrameRate:         "30",
 		GOPFrames:         "15",
 		Reencode:          true,
-		BitrateMultiplier: 3,
+		BitrateMultiplier: 0,
 		EncoderPurpose:    video.EncoderLowLatency,
-		Message:           "最小遅延のRTSP出力です。",
+		Message:           "最小遅延のRTSP出力です。受信安定性を優先してビットレートを抑えます。",
 	},
 }
 
@@ -446,6 +446,27 @@ func (m *Manager) Status() Status {
 	status.Port = m.port
 	status.Latency = m.currentLatency()
 	return status
+}
+
+func (m *Manager) ConnectionRows(timeout time.Duration) []ConnectionStatus {
+	if timeout <= 0 {
+		timeout = 250 * time.Millisecond
+	}
+	m.mu.Lock()
+	runtime := m.mtx
+	connected := m.status.Connected
+	profile := m.currentLatency()
+	path := ""
+	if runtime != nil {
+		path = runtime.cfg.Path
+	}
+	m.mu.Unlock()
+	if !connected || runtime == nil || strings.TrimSpace(path) == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return runtime.connectionRows(ctx, path, profile)
 }
 
 func (m *Manager) loop(ctx context.Context, done chan struct{}) {
@@ -1173,6 +1194,9 @@ func (p LatencyProfile) encoderPurpose() video.EncoderPurpose {
 }
 
 func scaledLatencyPreset(preset video.QualityPreset, multiplier int) video.QualityPreset {
+	if multiplier == 0 {
+		return video.ResolveQuality("720", 0)
+	}
 	if multiplier <= 1 {
 		return preset
 	}

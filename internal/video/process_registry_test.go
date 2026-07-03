@@ -13,11 +13,11 @@ func TestOwnedProcessCommandLineMatches(t *testing.T) {
 		command string
 		want    bool
 	}{
-		{name: "quoted windows", command: `"C:\tools\mediamtx.exe" "C:\Temp\imagepad-mediamtx-123\mediamtx.yml"`, want: true},
-		{name: "unquoted", command: `mediamtx.exe C:\Temp\imagepad-mediamtx-123\mediamtx.yml`, want: true},
-		{name: "wrong executable", command: `"C:\tools\other.exe" "C:\Temp\imagepad-mediamtx-123\mediamtx.yml"`},
-		{name: "missing marker", command: `"C:\tools\mediamtx.exe" C:\Temp\manual\mediamtx.yml`},
-		{name: "marker only in executable", command: `C:\imagepad-mediamtx-tool\mediamtx.exe C:\Temp\manual\mediamtx.yml`},
+		{name: "quoted path", command: `"/tools/mediamtx.exe" "/tmp/imagepad-mediamtx-123/mediamtx.yml"`, want: true},
+		{name: "unquoted", command: `mediamtx.exe /tmp/imagepad-mediamtx-123/mediamtx.yml`, want: true},
+		{name: "wrong executable", command: `"/tools/other.exe" "/tmp/imagepad-mediamtx-123/mediamtx.yml"`},
+		{name: "missing marker", command: `"/tools/mediamtx.exe" /tmp/manual/mediamtx.yml`},
+		{name: "marker only in executable", command: `/tmp/imagepad-mediamtx-tool/mediamtx.exe /tmp/manual/mediamtx.yml`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -40,10 +40,10 @@ func TestKillOwnedProcessesValidatesDeduplicatesAndAggregatesErrors(t *testing.T
 
 	listProcessIDsByName = func(string) ([]int, error) { return []int{20, 30, 40, 20}, nil }
 	commands := map[int]string{
-		10: `mediamtx.exe C:\Temp\imagepad-mediamtx-ledger\mediamtx.yml`,
-		20: `mediamtx.exe C:\Temp\imagepad-mediamtx-scan\mediamtx.yml`,
-		30: `mediamtx.exe C:\Temp\manual\mediamtx.yml`,
-		40: `other.exe C:\Temp\imagepad-mediamtx-other\mediamtx.yml`,
+		10: `mediamtx.exe /tmp/imagepad-mediamtx-ledger/mediamtx.yml`,
+		20: `mediamtx.exe /tmp/imagepad-mediamtx-scan/mediamtx.yml`,
+		30: `mediamtx.exe /tmp/manual/mediamtx.yml`,
+		40: `other.exe /tmp/imagepad-mediamtx-other/mediamtx.yml`,
 	}
 	ownedProcessCommandLine = func(pid int) (string, error) { return commands[pid], nil }
 	var killed []int
@@ -79,7 +79,7 @@ func TestKillOwnedProcessesContinuesWhenScanFails(t *testing.T) {
 
 	listProcessIDsByName = func(string) ([]int, error) { return nil, errors.New("scan failed") }
 	ownedProcessCommandLine = func(int) (string, error) {
-		return `mediamtx.exe C:\Temp\imagepad-mediamtx-ledger\mediamtx.yml`, nil
+		return `mediamtx.exe /tmp/imagepad-mediamtx-ledger/mediamtx.yml`, nil
 	}
 	var killed []int
 	ownedProcessKill = func(pid int) error { killed = append(killed, pid); return nil }

@@ -117,14 +117,14 @@ func TestNormalizeLatencyModeAndProfile(t *testing.T) {
 		{name: "normal hls", input: LatencyModeHLS, wantMode: LatencyModeHLS, wantLabel: "高画質HLS（通常遅延）", wantMultiplier: 1},
 		{name: "low rtsp", input: LatencyModeRTSPLow, wantMode: LatencyModeRTSPLow, wantLabel: "低遅延RTSP", wantMultiplier: 1},
 		{name: "ultra rtsp", input: LatencyModeRTSPUltra, wantMode: LatencyModeRTSPUltra, wantLabel: "超低遅延RTSP", wantMultiplier: 2},
-		{name: "realtime rtsp", input: LatencyModeRTSPRealtime, wantMode: LatencyModeRTSPRealtime, wantLabel: "リアルタイムRTSP", wantMultiplier: 3},
+		{name: "realtime rtsp", input: LatencyModeRTSPRealtime, wantMode: LatencyModeRTSPRealtime, wantLabel: "リアルタイムRTSP", wantMultiplier: 0},
 		{name: "legacy auto", input: "  AUTO  ", wantMode: LatencyModeHLS, wantLabel: "高画質HLS（通常遅延）", wantMultiplier: 1},
 		{name: "legacy normal", input: "normal", wantMode: LatencyModeHLS, wantLabel: "高画質HLS（通常遅延）", wantMultiplier: 1},
 		{name: "legacy low", input: "low", wantMode: LatencyModeRTSPLow, wantLabel: "低遅延RTSP", wantMultiplier: 1},
 		{name: "legacy ultra", input: "ultra", wantMode: LatencyModeRTSPUltra, wantLabel: "超低遅延RTSP", wantMultiplier: 2},
 		{name: "legacy lhls", input: "lhls", wantMode: LatencyModeRTSPLow, wantLabel: "低遅延RTSP", wantMultiplier: 1},
 		{name: "legacy llhls", input: "llhls", wantMode: LatencyModeRTSPUltra, wantLabel: "超低遅延RTSP", wantMultiplier: 2},
-		{name: "legacy rtspt", input: "rtspt", wantMode: LatencyModeRTSPRealtime, wantLabel: "リアルタイムRTSP", wantMultiplier: 3},
+		{name: "legacy rtspt", input: "rtspt", wantMode: LatencyModeRTSPRealtime, wantLabel: "リアルタイムRTSP", wantMultiplier: 0},
 		{name: "unknown", input: "not-a-mode", wantMode: LatencyModeHLS, wantLabel: "高画質HLS（通常遅延）", wantMultiplier: 1},
 	}
 	for _, tc := range cases {
@@ -165,7 +165,7 @@ func TestLatencyCapabilitiesExposeFiveProductionModes(t *testing.T) {
 	}
 }
 
-func TestScaledLatencyPresetMultipliesStreamingBitrates(t *testing.T) {
+func TestScaledLatencyPresetAppliesStreamingBitratePolicy(t *testing.T) {
 	base := video.ResolveQuality("1080", 0)
 	tests := []struct {
 		multiplier int
@@ -175,7 +175,7 @@ func TestScaledLatencyPresetMultipliesStreamingBitrates(t *testing.T) {
 	}{
 		{multiplier: 1, wantVideo: "4500k", wantMax: "5200k", wantBuffer: "9000k"},
 		{multiplier: 2, wantVideo: "9000k", wantMax: "10400k", wantBuffer: "18000k"},
-		{multiplier: 3, wantVideo: "13500k", wantMax: "15600k", wantBuffer: "27000k"},
+		{multiplier: 0, wantVideo: "2500k", wantMax: "3000k", wantBuffer: "5000k"},
 	}
 	for _, tc := range tests {
 		got := scaledLatencyPreset(base, tc.multiplier)
@@ -183,6 +183,18 @@ func TestScaledLatencyPresetMultipliesStreamingBitrates(t *testing.T) {
 			t.Fatalf("x%d preset = %s/%s/%s, want %s/%s/%s",
 				tc.multiplier, got.VideoBitrate, got.MaxRate, got.BufferSize, tc.wantVideo, tc.wantMax, tc.wantBuffer)
 		}
+	}
+}
+
+func TestRealtimeRTSPUsesReceiverFriendlyBitrate(t *testing.T) {
+	profile := NormalizeLatencyProfile(LatencyModeRTSPRealtime)
+	preset := scaledLatencyPreset(video.ResolveQuality("1080", 0), profile.BitrateMultiplier)
+	if preset.Height > 720 {
+		t.Fatalf("realtime RTSP height = %d, want <= 720", preset.Height)
+	}
+	if preset.VideoBitrate != "2500k" || preset.MaxRate != "3000k" || preset.BufferSize != "5000k" {
+		t.Fatalf("realtime RTSP bitrate = %s/%s/%s, want 2500k/3000k/5000k",
+			preset.VideoBitrate, preset.MaxRate, preset.BufferSize)
 	}
 }
 

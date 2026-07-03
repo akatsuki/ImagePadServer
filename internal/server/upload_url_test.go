@@ -1,9 +1,10 @@
 package server
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"imagepadserver/internal/config"
 	"imagepadserver/internal/library"
 	"imagepadserver/internal/settings"
+	"imagepadserver/internal/video"
 )
 
 func TestUploadURLVideoModeRejectsPrivateHost(t *testing.T) {
@@ -30,17 +32,25 @@ func TestUploadURLVideoModeRejectsPrivateHost(t *testing.T) {
 }
 
 func TestUploadURLVideoModeDoesNotFallbackToImageOnYTDLPFailure(t *testing.T) {
-	localYTDLP := filepath.Join(settings.Dir(), "bin", "yt-dlp.exe")
-	if _, err := os.Stat(localYTDLP); os.IsNotExist(err) {
-		if _, err := exec.LookPath("yt-dlp"); err != nil {
-			t.Skip("yt-dlp not available for integration check")
-		}
+	oldPage := pageMediaDownloader
+	oldDirect := directMediaDownloader
+	defer func() {
+		pageMediaDownloader = oldPage
+		directMediaDownloader = oldDirect
+	}()
+	var directCalled bool
+	pageMediaDownloader = func(string, string) (video.DownloadedMedia, error) {
+		return video.DownloadedMedia{}, errors.New("yt-dlp route failed")
+	}
+	directMediaDownloader = func(context.Context, string, string, func(context.Context, string) (video.MediaProbe, error)) (downloadedRemoteMedia, error) {
+		directCalled = true
+		return downloadedRemoteMedia{}, errors.New("direct fallback should not run")
 	}
 
 	srv, mux := testServer(t, true)
 	defer srv.store.Reset()
 
-	req := httptest.NewRequest(http.MethodPost, "/api/upload-url", strings.NewReader(`{"url":"https://example.com/"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/upload-url", strings.NewReader(`{"url":"https://www.youtube.com/watch?v=test"}`))
 	rec := adminJSON(t, mux, req)
 
 	if rec.Code != http.StatusBadRequest {
@@ -52,6 +62,9 @@ func TestUploadURLVideoModeDoesNotFallbackToImageOnYTDLPFailure(t *testing.T) {
 	}
 	if strings.Contains(body, "remote content is not an image") {
 		t.Fatal("fell back to image download path")
+	}
+	if directCalled {
+		t.Fatal("direct fallback ran after yt-dlp failure")
 	}
 }
 

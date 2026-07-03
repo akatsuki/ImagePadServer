@@ -41,10 +41,35 @@ func TestUIGenericToastNotificationBar(t *testing.T) {
 		`Object.defineProperty(toast, 'textContent'`,
 		`body.pairing-active .toast`,
 		`document.body.classList.toggle('pairing-active'`,
-		`showToast(syncFailureMessage(error), { error: true })`,
+		`showToast(syncFailureMessage(error), { error: true, source: 'sync' })`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("generic toast notification bar missing %q", want)
+		}
+	}
+}
+
+func TestUIYTDLPBotLoginPromptAndSettings(t *testing.T) {
+	html := getIndexHTML(t)
+	for _, want := range []string{
+		`id="settingsButton"`,
+		`id="settingsModal"`,
+		`id="ytdlpLoginButton"`,
+		`id="ytdlpCookieDeleteButton"`,
+		`YoutubeがBOT認証エラーを起こしました。ログインを行うことでBOTではないことを証明できます。`,
+		`ログインする`,
+		`ログイン情報をこのアプリ用のCookieとして保存します。`,
+		`/api/ytdlp/login`,
+		`/api/ytdlp/cookies`,
+		`isYTDLPBotError`,
+		`isYTDLPFormatUnavailableError`,
+		`YouTube側から動画/音声フォーマットが返っていません。ログインCookieは使えていますが、この動画はyt-dlpで取得できません。`,
+		`ytdlpAuthInitialized`,
+		`YouTubeログインCookieを保存しました`,
+		`BOT認証エラーが出た時だけ使用してください。`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("yt-dlp login settings UI missing %q", want)
 		}
 	}
 }
@@ -83,10 +108,16 @@ func TestUIModeSwitchRefreshesShareURLDisplay(t *testing.T) {
 	for _, want := range []string{
 		`function renderShareURL(data)`,
 		`function shareURLForCurrentMode(data)`,
-		`if (uploadMode !== 'obs' && label === 'RTSP TCP URL')`,
-		`return { shareURL: '', shareURLLabel: 'URL' }`,
+		`function shareURLForMode(data, mode)`,
+		`if (mode === 'obs')`,
+		`if (mode === 'link')`,
+		`if (mode === 'file')`,
+		`function mediaShareURL(data)`,
+		`function fileShareURL(data)`,
+		`function displayedShareURL()`,
 		`const view = shareURLForCurrentMode(data)`,
-		`text = shareURLForCurrentMode(state).shareURL || ''`,
+		`text = displayedShareURL().shareURL || ''`,
+		`body: JSON.stringify({ target, mode: uploadMode })`,
 		`renderShareURL(state)`,
 		`setUploadMode('file')`,
 		`setUploadMode('link')`,
@@ -111,7 +142,7 @@ func TestUIShowsRTSPPublicationFailureWithoutCopyingMessage(t *testing.T) {
 		`function shareURLDisplayText(data)`,
 		`公開URLは未取得です: `,
 		`if (id === 'shareURL')`,
-		`text = shareURLForCurrentMode(state).shareURL || ''`,
+		`text = displayedShareURL().shareURL || ''`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("RTSP publication failure display/copy guard missing %q", want)
@@ -121,9 +152,49 @@ func TestUIShowsRTSPPublicationFailureWithoutCopyingMessage(t *testing.T) {
 
 func TestUIRendersIngestPhase(t *testing.T) {
 	html := getIndexHTML(t)
-	for _, want := range []string{"ingestPhase", "ダウンロード中", "解析中"} {
+	for _, want := range []string{"ingestPhase", "ダウンロード中", "解析中", "function renderIngestPreview(", "動画をダウンロード中...", "progressPercent", "progressText"} {
 		if !strings.Contains(html, want) {
 			t.Errorf("UI page missing %q", want)
+		}
+	}
+	ingestIndex := strings.Index(html, `const ingestLabel = data.ingest && data.ingest.active ? ingestPhaseLabel(data.ingest.phase) : '';`)
+	emptyIndex := strings.Index(html, `if (!data.current)`)
+	if ingestIndex < 0 || emptyIndex < 0 {
+		t.Fatalf("missing ingest/current preview guards: ingest=%d empty=%d", ingestIndex, emptyIndex)
+	}
+	if ingestIndex > emptyIndex {
+		t.Fatal("ingest progress must render before empty-current preview fallback")
+	}
+	for _, want := range []string{
+		`const linkDownload = uploadMode === 'link';`,
+		`renderIngestPreview('downloading', pendingURL, 0, '', true);`,
+		`scrollProgressIntoView();`,
+		`mobileProgressFill.classList.remove('indeterminate');`,
+		`'ingest:' + phase + ':' + pct + ':' + detail`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("link download immediate progress missing %q", want)
+		}
+	}
+}
+
+func TestUIOffersBrowserMediaCandidateDialogAfterLinkFailure(t *testing.T) {
+	html := getIndexHTML(t)
+	for _, want := range []string{
+		`id="mediaCandidateDialog"`,
+		`id="mediaCandidateList"`,
+		`ページ内動画候補`,
+		`function findBrowserMediaCandidates(`,
+		`function openMediaCandidateDialog(`,
+		`function retryLinkCandidate(`,
+		`/api/browser-media-candidates`,
+		`await maybeOfferBrowserMediaCandidates(action, error)`,
+		`uploadFromLink(action, candidate.url)`,
+		`function isKnownYTDLPPageURL(`,
+		`if (isKnownYTDLPPageURL(pageURL)) return false;`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("browser media candidate UI missing %q", want)
 		}
 	}
 }
@@ -146,11 +217,45 @@ func TestVideoPlayerEnabledModeRemoveAccept(t *testing.T) {
 
 func TestVideoPlayerDisabledModeRestoresAccept(t *testing.T) {
 	html := getIndexHTML(t)
-	if !strings.Contains(html, `imageAccept = 'image/png,image/jpeg,image/gif,image/webp,image/bmp`) {
+	if !strings.Contains(html, `imageAccept = 'image/png,image/jpeg,image/gif,image/webp,image/avif,image/heic,image/heif,image/jxl,image/bmp`) {
 		t.Fatal("imageAccept should contain image/RAW types for disabled mode")
 	}
 	if !strings.Contains(html, `data.enabled ? '' : imageAccept`) {
 		t.Fatal("disabled mode should restore imageAccept via ternary")
+	}
+}
+
+func TestUIContainsModernImageAcceptTypes(t *testing.T) {
+	html := getIndexHTML(t)
+	for _, want := range []string{
+		`image/avif`,
+		`image/heic`,
+		`image/heif`,
+		`image/jxl`,
+		`.avif`,
+		`.heic`,
+		`.heif`,
+		`.jxl`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("modern image accept list missing %q", want)
+		}
+	}
+}
+
+func TestUIContainsImagePresetControls(t *testing.T) {
+	html := getIndexHTML(t)
+	for _, want := range []string{
+		`id="formatSelect"`,
+		`id="qualitySelect"`,
+		`name="maxDimension"`,
+		`name="maxMB"`,
+		`qualityOptions`,
+		`updateUploadControlsVisibility`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("image preset controls missing %q", want)
+		}
 	}
 }
 
