@@ -17,7 +17,7 @@ import (
 //go:embed fonts/NotoSansJP-Regular.ttf fonts/NotoSansJP-Medium.ttf fonts/NotoSansJP-SemiBold.ttf
 var embeddedFonts embed.FS
 
-var errFontNotFound = errors.New("Noto Sans JP font not found")
+var errFontNotFound = errors.New("font not found: Noto Sans JP")
 
 var embeddedFontFiles = []string{
 	"fonts/NotoSansJP-Regular.ttf",

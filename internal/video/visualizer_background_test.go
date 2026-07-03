@@ -478,13 +478,9 @@ func TestPrepareVisualizerBaseWithArtwork(t *testing.T) {
 		t.Fatalf("output is not a valid PNG: %v", err)
 	}
 
-	// ForegroundMode must be valid.  Overlay may be 0 (no overlay needed) up
-	// to 255 (100 %).
+	// ForegroundMode must be valid. Overlay may be 0 (no overlay needed).
 	if mode.Color.A != 255 {
 		t.Fatalf("foreground color must be opaque, got alpha %d", mode.Color.A)
-	}
-	if mode.Overlay.A > 255 {
-		t.Fatalf("overlay alpha %d > 255 (max)", mode.Overlay.A)
 	}
 }
 
@@ -596,9 +592,6 @@ func TestPrepareVisualizerBaseMixedLuminance(t *testing.T) {
 	// ForegroundMode must have opaque colour and valid overlay.
 	if mode.Color.A != 255 {
 		t.Errorf("foreground must be opaque, got alpha %d", mode.Color.A)
-	}
-	if mode.Overlay.A > 255 {
-		t.Errorf("overlay alpha %d > 255", mode.Overlay.A)
 	}
 
 	// Note: we do NOT re-check per-pixel contrast against the final rendered

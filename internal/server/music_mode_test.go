@@ -115,14 +115,22 @@ func TestMusicModeRoutesPublishAndQueueURLsToAudioAcquirer(t *testing.T) {
 // works, not just an allowlist), and only when yt-dlp fails does the bounded
 // direct downloader run.
 func TestVideoModeTriesYTDLPThenDirect(t *testing.T) {
+	oldPage := pageMediaDownloader
+	oldHLS := pageHLSMediaDownloader
+	oldDirect := directMediaDownloader
+	oldEnsureFFmpeg := ensureFFmpeg
+	t.Cleanup(func() {
+		pageMediaDownloader = oldPage
+		pageHLSMediaDownloader = oldHLS
+		directMediaDownloader = oldDirect
+		ensureFFmpeg = oldEnsureFFmpeg
+	})
+	ensureFFmpeg = func() (string, error) {
+		return "", errors.New("ffmpeg route blocked")
+	}
+
 	t.Run("yt-dlp success skips direct", func(t *testing.T) {
 		_, mux := testServer(t, true)
-		oldPage := pageMediaDownloader
-		oldDirect := directMediaDownloader
-		defer func() {
-			pageMediaDownloader = oldPage
-			directMediaDownloader = oldDirect
-		}()
 		pageCalled := false
 		directCalled := false
 		pageMediaDownloader = func(string, string) (video.DownloadedMedia, error) {
@@ -150,12 +158,6 @@ func TestVideoModeTriesYTDLPThenDirect(t *testing.T) {
 		} {
 			t.Run(rawURL, func(t *testing.T) {
 				_, mux := testServer(t, true)
-				oldPage := pageMediaDownloader
-				oldDirect := directMediaDownloader
-				defer func() {
-					pageMediaDownloader = oldPage
-					directMediaDownloader = oldDirect
-				}()
 				pageCalled := false
 				directCalled := false
 				pageMediaDownloader = func(string, string) (video.DownloadedMedia, error) {
@@ -182,6 +184,31 @@ func TestVideoModeTriesYTDLPThenDirect(t *testing.T) {
 		}
 	})
 
+	t.Run("yt-dlp failure tries page HLS before direct for unknown pages", func(t *testing.T) {
+		_, mux := testServer(t, true)
+		pageCalled := false
+		hlsCalled := false
+		directCalled := false
+		pageMediaDownloader = func(string, string) (video.DownloadedMedia, error) {
+			pageCalled = true
+			return video.DownloadedMedia{}, errors.New("yt-dlp route failed")
+		}
+		pageHLSMediaDownloader = func(context.Context, string, string) (video.DownloadedMedia, error) {
+			hlsCalled = true
+			return video.DownloadedMedia{SourcePath: filepath.Join(t.TempDir(), "missing.mp4"), Name: "hls.mp4"}, nil
+		}
+		directMediaDownloader = func(context.Context, string, string, func(context.Context, string) (video.MediaProbe, error)) (downloadedRemoteMedia, error) {
+			directCalled = true
+			return downloadedRemoteMedia{}, errors.New("direct route selected")
+		}
+
+		req := httptest.NewRequest(http.MethodPost, "/api/upload-url", strings.NewReader(`{"url":"https://example.com/watch/123"}`))
+		adminJSON(t, mux, req)
+		if !pageCalled || !hlsCalled || directCalled {
+			t.Fatalf("pageCalled=%v hlsCalled=%v directCalled=%v, want yt-dlp then HLS and direct skipped", pageCalled, hlsCalled, directCalled)
+		}
+	})
+
 	t.Run("yt-dlp failure skips direct for page URLs", func(t *testing.T) {
 		// Page URLs (YouTube, Twitter/X, SoundCloud) only return HTML to a
 		// plain GET; the direct fallback must be skipped so the real yt-dlp
@@ -196,12 +223,6 @@ func TestVideoModeTriesYTDLPThenDirect(t *testing.T) {
 		} {
 			t.Run(rawURL, func(t *testing.T) {
 				_, mux := testServer(t, true)
-				oldPage := pageMediaDownloader
-				oldDirect := directMediaDownloader
-				defer func() {
-					pageMediaDownloader = oldPage
-					directMediaDownloader = oldDirect
-				}()
 				pageCalled := false
 				directCalled := false
 				pageMediaDownloader = func(string, string) (video.DownloadedMedia, error) {

@@ -47,7 +47,7 @@ func downloadRemoteImage(rawURL string, maxBytes int64) (io.ReadCloser, string, 
 		return nil, "", err
 	}
 	req.Header.Set("User-Agent", "ImagePadServer/1.0")
-	req.Header.Set("Accept", "image/webp,image/svg+xml,image/png,image/jpeg,image/gif,image/bmp,image/tiff,image/x-sony-arw,image/x-sony-srf,image/x-sony-sr2,image/x-canon-crw,image/x-canon-cr2,image/x-canon-cr3,image/x-panasonic-rw2,image/x-olympus-orf,image/x-fuji-raf,image/x-nikon-nef,image/x-nikon-nrw,image/x-sigma-x3f,image/x-adobe-dng,image/*;q=0.8,application/octet-stream;q=0.6,*/*;q=0.2")
+	req.Header.Set("Accept", "image/webp,image/avif,image/heic,image/heif,image/jxl,image/svg+xml,image/png,image/jpeg,image/gif,image/bmp,image/tiff,image/x-sony-arw,image/x-sony-srf,image/x-sony-sr2,image/x-canon-crw,image/x-canon-cr2,image/x-canon-cr3,image/x-panasonic-rw2,image/x-olympus-orf,image/x-fuji-raf,image/x-nikon-nef,image/x-nikon-nrw,image/x-sigma-x3f,image/x-adobe-dng,image/*;q=0.8,application/octet-stream;q=0.6,*/*;q=0.2")
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -179,6 +179,14 @@ func remoteFileName(u *url.URL, contentType string) string {
 		return name + ".gif"
 	case "image/webp":
 		return name + ".webp"
+	case "image/avif":
+		return name + ".avif"
+	case "image/heic":
+		return name + ".heic"
+	case "image/heif":
+		return name + ".heif"
+	case "image/jxl":
+		return name + ".jxl"
 	case "image/bmp":
 		return name + ".bmp"
 	case "image/tiff":

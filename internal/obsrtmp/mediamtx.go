@@ -2,6 +2,7 @@ package obsrtmp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,25 +14,37 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"imagepadserver/internal/settings"
+	"imagepadserver/internal/video"
 )
 
 // mediaMTXPorts are the loopback management/HLS ports and the advertised RTSP
 // port for one app-owned MediaMTX sidecar.
 type mediaMTXPorts struct {
-	API  int
-	HLS  int
-	RTSP int
+	API         int
+	HLS         int
+	RTSP        int
+	RTP         int
+	RTCP        int
+	BackendRTSP int
+	BackendRTP  int
+	BackendRTCP int
 }
 
 // mediaMTXSessionConfig describes a single OBS session's MediaMTX instance:
 // one publish path protected by a per-session credential, with every protocol
 // except RTSP and HLS disabled.
 type mediaMTXSessionConfig struct {
-	Path          string
-	PublishUser   string
-	PublishPass   string
-	Ports         mediaMTXPorts
-	AdvertiseHost string
+	Path           string
+	PublishUser    string
+	PublishPass    string
+	Ports          mediaMTXPorts
+	AdvertiseHost  string
+	DebugLogPath   string
+	HLSVariant     string
+	HLSAlwaysRemux bool
+	HLSDirectory   string
 }
 
 // renderMediaMTXConfig renders a minimal MediaMTX YAML configuration. Only the
@@ -41,8 +54,13 @@ type mediaMTXSessionConfig struct {
 // loopback only.
 func renderMediaMTXConfig(cfg mediaMTXSessionConfig) string {
 	var b strings.Builder
-	b.WriteString("logLevel: error\n")
-	b.WriteString("logDestinations: [stdout]\n")
+	b.WriteString("logLevel: debug\n")
+	if cfg.DebugLogPath != "" {
+		b.WriteString("logDestinations: [stdout, file]\n")
+		fmt.Fprintf(&b, "logFile: %q\n", filepath.ToSlash(cfg.DebugLogPath))
+	} else {
+		b.WriteString("logDestinations: [stdout]\n")
+	}
 	b.WriteString("readTimeout: 10s\n")
 	b.WriteString("writeTimeout: 10s\n")
 
@@ -53,21 +71,34 @@ func renderMediaMTXConfig(cfg mediaMTXSessionConfig) string {
 	b.WriteString("rtmp: no\n")
 	b.WriteString("webrtc: no\n")
 	b.WriteString("srt: no\n")
+	b.WriteString("moq: no\n")
 
 	b.WriteString("rtsp: yes\n")
-	b.WriteString("rtspTransports: [tcp]\n")
+	b.WriteString("rtspTransports: [tcp, udp]\n")
 	b.WriteString("rtspEncryption: \"no\"\n")
-	fmt.Fprintf(&b, "rtspAddress: :%d\n", cfg.Ports.RTSP)
+	fmt.Fprintf(&b, "rtspAddress: 127.0.0.1:%d\n", cfg.Ports.mediaMTXRTSPPort())
+	fmt.Fprintf(&b, "rtpAddress: 127.0.0.1:%d\n", cfg.Ports.mediaMTXRTPPort())
+	fmt.Fprintf(&b, "rtcpAddress: 127.0.0.1:%d\n", cfg.Ports.mediaMTXRTCPPort())
 
 	b.WriteString("hls: yes\n")
 	fmt.Fprintf(&b, "hlsAddress: 127.0.0.1:%d\n", cfg.Ports.HLS)
-	b.WriteString("hlsVariant: lowLatency\n")
-	b.WriteString("hlsAlwaysRemux: no\n")
+	hlsVariant := strings.TrimSpace(cfg.HLSVariant)
+	if hlsVariant == "" {
+		hlsVariant = "lowLatency"
+	}
+	fmt.Fprintf(&b, "hlsVariant: %s\n", hlsVariant)
+	if cfg.HLSAlwaysRemux {
+		b.WriteString("hlsAlwaysRemux: yes\n")
+	} else {
+		b.WriteString("hlsAlwaysRemux: no\n")
+	}
 	b.WriteString("hlsEncryption: no\n")
+	if cfg.HLSDirectory != "" {
+		fmt.Fprintf(&b, "hlsDirectory: %q\n", filepath.ToSlash(cfg.HLSDirectory))
+	}
 
 	// Per-session publish credential, restricted to loopback and to the single
-	// owned path. A read-only "any" user lets the loopback HLS server and the
-	// app's own proxy read the stream; the HLS server is bound to 127.0.0.1.
+	// owned path. Anonymous readers can access only the randomized active path.
 	b.WriteString("authInternalUsers:\n")
 	fmt.Fprintf(&b, "  - user: %s\n", cfg.PublishUser)
 	fmt.Fprintf(&b, "    pass: %s\n", cfg.PublishPass)
@@ -75,13 +106,15 @@ func renderMediaMTXConfig(cfg mediaMTXSessionConfig) string {
 	b.WriteString("    permissions:\n")
 	fmt.Fprintf(&b, "      - action: publish\n        path: %s\n", cfg.Path)
 	b.WriteString("  - user: any\n")
-	b.WriteString("    ips: ['127.0.0.1/32']\n")
 	b.WriteString("    permissions:\n")
-	b.WriteString("      - action: read\n")
-	b.WriteString("      - action: playback\n")
+	fmt.Fprintf(&b, "      - action: read\n        path: %s\n", cfg.Path)
+	fmt.Fprintf(&b, "      - action: playback\n        path: %s\n", cfg.Path)
 	// The API and metrics endpoints are themselves gated by authInternalUsers;
 	// without this the app could not health-check or manage its own loopback
 	// MediaMTX. Restricted to loopback like every other permission here.
+	b.WriteString("  - user: any\n")
+	b.WriteString("    ips: ['127.0.0.1/32']\n")
+	b.WriteString("    permissions:\n")
 	b.WriteString("      - action: api\n")
 	b.WriteString("      - action: metrics\n")
 	b.WriteString("      - action: pprof\n")
@@ -96,6 +129,7 @@ func renderMediaMTXConfig(cfg mediaMTXSessionConfig) string {
 // signals the handle it started, never a process discovered by name or PID, so
 // it cannot terminate an unrelated process.
 type managedProcess interface {
+	pid() int
 	stop() error
 	kill() error
 	done() <-chan error
@@ -104,6 +138,13 @@ type managedProcess interface {
 type osManagedProcess struct {
 	cmd  *exec.Cmd
 	exit chan error
+}
+
+func (p *osManagedProcess) pid() int {
+	if p.cmd.Process == nil {
+		return 0
+	}
+	return p.cmd.Process.Pid
 }
 
 func (p *osManagedProcess) stop() error {
@@ -136,7 +177,13 @@ func realStartMediaMTXProcess(ctx context.Context, exe, configPath string) (mana
 		return nil, fmt.Errorf("start MediaMTX: %w", err)
 	}
 	proc := &osManagedProcess{cmd: cmd, exit: make(chan error, 1)}
-	go func() { proc.exit <- cmd.Wait() }()
+	pid := proc.pid()
+	_ = registerMediaMTXProcess(pid)
+	go func() {
+		err := cmd.Wait()
+		_ = unregisterMediaMTXProcess(pid)
+		proc.exit <- err
+	}()
 	return proc, nil
 }
 
@@ -305,16 +352,16 @@ func (r *mediaMTXRuntime) hlsBaseURL() string {
 // per-session credential.
 func (r *mediaMTXRuntime) publishURL() string {
 	return fmt.Sprintf("rtsp://%s:%s@127.0.0.1:%d/%s",
-		r.cfg.PublishUser, r.cfg.PublishPass, r.cfg.Ports.RTSP, r.cfg.Path)
+		r.cfg.PublishUser, r.cfg.PublishPass, r.cfg.Ports.mediaMTXRTSPPort(), r.cfg.Path)
 }
 
-// rtsptURL is the advertised RTSP-over-TCP URL handed to PC players.
-func (r *mediaMTXRuntime) rtsptURL() string {
+// rtspURL is the advertised RTSP URL handed to players.
+func (r *mediaMTXRuntime) rtspURL() string {
 	host := strings.TrimSpace(r.cfg.AdvertiseHost)
 	if host == "" {
 		host = "127.0.0.1"
 	}
-	return fmt.Sprintf("rtspt://%s:%d/%s", host, r.cfg.Ports.RTSP, r.cfg.Path)
+	return fmt.Sprintf("rtsp://%s:%d/%s", host, r.cfg.Ports.RTSP, r.cfg.Path)
 }
 
 // proxyHLS forwards a public LL-HLS request to the loopback MediaMTX HLS server
@@ -346,6 +393,298 @@ func (r *mediaMTXRuntime) proxyHLS(w http.ResponseWriter, req *http.Request, nam
 	copyProxyHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
+}
+
+func (r *mediaMTXRuntime) hlsArtifactReady(ctx context.Context, name string) bool {
+	if r == nil {
+		return false
+	}
+	target := r.hlsBaseURL() + "/" + name
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return false
+	}
+	resp, err := r.httpClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	return resp.StatusCode >= 200 && resp.StatusCode < 300
+}
+
+type mediaMTXConnectionKind string
+
+const (
+	mediaMTXConnectionKindRTSP mediaMTXConnectionKind = "rtsp"
+	mediaMTXConnectionKindHLS  mediaMTXConnectionKind = "hls"
+)
+
+type mediaMTXConnectionList struct {
+	Items []mediaMTXConnectionItem `json:"items"`
+}
+
+type mediaMTXConnectionItem struct {
+	RemoteAddr string `json:"remoteAddr"`
+	State      string `json:"state"`
+	Path       string `json:"path"`
+	Transport  string `json:"transport"`
+	UserAgent  string `json:"userAgent"`
+}
+
+func (r *mediaMTXRuntime) connectionRows(ctx context.Context, path string, profile LatencyProfile) []ConnectionStatus {
+	if r == nil || strings.TrimSpace(path) == "" {
+		return nil
+	}
+	endpoints := []struct {
+		path string
+		kind mediaMTXConnectionKind
+	}{
+		{path: "/v3/rtspsessions/list", kind: mediaMTXConnectionKindRTSP},
+		{path: "/v3/hlssessions/list", kind: mediaMTXConnectionKindHLS},
+	}
+	var rows []ConnectionStatus
+	seen := map[string]bool{}
+	for _, endpoint := range endpoints {
+		body, ok := r.fetchAPI(ctx, endpoint.path)
+		if !ok {
+			continue
+		}
+		for _, row := range mediaMTXConnectionRowsFromList(body, path, endpoint.kind, profile) {
+			key := row.Protocol + "\x00" + row.IP
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			rows = append(rows, row)
+		}
+	}
+	return rows
+}
+
+func (r *mediaMTXRuntime) fetchAPI(ctx context.Context, path string) ([]byte, bool) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.apiBaseURL()+path, nil)
+	if err != nil {
+		return nil, false
+	}
+	resp, err := r.httpClient.Do(req)
+	if err != nil {
+		return nil, false
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return nil, false
+	}
+	return data, true
+}
+
+func mediaMTXConnectionRowsFromList(body []byte, path string, kind mediaMTXConnectionKind, profile LatencyProfile) []ConnectionStatus {
+	var list mediaMTXConnectionList
+	if err := json.Unmarshal(body, &list); err != nil {
+		return nil
+	}
+	path = strings.TrimSpace(path)
+	rows := make([]ConnectionStatus, 0, len(list.Items))
+	for _, item := range list.Items {
+		if path != "" && strings.TrimSpace(item.Path) != path {
+			continue
+		}
+		if kind == mediaMTXConnectionKindRTSP && !strings.EqualFold(strings.TrimSpace(item.State), "read") {
+			continue
+		}
+		host := mediaMTXRemoteHost(item.RemoteAddr)
+		if host == "" {
+			continue
+		}
+		rows = append(rows, mediaMTXConnectionRow(host, item, kind, profile))
+	}
+	return rows
+}
+
+func mediaMTXConnectionRow(host string, item mediaMTXConnectionItem, kind mediaMTXConnectionKind, profile LatencyProfile) ConnectionStatus {
+	protocol := "RTSP"
+	quality := "良好"
+	lag := mediaMTXEstimateRTSPLagSeconds(profile)
+	note := "MediaMTXのRTSP読者セッションです"
+	if strings.EqualFold(strings.TrimSpace(item.Transport), "tcp") {
+		protocol = "RTSP/TCP"
+	}
+	if kind == mediaMTXConnectionKindHLS {
+		protocol = "HLS"
+		quality = "通常"
+		lag = mediaMTXEstimateHLSLagSeconds(profile)
+		note = "MediaMTXのHLS読者セッションです"
+	}
+	return ConnectionStatus{
+		IP:         host,
+		Protocol:   protocol,
+		Device:     mediaMTXDeviceLabel(item.UserAgent),
+		State:      "接続中",
+		Quality:    quality,
+		LagSeconds: lag,
+		LagLevel:   mediaMTXLagLevel(lag),
+		Note:       note,
+	}
+}
+
+func mediaMTXRemoteHost(remoteAddr string) string {
+	remoteAddr = strings.TrimSpace(remoteAddr)
+	if remoteAddr == "" {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err == nil {
+		return host
+	}
+	return remoteAddr
+}
+
+func mediaMTXDeviceLabel(userAgent string) string {
+	ua := strings.TrimSpace(userAgent)
+	if ua == "" {
+		return "Unknown"
+	}
+	lower := strings.ToLower(ua)
+	if strings.Contains(lower, "mozilla/") {
+		return "Browser"
+	}
+	return ua
+}
+
+func mediaMTXEstimateRTSPLagSeconds(profile LatencyProfile) float64 {
+	switch profile.Mode {
+	case LatencyModeRTSPRealtime:
+		return 0.8
+	case LatencyModeRTSPUltra:
+		return 1.5
+	case LatencyModeRTSPLow:
+		return 3.5
+	case LatencyModeHLS:
+		return 5
+	case LatencyModeHLSHigh:
+		return 10
+	default:
+		return 4
+	}
+}
+
+func mediaMTXEstimateHLSLagSeconds(profile LatencyProfile) float64 {
+	lag := mediaMTXEstimateRTSPLagSeconds(profile) + 1.7
+	if lag < 2.5 {
+		return 2.5
+	}
+	return lag
+}
+
+func mediaMTXLagLevel(seconds float64) string {
+	switch {
+	case seconds <= 1.2:
+		return "good"
+	case seconds <= 2.5:
+		return "ok"
+	case seconds <= 5:
+		return "warn"
+	default:
+		return "bad"
+	}
+}
+
+func importMediaMTXHLS(outDir, id, hlsDir, pathName string) ([]string, error) {
+	playlistPath, baseDir, err := findMediaMTXPlaylist(hlsDir, pathName)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(playlistPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(outDir, 0700); err != nil {
+		return nil, err
+	}
+
+	segmentPattern := video.SegmentPattern(id)
+	segmentIndex := 0
+	files := []string{}
+	var rewritten strings.Builder
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "#") {
+			rewritten.WriteString(line)
+			rewritten.WriteByte('\n')
+			continue
+		}
+		sourceName := strings.Split(trimmed, "?")[0]
+		sourcePath := filepath.Join(baseDir, filepath.FromSlash(sourceName))
+		destName := fmt.Sprintf(segmentPattern, segmentIndex)
+		segmentIndex++
+		destPath := filepath.Join(outDir, destName)
+		if err := copyMediaMTXFile(destPath, sourcePath); err != nil {
+			return nil, err
+		}
+		files = append(files, destPath)
+		rewritten.WriteString(destName)
+		rewritten.WriteByte('\n')
+	}
+	text := rewritten.String()
+	if !strings.Contains(text, "#EXT-X-ENDLIST") {
+		text += "#EXT-X-ENDLIST\n"
+	}
+	playlistOut := filepath.Join(outDir, video.PlaylistName(id))
+	if err := os.WriteFile(playlistOut, []byte(text), 0600); err != nil {
+		return nil, err
+	}
+	return append([]string{playlistOut}, files...), nil
+}
+
+func findMediaMTXPlaylist(hlsDir, pathName string) (string, string, error) {
+	if strings.TrimSpace(hlsDir) == "" {
+		return "", "", errors.New("MediaMTX HLS directory is empty")
+	}
+	candidates := []string{
+		filepath.Join(hlsDir, pathName, "index.m3u8"),
+		filepath.Join(hlsDir, pathName, "stream.m3u8"),
+		filepath.Join(hlsDir, "index.m3u8"),
+	}
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, filepath.Dir(candidate), nil
+		}
+	}
+	var found string
+	_ = filepath.WalkDir(hlsDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d == nil || d.IsDir() || found != "" {
+			return nil
+		}
+		if strings.EqualFold(filepath.Ext(path), ".m3u8") {
+			found = path
+		}
+		return nil
+	})
+	if found == "" {
+		return "", "", fmt.Errorf("MediaMTX HLS playlist not found in %s", hlsDir)
+	}
+	return found, filepath.Dir(found), nil
+}
+
+func copyMediaMTXFile(dst, src string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Close()
 }
 
 func copyProxyHeaders(dst, src http.Header) {
@@ -472,7 +811,7 @@ func freeLoopbackPort() (int, error) {
 func allocMediaMTXPorts() (mediaMTXPorts, error) {
 	var ports mediaMTXPorts
 	seen := map[int]bool{}
-	for _, target := range []*int{&ports.API, &ports.HLS, &ports.RTSP} {
+	for _, target := range []*int{&ports.API, &ports.HLS, &ports.RTSP, &ports.RTP, &ports.RTCP, &ports.BackendRTSP, &ports.BackendRTP, &ports.BackendRTCP} {
 		for {
 			port, err := freeLoopbackPort()
 			if err != nil {
@@ -489,6 +828,27 @@ func allocMediaMTXPorts() (mediaMTXPorts, error) {
 	return ports, nil
 }
 
+func (p mediaMTXPorts) mediaMTXRTSPPort() int {
+	if p.BackendRTSP > 0 {
+		return p.BackendRTSP
+	}
+	return p.RTSP
+}
+
+func (p mediaMTXPorts) mediaMTXRTPPort() int {
+	if p.BackendRTP > 0 {
+		return p.BackendRTP
+	}
+	return p.RTP
+}
+
+func (p mediaMTXPorts) mediaMTXRTCPPort() int {
+	if p.BackendRTCP > 0 {
+		return p.BackendRTCP
+	}
+	return p.RTCP
+}
+
 func mediaMTXCredential() (string, string, error) {
 	user, err := lhlsToken()
 	if err != nil {
@@ -499,6 +859,14 @@ func mediaMTXCredential() (string, string, error) {
 		return "", "", err
 	}
 	return "obs-" + user[:8], pass, nil
+}
+
+func mediaMTXDebugLogPath() string {
+	if strings.HasSuffix(strings.ToLower(filepath.Base(os.Args[0])), ".test.exe") ||
+		strings.HasSuffix(strings.ToLower(filepath.Base(os.Args[0])), ".test") {
+		return ""
+	}
+	return filepath.Join(settings.Dir(), "mediamtx-rtsp-debug.log")
 }
 
 // mediaMTXPathName derives a safe MediaMTX path name from a session id, keeping

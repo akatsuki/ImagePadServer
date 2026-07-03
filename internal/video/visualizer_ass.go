@@ -13,11 +13,6 @@ import (
 	"strings"
 )
 
-// ASS colour constants
-const (
-	assWhite = "&H00FFFFFF"
-)
-
 // BuildVisualizerASS generates a complete ASS subtitle file for the audio
 // visualizer.  It produces [Script Info], [V4+ Styles], and [Events] sections.
 //

@@ -9,6 +9,7 @@ import (
 )
 
 func TestDownloadMusicUsesAudioOnlyAndChannelMetadata(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
 	dir := t.TempDir()
 	oldRun := runDownloadCmd
 	defer func() { runDownloadCmd = oldRun }()
@@ -44,7 +45,7 @@ func TestDownloadMusicUsesAudioOnlyAndChannelMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(gotArgs, " ")
-	for _, required := range []string{"--no-playlist", "--max-filesize", "--write-thumbnail", "--write-info-json", "-f bestaudio/best", "-x", "--concurrent-fragments 4"} {
+	for _, required := range []string{"--no-playlist", "--max-filesize", "--write-thumbnail", "--write-info-json", "-f bestaudio/best", "-x", "--concurrent-fragments 1"} {
 		if !strings.Contains(joined, required) {
 			t.Fatalf("yt-dlp args %q do not contain %q", joined, required)
 		}
@@ -117,6 +118,10 @@ func TestDownloadMusicPassesFFmpegLocation(t *testing.T) {
 	if loc != ffDir {
 		t.Fatalf("--ffmpeg-location = %q, want %q", loc, ffDir)
 	}
+	joined := strings.Join(gotArgs, " ")
+	if !strings.Contains(joined, "--concurrent-fragments 4") {
+		t.Fatalf("non-YouTube yt-dlp args %q do not keep fast fragments", joined)
+	}
 }
 
 func TestParseMusicInfoJSONFallsBackToChannelForArtist(t *testing.T) {
@@ -137,7 +142,9 @@ func TestDownloadVideoURLUsesTitleFromInfoJSON(t *testing.T) {
 	dir := t.TempDir()
 	oldRun := runDownloadCmd
 	defer func() { runDownloadCmd = oldRun }()
+	var gotArgs []string
 	runDownloadCmd = func(_ string, args ...string) error {
+		gotArgs = append([]string(nil), args...)
 		var target string
 		for i := 0; i < len(args)-1; i++ {
 			if args[i] == "-o" {
@@ -165,6 +172,34 @@ func TestDownloadVideoURLUsesTitleFromInfoJSON(t *testing.T) {
 	}
 	if !strings.HasSuffix(thumbnailPath, ".jpg") {
 		t.Fatalf("thumbnailPath = %q, want .jpg", thumbnailPath)
+	}
+	if joined := strings.Join(gotArgs, " "); !strings.Contains(joined, "--concurrent-fragments 4") {
+		t.Fatalf("non-YouTube video yt-dlp args %q do not keep fast fragments", joined)
+	}
+}
+
+func TestDownloadVideoURLUsesSingleFragmentForYouTube(t *testing.T) {
+	requireFakeYTDLP(t)
+	dir := t.TempDir()
+	oldRun := runDownloadCmd
+	defer func() { runDownloadCmd = oldRun }()
+	var gotArgs []string
+	runDownloadCmd = func(_ string, args ...string) error {
+		gotArgs = append([]string(nil), args...)
+		var target string
+		for i := 0; i < len(args)-1; i++ {
+			if args[i] == "-o" {
+				target = args[i+1]
+			}
+		}
+		base := strings.TrimSuffix(target, ".%(ext)s")
+		return os.WriteFile(base+".mp4", []byte("video"), 0600)
+	}
+	if _, _, _, err := downloadVideoURL("https://www.youtube.com/watch?v=test", dir); err != nil {
+		t.Fatal(err)
+	}
+	if joined := strings.Join(gotArgs, " "); !strings.Contains(joined, "--concurrent-fragments 1") {
+		t.Fatalf("YouTube video yt-dlp args %q do not throttle fragments", joined)
 	}
 }
 

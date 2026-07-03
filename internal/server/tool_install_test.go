@@ -65,6 +65,30 @@ func TestStartVideoToolInstallRevertsOnFailure(t *testing.T) {
 	}
 }
 
+func TestStartVideoToolInstallSkipsTrailingBackoff(t *testing.T) {
+	s, _ := testServer(t, false)
+	prevReady, prevEnsure, prevBackoff := videoToolsReady, ensureVideoTools, videoToolInstallBackoff
+	t.Cleanup(func() {
+		videoToolsReady = prevReady
+		ensureVideoTools = prevEnsure
+		videoToolInstallBackoff = prevBackoff
+	})
+	videoToolsReady = func() bool { return false }
+	ensureVideoTools = func() error { return errFakeInstall }
+	var sleeps int
+	videoToolInstallBackoff = func(int) time.Duration {
+		sleeps++
+		return 0
+	}
+
+	s.startVideoToolInstall()
+	waitFor(t, 2*time.Second, func() bool { return !s.toolInstallingNow() })
+
+	if sleeps != 3 {
+		t.Fatalf("backoff calls = %d, want 3 between 4 attempts", sleeps)
+	}
+}
+
 func TestVideoPlayerEnableAsyncWhenToolsMissing(t *testing.T) {
 	s, _ := testServer(t, false)
 	prevReady, prevEnsure, prevBackoff := videoToolsReady, ensureVideoTools, videoToolInstallBackoff

@@ -49,7 +49,7 @@ const indexHTML = `<!doctype html>
     .sidebar { grid-area: sidebar; }
     .content { grid-area: content; }
     .history { grid-area: history; }
-    .quit { grid-area: quit; align-self: start; }
+    .quit { grid-area: quit; align-self: start; display: grid; grid-template-columns: 1fr 44px; gap: 6px; }
     .quit-button {
       width: 100%;
       min-height: 40px;
@@ -57,6 +57,15 @@ const indexHTML = `<!doctype html>
       color: #fff;
       font-weight: 700;
     }
+    .settings-button {
+      min-height: 40px;
+      padding: 0;
+      font-size: 20px;
+      background: #eef3f7;
+      color: var(--ink);
+      border: 1px solid var(--line);
+    }
+    .settings-button:hover { background: #dde8f0; }
     .quit-button:hover { background: #a93226; }
     .quit-button.done {
       background: #5b6b75;
@@ -307,6 +316,28 @@ const indexHTML = `<!doctype html>
       text-align: right;
       overflow-wrap: anywhere;
     }
+    .pill.obs-status-pill {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      align-items: center;
+    }
+    .pill.obs-status-pill span {
+      text-align: right;
+    }
+    .pill-action {
+      min-height: 24px;
+      padding: 0 8px;
+      border: 1px solid #bdd7d0;
+      background: rgba(255, 255, 255, 0.58);
+      color: #21443d;
+      font-size: 11px;
+      font-weight: 800;
+      box-shadow: none;
+    }
+    .pill-action:hover {
+      background: #fff;
+      transform: none;
+    }
     .toggle-row {
       display: grid;
       grid-template-columns: minmax(0, 1fr) 46px;
@@ -473,6 +504,56 @@ const indexHTML = `<!doctype html>
     .tool-install-title { font-weight: 800; color: #21443d; }
     .tool-install-detail { color: var(--muted); font-size: 13px; font-weight: 700; }
     .tool-install-card.failed .tool-install-title { color: #b3261e; }
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 10000;
+      display: grid;
+      place-items: center;
+      padding: 18px;
+      background: rgba(23, 32, 42, .46);
+    }
+    .modal-backdrop[hidden] { display: none; }
+    .modal-card {
+      max-width: min(92vw, 720px);
+      max-height: min(88vh, 720px);
+      overflow: auto;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 16px;
+      box-shadow: 0 18px 50px rgba(0,0,0,0.25);
+    }
+    .modal-card h2 { margin-bottom: 6px; }
+    .candidate-list { display: grid; gap: 8px; margin: 12px 0; }
+    .candidate-item {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255,255,255,.54);
+    }
+    .candidate-meta { display: grid; gap: 3px; min-width: 0; }
+    .candidate-kind { font-weight: 800; color: var(--ink); }
+    .candidate-url {
+      overflow-wrap: anywhere;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    .settings-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 0;
+      border-top: 1px solid var(--line);
+    }
+    .settings-row:first-of-type { border-top: 0; }
+    .settings-row p { margin: 2px 0 0; color: var(--muted); }
     .actions {
       display: flex;
       flex-wrap: wrap;
@@ -504,6 +585,67 @@ const indexHTML = `<!doctype html>
       min-width: 34px;
       padding: 0;
       font-size: 15px;
+    }
+    .obs-latency-actions {
+      display: block;
+    }
+    .obs-latency-actions select {
+      width: 100%;
+    }
+    .obs-connections-card { width: min(100%, 760px); }
+    .connection-table-wrap {
+      overflow-x: auto;
+      border: 1px solid #d9e6e0;
+      border-radius: 12px;
+    }
+    .connection-table {
+      width: 100%;
+      min-width: 640px;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    .connection-table th,
+    .connection-table td {
+      padding: 10px 12px;
+      border-bottom: 1px solid #e7f0ec;
+      text-align: left;
+      white-space: nowrap;
+    }
+    .connection-table th {
+      background: #f4faf7;
+      color: #24483f;
+      font-weight: 800;
+    }
+    .connection-table tbody tr:last-child td { border-bottom: 0; }
+    .connection-empty { color: var(--muted); text-align: center; }
+    .lag-cell {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 150px;
+    }
+    .lag-bar {
+      width: 96px;
+      height: 10px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: #e8eee9;
+    }
+    .lag-bar-fill {
+      display: block;
+      height: 100%;
+      min-width: 8px;
+      border-radius: inherit;
+    }
+    .lag-good { background: #159947; }
+    .lag-ok { background: #78b92e; }
+    .lag-warn { background: #d99116; }
+    .lag-bad { background: #c3422f; }
+    .lag-value {
+      min-width: 38px;
+      font-variant-numeric: tabular-nums;
+      font-weight: 800;
+      color: #23443d;
     }
     .link-input-row {
       display: flex;
@@ -693,10 +835,60 @@ const indexHTML = `<!doctype html>
       display: block;
     }
     .toast {
-      min-height: 18px;
-      color: var(--accent);
-      font-weight: 700;
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      z-index: 30;
+      width: min(420px, calc(100vw - 36px));
+      min-height: 0;
+      padding: 12px 14px;
+      border: 1px solid #bdd7d0;
+      border-left: 5px solid var(--accent);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, .96);
+      color: #21443d;
+      font-weight: 800;
       font-size: 13px;
+      line-height: 1.45;
+      box-shadow: 0 14px 40px rgba(0, 0, 0, .20);
+      opacity: 0;
+      transform: translateY(12px);
+      pointer-events: none;
+      transition: opacity .16s ease, transform .16s ease, bottom .16s ease;
+    }
+    .toast.active {
+      opacity: 1;
+      transform: translateY(0);
+      pointer-events: auto;
+    }
+    .toast.error {
+      border-left-color: var(--accent-2);
+      color: #7f2a1c;
+    }
+    .toast-message {
+      overflow-wrap: anywhere;
+    }
+    .toast-actions {
+      display: none;
+      justify-content: flex-end;
+      gap: 6px;
+      margin-top: 10px;
+    }
+    .toast.error .toast-actions {
+      display: flex;
+    }
+    .toast-action {
+      min-height: 28px;
+      padding: 0 10px;
+      border: 1px solid rgba(127, 42, 28, .24);
+      background: rgba(255, 255, 255, .76);
+      color: #7f2a1c;
+      font-size: 12px;
+      font-weight: 900;
+    }
+    .toast-close {
+      min-width: 30px;
+      padding: 0;
     }
     .pairing-panel {
       display: none;
@@ -712,6 +904,9 @@ const indexHTML = `<!doctype html>
     }
     .pairing-panel.active {
       display: block;
+    }
+    body.pairing-active .toast {
+      bottom: 210px;
     }
     .pairing-title {
       margin: 0 0 6px;
@@ -855,6 +1050,11 @@ const indexHTML = `<!doctype html>
         display: grid;
       }
     }
+    @media (max-width: 720px) {
+      body.pairing-active .toast {
+        bottom: 230px;
+      }
+    }
     @media (max-width: 720px) and (pointer: coarse) {
       .phone-connect {
         display: none;
@@ -939,7 +1139,7 @@ const indexHTML = `<!doctype html>
           <div class="upload-panel active" id="fileUploadPanel">
             <div class="drop-zone" id="fileDropZone">
               <div class="drop-hint" id="dropHint">Drop image or RAW files here</div>
-              <input id="imageInput" name="image" type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp,image/tiff,image/svg+xml,image/x-sony-arw,image/x-canon-crw,image/x-canon-cr2,image/x-canon-cr3,image/x-panasonic-rw2,image/x-olympus-orf,image/x-fuji-raf,image/x-nikon-nef,image/x-nikon-nrw,image/x-sigma-x3f,image/x-adobe-dng,.jpg,.jpeg,.png,.gif,.webp,.bmp,.tif,.tiff,.svg,.arw,.srf,.sr2,.crw,.cr2,.cr3,.rw2,.raw,.orf,.raf,.nef,.nrw,.x3f,.dng" required>
+              <input id="imageInput" name="image" type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/avif,image/heic,image/heif,image/jxl,image/bmp,image/tiff,image/svg+xml,image/x-sony-arw,image/x-canon-crw,image/x-canon-cr2,image/x-canon-cr3,image/x-panasonic-rw2,image/x-olympus-orf,image/x-fuji-raf,image/x-nikon-nef,image/x-nikon-nrw,image/x-sigma-x3f,image/x-adobe-dng,.jpg,.jpeg,.png,.gif,.webp,.avif,.heic,.heif,.jxl,.bmp,.tif,.tiff,.svg,.arw,.srf,.sr2,.crw,.cr2,.cr3,.rw2,.raw,.orf,.raf,.nef,.nrw,.x3f,.dng" required>
               <div class="drop-file-name" id="dropFileName">No file selected</div>
             </div>
           </div>
@@ -969,33 +1169,41 @@ const indexHTML = `<!doctype html>
                   <button type="button" class="secondary" id="obsKeyRotateButton">更新</button>
                 </div>
               </div>
-              <div class="pill"><strong>OBS</strong><span id="obsStatus">確認中</span></div>
+              <div class="pill obs-status-pill"><strong>OBS</strong><span id="obsStatus">確認中</span><button type="button" class="pill-action" id="obsLatencyDetailButton">接続詳細</button></div>
               <div class="urlbox">
                 <div>
                   <strong>OBS Latency</strong>
-                  <span id="obsLatencyStatus">auto</span>
                 </div>
-                <select id="obsLatencyMode" aria-label="OBS latency mode">
-                  <option value="auto">自動</option>
-                  <option value="normal">普通（5s）</option>
-                  <option value="low">低遅延（1s）</option>
-                  <option value="ultra">超低遅延（0.5s+）</option>
-                </select>
-                <label><input id="obsDVRToggle" type="checkbox"> DVR 30min</label>
+                <div class="obs-latency-actions">
+                  <select id="obsLatencyMode" aria-label="OBS latency mode">
+                    <option value="hls-high">最高画質HLS（10s+）</option>
+                    <option value="hls">高画質HLS（5s）</option>
+                    <option value="rtsp-low">低遅延RTSP（3-4s）</option>
+                    <option value="rtsp-ultra">超低遅延RTSP（1-2s）</option>
+                    <option value="rtsp-realtime">リアルタイムRTSP（0.5s+）</option>
+                  </select>
+                </div>
               </div>
             </div>
           </div>
           <div class="controls">
-            <label><span>最大辺</span><input name="maxDimension" type="number" min="64" max="8192" value="2048"></label>
-            <label><span>形式</span><select name="format"><option value="jpeg">JPEG</option><option value="png">PNG</option></select></label>
-            <label><span>JPEG品質</span><input name="quality" type="number" min="40" max="95" value="88"></label>
-            <label><span>最大MB</span><input name="maxMB" type="number" min="1" max="120" value="30"></label>
+            <label><span>最大辺</span><select name="maxDimension"><option value="1024">1024px</option><option value="2048" selected>2048px</option><option value="4096">4096px</option><option value="8192">8192px</option></select></label>
+            <label><span>形式</span><select name="format" id="formatSelect"><option value="png">非劣化 (PNG)</option><option value="webp" selected>高品質 (WebP)</option><option value="jpeg">高圧縮 (JPEG)</option></select></label>
+            <label><span>品質</span><select name="quality" id="qualitySelect"></select></label>
+            <label><span>最大MB</span><select name="maxMB"><option value="10">10 MB</option><option value="30" selected>30 MB</option><option value="60">60 MB</option><option value="120">120 MB</option></select></label>
           </div>
           <div class="upload-actions">
             <button id="uploadButton" type="submit" name="uploadAction" value="publish">変換して公開</button>
             <button id="queueUploadButton" type="submit" class="secondary" name="uploadAction" value="queue">動画変換へ</button>
           </div>
-          <div class="toast" id="toast"></div>
+          <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true">
+            <div class="toast-message" id="toastMessage"></div>
+            <div class="toast-actions" id="toastActions">
+              <button type="button" class="toast-action" id="toastYTDLPLoginButton" hidden>ログインする</button>
+              <button type="button" class="toast-action" id="toastCopyButton">診断情報をコピー</button>
+              <button type="button" class="toast-action toast-close" id="toastCloseButton" aria-label="通知を閉じる">×</button>
+            </div>
+          </div>
           <div class="mobile-progress" id="mobileProgress">
             <div id="mobileProgressText">変換中</div>
             <div class="progress-track" aria-label="変換進捗">
@@ -1045,6 +1253,7 @@ const indexHTML = `<!doctype html>
 
     <div class="quit">
       <button type="button" class="quit-button" id="quitButton" title="サーバーアプリ本体を終了します">アプリを終了</button>
+      <button type="button" class="settings-button" id="settingsButton" title="設定" aria-label="設定">⚙</button>
     </div>
   </main>
   <div class="drag-drop-overlay" id="dragDropOverlay" aria-hidden="true">
@@ -1062,11 +1271,96 @@ const indexHTML = `<!doctype html>
       <div class="tool-install-detail" id="toolInstallDetail"></div>
     </div>
   </div>
+  <div class="modal-backdrop" id="rtspRiskDialog" hidden>
+    <section class="modal-card" role="alertdialog" aria-modal="true" aria-labelledby="rtspRiskTitle" aria-describedby="rtspRiskDescription">
+      <h2 id="rtspRiskTitle">RTSPを外部公開します</h2>
+      <div id="rtspRiskDescription">
+        <p>リアルタイム系RTSPは UPnP とグローバルIPを使って、VRChat から直接到達できるURLを作成します。</p>
+        <ul>
+          <li>ルーターに一時的なポート開放を要求します。</li>
+          <li>生成されたURLを知っている相手は配信中の映像へ接続できます。</li>
+          <li>配信終了時にポート開放は閉じますが、ネットワーク環境によって失敗する場合があります。</li>
+        </ul>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="secondary" id="rtspRiskCancel">キャンセル</button>
+        <button type="button" class="warn" id="rtspRiskConfirm">リスクを理解して有効化</button>
+      </div>
+    </section>
+  </div>
+  <div class="modal-backdrop" id="obsKeyRiskDialog" hidden>
+    <section class="modal-card" role="alertdialog" aria-modal="true" aria-labelledby="obsKeyRiskTitle" aria-describedby="obsKeyRiskDescription">
+      <h2 id="obsKeyRiskTitle">OBS Stream Keyを変更します</h2>
+      <div id="obsKeyRiskDescription">
+        <p>Stream Key を変更すると、同じキーを知るOBS/中継元だけがこの受信口へ配信できます。</p>
+        <ul>
+          <li>変更後はOBS側の設定も同じ値へ差し替えてください。</li>
+          <li>第三者に推測されにくい長いキーを使ってください。</li>
+          <li>保存されたキーは次回起動時も維持されます。</li>
+        </ul>
+      </div>
+      <label><span>新しい Stream Key</span><input id="obsKeyEditInput" type="text" autocomplete="off" spellcheck="false"></label>
+      <div class="modal-actions">
+        <button type="button" class="secondary" id="obsKeyRiskCancel">キャンセル</button>
+        <button type="button" class="warn" id="obsKeyRiskConfirm">変更して保存</button>
+      </div>
+    </section>
+  </div>
+  <div class="modal-backdrop" id="settingsModal" hidden>
+    <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+      <h2 id="settingsTitle">設定</h2>
+      <div class="settings-row">
+        <div>
+          <strong>YouTube / yt-dlp ログイン</strong>
+          <p><span id="ytdlpCookieStatus">Cookie未保存</span>。BOT認証エラーが出た時だけ使用してください。</p>
+        </div>
+        <button type="button" id="ytdlpLoginButton">ログインする</button>
+      </div>
+      <div class="settings-row">
+        <div>
+          <strong>保存済みCookie</strong>
+          <p>BOT認証回避に使うCookieを削除します。</p>
+        </div>
+        <button type="button" class="warn" id="ytdlpCookieDeleteButton">Cookie削除</button>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="secondary" id="settingsCloseButton">閉じる</button>
+      </div>
+    </section>
+  </div>
+  <div class="modal-backdrop" id="mediaCandidateDialog" hidden>
+    <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="mediaCandidateTitle" aria-describedby="mediaCandidateDescription">
+      <h2 id="mediaCandidateTitle">ページ内動画候補</h2>
+      <p id="mediaCandidateDescription">非表示ブラウザでページを開き、再生時に発生した動画リクエストを検出しました。使う候補を選んでください。</p>
+      <div class="candidate-list" id="mediaCandidateList"></div>
+      <div class="modal-actions">
+        <button type="button" class="secondary" id="mediaCandidateClose">閉じる</button>
+      </div>
+    </section>
+  </div>
+  <div class="modal-backdrop" id="obsConnectionsDialog" hidden>
+    <section class="modal-card obs-connections-card" role="dialog" aria-modal="true" aria-labelledby="obsConnectionsTitle" aria-describedby="obsConnectionsDescription">
+      <h2 id="obsConnectionsTitle">OBS接続詳細</h2>
+      <p id="obsConnectionsDescription">推定ラグはプロファイル、プロトコル、表示経路からの見積もりです。VRChat内の最終表示遅延とは異なる場合があります。</p>
+      <div class="connection-table-wrap">
+        <table class="connection-table">
+          <thead><tr><th>IP</th><th>プロトコル</th><th>機種</th><th>状態</th><th>品質</th><th>推定ラグ</th></tr></thead>
+          <tbody id="obsConnectionsTableBody">
+            <tr><td colspan="6" class="connection-empty">接続なし</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="actions">
+        <button type="button" class="secondary" id="obsConnectionsClose">閉じる</button>
+      </div>
+    </section>
+  </div>
   <div class="pairing-panel" id="pairingPanel" role="status" aria-live="polite">
     <p class="pairing-title">BrowserRelayStreamer pairing code</p>
     <strong class="pairing-pin" id="pairingPin">0000</strong>
     <p class="pairing-detail" id="pairingDetail">Enter this code on the other computer.</p>
   </div>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js" defer></script>
   <script>
     const state = {
       imageURL: {{printf "%q" .imageURL}},
@@ -1085,12 +1379,200 @@ const indexHTML = `<!doctype html>
       videoQuality: null,
       obs: null,
       pairing: null,
+      ytdlpAuth: null,
       currentID: "",
       obsPreviewID: "",
+      obsPreviewURL: "",
       previewMode: "empty"
     };
 
     const toast = document.getElementById('toast');
+    const toastMessage = document.getElementById('toastMessage');
+    const toastYTDLPLoginButton = document.getElementById('toastYTDLPLoginButton');
+    const toastCopyButton = document.getElementById('toastCopyButton');
+    const toastCloseButton = document.getElementById('toastCloseButton');
+    const toastTextDescriptor = Object.getOwnPropertyDescriptor(Node.prototype, 'textContent');
+    let toastTimer = null;
+    let toastInternalUpdate = false;
+    let lastToastErrorReport = '';
+    function writeToastText(text) {
+      if (!toastMessage && !toast) return;
+      toastInternalUpdate = true;
+      const target = toastMessage || toast;
+      if (toastTextDescriptor && toastTextDescriptor.set) {
+        toastTextDescriptor.set.call(target, text);
+      } else {
+        target.innerText = text;
+      }
+      toastInternalUpdate = false;
+    }
+    function showToast(message, options = {}) {
+      if (!toast) return;
+      const text = String(message || '');
+      const visible = text.trim() !== '';
+      const isError = !!options.error;
+      const ytdlpBotError = isError && isYTDLPBotError(text);
+      const ytdlpFormatUnavailable = isError && isYTDLPFormatUnavailableError(text);
+      const displayText = ytdlpBotError
+        ? 'YoutubeがBOT認証エラーを起こしました。ログインを行うことでBOTではないことを証明できます。'
+        : (ytdlpFormatUnavailable
+          ? 'YouTube側から動画/音声フォーマットが返っていません。ログインCookieは使えていますが、この動画はyt-dlpで取得できません。'
+          : text);
+      clearTimeout(toastTimer);
+      writeToastText(displayText);
+      if (!visible) {
+        toast.classList.remove('active', 'error');
+        delete toast.dataset.error;
+        delete toast.dataset.errorSource;
+        if (toastYTDLPLoginButton) toastYTDLPLoginButton.hidden = true;
+        lastToastErrorReport = '';
+        return;
+      }
+      toast.classList.add('active');
+      toast.classList.toggle('error', isError);
+      if (isError) {
+        toast.dataset.error = '1';
+        if (options.source) {
+          toast.dataset.errorSource = String(options.source);
+        } else {
+          delete toast.dataset.errorSource;
+        }
+        if (toastYTDLPLoginButton) toastYTDLPLoginButton.hidden = !ytdlpBotError;
+        lastToastErrorReport = buildErrorReport(displayText, (ytdlpBotError || ytdlpFormatUnavailable) ? { originalError: text } : (options.context || null));
+      } else {
+        delete toast.dataset.error;
+        delete toast.dataset.errorSource;
+        if (toastYTDLPLoginButton) toastYTDLPLoginButton.hidden = true;
+        lastToastErrorReport = '';
+      }
+      const timeout = options.timeout === undefined ? (isError ? 0 : 4200) : options.timeout;
+      if (timeout > 0) {
+        toastTimer = setTimeout(() => showToast('', { timeout: 0 }), timeout);
+      }
+    }
+    function hideToast() {
+      showToast('', { timeout: 0 });
+    }
+    function isToastErrorMessage(value) {
+      const text = String(value || '');
+      return /失敗|Failed|Error|error|NetworkError|使えません|ありません|確認してください/.test(text);
+    }
+    function isYTDLPBotError(value) {
+      const text = String(value || '').toLowerCase();
+      return text.includes('yt-dlp') && (
+        text.includes('sign in to confirm') ||
+        text.includes('not a bot') ||
+        text.includes('bot') ||
+        text.includes('cookies') ||
+        text.includes('cookie')
+      );
+    }
+    function isYTDLPFormatUnavailableError(value) {
+      const text = String(value || '').toLowerCase();
+      return text.includes('yt-dlp') && text.includes('requested format is not available');
+    }
+    if (toast && toastTextDescriptor && toastTextDescriptor.set && toastTextDescriptor.get) {
+      Object.defineProperty(toast, 'textContent', {
+        get() { return toastTextDescriptor.get.call(toastMessage || this); },
+        set(value) {
+          if (toastInternalUpdate) {
+            if (toastMessage) {
+              toastTextDescriptor.set.call(toastMessage, value);
+            } else {
+              toastTextDescriptor.set.call(this, value);
+            }
+            return;
+          }
+          showToast(value, { error: this.dataset.error === '1' || isToastErrorMessage(value) });
+        }
+      });
+    }
+    function buildErrorReport(message, context) {
+      const obs = state.obs || {};
+      const latency = obs.latency || {};
+      const current = state.current || (Array.isArray(state.history) ? state.history.find((item) => item && item.id === state.currentID) : null) || {};
+      const share = displayedShareURL();
+      const report = {
+        app: 'ImagePadServer',
+        generatedAt: new Date().toISOString(),
+        pageURL: window.location.href,
+        userAgent: navigator.userAgent,
+        visibility: document.visibilityState,
+        online: navigator.onLine,
+        uploadMode,
+        wingMode,
+        error: {
+          message: message,
+          context: context || null
+        },
+        currentMedia: {
+          id: state.currentID || '',
+          name: current.name || '',
+          kind: current.kind || '',
+          mime: current.mime || '',
+          url: current.url || ''
+        },
+        urls: {
+          imageURL: state.imageURL || '',
+          videoURL: state.videoURL || '',
+          hlsURL: state.hlsURL || '',
+          shareURL: share.shareURL || '',
+          shareURLLabel: share.shareURLLabel || '',
+          phoneURL: state.phoneURL || '',
+          localImageURL: state.localImageURL || '',
+          previewImageURL: state.previewImageURL || '',
+          publicImageURL: state.publicImageURL || ''
+        },
+        preview: {
+          mode: state.previewMode || '',
+          obsPreviewID: state.obsPreviewID || ''
+        },
+        ingest: state.ingest || null,
+        video: state.video || null,
+        videoQuality: state.videoQuality || null,
+        toolInstall: state.toolInstall || null,
+        pairing: state.pairing || null,
+        obs: {
+          available: !!obs.available,
+          connected: !!obs.connected,
+          publishing: !!obs.publishing,
+          serverAddress: obs.serverAddress || '',
+          previewURL: obs.previewURL || '',
+          publicHLSURL: obs.publicHLSURL || '',
+          rtsptURL: obs.rtsptURL || '',
+          latency: {
+            mode: latency.mode || '',
+            label: latency.label || '',
+            target: latency.target || '',
+            message: latency.message || ''
+          },
+          connections: Array.isArray(obs.connections) ? obs.connections : []
+        }
+      };
+      return JSON.stringify(report, null, 2);
+    }
+    async function copyToastErrorReport() {
+      if (!lastToastErrorReport) return;
+      const original = toastCopyButton ? toastCopyButton.textContent : '';
+      try {
+        await copyText(lastToastErrorReport, toastMessage || toast);
+        if (toastCopyButton) {
+          toastCopyButton.textContent = 'コピーしました';
+          setTimeout(() => { toastCopyButton.textContent = original || '診断情報をコピー'; }, 1500);
+        }
+      } catch (error) {
+        if (toastCopyButton) {
+          toastCopyButton.textContent = 'コピー失敗';
+          setTimeout(() => { toastCopyButton.textContent = original || '診断情報をコピー'; }, 1500);
+        }
+      }
+    }
+    if (toastCopyButton) {
+      toastCopyButton.addEventListener('click', copyToastErrorReport);
+    }
+    if (toastCloseButton) {
+      toastCloseButton.addEventListener('click', hideToast);
+    }
     const uploadForm = document.getElementById('uploadForm');
     const uploadButton = document.getElementById('uploadButton');
     const queueUploadButton = document.getElementById('queueUploadButton');
@@ -1110,6 +1592,8 @@ const indexHTML = `<!doctype html>
     const linkUploadPanel = document.getElementById('linkUploadPanel');
     const obsUploadPanel = document.getElementById('obsUploadPanel');
     const uploadControls = uploadForm.querySelector('.controls');
+    const formatSelect = document.getElementById('formatSelect');
+    const qualitySelect = document.getElementById('qualitySelect');
     const preview = document.getElementById('preview');
     const historyList = document.getElementById('historyList');
     const wingTabButtons = Array.from(document.querySelectorAll('[data-wing-tab]'));
@@ -1129,8 +1613,26 @@ const indexHTML = `<!doctype html>
     const clearButton = document.getElementById('clearButton');
     const obsKeyRotateButton = document.getElementById('obsKeyRotateButton');
     const obsLatencyMode = document.getElementById('obsLatencyMode');
-    const obsLatencyStatus = document.getElementById('obsLatencyStatus');
-    const obsDVRToggle = document.getElementById('obsDVRToggle');
+    const obsLatencyDetailButton = document.getElementById('obsLatencyDetailButton');
+    const rtspRiskDialog = document.getElementById('rtspRiskDialog');
+    const rtspRiskCancel = document.getElementById('rtspRiskCancel');
+    const rtspRiskConfirm = document.getElementById('rtspRiskConfirm');
+    const obsKeyRiskDialog = document.getElementById('obsKeyRiskDialog');
+    const obsKeyRiskCancel = document.getElementById('obsKeyRiskCancel');
+    const obsKeyRiskConfirm = document.getElementById('obsKeyRiskConfirm');
+    const obsKeyEditInput = document.getElementById('obsKeyEditInput');
+    const settingsButton = document.getElementById('settingsButton');
+    const settingsModal = document.getElementById('settingsModal');
+    const settingsCloseButton = document.getElementById('settingsCloseButton');
+    const ytdlpLoginButton = document.getElementById('ytdlpLoginButton');
+    const ytdlpCookieDeleteButton = document.getElementById('ytdlpCookieDeleteButton');
+    const ytdlpCookieStatus = document.getElementById('ytdlpCookieStatus');
+    const obsConnectionsDialog = document.getElementById('obsConnectionsDialog');
+    const obsConnectionsClose = document.getElementById('obsConnectionsClose');
+    const obsConnectionsTableBody = document.getElementById('obsConnectionsTableBody');
+    const mediaCandidateDialog = document.getElementById('mediaCandidateDialog');
+    const mediaCandidateList = document.getElementById('mediaCandidateList');
+    const mediaCandidateClose = document.getElementById('mediaCandidateClose');
     const pairingPanel = document.getElementById('pairingPanel');
     const pairingPin = document.getElementById('pairingPin');
     const pairingDetail = document.getElementById('pairingDetail');
@@ -1143,14 +1645,43 @@ const indexHTML = `<!doctype html>
     let refreshAgain = false;
     let lastAppliedStateSeq = 0;
     let localChangeChannel = null;
+    let confirmedOBSLatencyMode = 'hls';
     let wingMode = 'history';
-    const imageAccept = 'image/png,image/jpeg,image/gif,image/webp,image/bmp,image/tiff,image/svg+xml,image/x-sony-arw,image/x-canon-crw,image/x-canon-cr2,image/x-canon-cr3,image/x-panasonic-rw2,image/x-olympus-orf,image/x-fuji-raf,image/x-nikon-nef,image/x-nikon-nrw,image/x-sigma-x3f,image/x-adobe-dng,.jpg,.jpeg,.png,.gif,.webp,.bmp,.tif,.tiff,.svg,.arw,.srf,.sr2,.crw,.cr2,.cr3,.rw2,.raw,.orf,.raf,.nef,.nrw,.x3f,.dng';
+    let pendingOBSAutoCopy = false;
+    let lastAutoCopiedOBSURL = '';
+    let obsPreviewHLS = null;
+    const imageAccept = 'image/png,image/jpeg,image/gif,image/webp,image/avif,image/heic,image/heif,image/jxl,image/bmp,image/tiff,image/svg+xml,image/x-sony-arw,image/x-canon-crw,image/x-canon-cr2,image/x-canon-cr3,image/x-panasonic-rw2,image/x-olympus-orf,image/x-fuji-raf,image/x-nikon-nef,image/x-nikon-nrw,image/x-sigma-x3f,image/x-adobe-dng,.jpg,.jpeg,.png,.gif,.webp,.avif,.heic,.heif,.jxl,.bmp,.tif,.tiff,.svg,.arw,.srf,.sr2,.crw,.cr2,.cr3,.rw2,.raw,.orf,.raf,.nef,.nrw,.x3f,.dng';
     const mediaAccept = imageAccept + ',video/*,video/mp4,video/quicktime,video/webm,video/x-matroska,.mp4,.mov,.m4v,.webm,.mkv,.avi';
     const rawExtensions = new Set(['.arw', '.srf', '.sr2', '.crw', '.cr2', '.cr3', '.rw2', '.raw', '.orf', '.raf', '.nef', '.nrw', '.x3f', '.dng']);
+    const qualityOptions = {
+      png: [
+        ['lossless', '非劣化'],
+        ['highest', '最高'],
+        ['high', '高'],
+        ['medium', '中'],
+        ['low', '低']
+      ],
+      webp: [
+        ['highest', '最高'],
+        ['high', '高'],
+        ['medium', '中'],
+        ['low', '低'],
+        ['lowest', '最低']
+      ],
+      jpeg: [
+        ['highest', '最高'],
+        ['high', '高'],
+        ['medium', '中'],
+        ['low', '低'],
+        ['lowest', '最低']
+      ]
+    };
     let ffmpegPending = false;
     let ffmpegReady = false;
     let ffmpegPromise = null;
     let obsKeyVisible = false;
+    let ytdlpAuthInitialized = false;
+    let ytdlpAuthWasSaved = false;
 
     function syncFailureMessage(error) {
       const text = String((error && error.message) || error || '').trim();
@@ -1189,15 +1720,13 @@ const indexHTML = `<!doctype html>
         const data = JSON.parse(body);
         if (seq === lastAppliedStateSeq) {
           applyState(data);
-          if (toast && toast.dataset.error === '1') {
-            toast.textContent = '';
-            delete toast.dataset.error;
+          if (toast && toast.dataset.error === '1' && toast.dataset.errorSource === 'sync') {
+            hideToast();
           }
         }
       } catch (error) {
         if (toast && !document.hidden) {
-          toast.textContent = syncFailureMessage(error);
-          toast.dataset.error = '1';
+          showToast(syncFailureMessage(error), { error: true, source: 'sync' });
         }
       } finally {
         refreshInFlight = false;
@@ -1218,17 +1747,21 @@ const indexHTML = `<!doctype html>
       state.localImageURL = data.localImageURL;
       state.previewImageURL = data.previewImageURL;
       state.publicImageURL = data.publicImageURL;
+      state.current = data.current || null;
       state.history = data.history || [];
       state.videoQueue = data.videoQueue || [];
       state.videoQuality = data.videoQuality;
+      state.ingest = data.ingest || null;
+      state.video = data.video || null;
       state.obs = data.obs || null;
       state.pairing = data.pairing || null;
+      state.ytdlpAuth = data.ytdlpAuth || null;
+      state.toolInstall = data.toolInstall || null;
       state.videoPlayerEnabled = !!(data.videoPlayer && data.videoPlayer.enabled);
       state.musicModeEnabled = !!(data.videoPlayer && data.videoPlayer.musicModeEnabled);
       document.getElementById('phoneURL').textContent = data.phoneURL;
       document.getElementById('phoneURLMobile').textContent = data.phoneURL;
-      document.getElementById('shareURL').textContent = data.shareURL || '公開URLは未取得です';
-      document.getElementById('shareURLLabel').textContent = data.shareURLLabel || 'URL';
+      renderShareURL(state);
       document.getElementById('videoStatus').textContent = videoText(data.video);
       updateMobileProgress(data);
       updateToolInstall(data.toolInstall);
@@ -1236,6 +1769,7 @@ const indexHTML = `<!doctype html>
       applyVideoPlayer(data.videoPlayer);
       applyOBS(data.obs);
       applyPairing(data.pairing);
+      updateYTDLPAuthState();
       applyOBSProtection();
       document.getElementById('upnpText').textContent = publicText(data.tunnel, data.upnp);
       document.getElementById('hasImage').textContent = currentText(data.current);
@@ -1243,11 +1777,75 @@ const indexHTML = `<!doctype html>
       renderPreview(data, nextCurrentID);
       renderHistory(state.history, nextCurrentID);
       state.currentID = nextCurrentID;
+      maybeAutoCopyOBSURL(data);
 
       scheduleRefresh((data.ingest && data.ingest.active) || (data.video && data.video.active) || (data.obs && data.obs.connected) ? 750 : 2000);
     }
 
+    function renderShareURL(data) {
+      const view = shareURLForCurrentMode(data);
+      document.getElementById('shareURL').textContent = shareURLDisplayText(view);
+      document.getElementById('shareURLLabel').textContent = view.shareURLLabel || 'URL';
+    }
+
+    function shareURLForCurrentMode(data) {
+      return shareURLForMode(data, uploadMode);
+    }
+
+    function shareURLForMode(data, mode) {
+      data = data || {};
+      if (mode === 'obs') {
+        const obs = data.obs || {};
+        const url = obs.rtsptURL || '';
+        if (String(url).startsWith('rtsp://')) {
+          return { shareURL: url, shareURLLabel: 'RTSP TCP URL', obs };
+        }
+        return { shareURL: '', shareURLLabel: 'RTSP TCP URL', obs };
+      }
+      if (mode === 'link') {
+        return mediaShareURL(data);
+      }
+      if (mode === 'file') {
+        return fileShareURL(data);
+      }
+      return data || {};
+    }
+
+    function mediaShareURL(data) {
+      if (data && data.videoPlayerEnabled) {
+        if (data.hlsURL) return { shareURL: data.hlsURL, shareURLLabel: 'HLS URL' };
+        if (data.videoURL) return { shareURL: data.videoURL, shareURLLabel: 'MP4 URL' };
+      }
+      return fileShareURL(data);
+    }
+
+    function fileShareURL(data) {
+      if (data && data.videoPlayerEnabled) {
+        if (data.hlsURL) return { shareURL: data.hlsURL, shareURLLabel: 'HLS URL' };
+        if (data.videoURL) return { shareURL: data.videoURL, shareURLLabel: 'MP4 URL' };
+      }
+      if (data && data.imageURL) return { shareURL: data.imageURL, shareURLLabel: 'ImagePad URL' };
+      if (data && data.publicImageURL) return { shareURL: data.publicImageURL, shareURLLabel: 'ImagePad URL' };
+      if (data && data.localImageURL) return { shareURL: data.localImageURL, shareURLLabel: 'Local URL' };
+      return { shareURL: '', shareURLLabel: 'URL' };
+    }
+
+    function displayedShareURL() {
+      return shareURLForCurrentMode(state);
+    }
+
+    function shareURLDisplayText(data) {
+      if (data && data.shareURL) return data.shareURL;
+      const label = data && data.shareURLLabel ? String(data.shareURLLabel) : '';
+      const message = data && data.obs && data.obs.message ? String(data.obs.message) : '';
+      if (label === 'RTSP TCP URL' && message) {
+        return '公開URLは未取得です: ' + message;
+      }
+      return '公開URLは未取得です';
+    }
+
     function resetOBSPreview() {
+      destroyOBSPreviewHLS();
       if (state.previewMode === 'obs') {
         const video = preview.querySelector('video');
         if (video) {
@@ -1259,11 +1857,41 @@ const indexHTML = `<!doctype html>
       }
       state.previewMode = 'obs-restarting';
       state.obsPreviewID = "";
+      state.obsPreviewURL = "";
+    }
+
+    function destroyOBSPreviewHLS() {
+      if (!obsPreviewHLS) return;
+      try {
+        obsPreviewHLS.destroy();
+      } catch (error) {
+      }
+      obsPreviewHLS = null;
+    }
+
+    function attachHLSPreview(video, src) {
+      destroyOBSPreviewHLS();
+      if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = src;
+        return true;
+      }
+      if (window.Hls && window.Hls.isSupported()) {
+        obsPreviewHLS = new window.Hls({
+          lowLatencyMode: true,
+          backBufferLength: 30
+        });
+        obsPreviewHLS.loadSource(src);
+        obsPreviewHLS.attachMedia(video);
+        return true;
+      }
+      return false;
     }
 
     function applyPairing(pairing) {
+      const active = !!(pairing && pairing.active && pairing.pin);
+      document.body.classList.toggle('pairing-active', active);
       if (!pairingPanel || !pairingPin || !pairingDetail) return;
-      if (!pairing || !pairing.active || !pairing.pin) {
+      if (!active) {
         pairingPanel.classList.remove('active');
         return;
       }
@@ -1276,47 +1904,51 @@ const indexHTML = `<!doctype html>
     function renderPreview(data, nextCurrentID) {
       if (uploadMode === 'obs' && data.obs && data.obs.connected && data.obs.previewURL) {
         const obsID = data.obs.mediaID || nextCurrentID;
-        if (state.previewMode !== 'obs' || obsID !== state.obsPreviewID) {
+        if (state.previewMode !== 'obs' || obsID !== state.obsPreviewID || data.obs.previewURL !== state.obsPreviewURL) {
           preview.classList.add('obs-preview');
           preview.innerHTML = '';
           const video = document.createElement('video');
-          video.src = data.obs.previewURL;
           video.controls = true;
           video.autoplay = true;
           video.muted = true;
           video.playsInline = true;
-          preview.appendChild(video);
+          if (attachHLSPreview(video, data.obs.previewURL)) {
+            preview.appendChild(video);
+          } else {
+            const link = document.createElement('a');
+            link.href = data.obs.previewURL;
+            link.textContent = 'HLSプレビューを開く';
+            link.target = '_blank';
+            link.rel = 'noreferrer';
+            preview.innerHTML = '<div class="empty">このブラウザではHLSプレビューを直接再生できません。</div>';
+            preview.appendChild(link);
+          }
           state.previewMode = 'obs';
           state.obsPreviewID = obsID;
+          state.obsPreviewURL = data.obs.previewURL;
         }
         state.currentID = obsID;
         return;
       }
+      destroyOBSPreviewHLS();
       preview.classList.remove('obs-preview');
       state.obsPreviewID = "";
+      state.obsPreviewURL = "";
+      const ingestLabel = data.ingest && data.ingest.active ? ingestPhaseLabel(data.ingest.phase) : '';
+      if (ingestLabel) {
+        renderIngestPreview(
+          data.ingest.phase,
+          data.ingest.title || '',
+          Number(data.ingest.progressPercent || 0),
+          data.ingest.progressText || '',
+          false
+        );
+        return;
+      }
       if (!data.current) {
         if (state.previewMode !== 'empty') {
           preview.innerHTML = '<div class="empty">まだ画像が選択されていません</div>';
           state.previewMode = 'empty';
-        }
-        return;
-      }
-      const ingestLabel = data.ingest && data.ingest.active ? ingestPhaseLabel(data.ingest.phase) : '';
-      if (ingestLabel) {
-        // Rebuild only when the phase changes so the indeterminate sweep
-        // animation isn't restarted on every poll.
-        const mode = 'ingest:' + data.ingest.phase;
-        if (state.previewMode !== mode) {
-          const title = data.ingest.title ? escapeHTML(data.ingest.title) : '';
-          preview.innerHTML =
-            '<div class="progress-preview">' +
-              '<div>' + escapeHTML(ingestLabel) + '</div>' +
-              '<div class="progress-track" aria-label="処理状況">' +
-                '<div class="progress-fill indeterminate"></div>' +
-              '</div>' +
-              (title ? '<div class="progress-detail">' + title + '</div>' : '') +
-            '</div>';
-          state.previewMode = mode;
         }
         return;
       }
@@ -1349,6 +1981,24 @@ const indexHTML = `<!doctype html>
         preview.appendChild(img);
         state.previewMode = 'image';
       }
+    }
+
+    function renderIngestPreview(phase, title, percent, progressText, force) {
+      const label = ingestPhaseLabel(phase);
+      if (!label) return;
+      const pct = Math.max(0, Math.min(100, Number(percent || 0)));
+      const detail = progressText || title || '';
+      const mode = 'ingest:' + phase + ':' + pct + ':' + detail;
+      if (!force && state.previewMode === mode) return;
+      preview.innerHTML =
+        '<div class="progress-preview">' +
+          '<div>' + escapeHTML(label) + '</div>' +
+          '<div class="progress-track" aria-label="処理状況">' +
+            '<div class="progress-fill" style="width:' + Math.max(6, pct) + '%"></div>' +
+          '</div>' +
+          (detail ? '<div class="progress-detail">' + escapeHTML(detail) + '</div>' : '') +
+        '</div>';
+      state.previewMode = mode;
     }
 
     function escapeHTML(value) {
@@ -1600,11 +2250,12 @@ const indexHTML = `<!doctype html>
       const ingest = data && data.ingest;
       const label = ingest && ingest.active ? ingestPhaseLabel(ingest.phase) : '';
       if (label) {
-        // Pre-render phases: show the phase with an indeterminate (no %) bar.
+        const percent = Math.max(0, Math.min(100, Number(ingest.progressPercent || 0)));
+        const detail = ingest.progressText || ingest.title || '';
         mobileProgress.classList.add('open');
-        mobileProgressText.textContent = label + (ingest.title ? ' — ' + ingest.title : '');
-        mobileProgressFill.classList.add('indeterminate');
-        mobileProgressFill.style.width = '';
+        mobileProgressText.textContent = label + (detail ? ' — ' + detail : '');
+        mobileProgressFill.classList.remove('indeterminate');
+        mobileProgressFill.style.width = Math.max(6, percent) + '%';
         return;
       }
       const video = data && data.video;
@@ -1675,12 +2326,34 @@ const indexHTML = `<!doctype html>
       qualityStatus.textContent = (data.effective || 'auto') + 'p' + network + bitrateOnly;
     }
 
+    function updateQualityOptions() {
+      if (!formatSelect || !qualitySelect) return;
+      const format = qualityOptions[formatSelect.value] ? formatSelect.value : 'webp';
+      const previous = qualitySelect.value;
+      qualitySelect.replaceChildren();
+      for (const [value, label] of qualityOptions[format]) {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = label;
+        qualitySelect.appendChild(option);
+      }
+      const defaults = { png: 'lossless', webp: 'high', jpeg: 'high' };
+      qualitySelect.value = qualityOptions[format].some(([value]) => value === previous) ? previous : defaults[format];
+    }
+
+    function updateUploadControlsVisibility() {
+      if (uploadControls) {
+        uploadControls.hidden = uploadMode === 'obs' || state.videoPlayerEnabled;
+      }
+    }
+
     function applyVideoPlayer(data) {
       if (!data) {
         videoPlayerToggle.checked = false;
         videoPlayerText.textContent = '確認できません';
         musicModeRow.hidden = true;
         musicModeToggle.checked = false;
+        updateUploadControlsVisibility();
         return;
       }
       videoPlayerToggle.checked = !!data.enabled;
@@ -1707,6 +2380,7 @@ const indexHTML = `<!doctype html>
       if (!data.enabled && uploadMode === 'obs') {
         setUploadMode('file');
       }
+      updateUploadControlsVisibility();
     }
 
     function applyOBS(data) {
@@ -1718,20 +2392,15 @@ const indexHTML = `<!doctype html>
         server.textContent = 'RTMP receiver is unavailable';
         key.textContent = '-';
         status.textContent = 'unavailable';
-        if (obsLatencyStatus) obsLatencyStatus.textContent = 'unavailable';
+        renderOBSConnections([]);
         return;
       }
       server.textContent = data.serverAddress || 'RTMP receiver is stopped';
       key.textContent = obsKeyVisible ? (data.streamKey || '-') : maskSecret(data.streamKey);
       const latency = data.latency || {};
-      if (obsLatencyMode) obsLatencyMode.value = latency.mode || 'auto';
-      if (obsDVRToggle) obsDVRToggle.checked = !!latency.dvr;
-      if (obsLatencyStatus) {
-        const target = latency.target && latency.target !== 'auto' ? ' / ' + latency.target : '';
-        const dvr = latency.dvr ? ' / DVR 30min' : '';
-        obsLatencyStatus.textContent = (latency.label || latency.mode || 'auto') + target + dvr;
-        obsLatencyStatus.title = latency.message || '';
-      }
+      confirmedOBSLatencyMode = latency.mode || 'hls';
+      if (obsLatencyMode) obsLatencyMode.value = confirmedOBSLatencyMode;
+      renderOBSConnections(data.connections || []);
       if (data.connected && data.publishing) {
         status.textContent = 'publishing / HLS event';
       } else if (data.connected) {
@@ -1741,6 +2410,45 @@ const indexHTML = `<!doctype html>
       } else {
         status.textContent = data.message || 'stopped';
       }
+    }
+
+    function renderOBSConnections(rows) {
+      if (!obsConnectionsTableBody) return;
+      const list = Array.isArray(rows) ? rows : [];
+      if (!list.length) {
+        obsConnectionsTableBody.innerHTML = '<tr><td colspan="6" class="connection-empty">接続なし</td></tr>';
+        return;
+      }
+      obsConnectionsTableBody.innerHTML = list.map((row) => {
+        const lag = Number(row.lagSeconds || 0);
+        const level = normalizeLagLevel(row.lagLevel, lag);
+        const width = Math.max(8, Math.min(100, (lag / 12) * 100));
+        const note = row.note ? ' title="' + escapeHTML(row.note) + '"' : '';
+        return '<tr' + note + '>' +
+          '<td>' + escapeHTML(row.ip || '-') + '</td>' +
+          '<td>' + escapeHTML(row.protocol || '-') + '</td>' +
+          '<td>' + escapeHTML(row.device || '-') + '</td>' +
+          '<td>' + escapeHTML(row.state || '-') + '</td>' +
+          '<td>' + escapeHTML(row.quality || '-') + '</td>' +
+          '<td><div class="lag-cell"><div class="lag-bar" aria-hidden="true"><span class="lag-bar-fill lag-' + level + '" style="width:' + width.toFixed(0) + '%"></span></div><span class="lag-value">' + formatLagSeconds(lag) + '</span></div></td>' +
+          '</tr>';
+      }).join('');
+    }
+
+    function normalizeLagLevel(level, seconds) {
+      const value = String(level || '').toLowerCase();
+      if (['good', 'ok', 'warn', 'bad'].includes(value)) return value;
+      if (seconds <= 1.2) return 'good';
+      if (seconds <= 2.5) return 'ok';
+      if (seconds <= 5) return 'warn';
+      return 'bad';
+    }
+
+    function formatLagSeconds(seconds) {
+      if (!Number.isFinite(seconds) || seconds <= 0) return '-';
+      if (seconds < 1) return seconds.toFixed(1) + 's';
+      if (Math.abs(seconds - Math.round(seconds)) < 0.05) return String(Math.round(seconds)) + 's';
+      return seconds.toFixed(1).replace(/\.0$/, '') + 's';
     }
 
     function maskSecret(value) {
@@ -1876,9 +2584,9 @@ const indexHTML = `<!doctype html>
           const res = await fetch('/api/obs/start', { method: 'POST' });
           if (!res.ok) throw new Error(await res.text());
           const data = await res.json();
+          pendingOBSAutoCopy = true;
           applyState(data);
           setUploadMode('obs');
-          await copyStartedOBSURL(data);
           announceLocalChange();
           toast.textContent = data.obs && data.obs.connected ? 'OBS配信を公開しました' : 'OBS配信開始を予約しました';
         } catch (error) {
@@ -1894,27 +2602,26 @@ const indexHTML = `<!doctype html>
       }
       uploadButton.disabled = true;
       queueUploadButton.disabled = true;
-      toast.textContent = action === 'queue' ? '動画変換に追加中...' : 'アップロード中...';
+      const linkDownload = uploadMode === 'link';
+      if (linkDownload) {
+        const pendingURL = imageURLInput.value.trim();
+        toast.textContent = '動画をダウンロード中...';
+        renderIngestPreview('downloading', pendingURL, 0, '', true);
+        scrollProgressIntoView();
+      } else {
+        toast.textContent = action === 'queue' ? '動画変換に追加中...' : 'アップロード中...';
+      }
       try {
         const res = uploadMode === 'link' ? await uploadFromLink(action) : await uploadFromFile(action);
         if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
-        applyState(data);
-        announceLocalChange();
-        scrollProgressIntoView();
-        if (action === 'queue') {
-          setWingMode('queue');
-          toast.textContent = '動画変換に追加しました';
-          return;
-        }
-        const isVideo = data.current && data.current.kind === 'video';
-        if (isVideo) {
-          toast.textContent = data.clipboardCopied ? '動画HLS変換を開始し、URLをPCにコピーしました' : '動画HLS変換を開始しました';
-        } else {
-          toast.textContent = data.clipboardCopied ? '公開画像を更新し、URLをPCにコピーしました' : '公開画像を更新しました';
-        }
+        handleUploadSuccess(data, action);
       } catch (error) {
-        toast.textContent = error.message || 'アップロードに失敗しました';
+        const offered = await maybeOfferBrowserMediaCandidates(action, error);
+        await refreshState();
+        if (!offered) {
+          showToast(error.message || 'アップロードに失敗しました', { error: true });
+        }
       } finally {
         uploadButton.disabled = false;
         queueUploadButton.disabled = false;
@@ -1934,14 +2641,13 @@ const indexHTML = `<!doctype html>
       fileUploadPanel.classList.toggle('active', !linkMode && !obsMode);
       linkUploadPanel.classList.toggle('active', linkMode);
       obsUploadPanel.classList.toggle('active', obsMode);
-      if (uploadControls) {
-        uploadControls.hidden = obsMode;
-      }
+      updateUploadControlsVisibility();
       imageInput.required = !linkMode && !obsMode;
       imageURLInput.required = linkMode;
       uploadButton.hidden = false;
       queueUploadButton.hidden = obsMode || !state.videoPlayerEnabled;
       uploadButton.textContent = linkMode ? 'リンクから変換して公開' : '変換して公開';
+      renderShareURL(state);
       applyOBSProtection();
       applyOBS(state.obs);
       if (linkMode) {
@@ -1954,35 +2660,196 @@ const indexHTML = `<!doctype html>
       return fetch(action === 'queue' ? '/api/upload-queue' : '/api/upload', { method: 'POST', body: formData });
     }
 
-    async function copyStartedOBSURL(data) {
-      const url = data && (data.shareURL || data.hlsURL || data.publicHLSURL);
-      if (!url || !url.startsWith('http')) {
+    function handleUploadSuccess(data, action) {
+      applyState(data);
+      announceLocalChange();
+      scrollProgressIntoView();
+      if (action === 'queue') {
+        setWingMode('queue');
+        toast.textContent = '動画変換に追加しました';
         return;
       }
-      const source = document.getElementById('shareURL');
-      try {
-        await copyText(url, source);
-      } catch (error) {
-      }
-      try {
-        await copyURLOnPC('shareURL');
-      } catch (error) {
+      const isVideo = data.current && data.current.kind === 'video';
+      if (isVideo) {
+        toast.textContent = data.clipboardCopied ? '動画HLS変換を開始し、URLをPCにコピーしました' : '動画HLS変換を開始しました';
+      } else {
+        toast.textContent = data.clipboardCopied ? '公開画像を更新し、URLをPCにコピーしました' : '公開画像を更新しました';
       }
     }
 
-    function uploadFromLink(action) {
+    function publicOBSRTSPURL(data) {
+      const url = data && data.obs && data.obs.rtsptURL ? String(data.obs.rtsptURL) : '';
+      if (!url.startsWith('rtsp://')) {
+        return '';
+      }
+      try {
+        const host = new URL(url).hostname;
+        if (/^(localhost|127\.|10\.|192\.168\.|169\.254\.|0\.0\.0\.0$)/i.test(host)) return '';
+        if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host)) return '';
+        if (/^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\./.test(host)) return '';
+      } catch (error) {
+        return '';
+      }
+      return url;
+    }
+
+    async function maybeAutoCopyOBSURL(data) {
+      if (!pendingOBSAutoCopy) {
+        return;
+      }
+      const url = publicOBSRTSPURL(data);
+      if (!url || url === lastAutoCopiedOBSURL) {
+        return;
+      }
+      pendingOBSAutoCopy = false;
+      lastAutoCopiedOBSURL = url;
+      const source = document.getElementById('shareURL');
+      let browserCopied = false;
+      let pcCopied = false;
+      try {
+        browserCopied = await copyText(url, source);
+      } catch (error) {
+      }
+      try {
+        const pcResult = await copyURLOnPC('shareURL');
+        pcCopied = !!pcResult.pcClipboardCopied;
+      } catch (error) {
+      }
+      if (pcCopied && browserCopied) {
+        toast.textContent = 'グローバルRTSP URLをコピーしました。PCにもコピー済みです';
+      } else if (pcCopied) {
+        toast.textContent = 'グローバルRTSP URLをPCにコピーしました';
+      } else if (browserCopied) {
+        toast.textContent = 'グローバルRTSP URLをこの端末にコピーしました';
+      } else {
+        toast.textContent = 'グローバルRTSP URLを表示しました。コピーできない場合は手動でコピーしてください';
+      }
+    }
+
+    function uploadFromLink(action, overrideURL) {
       const formData = new FormData(uploadForm);
+      const targetURL = (overrideURL || imageURLInput.value).trim();
       return fetch(action === 'queue' ? '/api/upload-url-queue' : '/api/upload-url', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          url: imageURLInput.value.trim(),
+          url: targetURL,
           format: formData.get('format'),
           quality: formData.get('quality'),
           maxDimension: formData.get('maxDimension'),
           maxMB: formData.get('maxMB')
         })
       });
+    }
+
+    async function findBrowserMediaCandidates(url) {
+      const res = await fetch('/api/browser-media-candidates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url })
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    }
+
+    async function maybeOfferBrowserMediaCandidates(action, originalError) {
+      if (uploadMode !== 'link') return false;
+      const pageURL = imageURLInput.value.trim();
+      if (!pageURL) return false;
+      if (isKnownYTDLPPageURL(pageURL)) return false;
+      toast.textContent = 'ページ内の動画候補を探しています...';
+      let data;
+      try {
+        data = await findBrowserMediaCandidates(pageURL);
+      } catch (error) {
+        return false;
+      }
+      const candidates = Array.isArray(data.candidates) ? data.candidates : [];
+      if (!candidates.length) {
+        if (data.message && !data.unavailable) {
+          toast.textContent = data.message;
+          return true;
+        }
+        return false;
+      }
+      openMediaCandidateDialog(candidates, action, originalError);
+      toast.textContent = 'ページ内動画候補を検出しました';
+      return true;
+    }
+
+    function isKnownYTDLPPageURL(value) {
+      let host = '';
+      try {
+        host = new URL(value).hostname.toLowerCase();
+      } catch (error) {
+        return false;
+      }
+      return host === 'youtu.be' ||
+        host.endsWith('.youtube.com') ||
+        host === 'youtube.com' ||
+        host.endsWith('.x.com') ||
+        host === 'x.com' ||
+        host.endsWith('.twitter.com') ||
+        host === 'twitter.com' ||
+        host.endsWith('.soundcloud.com') ||
+        host === 'soundcloud.com';
+    }
+
+    function openMediaCandidateDialog(candidates, action, originalError) {
+      if (!mediaCandidateDialog || !mediaCandidateList) return;
+      mediaCandidateList.innerHTML = '';
+      candidates.forEach((candidate) => {
+        const row = document.createElement('div');
+        row.className = 'candidate-item';
+        const meta = document.createElement('div');
+        meta.className = 'candidate-meta';
+        const kind = document.createElement('div');
+        kind.className = 'candidate-kind';
+        kind.textContent = candidate.label || candidate.kind || 'メディア';
+        const url = document.createElement('div');
+        url.className = 'candidate-url';
+        url.textContent = candidate.url || '';
+        meta.append(kind, url);
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = action === 'queue' ? 'キューに追加' : '公開';
+        button.addEventListener('click', () => retryLinkCandidate(action, candidate));
+        row.append(meta, button);
+        mediaCandidateList.append(row);
+      });
+      if (originalError && originalError.message) {
+        mediaCandidateDialog.setAttribute('data-original-error', originalError.message);
+      }
+      mediaCandidateDialog.hidden = false;
+      if (mediaCandidateClose) mediaCandidateClose.focus();
+    }
+
+    function hideMediaCandidateDialog() {
+      if (!mediaCandidateDialog) return;
+      mediaCandidateDialog.hidden = true;
+      if (imageURLInput) imageURLInput.focus();
+    }
+
+    async function retryLinkCandidate(action, candidate) {
+      if (!candidate || !candidate.url) return;
+      hideMediaCandidateDialog();
+      imageURLInput.value = candidate.url;
+      uploadButton.disabled = true;
+      queueUploadButton.disabled = true;
+      toast.textContent = '選択した動画候補をダウンロード中...';
+      renderIngestPreview('downloading', candidate.url, 0, '', true);
+      scrollProgressIntoView();
+      try {
+        const res = await uploadFromLink(action, candidate.url);
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        handleUploadSuccess(data, action);
+      } catch (error) {
+        toast.textContent = error.message || '選択した動画候補の取得に失敗しました';
+      } finally {
+        uploadButton.disabled = false;
+        queueUploadButton.disabled = false;
+      }
     }
 
     function selectedRAWFile() {
@@ -2137,6 +3004,7 @@ const indexHTML = `<!doctype html>
         if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
         applyState(data);
+        applyHistoryTargetMode(data);
         announceLocalChange();
         toast.textContent = data.clipboardCopied ? '履歴から公開し、URLをPCにコピーしました' : '履歴から復元しました';
       } catch (error) {
@@ -2146,12 +3014,26 @@ const indexHTML = `<!doctype html>
       }
     }
 
+    function applyHistoryTargetMode(data) {
+      const mode = data && data.historyTargetMode ? String(data.historyTargetMode) : '';
+      if (mode === 'obs') {
+        setUploadMode('obs');
+      } else if (mode === 'link') {
+        setUploadMode('link');
+      } else if (mode === 'file') {
+        setUploadMode('file');
+      }
+    }
+
     document.addEventListener('click', async (event) => {
       const target = event.target.closest('[data-copy]');
       if (!target) return;
       const id = target.getAttribute('data-copy');
       const source = document.getElementById(id);
       let text = source.textContent;
+      if (id === 'shareURL') {
+        text = displayedShareURL().shareURL || '';
+      }
       if (id === 'obsStreamKey' && state.obs && state.obs.streamKey) {
         text = state.obs.streamKey;
       }
@@ -2193,7 +3075,7 @@ const indexHTML = `<!doctype html>
       const res = await fetch('/api/copy-url', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ target })
+        body: JSON.stringify({ target, mode: uploadMode })
       });
       if (!res.ok) {
         throw new Error(await res.text());
@@ -2242,39 +3124,46 @@ const indexHTML = `<!doctype html>
       button.setAttribute('aria-label', button.title);
       applyOBS(state.obs);
     });
-    obsKeyRotateButton.addEventListener('click', async () => {
-      if (!window.confirm('OBSのStream Keyを更新します。OBS側のキーも差し替える必要があります。よろしいですか？')) {
-        return;
-      }
-      obsKeyRotateButton.disabled = true;
-      toast.textContent = 'OBS Stream Keyを更新中...';
-      try {
-        const res = await fetch('/api/obs/key', { method: 'POST' });
-        if (!res.ok) throw new Error(await res.text());
-        const data = await res.json();
-        applyState(data);
-        announceLocalChange();
-        toast.textContent = 'OBS Stream Keyを更新しました';
-      } catch (error) {
-        toast.textContent = error.message || 'OBS Stream Keyの更新に失敗しました';
-      } finally {
-        obsKeyRotateButton.disabled = false;
-      }
-    });
+    const obsStreamKeyElement = document.getElementById('obsStreamKey');
+    const requestOBSKeyChange = async () => {
+      const nextKey = await showOBSKeyRiskDialog();
+      if (!nextKey) return;
+      await updateOBSStreamKey(nextKey);
+    };
+    if (obsStreamKeyElement) {
+      obsStreamKeyElement.addEventListener('click', requestOBSKeyChange);
+      obsStreamKeyElement.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          requestOBSKeyChange();
+        }
+      });
+    }
+    obsKeyRotateButton.addEventListener('click', requestOBSKeyChange);
     obsLatencyMode.addEventListener('change', async () => {
-      updateOBSLatency();
+      const requestedMode = obsLatencyMode.value;
+      if (requestedMode.startsWith('rtsp-') && !String(confirmedOBSLatencyMode || '').startsWith('rtsp-')) {
+        const accepted = await showRTSPRiskDialog();
+        if (!accepted) {
+          obsLatencyMode.value = confirmedOBSLatencyMode;
+          return;
+        }
+      }
+      updateOBSLatency(requestedMode);
     });
-    obsDVRToggle.addEventListener('change', async () => {
-      updateOBSLatency();
-    });
-    async function updateOBSLatency() {
+    if (obsLatencyDetailButton) {
+      obsLatencyDetailButton.addEventListener('click', async () => {
+        await refreshState();
+        showOBSConnectionsDialog();
+      });
+    }
+    async function updateOBSLatency(mode) {
       obsLatencyMode.disabled = true;
-      obsDVRToggle.disabled = true;
       try {
         const res = await fetch('/api/obs/latency', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mode: obsLatencyMode.value, dvr: obsDVRToggle.checked })
+          body: JSON.stringify({ mode: mode || obsLatencyMode.value })
         });
         if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
@@ -2288,8 +3177,144 @@ const indexHTML = `<!doctype html>
         toast.textContent = error.message || 'Failed to update OBS latency mode';
       } finally {
         obsLatencyMode.disabled = false;
-        obsDVRToggle.disabled = false;
       }
+    }
+    function showRTSPRiskDialog() {
+      if (!rtspRiskDialog || !rtspRiskCancel || !rtspRiskConfirm) {
+        return Promise.resolve(false);
+      }
+      return new Promise((resolve) => {
+        let settled = false;
+        const finish = (accepted) => {
+          if (settled) return;
+          settled = true;
+          rtspRiskDialog.hidden = true;
+          rtspRiskDialog.removeEventListener('click', onBackdrop);
+          rtspRiskCancel.removeEventListener('click', onCancel);
+          rtspRiskConfirm.removeEventListener('click', onConfirm);
+          document.removeEventListener('keydown', onKeyDown);
+          if (obsLatencyMode) obsLatencyMode.focus();
+          resolve(accepted);
+        };
+        const onCancel = () => finish(false);
+        const onConfirm = () => finish(true);
+        const onBackdrop = (event) => {
+          if (event.target === rtspRiskDialog) finish(false);
+        };
+        const onKeyDown = (event) => {
+          if (event.key === 'Escape') finish(false);
+        };
+        rtspRiskDialog.hidden = false;
+        rtspRiskDialog.addEventListener('click', onBackdrop);
+        rtspRiskCancel.addEventListener('click', onCancel);
+        rtspRiskConfirm.addEventListener('click', onConfirm);
+        document.addEventListener('keydown', onKeyDown);
+        rtspRiskConfirm.focus();
+      });
+    }
+    function showOBSKeyRiskDialog() {
+      if (!obsKeyRiskDialog || !obsKeyRiskCancel || !obsKeyRiskConfirm || !obsKeyEditInput) {
+        return Promise.resolve('');
+      }
+      obsKeyEditInput.value = (state.obs && state.obs.streamKey) || '';
+      return new Promise((resolve) => {
+        let settled = false;
+        const finish = (value) => {
+          if (settled) return;
+          settled = true;
+          obsKeyRiskDialog.hidden = true;
+          obsKeyRiskDialog.removeEventListener('click', onBackdrop);
+          obsKeyRiskCancel.removeEventListener('click', onCancel);
+          obsKeyRiskConfirm.removeEventListener('click', onConfirm);
+          obsKeyEditInput.removeEventListener('keydown', onInputKeyDown);
+          document.removeEventListener('keydown', onKeyDown);
+          const key = document.getElementById('obsStreamKey');
+          if (key) key.focus();
+          resolve(value);
+        };
+        const validate = () => {
+          const value = obsKeyEditInput.value.trim();
+          if (!value) {
+            toast.textContent = 'OBS Stream Keyを入力してください';
+            obsKeyEditInput.focus();
+            return '';
+          }
+          if (/[\\/\s?#]/.test(value)) {
+            toast.textContent = 'OBS Stream Keyに空白、/、\\\\、?、# は使えません';
+            obsKeyEditInput.focus();
+            return '';
+          }
+          return value;
+        };
+        const onCancel = () => finish('');
+        const onConfirm = () => {
+          const value = validate();
+          if (value) finish(value);
+        };
+        const onBackdrop = (event) => {
+          if (event.target === obsKeyRiskDialog) finish('');
+        };
+        const onKeyDown = (event) => {
+          if (event.key === 'Escape') finish('');
+        };
+        const onInputKeyDown = (event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            onConfirm();
+          }
+        };
+        obsKeyRiskDialog.hidden = false;
+        obsKeyRiskDialog.addEventListener('click', onBackdrop);
+        obsKeyRiskCancel.addEventListener('click', onCancel);
+        obsKeyRiskConfirm.addEventListener('click', onConfirm);
+        obsKeyEditInput.addEventListener('keydown', onInputKeyDown);
+        document.addEventListener('keydown', onKeyDown);
+        obsKeyEditInput.focus();
+        obsKeyEditInput.select();
+      });
+    }
+    async function updateOBSStreamKey(streamKey) {
+      obsKeyRotateButton.disabled = true;
+      toast.textContent = 'OBS Stream Keyを保存中...';
+      try {
+        const res = await fetch('/api/obs/key', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ streamKey })
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        obsKeyVisible = true;
+        applyState(data);
+        announceLocalChange();
+        toast.textContent = 'OBS Stream Keyを保存しました。OBS側の設定も同じ値へ変更してください';
+      } catch (error) {
+        toast.textContent = error.message || 'OBS Stream Keyの保存に失敗しました';
+      } finally {
+        obsKeyRotateButton.disabled = false;
+      }
+    }
+    function showOBSConnectionsDialog() {
+      if (!obsConnectionsDialog || !obsConnectionsClose) return;
+      const close = () => {
+        obsConnectionsDialog.hidden = true;
+        obsConnectionsDialog.removeEventListener('click', onBackdrop);
+        obsConnectionsClose.removeEventListener('click', close);
+        document.removeEventListener('keydown', onKeyDown);
+        if (obsLatencyDetailButton) obsLatencyDetailButton.focus();
+      };
+      const onBackdrop = (event) => {
+        if (event.target === obsConnectionsDialog) close();
+      };
+      const onKeyDown = (event) => {
+        if (event.key === 'Escape') close();
+      };
+      renderOBSConnections((state.obs && state.obs.connections) || []);
+      obsConnectionsDialog.hidden = false;
+      obsConnectionsDialog.addEventListener('click', onBackdrop);
+      obsConnectionsClose.addEventListener('click', close);
+      document.addEventListener('keydown', onKeyDown);
+      obsConnectionsClose.focus();
     }
     document.getElementById('tunnelReconnectButton').addEventListener('click', async () => {
       const button = document.getElementById('tunnelReconnectButton');
@@ -2306,6 +3331,84 @@ const indexHTML = `<!doctype html>
         button.disabled = false;
       }
     });
+    function updateYTDLPAuthState() {
+      const saved = !!(state.ytdlpAuth && state.ytdlpAuth.saved);
+      if (ytdlpCookieStatus) {
+        ytdlpCookieStatus.textContent = saved ? 'Cookie保存済み' : 'Cookie未保存';
+      }
+      if (ytdlpCookieDeleteButton) {
+        ytdlpCookieDeleteButton.disabled = !saved;
+      }
+      if (ytdlpAuthInitialized && !ytdlpAuthWasSaved && saved) {
+        showToast('YouTubeログインCookieを保存しました');
+      }
+      ytdlpAuthInitialized = true;
+      ytdlpAuthWasSaved = saved;
+    }
+    function showSettingsModal() {
+      if (!settingsModal) return;
+      updateYTDLPAuthState();
+      settingsModal.hidden = false;
+      if (ytdlpLoginButton) ytdlpLoginButton.focus();
+    }
+    function hideSettingsModal() {
+      if (!settingsModal) return;
+      settingsModal.hidden = true;
+      if (settingsButton) settingsButton.focus();
+    }
+    function confirmYTDLPLoginRisk() {
+      return window.confirm('ログイン情報をこのアプリ用のCookieとして保存します。\n\nBOT認証エラーが出た時だけ使用してください。通常時の利用は推奨しません。\n\nデメリット:\n- このPC上のImagePadServerデータ内にCookieファイルが保存されます。\n- Cookieが残っている間はyt-dlpがログイン状態でアクセスします。\n- 共有PCではCookie削除を使って消してください。\n\n続行しますか？');
+    }
+    async function loginYTDLP() {
+      if (!confirmYTDLPLoginRisk()) return;
+      const buttons = [ytdlpLoginButton, toastYTDLPLoginButton].filter(Boolean);
+      buttons.forEach((button) => { button.disabled = true; });
+      showToast('ログイン画面を開いています。YouTubeにログインするとCookieを保存します。', { timeout: 0 });
+      try {
+        const res = await fetch('/api/ytdlp/login', { method: 'POST' });
+        if (!res.ok) throw new Error(await res.text());
+        state.ytdlpAuth = await res.json();
+        updateYTDLPAuthState();
+        showToast(state.ytdlpAuth && state.ytdlpAuth.saved ? 'YouTubeログインCookieを保存しました' : 'ログインCookieはまだ保存されていません', { timeout: 5200 });
+        scheduleRefresh(100);
+      } catch (error) {
+        showToast(error.message || 'YouTubeログインCookieの保存に失敗しました', { error: true });
+      } finally {
+        buttons.forEach((button) => { button.disabled = false; });
+      }
+    }
+    async function deleteYTDLPCookies() {
+      if (!window.confirm('保存済みのYouTubeログインCookieを削除しますか？')) return;
+      if (ytdlpCookieDeleteButton) ytdlpCookieDeleteButton.disabled = true;
+      try {
+        const res = await fetch('/api/ytdlp/cookies', { method: 'DELETE' });
+        if (!res.ok) throw new Error(await res.text());
+        state.ytdlpAuth = await res.json();
+        updateYTDLPAuthState();
+        showToast('YouTubeログインCookieを削除しました');
+        scheduleRefresh(100);
+      } catch (error) {
+        showToast(error.message || 'YouTubeログインCookieの削除に失敗しました', { error: true });
+      } finally {
+        updateYTDLPAuthState();
+      }
+    }
+    if (settingsButton) settingsButton.addEventListener('click', showSettingsModal);
+    if (settingsCloseButton) settingsCloseButton.addEventListener('click', hideSettingsModal);
+    if (settingsModal) {
+      settingsModal.addEventListener('click', (event) => {
+        if (event.target === settingsModal) hideSettingsModal();
+      });
+    }
+    if (mediaCandidateClose) mediaCandidateClose.addEventListener('click', hideMediaCandidateDialog);
+    if (mediaCandidateDialog) {
+      mediaCandidateDialog.addEventListener('click', (event) => {
+        if (event.target === mediaCandidateDialog) hideMediaCandidateDialog();
+      });
+    }
+    if (ytdlpLoginButton) ytdlpLoginButton.addEventListener('click', loginYTDLP);
+    if (toastYTDLPLoginButton) toastYTDLPLoginButton.addEventListener('click', loginYTDLP);
+    if (ytdlpCookieDeleteButton) ytdlpCookieDeleteButton.addEventListener('click', deleteYTDLPCookies);
     const quitButton = document.getElementById('quitButton');
     if (quitButton) {
       quitButton.addEventListener('click', async () => {
@@ -2327,6 +3430,8 @@ const indexHTML = `<!doctype html>
     fileModeButton.addEventListener('click', () => setUploadMode('file'));
     linkModeButton.addEventListener('click', () => setUploadMode('link'));
     obsModeButton.addEventListener('click', () => setUploadMode('obs'));
+    formatSelect.addEventListener('change', updateQualityOptions);
+    updateQualityOptions();
     imageInput.addEventListener('change', ensureFFmpegForRAWSelection);
     qualityMode.addEventListener('change', async () => {
       try {
@@ -2431,6 +3536,15 @@ const indexHTML = `<!doctype html>
         if ('BroadcastChannel' in window) {
           localChangeChannel = new BroadcastChannel('imagepad-state');
           localChangeChannel.onmessage = () => scheduleRefresh(100);
+        }
+      } catch (error) {
+      }
+      try {
+        if ('EventSource' in window) {
+          const stateEvents = new EventSource('/api/events');
+          stateEvents.onopen = () => scheduleRefresh(50);
+          stateEvents.onerror = () => scheduleRefresh(1000);
+          stateEvents.addEventListener('state', () => scheduleRefresh(0));
         }
       } catch (error) {
       }

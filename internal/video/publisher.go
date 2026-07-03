@@ -846,9 +846,7 @@ func downloadVideoURL(rawURL, outDir string) (sourcePath, name, thumbnailPath st
 		"--max-filesize", "2G",
 		"-f", "bv*[height<=1080]+ba/b[height<=1080]/best[height<=1080]/best",
 		"--merge-output-format", "mp4",
-		// Download DASH/HLS fragments in parallel to work around per-connection
-		// throttling (notably YouTube), the same speedup music mode uses.
-		"--concurrent-fragments", "4",
+		"--concurrent-fragments", ytdlpConcurrentFragments(rawURL),
 		"--write-info-json",
 		"--write-thumbnail",
 		"-o", target,
@@ -1091,10 +1089,6 @@ func EndExternalHLS(outDir string, done chan struct{}) {
 	}
 }
 
-func isActive(outDir string) bool {
-	return isActiveForID(outDir, "")
-}
-
 func isActiveForID(outDir, id string) bool {
 	active, ok := activeHLS.Load(outDir)
 	if !ok {
@@ -1201,9 +1195,7 @@ func finalizeHLSPlaylist(outDir, id string) error {
 		return err
 	}
 	text := string(data)
-	if strings.Contains(text, "#EXT-X-PLAYLIST-TYPE:EVENT") {
-		text = strings.Replace(text, "#EXT-X-PLAYLIST-TYPE:EVENT", "#EXT-X-PLAYLIST-TYPE:VOD", 1)
-	}
+	text = strings.Replace(text, "#EXT-X-PLAYLIST-TYPE:EVENT", "#EXT-X-PLAYLIST-TYPE:VOD", 1)
 	if !strings.Contains(text, "#EXT-X-ENDLIST") {
 		if !strings.HasSuffix(text, "\n") {
 			text += "\n"

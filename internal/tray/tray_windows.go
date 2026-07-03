@@ -314,7 +314,9 @@ func newNotifyIconData(hwnd, icon uintptr) notifyIconData {
 		CallbackMsg: trayCallback,
 		Icon:        icon,
 	}
-	copy(data.Tip[:], syscall.StringToUTF16(about.AppName+" "+about.Version))
+	if tip, err := syscall.UTF16FromString(about.AppName + " " + about.Version); err == nil {
+		copy(data.Tip[:], tip)
+	}
 	return data
 }
 

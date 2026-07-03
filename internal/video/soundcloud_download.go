@@ -2,6 +2,9 @@ package video
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -9,11 +12,15 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
+
+	"imagepadserver/internal/settings"
+	"imagepadserver/internal/ytdlpauth"
 )
 
 // runDownloadCmd is the function used to execute yt-dlp.
 // It can be overridden by tests to avoid calling the real tool.
-var runDownloadCmd = run
+var runDownloadCmd = runYTDLPCommand
 
 // ffmpegLocationArgs returns yt-dlp's --ffmpeg-location flag pointing at the
 // bundled ffmpeg/ffprobe directory, so yt-dlp postprocessing (audio extraction
@@ -40,6 +47,22 @@ func ffmpegLocationArgs() []string {
 // ships stale edge99/edge101 fingerprints.)
 var youtubeImpersonateTargets = []string{"safari", "chrome", "firefox"}
 
+type ytdlpFailureDiagnostic struct {
+	GeneratedAt string                   `json:"generatedAt"`
+	URL         string                   `json:"url"`
+	Executable  string                   `json:"executable"`
+	Class       string                   `json:"class"`
+	UsedCookies bool                     `json:"usedCookies"`
+	Attempts    []ytdlpAttemptDiagnostic `json:"attempts"`
+}
+
+type ytdlpAttemptDiagnostic struct {
+	ImpersonateTarget string   `json:"impersonateTarget,omitempty"`
+	Args              []string `json:"args"`
+	Error             string   `json:"error"`
+	Class             string   `json:"class"`
+}
+
 // isYouTubeURL reports whether rawURL points at YouTube.
 func isYouTubeURL(rawURL string) bool {
 	u, err := url.Parse(rawURL)
@@ -62,6 +85,13 @@ func isYouTubeURL(rawURL string) bool {
 // web → web_safari → android_vr. Combined with the browser impersonation loop
 // below, this covers both failure modes without pinning a single client.
 const youtubePlayerClients = "web,web_safari,android_vr"
+
+func ytdlpConcurrentFragments(rawURL string) string {
+	if isYouTubeURL(rawURL) {
+		return "1"
+	}
+	return "4"
+}
 
 // ytdlpDownloadAttempts returns the ordered sets of extra yt-dlp args to try for
 // rawURL. For YouTube it impersonates a browser (the default android_vr client
@@ -90,18 +120,113 @@ func ytdlpDownloadAttempts(rawURL string) [][]string {
 // the URL (it is appended last). Non-YouTube URLs run exactly once.
 func runYTDLPDownload(exe, rawURL string, baseArgs []string) error {
 	var lastErr error
+	isYouTube := isYouTubeURL(rawURL)
+	var attempts []ytdlpAttemptDiagnostic
 	for _, extra := range ytdlpDownloadAttempts(rawURL) {
 		args := make([]string, 0, len(baseArgs)+len(extra)+1)
 		args = append(args, baseArgs...)
+		if !hasArg(args, "--newline") {
+			args = append(args, "--newline")
+		}
+		args = append(args, ytdlpauth.SavedCookieArgs()...)
 		args = append(args, extra...)
 		args = append(args, rawURL)
 		if err := runDownloadCmd(exe, args...); err == nil {
 			return nil
 		} else {
 			lastErr = err
+			if isYouTube {
+				class := classifyYTDLPError(err.Error())
+				attempts = append(attempts, ytdlpAttemptDiagnostic{
+					ImpersonateTarget: impersonateTargetFromArgs(args),
+					Args:              append([]string(nil), args...),
+					Error:             err.Error(),
+					Class:             class,
+				})
+				if class == "youtube_bot_check" {
+					writeYTDLPFailureDiagnostic(rawURL, exe, ytdlpauth.Status().Saved, attempts)
+					return err
+				}
+			}
 		}
 	}
+	if isYouTube && lastErr != nil {
+		writeYTDLPFailureDiagnostic(rawURL, exe, ytdlpauth.Status().Saved, attempts)
+	}
 	return lastErr
+}
+
+func writeYTDLPFailureDiagnostic(rawURL, exe string, usedCookies bool, attempts []ytdlpAttemptDiagnostic) {
+	if len(attempts) == 0 {
+		return
+	}
+	dir := filepath.Join(settings.Dir(), "diagnostics", "ytdlp")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return
+	}
+	report := ytdlpFailureDiagnostic{
+		GeneratedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		URL:         rawURL,
+		Executable:  exe,
+		Class:       attempts[len(attempts)-1].Class,
+		UsedCookies: usedCookies,
+		Attempts:    attempts,
+	}
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return
+	}
+	data = append(data, '\n')
+	path := filepath.Join(dir, "ytdlp-"+time.Now().UTC().Format("20060102T150405.000000000Z")+"-"+randomHex(4)+".json")
+	_ = os.WriteFile(path, data, 0o600)
+}
+
+func impersonateTargetFromArgs(args []string) string {
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "--impersonate" {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+func hasArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
+}
+
+func classifyYTDLPError(text string) string {
+	lower := strings.ToLower(text)
+	switch {
+	case strings.Contains(lower, "sign in to confirm") && strings.Contains(lower, "not a bot"):
+		return "youtube_bot_check"
+	case strings.Contains(lower, "requested format is not available") || strings.Contains(lower, "only images are available"):
+		return "youtube_format_unavailable"
+	case strings.Contains(lower, "po token") || strings.Contains(lower, "potoken"):
+		return "youtube_po_token_missing"
+	case strings.Contains(lower, "impersonate target") && strings.Contains(lower, "is not available"):
+		return "yt_dlp_impersonate_unavailable"
+	case strings.Contains(lower, "http error 403") || strings.Contains(lower, " forbidden"):
+		return "http_403"
+	case strings.Contains(lower, "http error 429") || strings.Contains(lower, "too many requests"):
+		return "rate_limited"
+	case strings.Contains(lower, "timeout") || strings.Contains(lower, "tls handshake") || strings.Contains(lower, "no such host"):
+		return "network"
+	default:
+		return "unknown"
+	}
+}
+
+func randomHex(bytesLen int) string {
+	buf := make([]byte, bytesLen)
+	if _, err := rand.Read(buf); err != nil {
+		return "00000000"
+	}
+	return hex.EncodeToString(buf)
 }
 
 // DownloadSoundCloud downloads a SoundCloud track using yt-dlp and returns
@@ -133,6 +258,7 @@ func DownloadSoundCloud(ctx context.Context, ytdlp, rawURL, outDir string) (Acqu
 	args := []string{
 		"--no-playlist",
 		"--no-warnings",
+		"--newline",
 		"--max-filesize", strconv.FormatInt(int64(MaxMediaSourceBytes), 10),
 		// Parallel fragment download — same speedup music mode uses.
 		"--concurrent-fragments", "4",

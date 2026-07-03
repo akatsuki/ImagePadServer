@@ -24,6 +24,7 @@ var (
 	procGlobalLock       = kernel32.NewProc("GlobalLock")
 	procGlobalUnlock     = kernel32.NewProc("GlobalUnlock")
 	procGlobalFree       = kernel32.NewProc("GlobalFree")
+	procRtlMoveMemory    = kernel32.NewProc("RtlMoveMemory")
 )
 
 // CopyText writes text to the current Windows user's clipboard.
@@ -52,9 +53,7 @@ func CopyText(text string) error {
 		procGlobalFree.Call(mem)
 		return err
 	}
-	for i, v := range data {
-		*(*uint16)(unsafe.Pointer(ptr + uintptr(i*2))) = v
-	}
+	procRtlMoveMemory.Call(ptr, uintptr(unsafe.Pointer(&data[0])), uintptr(len(data)*2))
 	procGlobalUnlock.Call(mem)
 
 	if ok, _, err := procSetClipboardData.Call(cfUnicodeText, mem); ok == 0 {

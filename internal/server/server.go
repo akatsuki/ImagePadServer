@@ -31,6 +31,7 @@ import (
 	"imagepadserver/internal/settings"
 	"imagepadserver/internal/upnp"
 	"imagepadserver/internal/video"
+	"imagepadserver/internal/ytdlpauth"
 )
 
 const (
@@ -39,7 +40,21 @@ const (
 	maxVideoUploadBytes = 2 << 30 // matches yt-dlp --max-filesize 2G
 )
 
-var pageMediaDownloader = video.DownloadMediaURL
+var (
+	pageMediaDownloader    = video.DownloadMediaURL
+	pageHLSMediaDownloader = downloadPageHLSMedia
+	networkMeasurer        = video.MeasureNetwork
+	ensureFFmpeg           = video.EnsureFFmpeg
+	ytdlpLoginLauncher     = func() error {
+		_, err := ytdlpauth.LaunchLoginAndSave(context.Background())
+		return err
+	}
+)
+
+var (
+	stateEventThrottleDelay  = 300 * time.Millisecond
+	stateEventHeartbeatDelay = 15 * time.Second
+)
 
 type Server struct {
 	cfg   config.Config
@@ -63,6 +78,58 @@ type Server struct {
 
 	toolInstallMu  sync.Mutex
 	toolInstalling bool
+	rtspMap        rtspMappingHandle
+	rtspSessionID  string
+	rtspReadySeq   uint64
+	mapRTSPPort    rtspPortMapper
+	setRTSPURL     func(sessionID, publicURL, message string) bool
+	eventMu        sync.Mutex
+	stateEvents    map[chan struct{}]struct{}
+	lastStateEvent time.Time
+	stateEventDue  bool
+}
+
+type rtspMappingHandle interface {
+	ExternalIP() string
+	ExternalPort() int
+	Close() error
+}
+
+type rtspPortMapper func(protocol string, internalPort, externalPort int, description string) (rtspMappingHandle, upnp.Result)
+
+type rtspMappingSet struct {
+	control rtspMappingHandle
+	owned   []rtspMappingHandle
+}
+
+func (m *rtspMappingSet) ExternalIP() string {
+	if m == nil || m.control == nil {
+		return ""
+	}
+	return m.control.ExternalIP()
+}
+
+func (m *rtspMappingSet) ExternalPort() int {
+	if m == nil || m.control == nil {
+		return 0
+	}
+	return m.control.ExternalPort()
+}
+
+func (m *rtspMappingSet) Close() error {
+	if m == nil {
+		return nil
+	}
+	var firstErr error
+	for _, mapping := range m.owned {
+		if mapping == nil {
+			continue
+		}
+		if err := mapping.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 func New(cfg config.Config, store *library.Store, imageURLBase string) *Server {
@@ -91,23 +158,41 @@ func New(cfg config.Config, store *library.Store, imageURLBase string) *Server {
 		adminToken:     adminToken,
 		pairings:       make(map[string]pairingRequest),
 		relayNonces:    make(map[string]time.Time),
+		stateEvents:    make(map[chan struct{}]struct{}),
 	}
 	srv.obs = obsrtmp.New(store.Dir(), advertisedHost, 1935, obsStreamKey, srv.videoQualityPreset, srv.obsLatencyProfile, obsrtmp.Callbacks{
-		OnStart: srv.handleOBSStreamStart,
-		OnDone:  srv.handleOBSStreamDone,
+		OnStart:     srv.handleOBSStreamStart,
+		OnDone:      srv.handleOBSStreamDone,
+		OnRTSPReady: srv.handleRTSPReady,
+		OnRTSPDone:  srv.handleRTSPDone,
 	})
+	srv.mapRTSPPort = func(protocol string, internalPort, externalPort int, description string) (rtspMappingHandle, upnp.Result) {
+		var mapping *upnp.TCPMapping
+		var result upnp.Result
+		if strings.EqualFold(protocol, "UDP") {
+			mapping, result = upnp.MapUDP(internalPort, externalPort, description)
+		} else {
+			mapping, result = upnp.MapTCP(internalPort, externalPort, description)
+		}
+		return mapping, result
+	}
+	srv.setRTSPURL = srv.obs.SetRTSPURL
 	return srv
 }
 
 func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/", s.admin(s.handleIndex))
 	mux.HandleFunc("/api/state", s.admin(s.handleState))
+	mux.HandleFunc("/api/events", s.admin(s.handleEvents))
 	mux.HandleFunc("/api/tunnel/reconnect", s.admin(s.handleTunnelReconnect))
 	mux.HandleFunc("/api/quit", s.admin(s.handleQuit))
+	mux.HandleFunc("/api/ytdlp/login", s.admin(s.handleYTDLPLogin))
+	mux.HandleFunc("/api/ytdlp/cookies", s.admin(s.handleYTDLPCookies))
 	mux.HandleFunc("/api/upload", s.admin(s.handleUpload))
 	mux.HandleFunc("/api/upload-queue", s.admin(s.handleUploadQueue))
 	mux.HandleFunc("/api/upload-url", s.admin(s.handleUploadURL))
 	mux.HandleFunc("/api/upload-url-queue", s.admin(s.handleUploadURLQueue))
+	mux.HandleFunc("/api/browser-media-candidates", s.admin(s.handleBrowserMediaCandidates))
 	mux.HandleFunc("/api/clear", s.admin(s.handleClear))
 	mux.HandleFunc("/api/pairing/request", s.handlePairingRequest)
 	mux.HandleFunc("/api/pairing/confirm", s.handlePairingConfirm)
@@ -182,7 +267,6 @@ func (s *Server) SetExitRequested(fn func()) {
 
 func (s *Server) SetTunnelStatus(ok bool, baseURL, message string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if ok {
 		s.tunnelURLBase = strings.TrimRight(baseURL, "/") + "/"
 	} else {
@@ -192,6 +276,72 @@ func (s *Server) SetTunnelStatus(ok bool, baseURL, message string) {
 		"ok":      ok,
 		"url":     s.tunnelURLBase,
 		"message": message,
+	}
+	s.mu.Unlock()
+	s.broadcastStateChanged()
+}
+
+func (s *Server) subscribeStateEvents() (<-chan struct{}, func()) {
+	ch := make(chan struct{}, 1)
+	s.eventMu.Lock()
+	if s.stateEvents == nil {
+		s.stateEvents = make(map[chan struct{}]struct{})
+	}
+	s.stateEvents[ch] = struct{}{}
+	s.eventMu.Unlock()
+	unsubscribe := func() {
+		s.eventMu.Lock()
+		if _, ok := s.stateEvents[ch]; ok {
+			delete(s.stateEvents, ch)
+			close(ch)
+		}
+		s.eventMu.Unlock()
+	}
+	return ch, unsubscribe
+}
+
+func (s *Server) broadcastStateChanged() {
+	s.eventMu.Lock()
+	defer s.eventMu.Unlock()
+	s.lastStateEvent = time.Now()
+	s.broadcastStateChangedLocked()
+}
+
+func (s *Server) broadcastStateChangedThrottled() {
+	s.eventMu.Lock()
+	now := time.Now()
+	elapsed := now.Sub(s.lastStateEvent)
+	if s.lastStateEvent.IsZero() || elapsed >= stateEventThrottleDelay {
+		s.lastStateEvent = now
+		s.stateEventDue = false
+		s.broadcastStateChangedLocked()
+		s.eventMu.Unlock()
+		return
+	}
+	if s.stateEventDue {
+		s.eventMu.Unlock()
+		return
+	}
+	s.stateEventDue = true
+	delay := stateEventThrottleDelay - elapsed
+	s.eventMu.Unlock()
+	time.AfterFunc(delay, func() {
+		s.eventMu.Lock()
+		if s.stateEventDue {
+			s.stateEventDue = false
+			s.lastStateEvent = time.Now()
+			s.broadcastStateChangedLocked()
+		}
+		s.eventMu.Unlock()
+	})
+}
+
+func (s *Server) broadcastStateChangedLocked() {
+	for ch := range s.stateEvents {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -203,12 +353,127 @@ func (s *Server) SyncOBSReceiver() {
 		s.obs.Start()
 		return
 	}
+	s.closeRTSPMapping("")
 	s.obs.Stop()
 }
 
 func (s *Server) StopOBSReceiver() {
+	s.closeRTSPMapping("")
 	if s.obs != nil {
 		s.obs.StopAndWait(8 * time.Second)
+	}
+}
+
+func (s *Server) handleRTSPReady(endpoint obsrtmp.RTSPEndpoint) {
+	s.mu.Lock()
+	s.rtspReadySeq++
+	seq := s.rtspReadySeq
+	mapPort := s.mapRTSPPort
+	setURL := s.setRTSPURL
+	s.mu.Unlock()
+	s.broadcastStateChanged()
+
+	if mapPort == nil || setURL == nil {
+		return
+	}
+	go s.publishRTSPReady(endpoint, seq, mapPort, setURL)
+}
+
+func (s *Server) publishRTSPReady(endpoint obsrtmp.RTSPEndpoint, seq uint64, mapPort rtspPortMapper, setURL func(sessionID, publicURL, message string) bool) {
+	defer s.broadcastStateChanged()
+	mapping, result := mapRTSPCompatibilityPorts(mapPort, endpoint)
+	if mapping == nil || !result.OK {
+		message := "RTSP is available on LAN/Tailscale; UPnP publication failed"
+		if result.Message != "" {
+			message += ": " + result.Message
+		}
+		setURL(endpoint.SessionID, "", message)
+		return
+	}
+	if !upnp.IsGloballyRoutableIPv4(mapping.ExternalIP()) {
+		_ = mapping.Close()
+		setURL(endpoint.SessionID, "",
+			"RTSP is available on LAN/Tailscale; CGNAT or upstream NAT prevents direct publication.")
+		return
+	}
+
+	s.mu.Lock()
+	if seq != s.rtspReadySeq {
+		s.mu.Unlock()
+		_ = mapping.Close()
+		return
+	}
+	previous := s.rtspMap
+	s.rtspMap = mapping
+	s.rtspSessionID = endpoint.SessionID
+	s.mu.Unlock()
+	if previous != nil {
+		_ = previous.Close()
+	}
+
+	publicURL := fmt.Sprintf("rtsp://%s:%d/%s", mapping.ExternalIP(), mapping.ExternalPort(), endpoint.Path)
+	if !setURL(endpoint.SessionID, publicURL,
+		"RTSP TCP/UDP is published through UPnP at "+mapping.ExternalIP()+".") {
+		s.closeRTSPMapping(endpoint.SessionID)
+	}
+}
+
+func mapRTSPCompatibilityPorts(mapPort rtspPortMapper, endpoint obsrtmp.RTSPEndpoint) (rtspMappingHandle, upnp.Result) {
+	type requestedMapping struct {
+		protocol    string
+		internal    int
+		external    int
+		description string
+	}
+	requests := []requestedMapping{
+		{protocol: "TCP", internal: endpoint.Port, external: endpoint.Port, description: "ImagePadServer RTSP TCP"},
+	}
+	if endpoint.RTPPort > 0 {
+		requests = append(requests, requestedMapping{protocol: "UDP", internal: endpoint.RTPPort, external: endpoint.RTPPort, description: "ImagePadServer RTSP RTP"})
+	}
+	if endpoint.RTCPPort > 0 {
+		requests = append(requests, requestedMapping{protocol: "UDP", internal: endpoint.RTCPPort, external: endpoint.RTCPPort, description: "ImagePadServer RTSP RTCP"})
+	}
+
+	var owned []rtspMappingHandle
+	for i, request := range requests {
+		mapping, result := mapPort(request.protocol, request.internal, request.external, request.description)
+		if mapping == nil || !result.OK {
+			for _, previous := range owned {
+				_ = previous.Close()
+			}
+			return nil, result
+		}
+		owned = append(owned, mapping)
+		if i == 0 && !upnp.IsGloballyRoutableIPv4(mapping.ExternalIP()) {
+			return &rtspMappingSet{control: mapping, owned: owned}, result
+		}
+	}
+	return &rtspMappingSet{control: owned[0], owned: owned}, upnp.Result{
+		OK:         true,
+		Message:    "RTSP TCP/UDP ports mapped by UPnP",
+		ExternalIP: owned[0].ExternalIP(),
+	}
+}
+
+func (s *Server) handleRTSPDone(sessionID string) {
+	s.closeRTSPMapping(sessionID)
+	s.broadcastStateChanged()
+}
+
+func (s *Server) closeRTSPMapping(sessionID string) {
+	s.mu.Lock()
+	if sessionID != "" && s.rtspSessionID != sessionID {
+		s.mu.Unlock()
+		return
+	}
+	mapping := s.rtspMap
+	s.rtspMap = nil
+	s.rtspSessionID = ""
+	s.rtspReadySeq++
+	s.mu.Unlock()
+	if mapping != nil {
+		_ = mapping.Close()
 	}
 }
 
@@ -232,6 +497,43 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.state(r))
 }
 
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming is unsupported", http.StatusInternalServerError)
+		return
+	}
+	events, unsubscribe := s.subscribeStateEvents()
+	defer unsubscribe()
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Connection", "keep-alive")
+	_, _ = io.WriteString(w, "retry: 1000\n")
+	_, _ = io.WriteString(w, "event: state\ndata: {}\n\n")
+	flusher.Flush()
+	heartbeat := time.NewTicker(stateEventHeartbeatDelay)
+	defer heartbeat.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-heartbeat.C:
+			_, _ = io.WriteString(w, "event: heartbeat\ndata: {}\n\n")
+			flusher.Flush()
+		case _, ok := <-events:
+			if !ok {
+				return
+			}
+			_, _ = io.WriteString(w, "event: state\ndata: {}\n\n")
+			flusher.Flush()
+		}
+	}
+}
+
 func (s *Server) handleTunnelReconnect(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -251,6 +553,35 @@ func (s *Server) handleTunnelReconnect(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]interface{}{"ok": true, "message": "再接続を要求しました"})
 	default:
 		writeJSON(w, map[string]interface{}{"ok": true, "message": "再接続要求は保留中です"})
+	}
+}
+
+func (s *Server) handleYTDLPLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := ytdlpLoginLauncher(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.broadcastStateChanged()
+	writeJSON(w, ytdlpauth.Status())
+}
+
+func (s *Server) handleYTDLPCookies(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, ytdlpauth.Status())
+	case http.MethodDelete:
+		if err := ytdlpauth.DeleteCookies(); err != nil {
+			http.Error(w, "failed to delete yt-dlp cookies", http.StatusInternalServerError)
+			return
+		}
+		s.broadcastStateChanged()
+		writeJSON(w, ytdlpauth.Status())
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
@@ -285,6 +616,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	defer s.broadcastStateChanged()
 	if err := r.ParseMultipartForm(uploadMemoryLimit()); err != nil {
 		http.Error(w, "failed to parse upload", http.StatusBadRequest)
 		return
@@ -310,6 +642,7 @@ func (s *Server) handleUploadQueue(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	defer s.broadcastStateChanged()
 	if err := r.ParseMultipartForm(uploadMemoryLimit()); err != nil {
 		http.Error(w, "failed to parse upload", http.StatusBadRequest)
 		return
@@ -335,6 +668,7 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	defer s.broadcastStateChanged()
 
 	var req struct {
 		URL          string `json:"url"`
@@ -370,7 +704,12 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 
 		// Preserve SoundCloud-page detection (uses yt-dlp).
 		if isSoundCloudURL(req.URL) {
-			media, err := video.DownloadMediaURL(req.URL, s.store.Dir())
+			var media video.DownloadedMedia
+			err := s.withYTDLPIngestProgress(func() error {
+				var downloadErr error
+				media, downloadErr = video.DownloadMediaURL(req.URL, s.store.Dir())
+				return downloadErr
+			})
 			if err != nil {
 				http.Error(w, videoURLDownloadError(err), http.StatusBadRequest)
 				return
@@ -392,7 +731,12 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if s.musicModeEnabled() {
-			acquired, err := musicURLAcquirer(r.Context(), s, req.URL)
+			var acquired video.AcquiredAudio
+			err := s.withYTDLPIngestProgress(func() error {
+				var acquireErr error
+				acquired, acquireErr = musicURLAcquirer(r.Context(), s, req.URL)
+				return acquireErr
+			})
 			if err != nil {
 				http.Error(w, videoURLDownloadError(err), http.StatusBadRequest)
 				return
@@ -410,7 +754,12 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 		// Try yt-dlp first — it handles YouTube, X/Twitter, niconico and many
 		// other video pages. If it cannot handle the URL, fall back to the
 		// bounded SSRF-safe direct downloader for direct media file links.
-		ytMedia, ytdlpErr := pageMediaDownloader(req.URL, s.store.Dir())
+		var ytMedia video.DownloadedMedia
+		ytdlpErr := s.withYTDLPIngestProgress(func() error {
+			var downloadErr error
+			ytMedia, downloadErr = pageMediaDownloader(req.URL, s.store.Dir())
+			return downloadErr
+		})
 		if ytdlpErr == nil {
 			state, err := s.processVideoFileAndPublish(r, ytMedia.SourcePath, ytMedia.Name, ytMedia.ThumbnailPath)
 			if err != nil {
@@ -432,11 +781,29 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		var hlsErr error
+		var hlsMedia video.DownloadedMedia
+		hlsErr = s.withYTDLPIngestProgress(func() error {
+			var downloadErr error
+			hlsMedia, downloadErr = pageHLSMediaDownloader(r.Context(), req.URL, s.store.Dir())
+			return downloadErr
+		})
+		if hlsErr == nil {
+			state, err := s.processVideoFileAndPublish(r, hlsMedia.SourcePath, hlsMedia.Name, hlsMedia.ThumbnailPath)
+			if err != nil {
+				os.Remove(hlsMedia.SourcePath)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, state)
+			return
+		}
+
 		// Fallback: bounded SSRF-safe downloader. Redirects are revalidated and
 		// the completed bytes are classified by ffprobe.
 		media, err := s.downloadDirectMedia(r.Context(), req.URL)
 		if err != nil {
-			http.Error(w, videoURLDownloadError(combineURLErrors(ytdlpErr, err)), http.StatusBadRequest)
+			http.Error(w, videoURLDownloadError(combineURLErrors(combineURLErrors(ytdlpErr, hlsErr), err)), http.StatusBadRequest)
 			return
 		}
 		probe := media.Probe
@@ -504,6 +871,7 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	defer s.broadcastStateChanged()
 
 	var req struct {
 		URL          string `json:"url"`
@@ -537,7 +905,12 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 
 		// Preserve SoundCloud-page detection (uses yt-dlp).
 		if isSoundCloudURL(req.URL) {
-			media, err := video.DownloadMediaURL(req.URL, s.store.Dir())
+			var media video.DownloadedMedia
+			err := s.withYTDLPIngestProgress(func() error {
+				var downloadErr error
+				media, downloadErr = video.DownloadMediaURL(req.URL, s.store.Dir())
+				return downloadErr
+			})
 			if err != nil {
 				http.Error(w, videoURLDownloadError(err), http.StatusBadRequest)
 				return
@@ -559,7 +932,12 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if s.musicModeEnabled() {
-			acquired, err := musicURLAcquirer(r.Context(), s, req.URL)
+			var acquired video.AcquiredAudio
+			err := s.withYTDLPIngestProgress(func() error {
+				var acquireErr error
+				acquired, acquireErr = musicURLAcquirer(r.Context(), s, req.URL)
+				return acquireErr
+			})
 			if err != nil {
 				http.Error(w, videoURLDownloadError(err), http.StatusBadRequest)
 				return
@@ -576,7 +954,12 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 
 		// Try yt-dlp first (YouTube, X/Twitter, niconico, …); fall back to the
 		// bounded SSRF-safe direct downloader for direct media file links.
-		ytMedia, ytdlpErr := pageMediaDownloader(req.URL, s.store.Dir())
+		var ytMedia video.DownloadedMedia
+		ytdlpErr := s.withYTDLPIngestProgress(func() error {
+			var downloadErr error
+			ytMedia, downloadErr = pageMediaDownloader(req.URL, s.store.Dir())
+			return downloadErr
+		})
 		if ytdlpErr == nil {
 			state, err := s.processVideoFileAndQueue(r, ytMedia.SourcePath, ytMedia.Name, ytMedia.ThumbnailPath)
 			if err != nil {
@@ -597,9 +980,27 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		var hlsErr error
+		var hlsMedia video.DownloadedMedia
+		hlsErr = s.withYTDLPIngestProgress(func() error {
+			var downloadErr error
+			hlsMedia, downloadErr = pageHLSMediaDownloader(r.Context(), req.URL, s.store.Dir())
+			return downloadErr
+		})
+		if hlsErr == nil {
+			state, err := s.processVideoFileAndQueue(r, hlsMedia.SourcePath, hlsMedia.Name, hlsMedia.ThumbnailPath)
+			if err != nil {
+				os.Remove(hlsMedia.SourcePath)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, state)
+			return
+		}
+
 		media, err := s.downloadDirectMedia(r.Context(), req.URL)
 		if err != nil {
-			http.Error(w, videoURLDownloadError(combineURLErrors(ytdlpErr, err)), http.StatusBadRequest)
+			http.Error(w, videoURLDownloadError(combineURLErrors(combineURLErrors(ytdlpErr, hlsErr), err)), http.StatusBadRequest)
 			return
 		}
 		probe := media.Probe
@@ -849,7 +1250,7 @@ func (s *Server) processVideoFileAndPublish(r *http.Request, sourcePath, name, p
 }
 
 func (s *Server) processVideoFileAndQueue(r *http.Request, sourcePath, name, providedThumbnail string) (map[string]interface{}, error) {
-	if _, err := video.EnsureFFmpeg(); err != nil {
+	if _, err := ensureFFmpeg(); err != nil {
 		return nil, err
 	}
 	thumbnail := s.useOrCreateVideoThumbnail(sourcePath, providedThumbnail)
@@ -934,12 +1335,14 @@ func (s *Server) handleOBSStreamStart(session obsrtmp.Session) {
 	info := library.CurrentImage{
 		ID:           session.ID,
 		Kind:         "video",
+		SourceKind:   "obs",
 		FileName:     filepath.Base(session.Recording),
 		PublicName:   "obs-" + session.ID + ".mp4",
 		ContentType:  "video/mp4",
 		OriginalName: session.Title,
 	}
 	_ = s.store.SetCurrentInfoWithID(info)
+	s.broadcastStateChanged()
 }
 
 func (s *Server) handleOBSStreamDone(session obsrtmp.Session) {
@@ -948,6 +1351,7 @@ func (s *Server) handleOBSStreamDone(session obsrtmp.Session) {
 	info := library.CurrentImage{
 		ID:           session.ID,
 		Kind:         "video",
+		SourceKind:   "obs",
 		FileName:     filepath.Base(session.Recording),
 		PublicName:   "obs-" + session.ID + ".mp4",
 		ContentType:  "video/mp4",
@@ -959,6 +1363,7 @@ func (s *Server) handleOBSStreamDone(session obsrtmp.Session) {
 	}
 	info.ID = session.ID
 	info.Kind = "video"
+	info.SourceKind = "obs"
 	info.FileName = filepath.Base(session.Recording)
 	info.PublicName = "obs-" + session.ID + ".mp4"
 	info.ContentType = "video/mp4"
@@ -973,6 +1378,7 @@ func (s *Server) handleOBSStreamDone(session obsrtmp.Session) {
 			_ = s.store.MarkConverted(session.ID, files)
 		}
 	}
+	s.broadcastStateChanged()
 }
 
 func (s *Server) withClipboardResult(state map[string]interface{}) map[string]interface{} {
@@ -995,14 +1401,38 @@ func (s *Server) clearPublication() {
 	_ = s.store.Clear()
 }
 
+var qualityPresetToJPEG = map[string]int{
+	"highest": 95,
+	"high":    85,
+	"medium":  75,
+	"low":     60,
+	"lowest":  45,
+}
+
+var qualityPresetToWebP = map[string]int{
+	"highest": 90,
+	"high":    80,
+	"medium":  70,
+	"low":     55,
+	"lowest":  40,
+}
+
 func optionsFromValues(value func(string) string) imageproc.Options {
 	opts := imageproc.DefaultOptions()
 	if v := value("format"); v != "" {
 		opts.Format = v
 	}
 	if v := value("quality"); v != "" {
-		if q, err := strconv.Atoi(v); err == nil {
+		if q, ok := qualityPresetToJPEG[v]; ok {
 			opts.JPEGQuality = q
+			opts.PNGQuality = v
+		} else if v == "lossless" {
+			opts.PNGQuality = v
+		} else if q, err := strconv.Atoi(v); err == nil {
+			opts.JPEGQuality = q
+		}
+		if q, ok := qualityPresetToWebP[v]; ok {
+			opts.WebPQuality = q
 		}
 	}
 	if v := value("maxDimension"); v != "" {
@@ -1040,6 +1470,7 @@ func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	defer s.broadcastStateChanged()
 	if err := s.store.Clear(); err != nil {
 		http.Error(w, "failed to clear image", http.StatusInternalServerError)
 		return
@@ -1052,6 +1483,7 @@ func (s *Server) handleOBSEnd(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	defer s.broadcastStateChanged()
 	if !s.videoPlayerEnabled() {
 		http.Error(w, "video player support is disabled", http.StatusBadRequest)
 		return
@@ -1069,6 +1501,7 @@ func (s *Server) handleOBSStart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	defer s.broadcastStateChanged()
 	if !s.videoPlayerEnabled() {
 		http.Error(w, "video player support is disabled", http.StatusBadRequest)
 		return
@@ -1136,12 +1569,27 @@ func (s *Server) handleOBSKey(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	defer s.broadcastStateChanged()
 	if s.obs == nil {
 		http.Error(w, "OBS receiver is unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	key, err := settings.RotateOBSStreamKey()
-	if err != nil {
+	var req struct {
+		StreamKey string `json:"streamKey"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid OBS stream key request", http.StatusBadRequest)
+		return
+	}
+	key := strings.TrimSpace(req.StreamKey)
+	if key == "" || strings.ContainsAny(key, "\\/ \t\r\n?#") {
+		http.Error(w, "invalid OBS stream key", http.StatusBadRequest)
+		return
+	}
+	if err := settings.Update(func(appSettings *settings.Settings) error {
+		appSettings.OBSStreamKey = key
+		return nil
+	}); err != nil {
 		http.Error(w, "failed to update OBS stream key", http.StatusInternalServerError)
 		return
 	}
@@ -1154,6 +1602,7 @@ func (s *Server) handleOBSLatency(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		writeJSON(w, s.obsState())
 	case http.MethodPost:
+		defer s.broadcastStateChanged()
 		var req struct {
 			Mode string `json:"mode"`
 			DVR  bool   `json:"dvr"`
@@ -1165,7 +1614,7 @@ func (s *Server) handleOBSLatency(w http.ResponseWriter, r *http.Request) {
 		mode := obsrtmp.NormalizeLatencyMode(req.Mode)
 		if err := settings.Update(func(appSettings *settings.Settings) error {
 			appSettings.OBSLatencyMode = mode
-			appSettings.OBSDVREnabled = req.DVR
+			appSettings.OBSDVREnabled = false
 			return nil
 		}); err != nil {
 			http.Error(w, "failed to save settings", http.StatusInternalServerError)
@@ -1193,6 +1642,7 @@ func (s *Server) handleHistoryFavorite(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	defer s.broadcastStateChanged()
 	var req struct {
 		ID       string `json:"id"`
 		Favorite bool   `json:"favorite"`
@@ -1213,6 +1663,7 @@ func (s *Server) handleHistoryQueue(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	defer s.broadcastStateChanged()
 	var req struct {
 		ID string `json:"id"`
 	}
@@ -1241,6 +1692,7 @@ func (s *Server) handleHistorySelect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	defer s.broadcastStateChanged()
 	var req struct {
 		ID string `json:"id"`
 	}
@@ -1254,7 +1706,9 @@ func (s *Server) handleHistorySelect(w http.ResponseWriter, r *http.Request) {
 	}
 	current := s.store.Current()
 	if current != nil && current.Converted {
-		writeJSON(w, s.withClipboardResult(s.state(r)))
+		state := s.withClipboardResult(s.state(r))
+		state["historyTargetMode"] = historyTargetMode(*current)
+		writeJSON(w, state)
 		return
 	}
 	if path, current, ok := s.store.CurrentPath(); ok && s.videoPlayerEnabled() {
@@ -1276,7 +1730,11 @@ func (s *Server) handleHistorySelect(w http.ResponseWriter, r *http.Request) {
 			s.enqueueStillConversion(path, current.ID, current.OriginalName)
 		}
 	}
-	writeJSON(w, s.withClipboardResult(s.state(r)))
+	state := s.withClipboardResult(s.state(r))
+	if current := s.store.Current(); current != nil {
+		state["historyTargetMode"] = historyTargetMode(*current)
+	}
+	writeJSON(w, state)
 }
 
 func (s *Server) enqueueHistoryItem(id string) error {
@@ -1337,65 +1795,6 @@ func (s *Server) probeVideoDuration(path string) int {
 	return secs
 }
 
-func (s *Server) processSoundCloudFileAndPublish(r *http.Request, media video.DownloadedMedia) (map[string]interface{}, error) {
-	if _, err := video.EnsureFFmpeg(); err != nil {
-		return nil, err
-	}
-	thumbnail := ""
-	if media.ArtworkPath != "" {
-		thumbnail = s.createVideoThumbnail(media.ArtworkPath)
-	}
-	info := soundCloudCurrentInfo(media, "current-video"+filepath.Ext(media.SourcePath), thumbnail)
-	if stat, err := os.Stat(media.SourcePath); err == nil {
-		info.SizeBytes = stat.Size()
-	}
-	if prev := s.store.Current(); prev != nil && prev.ID != "" {
-		video.CancelConversion(s.store.Dir(), prev.ID)
-	}
-	if err := s.store.SetCurrentInfo(info); err != nil {
-		return nil, fmt.Errorf("failed to save media")
-	}
-	current := s.store.Current()
-	currentID := ""
-	if current != nil {
-		currentID = current.ID
-	}
-	artworkPath := media.ArtworkPath
-	if thumbnail != "" {
-		artworkPath = filepath.Join(s.store.Dir(), thumbnail)
-	}
-	s.enqueueSoundCloudConversion(media.SourcePath, artworkPath, currentID, media.Name)
-
-	state := s.state(r)
-	return s.withClipboardResult(state), nil
-}
-
-func (s *Server) processSoundCloudFileAndQueue(r *http.Request, media video.DownloadedMedia) (map[string]interface{}, error) {
-	if _, err := video.EnsureFFmpeg(); err != nil {
-		return nil, err
-	}
-	thumbnail := ""
-	if media.ArtworkPath != "" {
-		thumbnail = s.createVideoThumbnail(media.ArtworkPath)
-	}
-	info := soundCloudCurrentInfo(media, "queued-video"+filepath.Ext(media.SourcePath), thumbnail)
-	if stat, err := os.Stat(media.SourcePath); err == nil {
-		info.SizeBytes = stat.Size()
-	}
-	historyItem, err := s.store.AddHistory(media.SourcePath, info)
-	if err != nil {
-		return nil, fmt.Errorf("failed to add to history")
-	}
-	if path, _, ok := s.store.HistoryPath(historyItem.ID); ok {
-		artworkPath := media.ArtworkPath
-		if path, _, ok := s.store.HistoryThumbnailPath(historyItem.ID); ok {
-			artworkPath = path
-		}
-		s.enqueueSoundCloudConversion(path, artworkPath, historyItem.ID, historyItem.OriginalName)
-	}
-	return s.state(r), nil
-}
-
 func soundCloudCurrentInfo(media video.DownloadedMedia, publicName, thumbnail string) library.CurrentImage {
 	return library.CurrentImage{
 		Kind:         "video",
@@ -1406,16 +1805,6 @@ func soundCloudCurrentInfo(media video.DownloadedMedia, publicName, thumbnail st
 		OriginalName: media.Name,
 		Thumbnail:    thumbnail,
 	}
-}
-
-func (s *Server) enqueueSoundCloudConversion(audioPath, artworkPath, id, title string) {
-	input := video.AudioRenderInput{
-		SourcePath:  audioPath,
-		Kind:        video.SourceSoundCloud,
-		ArtworkPath: artworkPath,
-	}
-	jobID := video.EnqueueAudioForID(input, s.store.Dir(), id, title, s.musicQualityPreset())
-	s.watchConversion(jobID, id)
 }
 
 func (s *Server) watchConversion(jobID, mediaID string) {
@@ -1446,10 +1835,13 @@ func (s *Server) watchConversion(jobID, mediaID string) {
 							_ = s.store.UpdateHistorySize(mediaID, convertedSize)
 							_ = s.store.MarkConverted(mediaID, files)
 						}
+						s.broadcastStateChanged()
 						return
 					case "error", "canceled":
+						s.broadcastStateChanged()
 						return
 					}
+					s.broadcastStateChangedThrottled()
 				}
 			}
 		}
@@ -1519,6 +1911,7 @@ func (s *Server) handleCopyURL(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		Target string `json:"target"`
+		Mode   string `json:"mode"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid copy request", http.StatusBadRequest)
@@ -1526,6 +1919,9 @@ func (s *Server) handleCopyURL(w http.ResponseWriter, r *http.Request) {
 	}
 
 	state := s.state(r)
+	if req.Mode == "obs" || req.Mode == "link" || req.Mode == "file" {
+		state["shareMode"] = req.Mode
+	}
 	copiedURL := urlForCopyTarget(state, req.Target)
 	if copiedURL == "" {
 		http.Error(w, "no URL available to copy", http.StatusBadRequest)
@@ -1544,6 +1940,7 @@ func (s *Server) handleVideoPlayer(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		writeJSON(w, s.videoPlayerState())
 	case http.MethodPost:
+		defer s.broadcastStateChanged()
 		var req struct {
 			Enabled bool `json:"enabled"`
 		}
@@ -1586,6 +1983,7 @@ func (s *Server) handleMusicMode(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		writeJSON(w, s.videoPlayerState())
 	case http.MethodPost:
+		defer s.broadcastStateChanged()
 		var req struct {
 			Enabled bool `json:"enabled"`
 		}
@@ -1644,6 +2042,7 @@ func (s *Server) handleVideoQuality(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		writeJSON(w, s.videoQualityState())
 	case http.MethodPost:
+		defer s.broadcastStateChanged()
 		var req struct {
 			Mode string `json:"mode"`
 		}
@@ -1670,11 +2069,15 @@ func (s *Server) handleNetworkCheck(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	measurement := video.MeasureNetwork()
-	_ = settings.Update(func(appSettings *settings.Settings) error {
+	defer s.broadcastStateChanged()
+	measurement := networkMeasurer()
+	if err := settings.Update(func(appSettings *settings.Settings) error {
 		appSettings.NetworkUploadMbps = measurement.UploadMbps
 		return nil
-	})
+	}); err != nil {
+		http.Error(w, "failed to save settings", http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, s.videoQualityState())
 }
 
@@ -1928,7 +2331,7 @@ func (s *Server) serveLHLSArtifact(w http.ResponseWriter, r *http.Request, id st
 		return false
 	}
 	name := filepath.Base(r.URL.Path)
-	if name == "current.m3u8" || name == "." || name == "/" {
+	if isOBSEntryPlaylistAlias(id, name) {
 		name = "master.m3u8"
 	}
 	path, ok := s.obs.LHLSPublicFile(id, name)
@@ -1952,10 +2355,14 @@ func (s *Server) serveLLHLSProxy(w http.ResponseWriter, r *http.Request, id stri
 		return false
 	}
 	name := filepath.Base(r.URL.Path)
-	if name == "current.m3u8" || name == "." || name == "/" {
+	if isOBSEntryPlaylistAlias(id, name) {
 		name = "index.m3u8"
 	}
 	return s.obs.ProxyLLHLS(w, r, id, name)
+}
+
+func isOBSEntryPlaylistAlias(id, name string) bool {
+	return name == "." || name == "/" || name == "current.m3u8" || name == video.PlaylistName(id)
 }
 
 func (s *Server) serveGeneratedAbsFile(w http.ResponseWriter, r *http.Request, absPath, contentType, publicName string, modTime time.Time) {
@@ -2058,6 +2465,7 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 	s.mu.RUnlock()
 
 	localImageURL := ""
+	obsStatus := s.obsState()
 	imageURLBase := s.imageURLBase
 	if tunnelURLBase != "" {
 		imageURLBase = tunnelURLBase
@@ -2069,7 +2477,9 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 	publicImageURL := ""
 	publicVideoURL := ""
 	publicHLSURL := ""
+	var currentMedia *library.CurrentImage
 	if current := s.store.Current(); current != nil {
+		currentMedia = current
 		videoPlayer := s.videoPlayerStateForID(current.ID)
 		if current.Kind != "video" {
 			imagePath := imageURLPath(current)
@@ -2103,8 +2513,10 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 			"hlsURL":        hlsURL,
 			"localImageURL": localImageURL,
 			"videoPlayer":   videoPlayer,
+			"obs":           obsStatus,
+			"obsLatency":    s.obsLatencyProfile(),
 		})
-		return s.stateWithMedia(r, upnpResult, tunnelStatus, videoPlayer, imageURL, videoURL, hlsURL, shareURL, shareURLLabel, publicImageURL, publicVideoURL, publicHLSURL, localImageURL, previewImageURL)
+		return s.stateWithMedia(r, upnpResult, tunnelStatus, videoPlayer, obsStatus, imageURL, videoURL, hlsURL, shareURL, shareURLLabel, publicImageURL, publicVideoURL, publicHLSURL, localImageURL, previewImageURL)
 	}
 	if imageURL == "" {
 		imageURL = ""
@@ -2119,6 +2531,9 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 		"hlsURL":        hlsURL,
 		"localImageURL": localImageURL,
 		"videoPlayer":   videoPlayer,
+		"obs":           obsStatus,
+		"obsLatency":    s.obsLatencyProfile(),
+		"current":       currentMedia,
 	})
 
 	return map[string]interface{}{
@@ -2145,9 +2560,10 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 		"video":           videoPlayer["status"],
 		"videoPlayer":     videoPlayer,
 		"videoQuality":    s.videoQualityState(),
-		"obs":             s.obsState(),
+		"obs":             obsStatus,
 		"pairing":         s.pairingState(),
 		"videoQueue":      s.videoQueueState(),
+		"ytdlpAuth":       ytdlpauth.Status(),
 		"ingest":          s.ingestState(),
 		"toolInstall":     video.ToolInstallStatus(),
 		"current":         s.store.Current(),
@@ -2156,7 +2572,7 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 	}
 }
 
-func (s *Server) stateWithMedia(r *http.Request, upnpResult upnp.Result, tunnelStatus map[string]interface{}, videoPlayer map[string]interface{}, imageURL, videoURL, hlsURL, shareURL, shareURLLabel, publicImageURL, publicVideoURL, publicHLSURL, localImageURL, previewImageURL string) map[string]interface{} {
+func (s *Server) stateWithMedia(r *http.Request, upnpResult upnp.Result, tunnelStatus map[string]interface{}, videoPlayer map[string]interface{}, obsStatus obsrtmp.Status, imageURL, videoURL, hlsURL, shareURL, shareURLLabel, publicImageURL, publicVideoURL, publicHLSURL, localImageURL, previewImageURL string) map[string]interface{} {
 	return map[string]interface{}{
 		"appName":         about.AppName,
 		"version":         about.Version,
@@ -2181,9 +2597,10 @@ func (s *Server) stateWithMedia(r *http.Request, upnpResult upnp.Result, tunnelS
 		"video":           videoPlayer["status"],
 		"videoPlayer":     videoPlayer,
 		"videoQuality":    s.videoQualityState(),
-		"obs":             s.obsState(),
+		"obs":             obsStatus,
 		"pairing":         s.pairingState(),
 		"videoQueue":      s.videoQueueState(),
+		"ytdlpAuth":       ytdlpauth.Status(),
 		"ingest":          s.ingestState(),
 		"toolInstall":     video.ToolInstallStatus(),
 		"current":         s.store.Current(),
@@ -2210,6 +2627,8 @@ func (s *Server) historyState() []map[string]interface{} {
 		result = append(result, map[string]interface{}{
 			"id":           item.ID,
 			"kind":         item.Kind,
+			"sourceKind":   item.SourceKind,
+			"targetMode":   historyTargetMode(item.CurrentImage),
 			"title":        title,
 			"width":        item.Width,
 			"height":       item.Height,
@@ -2222,6 +2641,19 @@ func (s *Server) historyState() []map[string]interface{} {
 		})
 	}
 	return result
+}
+
+func historyTargetMode(item library.CurrentImage) string {
+	switch {
+	case item.SourceKind == "obs" || strings.HasPrefix(item.PublicName, "obs-"):
+		return "obs"
+	case item.SourceKind == "soundcloud" || item.SourceKind == "local_audio" || item.SourceKind == "remote_audio":
+		return "link"
+	case item.SourceKind != "":
+		return "link"
+	default:
+		return "file"
+	}
 }
 
 func (s *Server) videoQueueState() []map[string]interface{} {
@@ -2359,14 +2791,115 @@ func (s *Server) obsState() obsrtmp.Status {
 	}
 	status := s.obs.Status()
 	status.Capabilities = obsrtmp.LatencyCapabilities()
-	// RTSPT has no browser-playable surface; its copyable rtspt:// URL is carried
-	// in status.RTSPTURL instead of a preview URL. Every HLS-family mode (HLS,
-	// LHLS, LL-HLS) shares the same /stream entry; the handlers route by the
-	// active transport.
-	if status.MediaID != "" && obsrtmp.NormalizeLatencyMode(status.Latency.Mode) != obsrtmp.LatencyModeRTSPT {
-		status.PreviewURL = s.adminPath("/stream/" + url.PathEscape(status.MediaID) + "/" + video.PlaylistName(status.MediaID))
-	}
+	applyOBSPreviewURL(&status, s.adminPath, s.obs.HLSPreviewReady)
+	syntheticRows := obsConnectionRows(status)
+	status.Connections = mergeOBSConnectionRows(s.obs.ConnectionRows(250*time.Millisecond), syntheticRows)
 	return status
+}
+
+func applyOBSPreviewURL(status *obsrtmp.Status, adminPath func(string) string, ready func(id, name string) bool) {
+	if status == nil || strings.TrimSpace(status.MediaID) == "" || adminPath == nil {
+		return
+	}
+	name := video.PlaylistName(status.MediaID)
+	if ready != nil && !ready(status.MediaID, name) {
+		return
+	}
+	status.PreviewURL = adminPath("/stream/" + url.PathEscape(status.MediaID) + "/" + name)
+}
+
+func obsConnectionRows(status obsrtmp.Status) []obsrtmp.ConnectionStatus {
+	if !status.Connected || strings.TrimSpace(status.MediaID) == "" {
+		return nil
+	}
+	rows := make([]obsrtmp.ConnectionStatus, 0, 2)
+	if strings.TrimSpace(status.RTSPTURL) != "" {
+		lag := estimateRTSPLagSeconds(status.Latency)
+		rows = append(rows, obsrtmp.ConnectionStatus{
+			IP:         hostFromStreamURL(status.RTSPTURL),
+			Protocol:   "RTSP/TCP",
+			Device:     "Unknown",
+			State:      "接続中",
+			Quality:    "良好",
+			LagSeconds: lag,
+			LagLevel:   obsLagLevel(lag),
+			Note:       "RTSP/TCP経路のプロファイル推定です",
+		})
+	}
+	if strings.TrimSpace(status.PreviewURL) != "" {
+		lag := estimateHLSPreviewLagSeconds(status.Latency)
+		rows = append(rows, obsrtmp.ConnectionStatus{
+			IP:         "local",
+			Protocol:   "HLS Preview",
+			Device:     "Browser",
+			State:      "接続中",
+			Quality:    "通常",
+			LagSeconds: lag,
+			LagLevel:   obsLagLevel(lag),
+			Note:       "管理画面プレビュー用のローカルHLSです",
+		})
+	}
+	return rows
+}
+
+func mergeOBSConnectionRows(realRows, syntheticRows []obsrtmp.ConnectionStatus) []obsrtmp.ConnectionStatus {
+	if len(realRows) == 0 {
+		return syntheticRows
+	}
+	rows := make([]obsrtmp.ConnectionStatus, 0, len(realRows)+len(syntheticRows))
+	rows = append(rows, realRows...)
+	for _, row := range syntheticRows {
+		if row.Protocol == "HLS Preview" {
+			rows = append(rows, row)
+		}
+	}
+	return rows
+}
+
+func hostFromStreamURL(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Hostname() == "" {
+		return "unknown"
+	}
+	return parsed.Hostname()
+}
+
+func estimateRTSPLagSeconds(profile obsrtmp.LatencyProfile) float64 {
+	switch profile.Mode {
+	case obsrtmp.LatencyModeRTSPRealtime:
+		return 0.8
+	case obsrtmp.LatencyModeRTSPUltra:
+		return 1.5
+	case obsrtmp.LatencyModeRTSPLow:
+		return 3.5
+	case obsrtmp.LatencyModeHLS:
+		return 5
+	case obsrtmp.LatencyModeHLSHigh:
+		return 10
+	default:
+		return 4
+	}
+}
+
+func estimateHLSPreviewLagSeconds(profile obsrtmp.LatencyProfile) float64 {
+	lag := estimateRTSPLagSeconds(profile) + 1.7
+	if lag < 2.5 {
+		return 2.5
+	}
+	return lag
+}
+
+func obsLagLevel(seconds float64) string {
+	switch {
+	case seconds <= 1.2:
+		return "good"
+	case seconds <= 2.5:
+		return "ok"
+	case seconds <= 5:
+		return "warn"
+	default:
+		return "bad"
+	}
 }
 
 func normalizeQualityMode(mode string) string {
@@ -2444,6 +2977,67 @@ func urlForClipboard(state map[string]interface{}) string {
 }
 
 func primaryShareURL(state map[string]interface{}) (string, string) {
+	switch shareModeFromState(state) {
+	case "obs":
+		return obsShareURL(state)
+	case "link":
+		return mediaShareURL(state)
+	case "file":
+		return fileShareURL(state)
+	default:
+		return mediaShareURL(state)
+	}
+}
+
+func shareModeFromState(state map[string]interface{}) string {
+	if mode, _ := state["shareMode"].(string); mode == "obs" || mode == "link" || mode == "file" {
+		return mode
+	}
+	if mode, _ := state["historyTargetMode"].(string); mode == "link" || mode == "file" {
+		return mode
+	}
+	if current, _ := state["current"].(*library.CurrentImage); current != nil {
+		mode := historyTargetMode(*current)
+		if mode != "obs" {
+			return mode
+		}
+	}
+	if current, _ := state["current"].(library.CurrentImage); current.ID != "" {
+		mode := historyTargetMode(current)
+		if mode != "obs" {
+			return mode
+		}
+	}
+	return ""
+}
+
+func obsShareURL(state map[string]interface{}) (string, string) {
+	obsLatency, _ := state["obsLatency"].(obsrtmp.LatencyProfile)
+	if obsStatus, ok := state["obs"].(obsrtmp.Status); ok &&
+		activeOBSLatency(obsLatency, obsStatus).Transport == obsrtmp.LatencyModeRTSPT &&
+		(obsStatus.Connected || obsStatus.Publishing) {
+		if strings.HasPrefix(obsStatus.RTSPTURL, "rtsp://") {
+			return obsStatus.RTSPTURL, "RTSP TCP URL"
+		}
+	}
+	return "", "URL"
+}
+
+func mediaShareURL(state map[string]interface{}) (string, string) {
+	if videoPlayer, ok := state["videoPlayer"].(map[string]interface{}); ok {
+		if enabled, _ := videoPlayer["enabled"].(bool); enabled {
+			if hlsURL, ok := state["hlsURL"].(string); ok && strings.HasPrefix(hlsURL, "http") {
+				return hlsURL, "HLS URL"
+			}
+			if videoURL, ok := state["videoURL"].(string); ok && strings.HasPrefix(videoURL, "http") {
+				return videoURL, "MP4 URL"
+			}
+		}
+	}
+	return fileShareURL(state)
+}
+
+func fileShareURL(state map[string]interface{}) (string, string) {
 	if videoPlayer, ok := state["videoPlayer"].(map[string]interface{}); ok {
 		if enabled, _ := videoPlayer["enabled"].(bool); enabled {
 			if hlsURL, ok := state["hlsURL"].(string); ok && strings.HasPrefix(hlsURL, "http") {
@@ -2464,6 +3058,13 @@ func primaryShareURL(state map[string]interface{}) (string, string) {
 		return localURL, "Local URL"
 	}
 	return "", "URL"
+}
+
+func activeOBSLatency(selected obsrtmp.LatencyProfile, status obsrtmp.Status) obsrtmp.LatencyProfile {
+	if selected.Mode != "" {
+		return selected
+	}
+	return status.Latency
 }
 
 func urlForCopyTarget(state map[string]interface{}, target string) string {

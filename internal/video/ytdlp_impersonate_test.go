@@ -1,6 +1,10 @@
 package video
 
 import (
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -69,6 +73,111 @@ func TestRunYTDLPDownloadYouTubeFallsBackThroughTargets(t *testing.T) {
 	}
 }
 
+func TestRunYTDLPDownloadAddsSavedCookies(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	cookiePath := filepath.Join(os.Getenv("IMAGEPAD_DATA_DIR"), "cookies", "yt-dlp-cookies.txt")
+	if err := os.MkdirAll(filepath.Dir(cookiePath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cookiePath, []byte("# Netscape HTTP Cookie File\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	oldRun := runDownloadCmd
+	defer func() { runDownloadCmd = oldRun }()
+	var calls [][]string
+	runDownloadCmd = func(_ string, args ...string) error {
+		calls = append(calls, append([]string(nil), args...))
+		return nil
+	}
+	if err := runYTDLPDownload("yt-dlp", "https://www.youtube.com/watch?v=x", []string{"-o", "out"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) == 0 {
+		t.Fatal("expected yt-dlp call")
+	}
+	joined := strings.Join(calls[0], " ")
+	if !strings.Contains(joined, "--cookies "+cookiePath) {
+		t.Fatalf("yt-dlp args %q do not include saved cookies %q", joined, cookiePath)
+	}
+}
+
+func TestRunYTDLPDownloadStopsAfterYouTubeBotCheck(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("IMAGEPAD_DATA_DIR", dataDir)
+
+	oldRun := runDownloadCmd
+	defer func() { runDownloadCmd = oldRun }()
+	var calls int
+	runDownloadCmd = func(_ string, args ...string) error {
+		calls++
+		return errors.New("ERROR: [youtube] id: Sign in to confirm you're not a bot")
+	}
+
+	err := runYTDLPDownload("yt-dlp", "https://www.youtube.com/watch?v=x", []string{"-o", "out"})
+	if err == nil {
+		t.Fatal("expected yt-dlp failure")
+	}
+	if calls != 1 {
+		t.Fatalf("yt-dlp calls = %d, want 1 after bot check", calls)
+	}
+	matches, globErr := filepath.Glob(filepath.Join(dataDir, "diagnostics", "ytdlp", "*.json"))
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("diagnostic files = %v, want exactly one", matches)
+	}
+	var report ytdlpFailureDiagnostic
+	data, readErr := os.ReadFile(matches[0])
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.URL != "https://www.youtube.com/watch?v=x" {
+		t.Fatalf("URL = %q", report.URL)
+	}
+	if report.Executable != "yt-dlp" {
+		t.Fatalf("Executable = %q", report.Executable)
+	}
+	if report.Class != "youtube_bot_check" {
+		t.Fatalf("Class = %q", report.Class)
+	}
+	if len(report.Attempts) != 1 {
+		t.Fatalf("attempts = %d, want 1 after bot check", len(report.Attempts))
+	}
+	if report.Attempts[0].ImpersonateTarget != "safari" || !strings.Contains(strings.Join(report.Attempts[0].Args, " "), "youtube:player_client=") {
+		t.Fatalf("first attempt not captured: %+v", report.Attempts[0])
+	}
+	if report.Attempts[0].Class != "youtube_bot_check" {
+		t.Fatalf("attempt class = %q", report.Attempts[0].Class)
+	}
+}
+
+func TestRunYTDLPDownloadDoesNotWriteDiagnosticForNonYouTubeFailure(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("IMAGEPAD_DATA_DIR", dataDir)
+
+	oldRun := runDownloadCmd
+	defer func() { runDownloadCmd = oldRun }()
+	runDownloadCmd = func(_ string, args ...string) error {
+		return errors.New("network failed")
+	}
+
+	if err := runYTDLPDownload("yt-dlp", "https://x.com/u/status/1/video/1", []string{"-o", "out"}); err == nil {
+		t.Fatal("expected yt-dlp failure")
+	}
+	matches, err := filepath.Glob(filepath.Join(dataDir, "diagnostics", "ytdlp", "*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("diagnostic files = %v, want none", matches)
+	}
+}
+
 func TestYouTubeAttemptsForceMultiClient(t *testing.T) {
 	for _, set := range ytdlpDownloadAttempts("https://youtu.be/x") {
 		joined := strings.Join(set, " ")
@@ -88,16 +197,16 @@ func TestYouTubeAttemptsForceMultiClient(t *testing.T) {
 
 func TestIsPageMediaURL(t *testing.T) {
 	cases := map[string]bool{
-		"https://www.youtube.com/watch?v=x":        true,
-		"https://youtu.be/x":                       true,
-		"https://music.youtube.com/watch?v=x":      true,
-		"https://soundcloud.com/a/b":               true,
-		"https://on.soundcloud.com/abc":            true,
-		"https://x.com/u/status/1/video/1":         true,
-		"https://twitter.com/u/status/1":           true,
-		"https://example.com/clip.mp4":             false,
-		"https://cdn.example.com/video.mp4":        false,
-		"https://example.com/some-page":            false,
+		"https://www.youtube.com/watch?v=x":   true,
+		"https://youtu.be/x":                  true,
+		"https://music.youtube.com/watch?v=x": true,
+		"https://soundcloud.com/a/b":          true,
+		"https://on.soundcloud.com/abc":       true,
+		"https://x.com/u/status/1/video/1":    true,
+		"https://twitter.com/u/status/1":      true,
+		"https://example.com/clip.mp4":        false,
+		"https://cdn.example.com/video.mp4":   false,
+		"https://example.com/some-page":       false,
 	}
 	for url, want := range cases {
 		if got := IsPageMediaURL(url); got != want {

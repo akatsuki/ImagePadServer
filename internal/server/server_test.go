@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,7 +20,9 @@ import (
 	"imagepadserver/internal/library"
 	"imagepadserver/internal/obsrtmp"
 	"imagepadserver/internal/settings"
+	"imagepadserver/internal/upnp"
 	"imagepadserver/internal/video"
+	"imagepadserver/internal/ytdlpauth"
 )
 
 func TestValidatePublicURLRejectsLocalhost(t *testing.T) {
@@ -72,6 +76,20 @@ func TestRemoteFileNameInfersRAWExtensions(t *testing.T) {
 	u = mustURL("https://example.com/raw")
 	if got := remoteFileName(u, "image/x-nikon-nef"); got != "raw.nef" {
 		t.Fatalf("remoteFileName = %q, want raw.nef", got)
+	}
+}
+
+func TestRemoteFileNameInfersModernImageExtensions(t *testing.T) {
+	u := mustURL("https://example.com/image")
+	for contentType, want := range map[string]string{
+		"image/avif": "image.avif",
+		"image/heic": "image.heic",
+		"image/heif": "image.heif",
+		"image/jxl":  "image.jxl",
+	} {
+		if got := remoteFileName(u, contentType); got != want {
+			t.Fatalf("remoteFileName(%q) = %q, want %q", contentType, got, want)
+		}
 	}
 }
 
@@ -177,11 +195,128 @@ func TestPublicReadRules(t *testing.T) {
 	}
 }
 
+func TestHandleEventsSendsHeartbeat(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	previousHeartbeat := stateEventHeartbeatDelay
+	stateEventHeartbeatDelay = 50 * time.Millisecond
+	t.Cleanup(func() { stateEventHeartbeatDelay = previousHeartbeat })
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+	mux := http.NewServeMux()
+	srv.Register(mux)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := adminRequest("http://127.0.0.1:8080/api/events", "127.0.0.1:50000").WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		mux.ServeHTTP(rec, req)
+		close(done)
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(rec.Body.String(), "event: heartbeat") {
+			cancel()
+			<-done
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	t.Fatalf("SSE body missing heartbeat: %q", rec.Body.String())
+}
+
 func TestPrimaryShareURL(t *testing.T) {
 	url, label := primaryShareURL(map[string]interface{}{
+		"shareMode":  "obs",
+		"obsLatency": obsrtmp.NormalizeLatencyProfile(obsrtmp.LatencyModeRTSPT),
+		"obs": obsrtmp.Status{
+			Connected: true,
+			RTSPTURL:  "rtsp://8.8.8.8:52000/obs_session",
+		},
 		"imageURL": "https://example.com/image/current.png",
-		"videoURL": "https://example.com/video/current.mp4",
-		"hlsURL":   "https://example.com/stream/abc123/current-abc123.m3u8",
+		"videoPlayer": map[string]interface{}{
+			"enabled": true,
+		},
+	})
+	if url != "rtsp://8.8.8.8:52000/obs_session" || label != "RTSP TCP URL" {
+		t.Fatalf("share URL = %q (%s), want RTSP", url, label)
+	}
+
+	url, label = primaryShareURL(map[string]interface{}{
+		"shareMode":  "obs",
+		"obsLatency": obsrtmp.NormalizeLatencyProfile(obsrtmp.LatencyModeRTSPT),
+		"obs": obsrtmp.Status{
+			Connected: true,
+			RTSPTURL:  "",
+		},
+		"videoPlayer": map[string]interface{}{
+			"enabled": true,
+		},
+	})
+	if url != "" || label != "URL" {
+		t.Fatalf("share URL = %q (%s), want no URL before public RTSP is ready", url, label)
+	}
+
+	url, label = primaryShareURL(map[string]interface{}{
+		"shareMode":  "link",
+		"obsLatency": obsrtmp.NormalizeLatencyProfile(obsrtmp.LatencyModeRTSPT),
+		"obs": obsrtmp.Status{
+			Connected: true,
+			RTSPTURL:  "",
+		},
+		"hlsURL": "https://example.com/stream/abc123/current-abc123.m3u8",
+		"videoPlayer": map[string]interface{}{
+			"enabled": true,
+		},
+	})
+	if url != "https://example.com/stream/abc123/current-abc123.m3u8" || label != "HLS URL" {
+		t.Fatalf("share URL = %q (%s), want link-mode HLS while public RTSP is not ready", url, label)
+	}
+
+	url, label = primaryShareURL(map[string]interface{}{
+		"shareMode":  "obs",
+		"obsLatency": obsrtmp.NormalizeLatencyProfile(obsrtmp.LatencyModeRTSPT),
+		"obs": obsrtmp.Status{
+			Connected: true,
+			RTSPTURL:  "",
+		},
+		"hlsURL": "https://example.com/stream/abc123/current-abc123.m3u8",
+		"videoPlayer": map[string]interface{}{
+			"enabled": true,
+		},
+	})
+	if url != "" || label != "URL" {
+		t.Fatalf("share URL = %q (%s), want OBS mode to wait for RTSP instead of HLS", url, label)
+	}
+
+	url, label = primaryShareURL(map[string]interface{}{
+		"shareMode":  "link",
+		"obsLatency": obsrtmp.NormalizeLatencyProfile(obsrtmp.LatencyModeRTSPT),
+		"obs": obsrtmp.Status{
+			Connected: false,
+			RTSPTURL:  "",
+		},
+		"hlsURL": "https://example.com/stream/abc123/current-abc123.m3u8",
+		"videoPlayer": map[string]interface{}{
+			"enabled": true,
+		},
+	})
+	if url != "https://example.com/stream/abc123/current-abc123.m3u8" || label != "HLS URL" {
+		t.Fatalf("share URL = %q (%s), want recorded HLS after RTSP session ends", url, label)
+	}
+
+	url, label = primaryShareURL(map[string]interface{}{
+		"shareMode": "file",
+		"imageURL":  "https://example.com/image/current.png",
+		"videoURL":  "https://example.com/video/current.mp4",
+		"hlsURL":    "https://example.com/stream/abc123/current-abc123.m3u8",
 		"videoPlayer": map[string]interface{}{
 			"enabled": true,
 		},
@@ -191,7 +326,8 @@ func TestPrimaryShareURL(t *testing.T) {
 	}
 
 	url, label = primaryShareURL(map[string]interface{}{
-		"imageURL": "https://example.com/image/current.png",
+		"shareMode": "file",
+		"imageURL":  "https://example.com/image/current.png",
 		"videoPlayer": map[string]interface{}{
 			"enabled": false,
 		},
@@ -320,6 +456,75 @@ func TestHistorySelectReturnsClipboardURL(t *testing.T) {
 	}
 }
 
+func TestHistorySelectReturnsRecordedHLSForOBSHistoryEvenWhenRTSPModeSelected(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	t.Setenv("IMAGEPAD_FFMPEG", slowFFmpegPath(t))
+	if err := settings.Update(func(s *settings.Settings) error {
+		s.VideoPlayerEnabled = true
+		s.OBSLatencyMode = obsrtmp.LatencyModeRTSPRealtime
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(t.TempDir(), "obs.mp4")
+	if err := os.WriteFile(source, []byte("mp4"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.AddHistory(source, library.CurrentImage{
+		Kind:         "video",
+		SourceKind:   "obs",
+		PublicName:   "obs-session.mp4",
+		ContentType:  "video/mp4",
+		OriginalName: "OBS session",
+		Converted:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	convertedDir := filepath.Join(filepath.Dir(store.Dir()), "converted", item.ID)
+	if err := os.MkdirAll(convertedDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	playlist := video.PlaylistName(item.ID)
+	if err := os.WriteFile(filepath.Join(convertedDir, playlist), []byte("#EXTM3U\n#EXTINF:1,\ncurrent-"+item.ID+"-000.ts\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(convertedDir, "current-"+item.ID+"-000.ts"), []byte("segment"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+	srv.SetTunnelStatus(true, "https://example.trycloudflare.com", "connected")
+	mux := http.NewServeMux()
+	srv.Register(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/history/select", strings.NewReader(fmt.Sprintf(`{"id":%q}`, item.ID)))
+	rec := adminJSON(t, mux, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %q", rec.Code, rec.Body.String())
+	}
+	var state map[string]interface{}
+	if err := json.NewDecoder(rec.Body).Decode(&state); err != nil {
+		t.Fatal(err)
+	}
+	shareURL, _ := state["shareURL"].(string)
+	if !strings.Contains(shareURL, "/stream/"+item.ID+"/") || !strings.HasPrefix(shareURL, "https://example.trycloudflare.com/") {
+		t.Fatalf("shareURL = %q, want public recorded HLS URL", shareURL)
+	}
+	if got, _ := state["shareURLLabel"].(string); got != "HLS URL" {
+		t.Fatalf("shareURLLabel = %q, want HLS URL", got)
+	}
+	if got, _ := state["copiedURL"].(string); got != shareURL {
+		t.Fatalf("copiedURL = %q, want shareURL %q", got, shareURL)
+	}
+	if got, _ := state["historyTargetMode"].(string); got != "obs" {
+		t.Fatalf("historyTargetMode = %q, want obs", got)
+	}
+}
+
 func TestStateIgnoresHLSConversionForDifferentCurrentMedia(t *testing.T) {
 	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
 	t.Setenv("IMAGEPAD_FFMPEG", slowFFmpegPath(t))
@@ -439,11 +644,11 @@ func TestHandleOBSLatencyNormalizesStorage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if appSettings.OBSLatencyMode != obsrtmp.LatencyModeLHLS {
-		t.Fatalf("OBSLatencyMode = %q, want %q", appSettings.OBSLatencyMode, obsrtmp.LatencyModeLHLS)
+	if appSettings.OBSLatencyMode != obsrtmp.LatencyModeRTSPLow {
+		t.Fatalf("OBSLatencyMode = %q, want %q", appSettings.OBSLatencyMode, obsrtmp.LatencyModeRTSPLow)
 	}
-	if !appSettings.OBSDVREnabled {
-		t.Fatal("expected DVR flag to be stored")
+	if appSettings.OBSDVREnabled {
+		t.Fatal("DVR flag must stay disabled for OBS latency transports")
 	}
 }
 
@@ -456,24 +661,439 @@ func TestOBSStateIncludesLatencyCapabilities(t *testing.T) {
 	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
 
 	status := srv.obsState()
-	if len(status.Capabilities) != 4 {
-		t.Fatalf("capabilities len = %d, want 4", len(status.Capabilities))
+	if len(status.Capabilities) != 5 {
+		t.Fatalf("capabilities len = %d, want 5", len(status.Capabilities))
 	}
 	got := map[string]obsrtmp.LatencyCapability{}
 	for _, capability := range status.Capabilities {
 		got[capability.Mode] = capability
 	}
 
-	for _, mode := range []string{obsrtmp.LatencyModeHLS, obsrtmp.LatencyModeLHLS, obsrtmp.LatencyModeLLHLS, obsrtmp.LatencyModeRTSPT} {
+	for _, mode := range []string{obsrtmp.LatencyModeHLSHigh, obsrtmp.LatencyModeHLS, obsrtmp.LatencyModeRTSPLow, obsrtmp.LatencyModeRTSPUltra, obsrtmp.LatencyModeRTSPRealtime} {
 		if _, ok := got[mode]; !ok {
 			t.Fatalf("missing capability for mode %q", mode)
 		}
 	}
-	if got[obsrtmp.LatencyModeLHLS].Label != "低遅延（LHLS, 実験）" || !got[obsrtmp.LatencyModeLHLS].Experimental {
-		t.Fatalf("LHLS capability = %#v, want experimental LHLS label", got[obsrtmp.LatencyModeLHLS])
+	if got[obsrtmp.LatencyModeRTSPLow].Label != "低遅延RTSP" || got[obsrtmp.LatencyModeRTSPLow].Experimental {
+		t.Fatalf("RTSP low capability = %#v, want production RTSP low label", got[obsrtmp.LatencyModeRTSPLow])
 	}
-	if got[obsrtmp.LatencyModeRTSPT].Transport != obsrtmp.LatencyModeRTSPT {
-		t.Fatalf("RTSPT capability = %#v, want RTSPT transport", got[obsrtmp.LatencyModeRTSPT])
+	if got[obsrtmp.LatencyModeRTSPRealtime].Transport != obsrtmp.LatencyModeRTSPT {
+		t.Fatalf("RTSP realtime capability = %#v, want RTSPT transport", got[obsrtmp.LatencyModeRTSPRealtime])
+	}
+}
+
+func TestApplyOBSPreviewURLIncludesRTSPTransport(t *testing.T) {
+	status := obsrtmp.Status{
+		Connected: true,
+		MediaID:   "rtsp-session",
+		RTSPTURL:  "rtsp://8.8.8.8:52000/obs_rtsp-session",
+		Latency:   obsrtmp.NormalizeLatencyProfile(obsrtmp.LatencyModeRTSPRealtime),
+	}
+
+	applyOBSPreviewURL(&status, func(path string) string {
+		return "http://127.0.0.1:8080" + path
+	}, func(id, name string) bool {
+		return id == "rtsp-session" && name == video.PlaylistName("rtsp-session")
+	})
+
+	want := "http://127.0.0.1:8080/stream/rtsp-session/" + video.PlaylistName("rtsp-session")
+	if status.PreviewURL != want {
+		t.Fatalf("PreviewURL = %q, want %q", status.PreviewURL, want)
+	}
+	rows := obsConnectionRows(status)
+	var sawHLSPreview bool
+	for _, row := range rows {
+		if row.Protocol == "HLS Preview" {
+			sawHLSPreview = true
+		}
+	}
+	if !sawHLSPreview {
+		t.Fatalf("connection rows = %#v, want HLS Preview row", rows)
+	}
+}
+
+func TestMergeOBSConnectionRowsPrefersRealReadersAndKeepsPreview(t *testing.T) {
+	realRows := []obsrtmp.ConnectionStatus{{
+		IP:       "192.0.2.88",
+		Protocol: "RTSP/TCP",
+		State:    "接続中",
+	}}
+	syntheticRows := []obsrtmp.ConnectionStatus{
+		{IP: "8.8.8.8", Protocol: "RTSP/TCP", State: "接続中"},
+		{IP: "local", Protocol: "HLS Preview", State: "接続中"},
+	}
+
+	rows := mergeOBSConnectionRows(realRows, syntheticRows)
+
+	if len(rows) != 2 {
+		t.Fatalf("rows len = %d, want real reader plus preview: %#v", len(rows), rows)
+	}
+	if rows[0].IP != "192.0.2.88" {
+		t.Fatalf("first row = %#v, want real reader", rows[0])
+	}
+	if rows[1].Protocol != "HLS Preview" {
+		t.Fatalf("second row = %#v, want preview row", rows[1])
+	}
+	for _, row := range rows {
+		if row.IP == "8.8.8.8" {
+			t.Fatalf("synthetic RTSP row leaked into real rows: %#v", rows)
+		}
+	}
+}
+
+func TestApplyOBSPreviewURLWaitsForReadableHLS(t *testing.T) {
+	status := obsrtmp.Status{
+		Connected: true,
+		MediaID:   "rtsp-session",
+		Latency:   obsrtmp.NormalizeLatencyProfile(obsrtmp.LatencyModeRTSPRealtime),
+	}
+
+	applyOBSPreviewURL(&status, func(path string) string {
+		return "http://127.0.0.1:8080" + path
+	}, func(id, name string) bool {
+		return false
+	})
+
+	if status.PreviewURL != "" {
+		t.Fatalf("PreviewURL = %q, want empty until HLS is readable", status.PreviewURL)
+	}
+}
+
+func TestOBSEntryPlaylistAliasDoesNotRewriteChildPlaylists(t *testing.T) {
+	id := "abc123"
+	for _, name := range []string{"current.m3u8", video.PlaylistName(id), ".", "/"} {
+		if !isOBSEntryPlaylistAlias(id, name) {
+			t.Errorf("entry alias %q was not recognized", name)
+		}
+	}
+	for _, name := range []string{"media_0.m3u8", "stream.m3u8", "index.m3u8"} {
+		if isOBSEntryPlaylistAlias(id, name) {
+			t.Errorf("child playlist %q was incorrectly treated as an entry alias", name)
+		}
+	}
+}
+
+func TestOBSLatencyAliasesAndCapabilitySurface(t *testing.T) {
+	// Legacy aliases (and whitespace/case) normalize onto the canonical
+	// transports without ever inventing a new one.
+	aliases := map[string]string{
+		"auto":   obsrtmp.LatencyModeHLS,
+		"normal": obsrtmp.LatencyModeHLS,
+		"low":    obsrtmp.LatencyModeRTSPLow,
+		"ultra":  obsrtmp.LatencyModeRTSPUltra,
+		" HLS ":  obsrtmp.LatencyModeHLS,
+		"RTSPT":  obsrtmp.LatencyModeRTSPRealtime,
+		"bogus":  obsrtmp.LatencyModeHLS,
+	}
+	for in, want := range aliases {
+		if got := obsrtmp.NormalizeLatencyMode(in); got != want {
+			t.Fatalf("NormalizeLatencyMode(%q) = %q, want %q", in, got, want)
+		}
+	}
+
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+
+	caps := map[string]obsrtmp.LatencyCapability{}
+	for _, c := range srv.obsState().Capabilities {
+		caps[c.Mode] = c
+	}
+	transports := map[string]string{
+		obsrtmp.LatencyModeHLSHigh:      obsrtmp.LatencyModeHLS,
+		obsrtmp.LatencyModeHLS:          obsrtmp.LatencyModeHLS,
+		obsrtmp.LatencyModeRTSPLow:      obsrtmp.LatencyModeRTSPT,
+		obsrtmp.LatencyModeRTSPUltra:    obsrtmp.LatencyModeRTSPT,
+		obsrtmp.LatencyModeRTSPRealtime: obsrtmp.LatencyModeRTSPT,
+	}
+	for mode, transport := range transports {
+		c, ok := caps[mode]
+		if !ok {
+			t.Fatalf("missing capability for mode %q", mode)
+		}
+		if !c.Available || !c.Selectable {
+			t.Fatalf("%s capability must be available and selectable: %#v", mode, c)
+		}
+		if c.Experimental {
+			t.Fatalf("%s experimental = true, want false", mode)
+		}
+		if c.Transport != transport {
+			t.Fatalf("%s transport = %q, want %q", mode, c.Transport, transport)
+		}
+	}
+
+	// With no active session, no transport leaks a preview URL.
+	if url := srv.obsState().PreviewURL; url != "" {
+		t.Fatalf("idle state should expose no preview URL, got %q", url)
+	}
+}
+
+type fakeRTSPMapping struct {
+	ip         string
+	port       int
+	closeCalls atomic.Int32
+}
+
+func (m *fakeRTSPMapping) ExternalIP() string {
+	return m.ip
+}
+
+func (m *fakeRTSPMapping) ExternalPort() int {
+	return m.port
+}
+
+func (m *fakeRTSPMapping) Close() error {
+	m.closeCalls.Add(1)
+	return nil
+}
+
+type rtspMapCall struct {
+	protocol     string
+	internalPort int
+	externalPort int
+	description  string
+}
+
+func waitForRTSPReadyTest(t *testing.T, done <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for RTSP publication update")
+	}
+}
+
+func TestRTSPReadyDoesNotBlockOnUPnPMapping(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	srv.mapRTSPPort = func(string, int, int, string) (rtspMappingHandle, upnp.Result) {
+		close(entered)
+		<-release
+		return nil, upnp.Result{Message: "mapping released"}
+	}
+	srv.setRTSPURL = func(string, string, string) bool { return true }
+	defer close(release)
+
+	returned := make(chan struct{})
+	go func() {
+		srv.handleRTSPReady(obsrtmp.RTSPEndpoint{
+			SessionID: "session",
+			Port:      49152,
+			Path:      "obs_session",
+		})
+		close(returned)
+	}()
+
+	select {
+	case <-returned:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("handleRTSPReady blocked on UPnP mapping")
+	}
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("UPnP mapping did not start asynchronously")
+	}
+}
+
+func TestRTSPReadyPublishesUPnPURL(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+	mappings := []*fakeRTSPMapping{
+		{ip: "8.8.8.8", port: 52000},
+		{ip: "8.8.8.8", port: 52001},
+		{ip: "8.8.8.8", port: 52002},
+	}
+	var calls []rtspMapCall
+	srv.mapRTSPPort = func(protocol string, internalPort, externalPort int, description string) (rtspMappingHandle, upnp.Result) {
+		calls = append(calls, rtspMapCall{protocol: protocol, internalPort: internalPort, externalPort: externalPort, description: description})
+		mapping := mappings[len(calls)-1]
+		return mapping, upnp.Result{OK: true, ExternalIP: mapping.ip}
+	}
+	var updatedSession, updatedURL, updatedMessage string
+	updated := make(chan struct{}, 1)
+	srv.setRTSPURL = func(sessionID, publicURL, message string) bool {
+		updatedSession = sessionID
+		updatedURL = publicURL
+		updatedMessage = message
+		select {
+		case updated <- struct{}{}:
+		default:
+		}
+		return true
+	}
+
+	srv.handleRTSPReady(obsrtmp.RTSPEndpoint{
+		SessionID: "new-session",
+		Port:      49152,
+		RTPPort:   49153,
+		RTCPPort:  49154,
+		Path:      "obs_new-session",
+		LocalURL:  "rtsp://192.168.1.10:49152/obs_new-session",
+	})
+	waitForRTSPReadyTest(t, updated)
+
+	wantCalls := []rtspMapCall{
+		{protocol: "TCP", internalPort: 49152, externalPort: 49152, description: "ImagePadServer RTSP TCP"},
+		{protocol: "UDP", internalPort: 49153, externalPort: 49153, description: "ImagePadServer RTSP RTP"},
+		{protocol: "UDP", internalPort: 49154, externalPort: 49154, description: "ImagePadServer RTSP RTCP"},
+	}
+	if len(calls) != len(wantCalls) {
+		t.Fatalf("mapped calls = %#v, want %#v", calls, wantCalls)
+	}
+	for i, want := range wantCalls {
+		if calls[i] != want {
+			t.Fatalf("mapped call %d = %#v, want %#v", i, calls[i], want)
+		}
+	}
+	if got, want := updatedSession, "new-session"; got != want {
+		t.Fatalf("updated session = %q, want %q", got, want)
+	}
+	if got, want := updatedURL, "rtsp://8.8.8.8:52000/obs_new-session"; got != want {
+		t.Fatalf("updated URL = %q, want %q", got, want)
+	}
+	if !strings.Contains(updatedMessage, "UPnP") {
+		t.Fatalf("updated message = %q, want UPnP status", updatedMessage)
+	}
+	if srv.rtspMap == nil || srv.rtspSessionID != "new-session" {
+		t.Fatalf("stored mapping/session = %#v/%q", srv.rtspMap, srv.rtspSessionID)
+	}
+}
+
+func TestRTSPReadyMappingFailureKeepsLANURL(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+	srv.mapRTSPPort = func(string, int, int, string) (rtspMappingHandle, upnp.Result) {
+		return nil, upnp.Result{Message: "no UPnP gateway found"}
+	}
+	var updatedURL, updatedMessage string
+	updated := make(chan struct{}, 1)
+	srv.setRTSPURL = func(_ string, publicURL, message string) bool {
+		updatedURL = publicURL
+		updatedMessage = message
+		select {
+		case updated <- struct{}{}:
+		default:
+		}
+		return true
+	}
+
+	srv.handleRTSPReady(obsrtmp.RTSPEndpoint{
+		SessionID: "session",
+		Port:      49152,
+		Path:      "obs_session",
+		LocalURL:  "rtsp://192.168.1.10:49152/obs_session",
+	})
+	waitForRTSPReadyTest(t, updated)
+
+	if got, want := updatedURL, ""; got != want {
+		t.Fatalf("updated URL = %q, want %q", got, want)
+	}
+	if !strings.Contains(updatedMessage, "no UPnP gateway found") {
+		t.Fatalf("updated message = %q", updatedMessage)
+	}
+	if srv.rtspMap != nil {
+		t.Fatalf("failed mapping was stored: %#v", srv.rtspMap)
+	}
+}
+
+func TestRTSPReadyRejectsCarrierNATAddress(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+	mapping := &fakeRTSPMapping{ip: "100.64.1.2", port: 49152}
+	srv.mapRTSPPort = func(string, int, int, string) (rtspMappingHandle, upnp.Result) {
+		return mapping, upnp.Result{OK: true, ExternalIP: mapping.ip}
+	}
+	var updatedURL, updatedMessage string
+	updated := make(chan struct{}, 1)
+	srv.setRTSPURL = func(_ string, publicURL, message string) bool {
+		updatedURL = publicURL
+		updatedMessage = message
+		select {
+		case updated <- struct{}{}:
+		default:
+		}
+		return true
+	}
+
+	srv.handleRTSPReady(obsrtmp.RTSPEndpoint{
+		SessionID: "session",
+		Port:      49152,
+		Path:      "obs_session",
+		LocalURL:  "rtsp://192.168.1.10:49152/obs_session",
+	})
+	waitForRTSPReadyTest(t, updated)
+
+	if got, want := updatedURL, ""; got != want {
+		t.Fatalf("updated URL = %q, want %q", got, want)
+	}
+	if !strings.Contains(updatedMessage, "CGNAT") {
+		t.Fatalf("updated message = %q, want CGNAT explanation", updatedMessage)
+	}
+	if got := mapping.closeCalls.Load(); got != 1 {
+		t.Fatalf("mapping close calls = %d, want 1", got)
+	}
+}
+
+func TestRTSPDoneDoesNotCloseNewerMapping(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+	mapping := &fakeRTSPMapping{ip: "8.8.8.8", port: 49152}
+	srv.rtspMap = mapping
+	srv.rtspSessionID = "new-session"
+
+	srv.handleRTSPDone("old-session")
+	if got := mapping.closeCalls.Load(); got != 0 {
+		t.Fatalf("stale done closed mapping %d times", got)
+	}
+	srv.handleRTSPDone("new-session")
+	if got := mapping.closeCalls.Load(); got != 1 {
+		t.Fatalf("matching done closed mapping %d times, want 1", got)
+	}
+	if srv.rtspMap != nil || srv.rtspSessionID != "" {
+		t.Fatalf("mapping ownership not cleared: %#v/%q", srv.rtspMap, srv.rtspSessionID)
+	}
+}
+
+func TestStopOBSReceiverClosesRTSPMapping(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+	mapping := &fakeRTSPMapping{ip: "8.8.8.8", port: 49152}
+	srv.rtspMap = mapping
+	srv.rtspSessionID = "session"
+
+	srv.StopOBSReceiver()
+	if got := mapping.closeCalls.Load(); got != 1 {
+		t.Fatalf("mapping close calls = %d, want 1", got)
 	}
 }
 
@@ -544,6 +1164,57 @@ func TestVideoURLDownloadError(t *testing.T) {
 	}
 }
 
+func TestUIKeepsActionErrorToastAcrossSuccessfulStateRefresh(t *testing.T) {
+	if !strings.Contains(indexHTML, "toast.dataset.errorSource === 'sync'") {
+		t.Fatal("state refresh success should only hide sync error toasts")
+	}
+	if !strings.Contains(indexHTML, "showToast(syncFailureMessage(error), { error: true, source: 'sync' })") {
+		t.Fatal("state refresh failures should mark their toasts as sync errors")
+	}
+}
+
+func TestYTDLPLoginAndCookieDeleteAPI(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	srv, mux := testServer(t, false)
+	defer srv.store.Reset()
+
+	oldLauncher := ytdlpLoginLauncher
+	defer func() { ytdlpLoginLauncher = oldLauncher }()
+	launched := false
+	ytdlpLoginLauncher = func() error {
+		launched = true
+		if err := os.MkdirAll(filepath.Dir(ytdlpauth.CookieFilePath()), 0700); err != nil {
+			return err
+		}
+		return os.WriteFile(ytdlpauth.CookieFilePath(), []byte("# Netscape HTTP Cookie File\n"), 0600)
+	}
+
+	req := adminRequest("http://127.0.0.1:8080/api/ytdlp/login", "127.0.0.1:1234")
+	req.Method = http.MethodPost
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login status = %d body=%q", rec.Code, rec.Body.String())
+	}
+	if !launched {
+		t.Fatal("expected login launcher to run")
+	}
+	if !strings.Contains(rec.Body.String(), `"saved":true`) {
+		t.Fatalf("login body = %q, want saved true", rec.Body.String())
+	}
+
+	req = adminRequest("http://127.0.0.1:8080/api/ytdlp/cookies", "127.0.0.1:1234")
+	req.Method = http.MethodDelete
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete status = %d body=%q", rec.Code, rec.Body.String())
+	}
+	if ytdlpauth.Status().Saved {
+		t.Fatal("cookie delete API should remove saved cookies")
+	}
+}
+
 func TestSoundCloudCurrentInfoUsesVideoPresentationAndSoundCloudSource(t *testing.T) {
 	media := video.DownloadedMedia{
 		SourcePath: "track.m4a",
@@ -593,6 +1264,29 @@ func TestAutoQualityPrefersUploadBandwidth(t *testing.T) {
 	}
 }
 
+func TestHandleNetworkCheckSurfacesSettingsSaveFailure(t *testing.T) {
+	srv, mux := testServer(t, false)
+	defer srv.store.Reset()
+
+	oldMeasurer := networkMeasurer
+	t.Cleanup(func() { networkMeasurer = oldMeasurer })
+	networkMeasurer = func() video.NetworkMeasurement {
+		return video.NetworkMeasurement{UploadMbps: 12}
+	}
+
+	notDir := filepath.Join(t.TempDir(), "settings-as-file")
+	if err := os.WriteFile(notDir, []byte("not a directory"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("IMAGEPAD_DATA_DIR", notDir)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/network-check", nil)
+	rec := adminJSON(t, mux, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 when settings cannot be saved; body = %q", rec.Code, rec.Body.String())
+	}
+}
+
 func adminRequest(rawURL, remoteAddr string) *http.Request {
 	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
 	if err != nil {
@@ -625,4 +1319,59 @@ func slowFFmpegPath(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return path
+}
+func TestOptionsFromValuesQualityPresets(t *testing.T) {
+	values := url.Values{
+		"format":       {"webp"},
+		"quality":      {"high"},
+		"maxDimension": {"4096"},
+		"maxMB":        {"60"},
+	}
+	opts := optionsFromValues(values.Get)
+	if opts.Format != "webp" {
+		t.Fatalf("Format = %q, want webp", opts.Format)
+	}
+	if opts.JPEGQuality != 85 {
+		t.Fatalf("JPEGQuality = %d, want 85", opts.JPEGQuality)
+	}
+	if opts.WebPQuality != 80 {
+		t.Fatalf("WebPQuality = %d, want 80", opts.WebPQuality)
+	}
+	if opts.PNGQuality != "high" {
+		t.Fatalf("PNGQuality = %q, want high", opts.PNGQuality)
+	}
+	if opts.MaxDimension != 4096 {
+		t.Fatalf("MaxDimension = %d, want 4096", opts.MaxDimension)
+	}
+	if opts.MaxBytes != 60<<20 {
+		t.Fatalf("MaxBytes = %d, want %d", opts.MaxBytes, int64(60<<20))
+	}
+}
+
+func TestOptionsFromValuesLegacyJPEGQuality(t *testing.T) {
+	values := url.Values{"quality": {"88"}}
+	opts := optionsFromValues(values.Get)
+	if opts.JPEGQuality != 88 {
+		t.Fatalf("JPEGQuality = %d, want 88", opts.JPEGQuality)
+	}
+	if opts.WebPQuality != 80 {
+		t.Fatalf("WebPQuality = %d, want default 80", opts.WebPQuality)
+	}
+	if opts.PNGQuality != "lossless" {
+		t.Fatalf("PNGQuality = %q, want default lossless", opts.PNGQuality)
+	}
+}
+
+func TestOptionsFromValuesPNGLossless(t *testing.T) {
+	values := url.Values{
+		"format":  {"png"},
+		"quality": {"lossless"},
+	}
+	opts := optionsFromValues(values.Get)
+	if opts.Format != "png" {
+		t.Fatalf("Format = %q, want png", opts.Format)
+	}
+	if opts.PNGQuality != "lossless" {
+		t.Fatalf("PNGQuality = %q, want lossless", opts.PNGQuality)
+	}
 }

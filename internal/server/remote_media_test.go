@@ -1,13 +1,17 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"imagepadserver/internal/video"
@@ -315,4 +319,177 @@ func TestDownloadRemoteMedia_emptyFilenameFromContentDisposition(t *testing.T) {
 	if result.Name == "" {
 		t.Fatal("Name should not be empty even with empty Content-Disposition filename")
 	}
+}
+
+func TestDownloadRemoteMedia_usesParallelRangesWhenSupported(t *testing.T) {
+	oldChunkSize := directMediaRangeChunkSize
+	oldWorkers := directMediaRangeWorkers
+	directMediaRangeChunkSize = 5
+	directMediaRangeWorkers = 3
+	t.Cleanup(func() {
+		directMediaRangeChunkSize = oldChunkSize
+		directMediaRangeWorkers = oldWorkers
+	})
+
+	body := []byte("abcdefghijklmnopqrstuvwxyz")
+	var mu sync.Mutex
+	var ranges []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rangeHeader := r.Header.Get("Range")
+		mu.Lock()
+		ranges = append(ranges, rangeHeader)
+		mu.Unlock()
+		serveRangeBody(t, w, r, body, "video.mp4")
+	}))
+	defer srv.Close()
+
+	outDir := t.TempDir()
+	result, err := downloadRemoteMedia(context.Background(), srv.URL+"/video.mp4", outDir, probeVideo)
+	if err != nil {
+		t.Fatalf("downloadRemoteMedia failed: %v", err)
+	}
+	got, err := os.ReadFile(result.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, body) {
+		t.Fatalf("downloaded body = %q, want %q", got, body)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(ranges) < 3 {
+		t.Fatalf("ranges = %v, want multiple range requests", ranges)
+	}
+	if ranges[0] != "bytes=0-0" {
+		t.Fatalf("first request Range = %q, want bytes=0-0", ranges[0])
+	}
+}
+
+func TestDownloadRemoteMedia_requeuesChunkAfterWorkerKick(t *testing.T) {
+	oldChunkSize := directMediaRangeChunkSize
+	oldWorkers := directMediaRangeWorkers
+	directMediaRangeChunkSize = 5
+	directMediaRangeWorkers = 3
+	t.Cleanup(func() {
+		directMediaRangeChunkSize = oldChunkSize
+		directMediaRangeWorkers = oldWorkers
+	})
+
+	body := []byte("abcdefghijklmnopqrstuvwxyz")
+	var mu sync.Mutex
+	kicked := false
+	retried := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rangeHeader := r.Header.Get("Range")
+		if rangeHeader == "bytes=10-14" {
+			mu.Lock()
+			if !kicked {
+				kicked = true
+				mu.Unlock()
+				http.Error(w, "rate limited", http.StatusTooManyRequests)
+				return
+			}
+			retried = true
+			mu.Unlock()
+		}
+		serveRangeBody(t, w, r, body, "video.mp4")
+	}))
+	defer srv.Close()
+
+	outDir := t.TempDir()
+	result, err := downloadRemoteMedia(context.Background(), srv.URL+"/video.mp4", outDir, probeVideo)
+	if err != nil {
+		t.Fatalf("downloadRemoteMedia failed: %v", err)
+	}
+	got, err := os.ReadFile(result.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, body) {
+		t.Fatalf("downloaded body = %q, want %q", got, body)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !kicked || !retried {
+		t.Fatalf("kicked=%v retried=%v, want failed chunk retried by surviving worker", kicked, retried)
+	}
+}
+
+func TestDownloadRemoteMedia_fallsBackWhenRangeUnsupported(t *testing.T) {
+	oldChunkSize := directMediaRangeChunkSize
+	directMediaRangeChunkSize = 5
+	t.Cleanup(func() { directMediaRangeChunkSize = oldChunkSize })
+
+	body := []byte("abcdefghijklmnopqrstuvwxyz")
+	var mu sync.Mutex
+	var requests []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests = append(requests, r.Header.Get("Range"))
+		mu.Unlock()
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	outDir := t.TempDir()
+	result, err := downloadRemoteMedia(context.Background(), srv.URL+"/video.mp4", outDir, probeVideo)
+	if err != nil {
+		t.Fatalf("downloadRemoteMedia failed: %v", err)
+	}
+	got, err := os.ReadFile(result.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, body) {
+		t.Fatalf("downloaded body = %q, want %q", got, body)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) < 2 || requests[0] != "bytes=0-0" || requests[1] != "" {
+		t.Fatalf("requests = %v, want range probe then plain fallback", requests)
+	}
+}
+
+func serveRangeBody(t *testing.T, w http.ResponseWriter, r *http.Request, body []byte, name string) {
+	t.Helper()
+	w.Header().Set("Accept-Ranges", "bytes")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
+	rangeHeader := r.Header.Get("Range")
+	if rangeHeader == "" {
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+		return
+	}
+	const prefix = "bytes="
+	if !strings.HasPrefix(rangeHeader, prefix) {
+		http.Error(w, "bad range", http.StatusRequestedRangeNotSatisfiable)
+		return
+	}
+	parts := strings.Split(strings.TrimPrefix(rangeHeader, prefix), "-")
+	if len(parts) != 2 {
+		http.Error(w, "bad range", http.StatusRequestedRangeNotSatisfiable)
+		return
+	}
+	start, err := strconv.Atoi(parts[0])
+	if err != nil {
+		http.Error(w, "bad range", http.StatusRequestedRangeNotSatisfiable)
+		return
+	}
+	end, err := strconv.Atoi(parts[1])
+	if err != nil {
+		http.Error(w, "bad range", http.StatusRequestedRangeNotSatisfiable)
+		return
+	}
+	if start < 0 || end < start || end >= len(body) {
+		http.Error(w, "bad range", http.StatusRequestedRangeNotSatisfiable)
+		return
+	}
+	chunk := body[start : end+1]
+	w.Header().Set("Content-Length", strconv.Itoa(len(chunk)))
+	w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(body)))
+	w.WriteHeader(http.StatusPartialContent)
+	_, _ = io.Copy(w, bytes.NewReader(chunk))
 }

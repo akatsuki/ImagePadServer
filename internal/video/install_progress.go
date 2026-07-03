@@ -33,6 +33,12 @@ func resetInstallProgress() {
 	installProgress.status = ToolInstall{}
 }
 
+// ClearToolInstallStatus clears stale progress after tools are known to be
+// available, including a previous failed install banner.
+func ClearToolInstallStatus() {
+	resetInstallProgress()
+}
+
 func installBegin(tool string) {
 	installProgress.mu.Lock()
 	defer installProgress.mu.Unlock()

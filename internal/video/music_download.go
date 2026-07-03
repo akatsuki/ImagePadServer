@@ -67,9 +67,7 @@ func DownloadMusic(ctx context.Context, ytdlp, rawURL, outDir string) (AcquiredA
 		"--max-filesize", strconv.FormatInt(MaxMediaSourceBytes, 10),
 		"-f", "bestaudio/best",
 		"-x",
-		// Download DASH/HLS fragments in parallel to work around per-connection
-		// throttling (notably YouTube), which dominates long-track download time.
-		"--concurrent-fragments", "4",
+		"--concurrent-fragments", ytdlpConcurrentFragments(rawURL),
 		"--write-thumbnail",
 		"--write-info-json",
 		"--print-to-file", "after_move:filepath", manifestPath,

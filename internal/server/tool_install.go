@@ -42,23 +42,31 @@ func (s *Server) startVideoToolInstall() {
 	}
 	s.toolInstalling = true
 	s.toolInstallMu.Unlock()
+	s.broadcastStateChanged()
 
 	go func() {
 		defer func() {
 			s.toolInstallMu.Lock()
 			s.toolInstalling = false
 			s.toolInstallMu.Unlock()
+			s.broadcastStateChanged()
 		}()
 
 		const maxRounds = 4
 		for round := 0; round < maxRounds; round++ {
 			if videoToolsReady() {
+				video.ClearToolInstallStatus()
 				s.commitVideoPlayerEnabled()
 				return
 			}
 			if err := ensureVideoTools(); err == nil {
+				video.ClearToolInstallStatus()
 				s.commitVideoPlayerEnabled()
 				return
+			}
+			s.broadcastStateChangedThrottled()
+			if round == maxRounds-1 {
+				break
 			}
 			time.Sleep(videoToolInstallBackoff(round))
 		}
