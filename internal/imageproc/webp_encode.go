@@ -43,6 +43,7 @@ func EncodeWebP(src image.Image, outPath string, quality int) error {
 		"-hide_banner",
 		"-loglevel", "error",
 		"-i", tmpPath,
+		"-c:v", "libwebp",
 		"-quality", strconv.Itoa(quality),
 		outPath,
 	)

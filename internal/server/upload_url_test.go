@@ -50,7 +50,7 @@ func TestUploadURLVideoModeDoesNotFallbackToImageOnYTDLPFailure(t *testing.T) {
 	srv, mux := testServer(t, true)
 	defer cleanupTestServer(srv)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/upload-url", strings.NewReader(`{"url":"https://www.youtube.com/watch?v=test"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/upload-url", strings.NewReader(`{"url":"https://x.com/u/status/1/video/1"}`))
 	rec := adminJSON(t, mux, req)
 
 	if rec.Code != http.StatusBadRequest {
