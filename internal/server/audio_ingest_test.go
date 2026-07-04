@@ -40,7 +40,7 @@ func writeTestWAV(t *testing.T, dir, name string) string {
 
 func TestProcessAudioFileAndPublish_SoundCloud(t *testing.T) {
 	srv, _ := testServer(t, true)
-	defer srv.store.Reset()
+	defer cleanupTestServer(srv)
 
 	audioPath := writeTestWAV(t, t.TempDir(), "source.wav")
 
@@ -87,7 +87,7 @@ func TestProcessAudioFileAndPublish_SoundCloud(t *testing.T) {
 
 func TestProcessAudioFileAndPublish_LocalAudio(t *testing.T) {
 	srv, _ := testServer(t, true)
-	defer srv.store.Reset()
+	defer cleanupTestServer(srv)
 
 	audioPath := writeTestWAV(t, t.TempDir(), "track.wav")
 
@@ -129,7 +129,7 @@ func TestProcessAudioFileAndPublish_LocalAudio(t *testing.T) {
 
 func TestProcessAudioFileAndPublish_RemoteAudio(t *testing.T) {
 	srv, _ := testServer(t, true)
-	defer srv.store.Reset()
+	defer cleanupTestServer(srv)
 
 	audioPath := writeTestWAV(t, t.TempDir(), "remote_source.wav")
 
@@ -163,7 +163,7 @@ func TestProcessAudioFileAndPublish_RemoteAudio(t *testing.T) {
 
 func TestProcessAudioFileAndQueue_SoundCloud(t *testing.T) {
 	srv, _ := testServer(t, true)
-	defer srv.store.Reset()
+	defer cleanupTestServer(srv)
 
 	audioPath := writeTestWAV(t, t.TempDir(), "queue_source.wav")
 
@@ -210,7 +210,7 @@ func TestProcessAudioFileAndQueue_SoundCloud(t *testing.T) {
 
 func TestProcessAudioFileAndQueue_LocalAudio(t *testing.T) {
 	srv, _ := testServer(t, true)
-	defer srv.store.Reset()
+	defer cleanupTestServer(srv)
 
 	audioPath := writeTestWAV(t, t.TempDir(), "queue_local.wav")
 
@@ -241,7 +241,7 @@ func TestProcessAudioFileAndQueue_LocalAudio(t *testing.T) {
 
 func TestProcessAudioFileAndPublish_SoundCloudGUNPEIFallback(t *testing.T) {
 	srv, _ := testServer(t, true)
-	defer srv.store.Reset()
+	defer cleanupTestServer(srv)
 
 	audioPath := writeTestWAV(t, t.TempDir(), "gunpei.wav")
 
@@ -288,7 +288,7 @@ func TestProcessAudioFileAndPublish_SoundCloudGUNPEIFallback(t *testing.T) {
 // causes every later ingest to be rejected with 409 "別の取り込み処理が進行中です".
 func TestProcessAndPublishLocalAudioClearsIngest(t *testing.T) {
 	srv, _ := testServer(t, true)
-	defer srv.store.Reset()
+	defer cleanupTestServer(srv)
 
 	audioPath := writeTestWAV(t, t.TempDir(), "ingest-clear.wav")
 	f, err := os.Open(audioPath)
@@ -312,7 +312,7 @@ func TestProcessAndPublishLocalAudioClearsIngest(t *testing.T) {
 // TestProcessAndPublishLocalAudioClearsIngest.
 func TestProcessAndQueueLocalAudioClearsIngest(t *testing.T) {
 	srv, _ := testServer(t, true)
-	defer srv.store.Reset()
+	defer cleanupTestServer(srv)
 
 	audioPath := writeTestWAV(t, t.TempDir(), "ingest-clear-queue.wav")
 	f, err := os.Open(audioPath)
@@ -334,7 +334,7 @@ func TestProcessAndQueueLocalAudioClearsIngest(t *testing.T) {
 
 func TestProcessAudioFileAndPublish_TitleFallsBackToFilename(t *testing.T) {
 	srv, _ := testServer(t, true)
-	defer srv.store.Reset()
+	defer cleanupTestServer(srv)
 
 	audioPath := writeTestWAV(t, t.TempDir(), "my-awesome-track.wav")
 

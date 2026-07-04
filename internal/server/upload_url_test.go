@@ -18,7 +18,7 @@ import (
 
 func TestUploadURLVideoModeRejectsPrivateHost(t *testing.T) {
 	srv, mux := testServer(t, true)
-	defer srv.store.Reset()
+	defer cleanupTestServer(srv)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/upload-url", strings.NewReader(`{"url":"http://192.168.0.1/video.mp4"}`))
 	rec := adminJSON(t, mux, req)
@@ -48,7 +48,7 @@ func TestUploadURLVideoModeDoesNotFallbackToImageOnYTDLPFailure(t *testing.T) {
 	}
 
 	srv, mux := testServer(t, true)
-	defer srv.store.Reset()
+	defer cleanupTestServer(srv)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/upload-url", strings.NewReader(`{"url":"https://www.youtube.com/watch?v=test"}`))
 	rec := adminJSON(t, mux, req)
@@ -70,7 +70,7 @@ func TestUploadURLVideoModeDoesNotFallbackToImageOnYTDLPFailure(t *testing.T) {
 
 func TestUploadURLImageModeRejectsPrivateHost(t *testing.T) {
 	srv, mux := testServer(t, false)
-	defer srv.store.Reset()
+	defer cleanupTestServer(srv)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/upload-url", strings.NewReader(`{"url":"http://127.0.0.1/image.png"}`))
 	rec := adminJSON(t, mux, req)
@@ -107,6 +107,14 @@ func testServer(t *testing.T, videoEnabled bool) (*Server, *http.ServeMux) {
 	mux := http.NewServeMux()
 	srv.Register(mux)
 	return srv, mux
+}
+
+func cleanupTestServer(srv *Server) {
+	if srv == nil || srv.store == nil {
+		return
+	}
+	video.CancelQueue(srv.store.Dir())
+	srv.store.Reset()
 }
 
 // pinDevTools points IMAGEPAD_FFMPEG/IMAGEPAD_FFPROBE at the dev machine's

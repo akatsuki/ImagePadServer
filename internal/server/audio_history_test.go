@@ -15,7 +15,7 @@ import (
 
 func TestAudioHistorySelectCurrent(t *testing.T) {
 	srv, mux := testServer(t, true)
-	defer srv.store.Reset()
+	defer cleanupTestServer(srv)
 
 	audioPath := writeTestWAV(t, t.TempDir(), "history_current.wav")
 
@@ -61,7 +61,7 @@ func TestAudioHistorySelectCurrent(t *testing.T) {
 
 func TestAudioHistoryQueueUnconverted(t *testing.T) {
 	srv, _ := testServer(t, true)
-	defer srv.store.Reset()
+	defer cleanupTestServer(srv)
 
 	audioPath := writeTestWAV(t, t.TempDir(), "queue_unconverted.wav")
 
@@ -89,7 +89,7 @@ func TestAudioHistoryQueueUnconverted(t *testing.T) {
 
 func TestAudioHistoryFailedReAnalysis(t *testing.T) {
 	srv, mux := testServer(t, true)
-	defer srv.store.Reset()
+	defer cleanupTestServer(srv)
 
 	// Create an invalid audio file (just bytes, not actually a WAV)
 	badDir := t.TempDir()
@@ -118,7 +118,7 @@ func TestAudioHistoryFailedReAnalysis(t *testing.T) {
 
 func TestAudioHistoryAlreadyConverted(t *testing.T) {
 	srv, _ := testServer(t, true)
-	defer srv.store.Reset()
+	defer cleanupTestServer(srv)
 
 	audioPath := writeTestWAV(t, t.TempDir(), "already_converted.wav")
 

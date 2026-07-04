@@ -101,7 +101,7 @@ func TestHandleFFmpegChecksConfiguredBinaryWithoutEnablingVideoMode(t *testing.T
 	t.Setenv("IMAGEPAD_FFMPEG", ffmpegPath)
 
 	srv, mux := testServer(t, false)
-	defer srv.store.Reset()
+	defer cleanupTestServer(srv)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/ffmpeg", nil)
 	rec := adminJSON(t, mux, req)
@@ -1236,7 +1236,7 @@ func TestUIKeepsActionErrorToastAcrossSuccessfulStateRefresh(t *testing.T) {
 func TestYTDLPLoginAndCookieDeleteAPI(t *testing.T) {
 	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
 	srv, mux := testServer(t, false)
-	defer srv.store.Reset()
+	defer cleanupTestServer(srv)
 
 	oldLauncher := ytdlpLoginLauncher
 	defer func() { ytdlpLoginLauncher = oldLauncher }()
@@ -1326,7 +1326,7 @@ func TestAutoQualityPrefersUploadBandwidth(t *testing.T) {
 
 func TestHandleNetworkCheckSurfacesSettingsSaveFailure(t *testing.T) {
 	srv, mux := testServer(t, false)
-	defer srv.store.Reset()
+	defer cleanupTestServer(srv)
 
 	oldMeasurer := networkMeasurer
 	t.Cleanup(func() { networkMeasurer = oldMeasurer })

@@ -33,7 +33,7 @@ func TestFindFFprobeDelegatesToVideoResolver(t *testing.T) {
 func TestProcessAndPublishLocalAudioUsesSharedPipeline(t *testing.T) {
 	useSystemFFprobeOrSkip(t)
 	srv, mux := testServer(t, true)
-	defer srv.store.Reset()
+	defer cleanupTestServer(srv)
 
 	wavDir := t.TempDir()
 	audioPath := writeTestWAV(t, wavDir, "test-track.wav")
@@ -93,7 +93,7 @@ func TestProcessAndPublishLocalAudioUsesSharedPipeline(t *testing.T) {
 func TestProcessAndQueueLocalAudioUsesSharedPipeline(t *testing.T) {
 	useSystemFFprobeOrSkip(t)
 	srv, mux := testServer(t, true)
-	defer srv.store.Reset()
+	defer cleanupTestServer(srv)
 
 	wavDir := t.TempDir()
 	audioPath := writeTestWAV(t, wavDir, "queued-audio.wav")
@@ -161,7 +161,7 @@ func useSystemFFprobeOrSkip(t *testing.T) {
 
 func TestLocalAudioNeverUsesSoundCloudMetadata(t *testing.T) {
 	srv, _ := testServer(t, true)
-	defer srv.store.Reset()
+	defer cleanupTestServer(srv)
 
 	audioPath := writeTestWAV(t, t.TempDir(), "test.wav")
 

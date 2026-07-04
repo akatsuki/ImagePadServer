@@ -108,7 +108,7 @@ func TestHandleUploadURLRemoteAudioPublish(t *testing.T) {
 	}
 
 	srv, _ := testServer(t, true)
-	defer srv.store.Reset()
+	defer cleanupTestServer(srv)
 
 	req := httptest.NewRequest("GET", "/", nil)
 	state, err := srv.processAudioFileAndPublish(req, acquired)
@@ -145,7 +145,7 @@ func TestHandleUploadURLRemoteAudioPublish(t *testing.T) {
 
 func TestHandleUploadURLUsesSecureDirectDownloader(t *testing.T) {
 	srv, mux := testServer(t, true)
-	defer srv.store.Reset()
+	defer cleanupTestServer(srv)
 
 	audioPath := writeTestWAV(t, t.TempDir(), "secure-direct.wav")
 	ffprobe := requireFFprobe(t)
@@ -220,7 +220,7 @@ func TestHandleUploadURLRemoteAudioQueue(t *testing.T) {
 	}
 
 	srv, _ := testServer(t, true)
-	defer srv.store.Reset()
+	defer cleanupTestServer(srv)
 
 	req := httptest.NewRequest("GET", "/", nil)
 	_, err = srv.processAudioFileAndQueue(req, acquired)
@@ -263,7 +263,7 @@ func TestHandleUploadURLRedirectPrivateNetworkRejected(t *testing.T) {
 	// The handler calls validateHTTPURL which blocks private IPs before
 	// any download occurs.  This test verifies the initial-validation gate.
 	srv, mux := testServer(t, true)
-	defer srv.store.Reset()
+	defer cleanupTestServer(srv)
 
 	for _, url := range []string{
 		"http://127.0.0.1/song.wav",
@@ -341,7 +341,7 @@ func TestHandleUploadURLRemoteAudioNoExtension(t *testing.T) {
 	}
 
 	srv, _ := testServer(t, true)
-	defer srv.store.Reset()
+	defer cleanupTestServer(srv)
 
 	req := httptest.NewRequest("GET", "/", nil)
 	_, err = srv.processAudioFileAndPublish(req, acquired)
@@ -384,7 +384,7 @@ func TestHandleUploadURLRemoteVideoUnchanged(t *testing.T) {
 
 	// Simulate the handler's dispatch for video.
 	srv, _ := testServer(t, true)
-	defer srv.store.Reset()
+	defer cleanupTestServer(srv)
 
 	req := httptest.NewRequest("GET", "/", nil)
 	state, err := srv.processVideoFileAndPublish(req, dummyPath, "clip.mp4", "")
