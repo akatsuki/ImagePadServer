@@ -92,6 +92,7 @@ type QualityPreset struct {
 	NetworkMbps  int    `json:"networkMbps"`
 	UploadMbps   int    `json:"uploadMbps"`
 	BitrateOnly  bool   `json:"bitrateOnly"`
+	Deinterlace  bool   `json:"deinterlace"`
 }
 
 func ResolveQuality(mode string, networkMbps int) QualityPreset {
@@ -178,6 +179,54 @@ func ResolveQualityForMusic(mode string, downloadMbps, uploadMbps int) QualityPr
 	return preset
 }
 
+func AdaptQualityPresetToSource(preset QualityPreset, probe MediaProbe) QualityPreset {
+	sourceHeight := 0
+	deinterlace := false
+	for _, stream := range probe.Streams {
+		if stream.CodecType != "video" || stream.AttachedPic {
+			continue
+		}
+		if stream.Height > sourceHeight {
+			sourceHeight = stream.Height
+		}
+		if isInterlacedFieldOrder(stream.FieldOrder) {
+			deinterlace = true
+		}
+	}
+	if sourceHeight <= 0 || preset.Height <= 0 || sourceHeight >= preset.Height {
+		preset.Deinterlace = preset.Deinterlace || deinterlace
+		return preset
+	}
+	if sourceHeight%2 != 0 {
+		sourceHeight--
+	}
+	if sourceHeight < 2 {
+		return preset
+	}
+	mode := "360"
+	if sourceHeight >= 1080 {
+		mode = "1080"
+	} else if sourceHeight >= 720 {
+		mode = "720"
+	}
+	base := ResolveQualityForUpload(mode, preset.NetworkMbps, preset.UploadMbps)
+	base.Mode = preset.Mode
+	base.BitrateOnly = preset.BitrateOnly
+	base.Deinterlace = preset.Deinterlace || deinterlace
+	base.Height = sourceHeight
+	base.Effective = strconv.Itoa(sourceHeight)
+	return base
+}
+
+func isInterlacedFieldOrder(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "tt", "bb", "tb", "bt":
+		return true
+	default:
+		return false
+	}
+}
+
 // scaleBitrate multiplies a bitrate string like "3000k" by factor, preserving
 // the unit suffix. Empty or unparseable values are returned unchanged.
 func scaleBitrate(s string, factor float64) string {
@@ -240,9 +289,9 @@ func PublishStillImageForID(imagePath, outDir, id string, preset QualityPreset) 
 	result.OK = result.MP4 || result.HLS
 	switch {
 	case mp4Err == nil && hlsErr == nil:
-		result.Message = "VRChat video outputs generated at " + preset.Effective + "p."
+		result.Message = "VRChat動画出力を " + preset.Effective + "p で生成しました。"
 	case result.OK:
-		result.Message = fmt.Sprintf("Some VRChat video outputs generated. MP4: %v, HLS: %v", errorText(mp4Err), errorText(hlsErr))
+		result.Message = fmt.Sprintf("一部のVRChat動画出力を生成しました。MP4: %v, HLS: %v", errorText(mp4Err), errorText(hlsErr))
 	default:
 		result.Message = fmt.Sprintf("FFmpeg failed. MP4: %v, HLS: %v", errorText(mp4Err), errorText(hlsErr))
 	}
@@ -345,14 +394,14 @@ func CurrentStatusForID(outDir, id string) Result {
 		return result
 	}
 	if result.OK {
-		result.Message = "VRChat video outputs are available."
+		result.Message = "VRChat動画出力を利用できます。"
 		return result
 	}
 	if _, err := ffmpegPath(); err != nil {
 		result.Message = "FFmpeg not found. Turn on video player support to download it, set IMAGEPAD_FFMPEG, or add ffmpeg to PATH."
 		return result
 	}
-	result.Message = "VRChat video outputs have not been generated yet."
+	result.Message = "VRChat動画出力はまだ生成されていません。"
 	return result
 }
 
@@ -711,8 +760,12 @@ func uploadedHLSArgsWithEncoder(sourcePath, id string, preset QualityPreset, enc
 	vod.MaxRate = scaleBitrate(preset.MaxRate, 0.83)
 	vod.BufferSize = scaleBitrate(preset.BufferSize, 0.83)
 	args = append(args, encoder.FFmpegArgs(vod, "medium")...)
+	filter := "scale=w='min(1920,iw)':h='min(" + strconv.Itoa(preset.Height) + ",ih)':force_original_aspect_ratio=decrease:force_divisible_by=2"
+	if preset.Deinterlace {
+		filter = "yadif," + filter
+	}
 	return append(args,
-		"-vf", "scale=w='min(1920,iw)':h='min("+strconv.Itoa(preset.Height)+",ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
+		"-vf", filter,
 		"-g", "60",
 		"-keyint_min", "60",
 		"-sc_threshold", "0",

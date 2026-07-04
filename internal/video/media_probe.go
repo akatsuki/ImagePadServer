@@ -25,6 +25,7 @@ type ffprobeStream struct {
 	Disposition ffprobeDisposition `json:"disposition"`
 	Width       int                `json:"width"`
 	Height      int                `json:"height"`
+	FieldOrder  string             `json:"field_order"`
 	Tags        map[string]string  `json:"tags"`
 }
 
@@ -58,6 +59,7 @@ func ParseMediaProbeJSON(data []byte) (MediaProbe, error) {
 			AttachedPic: s.Disposition.AttachedPic != 0,
 			Width:       s.Width,
 			Height:      s.Height,
+			FieldOrder:  s.FieldOrder,
 			Tags:        s.Tags,
 		}
 	}

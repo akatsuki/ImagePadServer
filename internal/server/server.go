@@ -36,8 +36,9 @@ import (
 
 const (
 	// maxMultipartMemory is kept low so large uploads spill to temp files instead of RAM.
-	maxMultipartMemory  = 32 << 20
-	maxVideoUploadBytes = 2 << 30 // matches yt-dlp --max-filesize 2G
+	maxMultipartMemory           = 32 << 20
+	maxLocalVideoUploadBytes     = 8 << 30
+	maxLocalVideoUploadBytesText = "8 GiB"
 )
 
 var (
@@ -223,7 +224,9 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/video/current.mp4", s.handleCurrentVideo)
 	mux.HandleFunc("/stream/current.m3u8", s.handleCurrentHLS)
 	mux.HandleFunc("/stream/", s.handleStream)
+	mux.HandleFunc("/assets/fonts/", s.handleUIFont)
 	mux.HandleFunc("/favicon.ico", s.handleFavicon)
+	mux.HandleFunc("/app-icon.png", s.handleAppIcon)
 	mux.HandleFunc("/healthz", s.handleHealth)
 }
 
@@ -617,10 +620,14 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.broadcastStateChanged()
+	trackedBody, finishReceive := s.trackUploadReceiveProgress(r.Body, r.ContentLength, uploadReceiveTitle(r))
+	r.Body = trackedBody
 	if err := r.ParseMultipartForm(uploadMemoryLimit()); err != nil {
+		finishReceive()
 		http.Error(w, "failed to parse upload", http.StatusBadRequest)
 		return
 	}
+	finishReceive()
 
 	file, header, err := r.FormFile("image")
 	if err != nil {
@@ -643,10 +650,14 @@ func (s *Server) handleUploadQueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.broadcastStateChanged()
+	trackedBody, finishReceive := s.trackUploadReceiveProgress(r.Body, r.ContentLength, uploadReceiveTitle(r))
+	r.Body = trackedBody
 	if err := r.ParseMultipartForm(uploadMemoryLimit()); err != nil {
+		finishReceive()
 		http.Error(w, "failed to parse upload", http.StatusBadRequest)
 		return
 	}
+	finishReceive()
 
 	file, header, err := r.FormFile("image")
 	if err != nil {
@@ -1171,7 +1182,7 @@ func (s *Server) processVideoAndPublish(r *http.Request, reader io.Reader, name 
 	if err != nil {
 		return nil, fmt.Errorf("failed to save video upload")
 	}
-	written, err := io.Copy(source, io.LimitReader(reader, maxVideoUploadBytes+1))
+	written, err := io.Copy(source, io.LimitReader(reader, maxLocalVideoUploadBytes+1))
 	if err != nil {
 		_ = source.Close()
 		_ = os.Remove(sourcePath)
@@ -1181,9 +1192,9 @@ func (s *Server) processVideoAndPublish(r *http.Request, reader io.Reader, name 
 		_ = os.Remove(sourcePath)
 		return nil, fmt.Errorf("failed to save video upload")
 	}
-	if written > maxVideoUploadBytes {
+	if written > maxLocalVideoUploadBytes {
 		_ = os.Remove(sourcePath)
-		return nil, fmt.Errorf("video exceeds size limit of %d bytes", maxVideoUploadBytes)
+		return nil, fmt.Errorf("video exceeds local upload size limit of %s", maxLocalVideoUploadBytesText)
 	}
 	return s.processVideoFileAndPublish(r, sourcePath, name, "")
 }
@@ -1197,7 +1208,7 @@ func (s *Server) processVideoAndQueue(r *http.Request, reader io.Reader, name st
 	if err != nil {
 		return nil, fmt.Errorf("failed to save video upload")
 	}
-	written, err := io.Copy(source, io.LimitReader(reader, maxVideoUploadBytes+1))
+	written, err := io.Copy(source, io.LimitReader(reader, maxLocalVideoUploadBytes+1))
 	if err != nil {
 		_ = source.Close()
 		_ = os.Remove(sourcePath)
@@ -1207,9 +1218,9 @@ func (s *Server) processVideoAndQueue(r *http.Request, reader io.Reader, name st
 		_ = os.Remove(sourcePath)
 		return nil, fmt.Errorf("failed to save video upload")
 	}
-	if written > maxVideoUploadBytes {
+	if written > maxLocalVideoUploadBytes {
 		_ = os.Remove(sourcePath)
-		return nil, fmt.Errorf("video exceeds size limit of %d bytes", maxVideoUploadBytes)
+		return nil, fmt.Errorf("video exceeds local upload size limit of %s", maxLocalVideoUploadBytesText)
 	}
 	return s.processVideoFileAndQueue(r, sourcePath, name, "")
 }
@@ -1453,6 +1464,24 @@ func optionsFromValues(value func(string) string) imageproc.Options {
 
 func uploadMemoryLimit() int64 {
 	return maxMultipartMemory
+}
+
+func uploadReceiveTitle(r *http.Request) string {
+	if r == nil {
+		return "ファイル"
+	}
+	name := strings.TrimSpace(r.Header.Get("X-ImagePad-Upload-Name"))
+	if name == "" {
+		return "ファイル"
+	}
+	if decoded, err := url.QueryUnescape(name); err == nil && strings.TrimSpace(decoded) != "" {
+		name = decoded
+	}
+	name = filepath.Base(name)
+	if name == "." || name == string(filepath.Separator) {
+		return "ファイル"
+	}
+	return name
 }
 
 func videoURLDownloadError(err error) string {
@@ -1707,7 +1736,7 @@ func (s *Server) handleHistorySelect(w http.ResponseWriter, r *http.Request) {
 	current := s.store.Current()
 	if current != nil && current.Converted {
 		state := s.withClipboardResult(s.state(r))
-		state["historyTargetMode"] = historyTargetMode(*current)
+		state["historyTargetMode"] = historySelectTargetMode(*current)
 		writeJSON(w, state)
 		return
 	}
@@ -1732,7 +1761,7 @@ func (s *Server) handleHistorySelect(w http.ResponseWriter, r *http.Request) {
 	}
 	state := s.withClipboardResult(s.state(r))
 	if current := s.store.Current(); current != nil {
-		state["historyTargetMode"] = historyTargetMode(*current)
+		state["historyTargetMode"] = historySelectTargetMode(*current)
 	}
 	writeJSON(w, state)
 }
@@ -1767,8 +1796,19 @@ func (s *Server) enqueueStillConversion(path, id, title string) {
 }
 
 func (s *Server) enqueueUploadedConversion(path, id, title string) {
-	jobID := video.EnqueueUploadedVideoForID(path, s.store.Dir(), id, title, s.videoQualityPreset(), s.probeVideoDuration(path))
+	probe, ok := s.probeVideoMedia(path)
+	preset := s.videoQualityPreset()
+	totalSeconds := 0
+	if ok {
+		preset = s.videoQualityPresetForSourceProbe(probe)
+		totalSeconds = videoDurationSeconds(probe)
+	}
+	jobID := video.EnqueueUploadedVideoForID(path, s.store.Dir(), id, title, preset, totalSeconds)
 	s.watchConversion(jobID, id)
+}
+
+func (s *Server) videoQualityPresetForSourceProbe(probe video.MediaProbe) video.QualityPreset {
+	return video.AdaptQualityPresetToSource(s.videoQualityPreset(), probe)
 }
 
 // probeVideoDuration returns the source video's duration in whole seconds via
@@ -1777,14 +1817,26 @@ func (s *Server) enqueueUploadedConversion(path, id, title string) {
 // duration cannot be determined, in which case the queue falls back to a raw
 // segment count instead of a percentage.
 func (s *Server) probeVideoDuration(path string) int {
+	probe, ok := s.probeVideoMedia(path)
+	if !ok {
+		return 0
+	}
+	return videoDurationSeconds(probe)
+}
+
+func (s *Server) probeVideoMedia(path string) (video.MediaProbe, bool) {
 	ffprobe, err := findFFprobe()
 	if err != nil {
-		return 0
+		return video.MediaProbe{}, false
 	}
 	probe, err := video.ProbeMedia(context.Background(), ffprobe, path)
 	if err != nil {
-		return 0
+		return video.MediaProbe{}, false
 	}
+	return probe, true
+}
+
+func videoDurationSeconds(probe video.MediaProbe) int {
 	if probe.Duration <= 0 {
 		return 0
 	}
@@ -2122,6 +2174,33 @@ func (s *Server) handleFavicon(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(appicon.IconICO)
 }
 
+func (s *Server) handleAppIcon(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	_, _ = w.Write(appicon.IconPNG)
+}
+
+func (s *Server) handleUIFont(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimPrefix(r.URL.Path, "/assets/fonts/")
+	if name != "NotoSansJP-Regular.ttf" && name != "NotoSansJP-Medium.ttf" && name != "NotoSansJP-SemiBold.ttf" {
+		http.NotFound(w, r)
+		return
+	}
+	fonts, err := video.VisualizerFonts()
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	paths := map[string]string{
+		"NotoSansJP-Regular.ttf":  fonts.Regular400,
+		"NotoSansJP-Medium.ttf":   fonts.Medium500,
+		"NotoSansJP-SemiBold.ttf": fonts.SemiBold600,
+	}
+	w.Header().Set("Content-Type", "font/ttf")
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	http.ServeFile(w, r, paths[name])
+}
+
 func (s *Server) handleCurrentImage(w http.ResponseWriter, r *http.Request) {
 	if !publicReadAllowed(r) {
 		http.NotFound(w, r)
@@ -2351,7 +2430,9 @@ func (s *Server) serveLLHLSProxy(w http.ResponseWriter, r *http.Request, id stri
 	if s.obs == nil {
 		return false
 	}
-	if obsrtmp.NormalizeLatencyMode(s.obs.Status().Latency.Mode) != obsrtmp.LatencyModeLLHLS {
+	status := s.obs.Status()
+	mode := obsrtmp.NormalizeLatencyMode(status.Latency.Mode)
+	if mode != obsrtmp.LatencyModeLLHLS && status.Latency.Transport != obsrtmp.LatencyModeRTSPT {
 		return false
 	}
 	name := filepath.Base(r.URL.Path)
@@ -2646,7 +2727,7 @@ func (s *Server) historyState() []map[string]interface{} {
 func historyTargetMode(item library.CurrentImage) string {
 	switch {
 	case item.SourceKind == "obs" || strings.HasPrefix(item.PublicName, "obs-"):
-		return "obs"
+		return "file"
 	case item.SourceKind == "soundcloud" || item.SourceKind == "local_audio" || item.SourceKind == "remote_audio":
 		return "link"
 	case item.SourceKind != "":
@@ -2654,6 +2735,13 @@ func historyTargetMode(item library.CurrentImage) string {
 	default:
 		return "file"
 	}
+}
+
+func historySelectTargetMode(item library.CurrentImage) string {
+	if item.Kind == "video" && item.Converted && (item.SourceKind == "obs" || strings.HasPrefix(item.PublicName, "obs-")) {
+		return "obs"
+	}
+	return historyTargetMode(item)
 }
 
 func (s *Server) videoQueueState() []map[string]interface{} {
@@ -2726,7 +2814,7 @@ func (s *Server) videoPlayerStateForID(id string) map[string]interface{} {
 
 func (s *Server) videoPlayerEmptyState() map[string]interface{} {
 	enabled := s.videoPlayerEnabled()
-	status := video.Result{Message: "VRChat video outputs have not been generated yet."}
+	status := video.Result{Message: "VRChat動画出力はまだ生成されていません。"}
 	if !enabled {
 		status = video.Result{Message: "VRChat video player support is disabled."}
 	}
@@ -2787,7 +2875,7 @@ func (s *Server) obsLatencyProfile() obsrtmp.LatencyProfile {
 
 func (s *Server) obsState() obsrtmp.Status {
 	if s.obs == nil {
-		return obsrtmp.Status{Message: "OBS RTMP receiver is unavailable."}
+		return obsrtmp.Status{Message: "OBS RTMP受信機能は利用できません。"}
 	}
 	status := s.obs.Status()
 	status.Capabilities = obsrtmp.LatencyCapabilities()
@@ -2996,6 +3084,9 @@ func shareModeFromState(state map[string]interface{}) string {
 	if mode, _ := state["historyTargetMode"].(string); mode == "link" || mode == "file" {
 		return mode
 	}
+	if hlsURL, _ := state["hlsURL"].(string); strings.HasPrefix(hlsURL, "http") {
+		return "link"
+	}
 	if current, _ := state["current"].(*library.CurrentImage); current != nil {
 		mode := historyTargetMode(*current)
 		if mode != "obs" {
@@ -3038,6 +3129,17 @@ func mediaShareURL(state map[string]interface{}) (string, string) {
 }
 
 func fileShareURL(state map[string]interface{}) (string, string) {
+	if currentMediaKind(state) == "image" {
+		if imageURL, ok := state["imageURL"].(string); ok && strings.HasPrefix(imageURL, "http") {
+			return imageURL, "ImagePad URL"
+		}
+		if publicURL, ok := state["publicImageURL"].(string); ok && strings.HasPrefix(publicURL, "http") {
+			return publicURL, "ImagePad URL"
+		}
+		if localURL, ok := state["localImageURL"].(string); ok && strings.HasPrefix(localURL, "http") {
+			return localURL, "Local URL"
+		}
+	}
 	if videoPlayer, ok := state["videoPlayer"].(map[string]interface{}); ok {
 		if enabled, _ := videoPlayer["enabled"].(bool); enabled {
 			if hlsURL, ok := state["hlsURL"].(string); ok && strings.HasPrefix(hlsURL, "http") {
@@ -3058,6 +3160,21 @@ func fileShareURL(state map[string]interface{}) (string, string) {
 		return localURL, "Local URL"
 	}
 	return "", "URL"
+}
+
+func currentMediaKind(state map[string]interface{}) string {
+	if current, _ := state["current"].(*library.CurrentImage); current != nil {
+		return current.Kind
+	}
+	if current, _ := state["current"].(library.CurrentImage); current.ID != "" {
+		return current.Kind
+	}
+	if current, _ := state["current"].(map[string]interface{}); current != nil {
+		if kind, _ := current["kind"].(string); kind != "" {
+			return kind
+		}
+	}
+	return ""
 }
 
 func activeOBSLatency(selected obsrtmp.LatencyProfile, status obsrtmp.Status) obsrtmp.LatencyProfile {

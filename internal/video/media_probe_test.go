@@ -67,6 +67,17 @@ func TestParseMediaProbeJSON(t *testing.T) {
 	}
 }
 
+func TestParseMediaProbeJSONIncludesFieldOrder(t *testing.T) {
+	data := []byte(`{"streams":[{"index":0,"codec_type":"video","codec_name":"h264","width":1920,"height":1080,"field_order":"tt"}],"format":{"duration":"10.0"}}`)
+	probe, err := ParseMediaProbeJSON(data)
+	if err != nil {
+		t.Fatalf("ParseMediaProbeJSON: %v", err)
+	}
+	if got := probe.Streams[0].FieldOrder; got != "tt" {
+		t.Fatalf("field order = %q, want tt", got)
+	}
+}
+
 func TestParseMediaProbeJSONInvalid(t *testing.T) {
 	_, err := ParseMediaProbeJSON([]byte(`{invalid`))
 	if err == nil {

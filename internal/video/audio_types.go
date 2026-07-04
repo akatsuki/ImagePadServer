@@ -33,6 +33,7 @@ type MediaStream struct {
 	AttachedPic bool
 	Width       int
 	Height      int
+	FieldOrder  string
 	Tags        map[string]string
 }
 

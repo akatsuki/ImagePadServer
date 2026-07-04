@@ -92,7 +92,9 @@ func TestUIHistoryPublishNavigatesToSourceMode(t *testing.T) {
 	for _, want := range []string{
 		`function applyHistoryTargetMode(data)`,
 		`const mode = data && data.historyTargetMode ? String(data.historyTargetMode) : ''`,
-		`setUploadMode('obs')`,
+		`data.current.kind === 'video'`,
+		`setMediaIntent('video')`,
+		`setMediaIntent('image')`,
 		`setUploadMode('link')`,
 		`setUploadMode('file')`,
 		`applyHistoryTargetMode(data)`,
@@ -100,6 +102,10 @@ func TestUIHistoryPublishNavigatesToSourceMode(t *testing.T) {
 		if !strings.Contains(html, want) {
 			t.Fatalf("history publish navigation missing %q", want)
 		}
+	}
+	if strings.Contains(html, `if (mode === 'obs') {
+        setUploadMode('obs');`) {
+		t.Fatal("history publish must not switch saved OBS recordings back into live OBS mode")
 	}
 }
 
@@ -136,6 +142,217 @@ func TestUIModeSwitchRefreshesShareURLDisplay(t *testing.T) {
 	}
 }
 
+func TestUIPreviewControllerIsWired(t *testing.T) {
+	html := getIndexHTML(t)
+	for _, want := range []string{
+		`const PreviewController = (() => {`,
+		`function initPreviewController(nextDeps)`,
+		`function renderPreviewController(data, context)`,
+		`function setPreviewVisibleController(visible)`,
+		`PreviewController.setVisible(`,
+		`PreviewController.init({`,
+		`PreviewController.render(data, {`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("PreviewController wiring missing %q", want)
+		}
+	}
+}
+
+func TestUIPreviewControllerOwnsHLSLifecycle(t *testing.T) {
+	html := getIndexHTML(t)
+	for _, want := range []string{
+		`let previewHLS = null`,
+		`function destroyPreviewHLS()`,
+		`window.Hls && window.Hls.isSupported()`,
+		`if (video.canPlayType('application/vnd.apple.mpegurl'))`,
+		`PreviewController.render(data, {`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("PreviewController HLS lifecycle missing %q", want)
+		}
+	}
+	hlsIndex := strings.Index(html, `window.Hls && window.Hls.isSupported()`)
+	nativeIndex := strings.Index(html, `video.canPlayType('application/vnd.apple.mpegurl')`)
+	if hlsIndex < 0 || nativeIndex < 0 || hlsIndex > nativeIndex {
+		t.Fatal("HLS.js must be preferred before native HLS sniffing")
+	}
+}
+
+func TestUIPreviewControllerRendersPlayableVideo(t *testing.T) {
+	html := getIndexHTML(t)
+	for _, want := range []string{
+		`function sameOriginPreviewURL(value)`,
+		`function mediaPreviewURL(data)`,
+		`function addVideoPlayButton(video)`,
+		`await video.play()`,
+		`preview-play-button`,
+		`state.previewVideoURL`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("playable video preview missing %q", want)
+		}
+	}
+	if strings.Contains(html, `video.muted = true;
+          video.preload = 'metadata';`) {
+		t.Fatal("regular video preview must not force mute before user playback")
+	}
+}
+
+func TestUIPreviewControllerOwnsAllPreviewModes(t *testing.T) {
+	html := getIndexHTML(t)
+	for _, want := range []string{
+		`function renderImage(data, nextCurrentID)`,
+		`function renderEmpty()`,
+		`function renderIngestProgress(data)`,
+		`function renderVideoProgress(data)`,
+		`function renderOBSPreview(data, context)`,
+		`preview.classList.add('obs-preview')`,
+		`preview.classList.remove('obs-preview')`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("PreviewController mode rendering missing %q", want)
+		}
+	}
+}
+
+func TestUIUploadControllerIsWired(t *testing.T) {
+	html := getIndexHTML(t)
+	for _, want := range []string{
+		`const UploadController = (() => {`,
+		`function initUploadController(nextDeps)`,
+		`function setUploadModeController(mode)`,
+		`function setMediaIntentController(intent)`,
+		`UploadController.init({`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("UploadController wiring missing %q", want)
+		}
+	}
+}
+
+func TestUIUploadControllerOwnsUploadProgress(t *testing.T) {
+	html := getIndexHTML(t)
+	for _, want := range []string{
+		`id="uploadProgressPanel"`,
+		`id="uploadProgressFill"`,
+		`id="uploadProgressText"`,
+		`function beginLocalUploadProgress(file, action)`,
+		`function updateLocalUploadProgress(loaded, total, title)`,
+		`function finishLocalUploadProgress()`,
+		`function renderUploadProgressController(percent, detail, title)`,
+		`uploadProgressPanel.classList.add('open')`,
+		`uploadProgressPanel.classList.remove('open')`,
+		`localUploadActive = true`,
+		`localUploadActive = false`,
+		`UploadController.beginLocalUploadProgress(selectedUploadFileName(), action)`,
+		`UploadController.updateLocalUploadProgress(event.loaded, event.total, title)`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("UploadController progress behavior missing %q", want)
+		}
+	}
+	if strings.Contains(html, `PreviewController.renderIngest('uploading'`) {
+		t.Fatal("local upload progress must render in the upload area, not the preview box")
+	}
+}
+
+func TestUIHistoryControllerIsWired(t *testing.T) {
+	html := getIndexHTML(t)
+	for _, want := range []string{
+		`const HistoryController = (() => {`,
+		`function renderHistoryController(data)`,
+		`function publishHistoryItem(id)`,
+		`function toggleFavoriteHistoryItem(id, favorite)`,
+		`function queueHistoryItem(id)`,
+		`HistoryController.render(state)`,
+		`HistoryController.publishHistoryItem(publish.dataset.historyPublish)`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("HistoryController wiring missing %q", want)
+		}
+	}
+}
+
+func TestUISettingsControllerIsWired(t *testing.T) {
+	html := getIndexHTML(t)
+	for _, want := range []string{
+		`const SettingsController = (() => {`,
+		`function openSettingsController()`,
+		`function openPhoneConnectController()`,
+		`function applyThemePreferenceController(preference, persist)`,
+		`SettingsController.openSettings()`,
+		`SettingsController.openPhoneConnect()`,
+		`SettingsController.applyThemePreference(button.dataset.themeChoice, true)`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("SettingsController wiring missing %q", want)
+		}
+	}
+}
+
+func TestUIRendersVideoPreviewElement(t *testing.T) {
+	html := getIndexHTML(t)
+	for _, want := range []string{
+		`data.current.kind === 'video'`,
+		`function sameOriginPreviewURL(value)`,
+		`function mediaPreviewURL(data)`,
+		`const videoPreviewURL = mediaPreviewURL(data)`,
+		`params.set('token', pageToken)`,
+		`function addVideoPlayButton(video)`,
+		`await video.play()`,
+		`preview-play-button`,
+		`const video = document.createElement('video')`,
+		`attachPreviewHLS(video, videoPreviewURL)`,
+		`state.previewVideoURL = videoPreviewURL`,
+		`const existingVideo = preview.querySelector('video')`,
+		`state.previewMode = 'video-waiting'`,
+		`deps.scheduleRefresh(500)`,
+		`.preview video`,
+		`box-sizing: border-box`,
+		`min-width: 0`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("video preview rendering missing %q", want)
+		}
+	}
+	if strings.Contains(html, `preview.innerHTML = '<div class="empty">動画をHLSとして配信できます</div>';`) {
+		t.Fatal("video preview must render a video element when an HLS/MP4 URL is available")
+	}
+	hlsIndex := strings.Index(html, `if (window.Hls && window.Hls.isSupported())`)
+	nativeIndex := strings.Index(html, `if (video.canPlayType('application/vnd.apple.mpegurl'))`)
+	if hlsIndex < 0 || nativeIndex < 0 || hlsIndex > nativeIndex {
+		t.Fatal("HLS.js must be preferred before native HLS sniffing for Chromium previews")
+	}
+	if strings.Contains(html, `}
+      destroyPreviewHLS();
+      preview.classList.remove('obs-preview');`) {
+		t.Fatal("regular video preview must not destroy the HLS instance on every state refresh")
+	}
+	if strings.Contains(html, `video.muted = true;
+          video.preload = 'metadata';`) {
+		t.Fatal("regular video preview must not force mute before user playback")
+	}
+}
+
+func TestUIThemePreferenceSupportsSystemLightDark(t *testing.T) {
+	html := getIndexHTML(t)
+	for _, want := range []string{
+		`data-theme-choice="system"`,
+		`data-theme-choice="light"`,
+		`data-theme-choice="dark"`,
+		`imagepad:themePreference`,
+		`prefers-color-scheme: dark`,
+		`function applyThemePreference`,
+		`document.documentElement.dataset.theme`,
+		`:root[data-theme="dark"]`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("theme preference UI missing %q", want)
+		}
+	}
+}
+
 func TestUIShowsRTSPPublicationFailureWithoutCopyingMessage(t *testing.T) {
 	html := getIndexHTML(t)
 	for _, want := range []string{
@@ -152,7 +369,7 @@ func TestUIShowsRTSPPublicationFailureWithoutCopyingMessage(t *testing.T) {
 
 func TestUIRendersIngestPhase(t *testing.T) {
 	html := getIndexHTML(t)
-	for _, want := range []string{"ingestPhase", "ダウンロード中", "解析中", "function renderIngestPreview(", "動画をダウンロード中...", "progressPercent", "progressText"} {
+	for _, want := range []string{"ingestPhase", "受信中", "ダウンロード中", "解析中", "function renderIngestPreview(", "動画をダウンロード中...", "progressPercent", "progressText"} {
 		if !strings.Contains(html, want) {
 			t.Errorf("UI page missing %q", want)
 		}
@@ -274,6 +491,66 @@ func TestMusicModeUIIsNestedUnderVideoPlayerMode(t *testing.T) {
 	}
 }
 
+func TestMusicWorkspaceUIIsFeatureFlagged(t *testing.T) {
+	html := getIndexHTML(t)
+	for _, want := range []string{
+		`const musicWorkspaceEnabled = true`,
+		`id="musicIntentButton"`,
+		`id="musicModeMenu"`,
+		`aria-haspopup="menu"`,
+		`music-caret`,
+		`data-music-mode-choice="single"`,
+		`data-music-mode-choice="playlist"`,
+		`data-music-mode-choice="party"`,
+		`id="musicPlaylistPanel"`,
+		`MusicController.init({`,
+		`MusicController.render({`,
+		`musicModeMenu.addEventListener('click'`,
+		`event.target.closest('[data-music-mode-choice]')`,
+		`if (!musicWorkspaceEnabled && intent === 'music')`,
+		`mediaIntent = intent === 'music' && musicWorkspaceEnabled`,
+		`flowGrid.hidden = false`,
+		`musicPlaylistPanel.hidden = !active || mode === 'single'`,
+		`PreviewController.setVisible(!active || mode === 'single')`,
+		`.preview-panel[hidden]`,
+		`obsModeButton.hidden = !state.videoPlayerEnabled || mediaIntent !== 'video'`,
+		`modeTabs.classList.toggle('has-obs', !!state.videoPlayerEnabled && mediaIntent === 'video')`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("music menu/controller missing %q", want)
+		}
+	}
+	if strings.Contains(html, `if (previewPanel) previewPanel.hidden = active`) {
+		t.Fatal("MusicController must not directly hide the preview panel")
+	}
+	if strings.Contains(html, `uploadHeading.textContent = mediaIntent === 'video' ? '動画アップロード' : '画像アップロード'`) {
+		t.Fatal("applyVideoPlayer must not overwrite music headings back to image")
+	}
+}
+
+func TestMusicWorkspaceHasRequiredModes(t *testing.T) {
+	html := getIndexHTML(t)
+	for _, want := range []string{
+		`シングル`,
+		`プレイリスト`,
+		`パーティーモード`,
+		`YouTubeプレイリストURL`,
+		`musicPlayerPlayButton`,
+		`musicPlayerStopButton`,
+		`musicPlayerRepeatButton`,
+		`musicPlayerShuffleButton`,
+		`draggable="true"`,
+		`aria-label="曲順をドラッグして変更"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("music menu/player UI missing %q", want)
+		}
+	}
+	if strings.Contains(html, `ミュージックHLSアドレス`) {
+		t.Fatal("single music mode must not show the old music HLS address block")
+	}
+}
+
 func TestOBSConnectionDetailsUIAndUnifiedRTSPURL(t *testing.T) {
 	html := getIndexHTML(t)
 	for _, want := range []string{
@@ -288,9 +565,9 @@ func TestOBSConnectionDetailsUIAndUnifiedRTSPURL(t *testing.T) {
 		`renderOBSConnections`,
 		`const url = data && data.obs && data.obs.rtsptURL ? String(data.obs.rtsptURL) : ''`,
 		`https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js`,
-		`function attachHLSPreview(video, src)`,
+		`function attachPreviewHLS(video, src)`,
 		`window.Hls && window.Hls.isSupported()`,
-		`data.obs.previewURL !== state.obsPreviewURL`,
+		`obsPreviewURL !== obsMediaURL`,
 		`最高画質HLS（10s+）`,
 		`高画質HLS（5s）`,
 		`低遅延RTSP（3-4s）`,
