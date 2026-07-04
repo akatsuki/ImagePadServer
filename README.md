@@ -34,10 +34,10 @@ https://akatsuki.github.io/ImagePadServer/
 
 ## まず使う
 
-Windows ではビルド済み exe を起動します。
+Windows では [GitHub Release](https://github.com/akatsuki/ImagePadServer/releases/tag/v1.5.2) から `imagepadserver-v1.5.2-windows-amd64.zip` をダウンロードして展開し、ビルド済み exe を起動します。
 
 ```powershell
-.\dist\1.3.0\release\win\imagepadserver-v1.3.0-windows-amd64.exe
+.\imagepadserver-v1.5.2-windows-amd64.exe
 ```
 
 macOS / Linux では Go を入れたうえで、ソースから起動できます。
@@ -161,10 +161,10 @@ ID3 タグ等のメタデータからタイトルが取得できた場合はそ�
 
 ### 検証コマンド
 
-AV-602 の完了後、次のコマンドで README.md の整合性を確認できます。
+次のコマンドで README.md のファイルサイズ表記を確認できます。
 
-```sh
-rtk grep "2 GB" README.md
+```powershell
+rtk proxy pwsh -NoProfile -Command 'Select-String -Path README.md -Pattern "4 GiB"'
 rtk git diff --check
 ```
 
@@ -202,7 +202,7 @@ Windows / macOS では、必要なツールが見つからない場合にアプ�
 macOS で事前に Homebrew 版を使いたい場合:
 
 ```sh
-brew install ffmpeg yt-dlp cloudflared
+brew install ffmpeg webp yt-dlp cloudflared
 ```
 
 手動でパスを指定する場合:
@@ -210,7 +210,7 @@ brew install ffmpeg yt-dlp cloudflared
 ```powershell
 $env:IMAGEPAD_FFMPEG="C:\tools\ffmpeg\bin\ffmpeg.exe"
 $env:IMAGEPAD_YTDLP="C:\tools\yt-dlp\yt-dlp.exe"
-.\dist\imagepadserver-v1.1.1.exe
+.\imagepadserver-v1.5.2-windows-amd64.exe
 ```
 
 Windows では FFmpeg / yt-dlp / cloudflared を非表示で起動するため、変換中にコマンドプロンプトは表示されない想定です。
@@ -285,7 +285,7 @@ IMAGEPAD_PORT=8080
 
 ```powershell
 $env:IMAGEPAD_PORT="8095"
-.\dist\imagepadserver-v1.1.1.exe
+.\imagepadserver-v1.5.2-windows-amd64.exe
 ```
 
 ## トラブルシュート
@@ -359,7 +359,7 @@ Windows PowerShell で exe ビルド:
 $env:CGO_ENABLED="0"
 $env:GOOS="windows"
 $env:GOARCH="amd64"
-go build -trimpath -ldflags "-H=windowsgui" -o dist\1.3.0\release\win\imagepadserver-v1.3.0-windows-amd64.exe .\cmd\imagepadserver
+go build -trimpath -ldflags "-H=windowsgui" -o dist\1.5.2\release\win\imagepadserver-v1.5.2-windows-amd64.exe .\cmd\imagepadserver
 ```
 
 `scripts/build-release.sh` writes builds under `dist/<version>/release/<platform>/` for stable versions and `dist/<version>/dev/<devN>/<platform>/` for dev versions.
@@ -370,7 +370,7 @@ Dev tags such as `v1.2.2-dev1` are published as `dev-release` prereleases.
 
 ## バージョン
 
-- Version: `v1.3.1`
+- Version: `v1.5.2`
 - Author: Akat / 赤月さん
 - Copyright: Copyright (c) 2026 Akat / 赤月さん
 - License: MIT License
