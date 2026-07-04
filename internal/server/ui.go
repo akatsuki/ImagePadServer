@@ -6,15 +6,15 @@ const indexHTML = `<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{.appName}}</title>
-  <link rel="icon" href="/favicon.ico" sizes="any">
-  <link rel="shortcut icon" href="/favicon.ico">
+  <link rel="icon" href="/favicon.ico?v=20260705-diamond-pad" sizes="any">
+  <link rel="shortcut icon" href="/favicon.ico?v=20260705-diamond-pad">
   <script>` + themeBootScript + `</script>
   <style>` + dashboardCSS + `</style>
 </head>
 <body>
   <header>
     <div class="app-brand">
-      <img class="app-icon" src="/app-icon.png?trim=1" alt="" aria-hidden="true">
+      <img class="app-icon" src="/app-icon.png?trim=1&v=20260705-diamond-pad" alt="" aria-hidden="true">
       <h1>ImagePadServer</h1>
       <span class="app-version">{{.version}}</span>
     </div>
