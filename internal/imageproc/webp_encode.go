@@ -50,7 +50,9 @@ func EncodeWebP(src image.Image, outPath string, quality int) error {
 	hideWindow(cmd)
 	output, err := video.CombinedOutputTrackedFFmpeg(cmd)
 	if err != nil {
-		return fmt.Errorf("%w: %s", err, trimCommandOutput(output))
+		if cwebpErr := encodeWithCWebP(tmpPath, outPath, quality); cwebpErr != nil {
+			return fmt.Errorf("%w: %s", err, trimCommandOutput(output))
+		}
 	}
 	info, err := os.Stat(outPath)
 	if err != nil {
@@ -58,6 +60,25 @@ func EncodeWebP(src image.Image, outPath string, quality int) error {
 	}
 	if info.Size() == 0 {
 		return fmt.Errorf("webp output is empty")
+	}
+	return nil
+}
+
+func encodeWithCWebP(srcPath, outPath string, quality int) error {
+	cwebp, err := exec.LookPath("cwebp")
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(cwebp,
+		"-quiet",
+		"-q", strconv.Itoa(quality),
+		srcPath,
+		"-o", outPath,
+	)
+	hideWindow(cmd)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%w: %s", err, trimCommandOutput(output))
 	}
 	return nil
 }
