@@ -1736,7 +1736,7 @@ func (s *Server) handleHistorySelect(w http.ResponseWriter, r *http.Request) {
 	current := s.store.Current()
 	if current != nil && current.Converted {
 		state := s.withClipboardResult(s.state(r))
-		state["historyTargetMode"] = historySelectTargetMode(*current)
+		state["historyTargetMode"] = historyTargetMode(*current)
 		writeJSON(w, state)
 		return
 	}
@@ -1761,7 +1761,7 @@ func (s *Server) handleHistorySelect(w http.ResponseWriter, r *http.Request) {
 	}
 	state := s.withClipboardResult(s.state(r))
 	if current := s.store.Current(); current != nil {
-		state["historyTargetMode"] = historySelectTargetMode(*current)
+		state["historyTargetMode"] = historyTargetMode(*current)
 	}
 	writeJSON(w, state)
 }
@@ -2735,13 +2735,6 @@ func historyTargetMode(item library.CurrentImage) string {
 	default:
 		return "file"
 	}
-}
-
-func historySelectTargetMode(item library.CurrentImage) string {
-	if item.Kind == "video" && item.Converted && (item.SourceKind == "obs" || strings.HasPrefix(item.PublicName, "obs-")) {
-		return "obs"
-	}
-	return historyTargetMode(item)
 }
 
 func (s *Server) videoQueueState() []map[string]interface{} {

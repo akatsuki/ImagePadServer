@@ -520,8 +520,8 @@ func TestHistorySelectReturnsRecordedHLSForOBSHistoryEvenWhenRTSPModeSelected(t 
 	if got, _ := state["copiedURL"].(string); got != shareURL {
 		t.Fatalf("copiedURL = %q, want shareURL %q", got, shareURL)
 	}
-	if got, _ := state["historyTargetMode"].(string); got != "obs" {
-		t.Fatalf("historyTargetMode = %q, want obs", got)
+	if got, _ := state["historyTargetMode"].(string); got != "file" {
+		t.Fatalf("historyTargetMode = %q, want file", got)
 	}
 }
 
