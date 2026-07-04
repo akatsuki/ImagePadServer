@@ -503,6 +503,20 @@ func TestProxyLLHLSGating(t *testing.T) {
 	}
 }
 
+func TestMediaMTXHLSNameMapsPublicEntryAliases(t *testing.T) {
+	id := "abc123"
+	for _, name := range []string{"current.m3u8", video.PlaylistName(id), ".", "/"} {
+		if got := mediaMTXHLSName(id, name); got != "index.m3u8" {
+			t.Fatalf("mediaMTXHLSName(%q) = %q, want index.m3u8", name, got)
+		}
+	}
+	for _, name := range []string{"main_stream.m3u8", "seg0.ts"} {
+		if got := mediaMTXHLSName(id, name); got != name {
+			t.Fatalf("mediaMTXHLSName(%q) = %q, want unchanged", name, got)
+		}
+	}
+}
+
 // TestMediaMTXRuntimeBootsRealBinary starts the real, pinned MediaMTX with the
 // rendered session config and confirms it reaches a healthy API. This validates
 // the generated YAML schema against the actual binary. It is opt-in (it may

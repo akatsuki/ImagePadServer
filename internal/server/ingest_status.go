@@ -2,6 +2,8 @@ package server
 
 import (
 	"fmt"
+	"io"
+	"strings"
 	"sync"
 
 	"imagepadserver/internal/video"
@@ -11,10 +13,27 @@ import (
 // download/analyze portion of media ingest (render progress is reported
 // separately via the video player state).
 const (
+	ingestUploading   = "uploading"
 	ingestDownloading = "downloading"
 	ingestAnalyzing   = "analyzing"
 	ingestProcessing  = "processing"
 )
+
+type uploadProgressReadCloser struct {
+	io.ReadCloser
+	server *Server
+	total  int64
+	read   int64
+}
+
+func (r *uploadProgressReadCloser) Read(p []byte) (int, error) {
+	n, err := r.ReadCloser.Read(p)
+	if n > 0 {
+		r.read += int64(n)
+		r.server.setDownloadByteProgress(r.read, r.total)
+	}
+	return n, err
+}
 
 type ingestStatus struct {
 	mu              sync.Mutex
@@ -85,6 +104,20 @@ func (s *Server) clearIngest() {
 	s.ingest.progressText = ""
 	s.ingest.mu.Unlock()
 	s.broadcastStateChanged()
+}
+
+func (s *Server) trackUploadReceiveProgress(body io.ReadCloser, total int64, title string) (io.ReadCloser, func()) {
+	if strings.TrimSpace(title) == "" {
+		title = "ファイル"
+	}
+	if !s.tryBeginIngest(ingestUploading, title) {
+		return body, func() {}
+	}
+	return &uploadProgressReadCloser{
+		ReadCloser: body,
+		server:     s,
+		total:      total,
+	}, s.clearIngest
 }
 
 func (s *Server) ingestState() map[string]interface{} {

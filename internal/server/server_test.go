@@ -593,6 +593,55 @@ func TestBitrateOnlyPresetKeepsActiveResolution(t *testing.T) {
 	}
 }
 
+func TestVideoQualityPresetForSourceProbeCapsToInputHeight(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	if err := settings.Update(func(s *settings.Settings) error {
+		s.VideoQualityMode = "1080"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+
+	preset := srv.videoQualityPresetForSourceProbe(video.MediaProbe{Streams: []video.MediaStream{
+		{CodecType: "video", Width: 1280, Height: 720},
+	}})
+
+	if preset.Height != 720 || preset.Effective != "720" {
+		t.Fatalf("preset = %+v, want 720p capped by source", preset)
+	}
+	if preset.Mode != "1080" {
+		t.Fatalf("mode = %q, want user setting preserved", preset.Mode)
+	}
+}
+
+func TestVideoQualityPresetForSourceProbeMarksInterlacedInput(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	if err := settings.Update(func(s *settings.Settings) error {
+		s.VideoQualityMode = "1080"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+
+	preset := srv.videoQualityPresetForSourceProbe(video.MediaProbe{Streams: []video.MediaStream{
+		{CodecType: "video", Width: 1920, Height: 1080, FieldOrder: "bb"},
+	}})
+
+	if !preset.Deinterlace {
+		t.Fatal("expected interlaced source to request deinterlace")
+	}
+}
+
 func TestOBSRelayConfigEnablesReceiverAndReturnsConnectionInfo(t *testing.T) {
 	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
 	store, err := library.NewStore(t.TempDir())
@@ -770,6 +819,17 @@ func TestOBSEntryPlaylistAliasDoesNotRewriteChildPlaylists(t *testing.T) {
 		if isOBSEntryPlaylistAlias(id, name) {
 			t.Errorf("child playlist %q was incorrectly treated as an entry alias", name)
 		}
+	}
+}
+
+func TestHistoryTargetModeTreatsSavedOBSRecordingAsFile(t *testing.T) {
+	mode := historyTargetMode(library.CurrentImage{
+		Kind:       "video",
+		SourceKind: "obs",
+		PublicName: "obs-abc123.mp4",
+	})
+	if mode != "file" {
+		t.Fatalf("historyTargetMode(saved OBS recording) = %q, want file", mode)
 	}
 }
 

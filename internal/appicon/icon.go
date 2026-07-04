@@ -7,6 +7,11 @@ import _ "embed"
 //go:embed imagepad-menubar-template.png
 var MenuBarTemplatePNG []byte
 
+// IconPNG contains a trimmed application icon for in-app UI surfaces.
+//
+//go:embed imagepad-icon-trimmed.png
+var IconPNG []byte
+
 // IconICO contains the application icon in ICO format.
 var IconICO = []byte{
 	0x00, 0x00, 0x01, 0x00, 0x04, 0x00, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00,

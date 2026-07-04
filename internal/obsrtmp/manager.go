@@ -263,7 +263,7 @@ func New(outDir, host string, port int, key string, preset func() video.QualityP
 			ServerAddress: serverAddress(host, port),
 			StreamKey:     key,
 			Latency:       NormalizeLatencyProfile("auto"),
-			Message:       "OBS RTMP receiver is stopped.",
+			Message:       "OBS RTMP受信は停止中です。",
 		},
 	}
 }
@@ -282,7 +282,7 @@ func (m *Manager) Start() {
 	m.done = done
 	m.status.Enabled = true
 	m.status.Listening = true
-	m.status.Message = "OBS RTMP receiver is waiting for a stream."
+	m.status.Message = "OBS RTMP受信は配信入力を待っています。"
 	m.mu.Unlock()
 
 	go m.loop(ctx, done)
@@ -300,7 +300,7 @@ func (m *Manager) Stop() {
 	m.status.MediaID = ""
 	m.status.RTSPTURL = ""
 	m.status.Publishing = false
-	m.status.Message = "OBS RTMP receiver is stopped."
+	m.status.Message = "OBS RTMP受信は停止中です。"
 	m.current = nil
 	m.mu.Unlock()
 	if cancel != nil {
@@ -365,7 +365,7 @@ func (m *Manager) setRTSPEndpoint(endpoint RTSPEndpoint) bool {
 	copy := endpoint
 	m.rtspEndpoint = &copy
 	m.status.RTSPTURL = ""
-	m.status.Message = "RTSP TCP stream is ready. Waiting for public RTSP publication."
+	m.status.Message = "RTSP TCPストリームを準備しました。外部公開を待っています。"
 	publishing := m.status.Publishing
 	m.mu.Unlock()
 	if publishing && m.cb.OnRTSPReady != nil {
@@ -418,7 +418,7 @@ func (m *Manager) StopAndWait(timeout time.Duration) {
 	m.status.MediaID = ""
 	m.status.RTSPTURL = ""
 	m.status.Publishing = false
-	m.status.Message = "OBS RTMP receiver is restarting."
+	m.status.Message = "OBS RTMP受信を再起動しています。"
 	m.current = nil
 	m.mu.Unlock()
 	if cancel != nil {
@@ -694,7 +694,7 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 
 	if err := cmd.Start(); err != nil {
 		cancel()
-		return fmt.Errorf("failed to start OBS RTMP receiver: %w", err)
+		return fmt.Errorf("OBS RTMP受信の開始に失敗しました: %w", err)
 	}
 	untrack := video.TrackStartedFFmpeg(cmd)
 	errCh := make(chan error, 1)
@@ -722,7 +722,7 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 		status.Listening = true
 		status.Connected = false
 		status.MediaID = ""
-		status.Message = "OBS RTMP receiver is waiting for a stream."
+		status.Message = "OBS RTMP受信は配信入力を待っています。"
 		status.EncoderName = encoder.Name
 		status.HardwareEncode = encoder.Hardware
 	})
@@ -739,7 +739,7 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 			}
 		} else {
 			m.setStatus(func(status *Status) {
-				status.Message = "LL-HLS stream is ready."
+				status.Message = "LL-HLSストリームを準備しました。"
 			})
 		}
 	}
@@ -778,7 +778,7 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 		return nil
 	}
 	if processErr != nil {
-		return fmt.Errorf("OBS RTMP receiver stopped: %w", processErr)
+		return fmt.Errorf("OBS RTMP受信が停止しました: %w", processErr)
 	}
 	return nil
 }
@@ -792,9 +792,9 @@ func (m *Manager) waitForStart(ctx context.Context, session Session, errCh <-cha
 			return false, nil
 		case err := <-errCh:
 			if err != nil {
-				return false, fmt.Errorf("OBS RTMP receiver stopped before a stream connected: %w", err)
+				return false, fmt.Errorf("配信接続前にOBS RTMP受信が停止しました: %w", err)
 			}
-			return false, fmt.Errorf("OBS RTMP receiver stopped before a stream connected")
+			return false, fmt.Errorf("配信接続前にOBS RTMP受信が停止しました")
 		case <-ticker.C:
 			if ready == nil || !ready() {
 				continue
@@ -1074,7 +1074,7 @@ func (m *Manager) ProxyLLHLS(w http.ResponseWriter, r *http.Request, id, name st
 	if !active || runtime == nil {
 		return false
 	}
-	runtime.proxyHLS(w, r, name)
+	runtime.proxyHLS(w, r, mediaMTXHLSName(id, name))
 	return true
 }
 
@@ -1090,10 +1090,22 @@ func (m *Manager) HLSPreviewReady(id, name string) bool {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 		defer cancel()
-		return runtime.hlsArtifactReady(ctx, name)
+		return runtime.hlsArtifactReady(ctx, mediaMTXHLSName(id, name))
 	}
 	path := filepath.Join(m.outDir, video.PlaylistName(id))
 	return fileExists(path)
+}
+
+func mediaMTXHLSName(id, name string) string {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "." || trimmed == "/" {
+		return "index.m3u8"
+	}
+	clean := filepath.Base(trimmed)
+	if clean == "." || clean == "/" || clean == "\\" || clean == "current.m3u8" || clean == video.PlaylistName(id) {
+		return "index.m3u8"
+	}
+	return clean
 }
 
 func EnableDVR(profile LatencyProfile) LatencyProfile {

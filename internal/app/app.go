@@ -115,9 +115,9 @@ func run(useNativeWindow bool) error {
 	defer resetMediaWorkspace(store)
 
 	httpServer := &http.Server{
-		Addr:         fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		Addr:              fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
+		ReadHeaderTimeout: 30 * time.Second,
+		IdleTimeout:       2 * time.Minute,
 	}
 
 	listener, err := net.Listen("tcp", httpServer.Addr)
