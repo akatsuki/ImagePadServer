@@ -123,6 +123,7 @@ const dashboardCSSLayout = `
       gap: 8px;
     }
     .header-actions .settings-button,
+    .header-actions .quit-header-button,
     .header-actions .phone-connect-button {
       min-height: 40px;
       height: 40px;
@@ -136,10 +137,33 @@ const dashboardCSSLayout = `
       font-weight: 850;
     }
     .header-actions .settings-button:hover,
+    .header-actions .quit-header-button:hover,
     .header-actions .phone-connect-button:hover {
       background: color-mix(in srgb, var(--on-header) 22%, transparent);
       border-color: color-mix(in srgb, var(--on-header) 34%, transparent);
       box-shadow: none;
+    }
+    .header-actions .icon-only-button {
+      width: 40px;
+      min-width: 40px;
+      padding: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .header-actions .icon-only-button svg {
+      width: 20px;
+      height: 20px;
+      display: block;
+    }
+    .header-actions .quit-header-button {
+      background: var(--danger);
+      color: var(--on-negative);
+      border-color: color-mix(in srgb, var(--on-negative) 28%, transparent);
+    }
+    .header-actions .quit-header-button:hover {
+      background: color-mix(in srgb, var(--danger) 88%, var(--color-black));
+      border-color: color-mix(in srgb, var(--on-negative) 42%, transparent);
     }
     .phone-connect-button {
       display: inline-flex;

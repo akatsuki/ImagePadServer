@@ -15,6 +15,21 @@ const dashboardScriptSettings = `
     if (phoneConnectCloseButton) {
       phoneConnectCloseButton.addEventListener('click', () => SettingsController.closePhoneConnect());
     }
+    if (quitButton) {
+      quitButton.addEventListener('click', async () => {
+        quitButton.disabled = true;
+        toast.textContent = 'アプリを終了しています...';
+        try {
+          const res = await apiFetch('/api/quit', { method: 'POST' });
+          if (!res.ok) throw new Error(await res.text());
+          const data = await res.json();
+          toast.textContent = data.message || 'アプリを終了します';
+        } catch (error) {
+          quitButton.disabled = false;
+          toast.textContent = error.message || '終了に失敗しました';
+        }
+      });
+    }
     if (phoneConnectDialog) {
       phoneConnectDialog.addEventListener('click', (event) => {
         if (event.target === phoneConnectDialog) hidePhoneConnectDialog();

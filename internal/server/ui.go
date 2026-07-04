@@ -25,7 +25,16 @@ const indexHTML = `<!doctype html>
         </svg>
         <span>スマホ接続</span>
       </button>
-      <button type="button" class="settings-button" id="settingsButton" title="設定">設定</button>
+      <button type="button" class="settings-button icon-only-button" id="settingsButton" title="設定" aria-label="設定">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path fill="currentColor" d="M19.4 13.5c.1-.5.1-1 .1-1.5s0-1-.1-1.5l2-1.5-2-3.5-2.4 1a8 8 0 0 0-2.6-1.5L14 2h-4l-.4 2.5A8 8 0 0 0 7 6L4.6 5l-2 3.5 2 1.5a9 9 0 0 0 0 3l-2 1.5 2 3.5L7 18a8 8 0 0 0 2.6 1.5L10 22h4l.4-2.5A8 8 0 0 0 17 18l2.4 1 2-3.5-2-1.5ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z"/>
+        </svg>
+      </button>
+      <button type="button" class="quit-header-button icon-only-button" id="quitButton" title="終了" aria-label="終了">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path fill="currentColor" d="M11 2h2v10h-2V2Zm6.7 3.6-1.4 1.4A7 7 0 1 1 7.7 7L6.3 5.6a9 9 0 1 0 11.4 0Z"/>
+        </svg>
+      </button>
     </div>
   </header>
   <main>

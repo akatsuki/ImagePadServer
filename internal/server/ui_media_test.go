@@ -277,6 +277,13 @@ func TestUIHistoryControllerIsWired(t *testing.T) {
 func TestUISettingsControllerIsWired(t *testing.T) {
 	html := getIndexHTML(t)
 	for _, want := range []string{
+		`id="settingsButton" title="設定" aria-label="設定"`,
+		`id="quitButton" title="終了" aria-label="終了"`,
+		`class="settings-button icon-only-button"`,
+		`class="quit-header-button icon-only-button"`,
+		`viewBox="0 0 24 24"`,
+		`const quitButton = document.getElementById('quitButton');`,
+		`apiFetch('/api/quit', { method: 'POST' })`,
 		`const SettingsController = (() => {`,
 		`function openSettingsController()`,
 		`function openPhoneConnectController()`,

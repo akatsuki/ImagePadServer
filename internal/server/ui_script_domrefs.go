@@ -73,6 +73,7 @@ const dashboardScriptDomRefs = `
     const phoneConnectDialog = document.getElementById('phoneConnectDialog');
     const phoneConnectCloseButton = document.getElementById('phoneConnectCloseButton');
     const settingsButton = document.getElementById('settingsButton');
+    const quitButton = document.getElementById('quitButton');
     const settingsModal = document.getElementById('settingsModal');
     const settingsCloseButton = document.getElementById('settingsCloseButton');
     const themeText = document.getElementById('themeText');
