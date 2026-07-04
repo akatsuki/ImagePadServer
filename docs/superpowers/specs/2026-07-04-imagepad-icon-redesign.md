@@ -4,24 +4,25 @@ Date: 2026-07-04
 
 ## Direction
 
-Use the "inside screen" composition selected during visual review.
+Use the "simple diamond PAD" composition selected during visual review.
 
-The redesigned icon should show a simplified computer screen inside the app-icon tile, with a minimal media symbol inside the screen. Do not place a separate photo card on top of the monitor, because a slight offset reads as an accidental overwrite instead of intentional depth.
+The redesigned icon should show a luminous diamond-shaped PAD on the floor projecting a floating photo upward. One edge of the photo should break into small voxel-like square boxes to suggest the image is being encoded into data, not damaged or dissolving.
 
 ## Design Intent
 
 ImagePadServer is a local helper that serves media from a PC to VRChat-facing tools. The icon should communicate:
 
-- local PC/helper context
 - image or media delivery
-- network sharing
+- local relay/projection from a PAD-like source
+- image encoding or transfer as data
 
-The final mark should keep those ideas in a simpler layered form:
+The final mark should keep those ideas in a clear layered form:
 
 - background: rounded square app tile with blue-to-cyan depth
-- middle layer: simplified screen shape
-- foreground within screen: mountain-and-sun media glyph
-- accent: one broadcast arc in the upper-right
+- floor layer: simple diamond-shaped glowing PAD
+- projection layer: subtle cyan beam from the PAD to the photo
+- foreground layer: floating photo card with mountain-and-sun media glyph
+- data accent: several small square boxes emerging from one photo edge and following the projection axis
 
 ## Apple Design Translation
 
@@ -31,7 +32,8 @@ Apple Design guidance is applied as design intent, not as a Mac-only workflow:
 - keep layers visually distinct by role
 - prefer vector source shapes
 - reduce detail for small sizes
-- avoid ambiguous overlap between foreground and background layers
+- keep the PAD as a simple diamond rather than a literal tablet or complex perspective shape
+- make voxel boxes read as encoded image data by keeping them square, ordered, and visually tied to the photo edge
 
 ## Production Assets
 
@@ -48,7 +50,14 @@ The implementation should create or update:
 
 ## Small-Size Rule
 
-At small sizes, preserve the screen silhouette, the internal mountain shape, and the broadcast arc. Drop shadows, inner highlights, and fine glass effects may be removed. The tray/menu-bar template should be its own simplified asset, not a downscaled full-color icon.
+At small sizes, preserve the diamond PAD silhouette, the floating photo silhouette, and a small cluster of square data boxes. Drop shadows, inner highlights, fine beam details, and excess boxes may be removed. The tray/menu-bar template should be its own simplified asset, not a downscaled full-color icon.
+
+## Visual Decisions
+
+- Use the simple diamond PAD option, not the layered or bold diamond variants.
+- Avoid iPad-like hardware details, sensors, or rounded-rectangle tablet cues.
+- Avoid text, binary digits, cracks, dust, or irregular fragments for the data effect.
+- Keep the square boxes numerous enough to communicate encoding, but organized enough to avoid noise in taskbar and tray sizes.
 
 ## Boundaries
 
