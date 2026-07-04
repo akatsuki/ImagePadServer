@@ -109,7 +109,7 @@ const dashboardScriptDomRefs = `
     const themeMediaQuery = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
     const imageAccept = 'image/png,image/jpeg,image/gif,image/webp,image/avif,image/heic,image/heif,image/jxl,image/bmp,image/tiff,image/svg+xml,image/x-sony-arw,image/x-canon-crw,image/x-canon-cr2,image/x-canon-cr3,image/x-panasonic-rw2,image/x-olympus-orf,image/x-fuji-raf,image/x-nikon-nef,image/x-nikon-nrw,image/x-sigma-x3f,image/x-adobe-dng,.jpg,.jpeg,.png,.gif,.webp,.avif,.heic,.heif,.jxl,.bmp,.tif,.tiff,.svg,.arw,.srf,.sr2,.crw,.cr2,.cr3,.rw2,.raw,.orf,.raf,.nef,.nrw,.x3f,.dng';
     const mediaAccept = imageAccept + ',video/*,video/mp4,video/quicktime,video/webm,video/x-matroska,.mp4,.mov,.m4v,.webm,.mkv,.avi';
-    const musicWorkspaceEnabled = true;
+    const musicWorkspaceEnabled = false;
     const rawExtensions = new Set(['.arw', '.srf', '.sr2', '.crw', '.cr2', '.cr3', '.rw2', '.raw', '.orf', '.raf', '.nef', '.nrw', '.x3f', '.dng']);
     const qualityOptions = {
       png: [

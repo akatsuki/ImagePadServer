@@ -494,7 +494,7 @@ func TestMusicModeUIIsNestedUnderVideoPlayerMode(t *testing.T) {
 func TestMusicWorkspaceUIIsFeatureFlagged(t *testing.T) {
 	html := getIndexHTML(t)
 	for _, want := range []string{
-		`const musicWorkspaceEnabled = true`,
+		`const musicWorkspaceEnabled = false`,
 		`id="musicIntentButton"`,
 		`id="musicModeMenu"`,
 		`aria-haspopup="menu"`,
