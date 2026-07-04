@@ -1,47 +1,101 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="ImagePadServer icon">
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">ImagePadServer diamond PAD app icon</title>
+  <desc id="desc">A simple glowing diamond PAD projects a floating photo while one photo edge turns into square encoded data boxes.</desc>
   <defs>
-    <linearGradient id="tile" x1="178" y1="120" x2="846" y2="900" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#113650"/>
-      <stop offset="0.48" stop-color="#168FE8"/>
-      <stop offset="1" stop-color="#43DFCF"/>
+    <linearGradient id="beam" x1="500" y1="700" x2="610" y2="250" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7DFFFF" stop-opacity="0.44"/>
+      <stop offset="0.52" stop-color="#49EFFF" stop-opacity="0.20"/>
+      <stop offset="1" stop-color="#49EFFF" stop-opacity="0"/>
     </linearGradient>
-    <linearGradient id="screen" x1="275" y1="258" x2="760" y2="626" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#F4FCFF"/>
+    <radialGradient id="padGlow" cx="512" cy="762" r="280" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#DFFFFF" stop-opacity="0.88"/>
+      <stop offset="0.46" stop-color="#41E9FF" stop-opacity="0.34"/>
+      <stop offset="1" stop-color="#41E9FF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="padTop" x1="280" y1="612" x2="744" y2="840" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#EFFFFF"/>
+      <stop offset="0.22" stop-color="#62F3FF"/>
+      <stop offset="0.62" stop-color="#146196"/>
+      <stop offset="1" stop-color="#061221"/>
+    </linearGradient>
+    <linearGradient id="padInner" x1="340" y1="672" x2="680" y2="808" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#DFFFFF" stop-opacity="0.90"/>
+      <stop offset="0.55" stop-color="#45EDFF" stop-opacity="0.40"/>
+      <stop offset="1" stop-color="#0D7DBD" stop-opacity="0.12"/>
+    </linearGradient>
+    <linearGradient id="photoFace" x1="300" y1="230" x2="730" y2="572" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="0.62" stop-color="#F0FBFF"/>
       <stop offset="1" stop-color="#BDEFFF"/>
     </linearGradient>
-    <linearGradient id="screenGlass" x1="300" y1="275" x2="746" y2="600" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.52"/>
-      <stop offset="0.55" stop-color="#FFFFFF" stop-opacity="0.10"/>
-      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    <linearGradient id="photoEdge" x1="280" y1="270" x2="782" y2="604" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="0.5" stop-color="#C7FBFF"/>
+      <stop offset="1" stop-color="#18C5F5"/>
     </linearGradient>
-    <linearGradient id="mountain" x1="318" y1="386" x2="716" y2="590" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#1DA4FF"/>
-      <stop offset="1" stop-color="#1067D4"/>
+    <linearGradient id="mountainA" x1="310" y1="430" x2="590" y2="620" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0875D8"/>
+      <stop offset="0.58" stop-color="#1AA8F0"/>
+      <stop offset="1" stop-color="#6DEEFF"/>
     </linearGradient>
-    <filter id="tileShadow" x="-20%" y="-20%" width="140%" height="150%">
-      <feDropShadow dx="0" dy="34" stdDeviation="38" flood-color="#07344F" flood-opacity="0.30"/>
+    <linearGradient id="mountainB" x1="540" y1="430" x2="760" y2="620" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2197E8"/>
+      <stop offset="1" stop-color="#77EAFF"/>
+    </linearGradient>
+    <radialGradient id="sun" cx="630" cy="322" r="70" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFE66B"/>
+      <stop offset="0.62" stop-color="#FFB93E"/>
+      <stop offset="1" stop-color="#FF7E3E"/>
+    </radialGradient>
+    <filter id="softShadow" x="-35%" y="-35%" width="170%" height="190%">
+      <feDropShadow dx="0" dy="30" stdDeviation="24" flood-color="#001126" flood-opacity="0.38"/>
     </filter>
-    <filter id="screenShadow" x="-20%" y="-25%" width="140%" height="155%">
-      <feDropShadow dx="0" dy="26" stdDeviation="24" flood-color="#073A5A" flood-opacity="0.32"/>
+    <filter id="padShadow" x="-40%" y="-40%" width="180%" height="190%">
+      <feDropShadow dx="0" dy="26" stdDeviation="18" flood-color="#001126" flood-opacity="0.44"/>
+      <feDropShadow dx="0" dy="0" stdDeviation="16" flood-color="#41E9FF" flood-opacity="0.28"/>
     </filter>
+    <clipPath id="photoClip">
+      <path d="M321 314C327 272 357 246 402 241L676 211C721 206 754 231 760 275L789 497C795 545 767 581 717 587L354 629C304 635 273 606 279 556Z"/>
+    </clipPath>
   </defs>
 
-  <rect x="128" y="104" width="768" height="768" rx="196" fill="url(#tile)" filter="url(#tileShadow)"/>
-  <path d="M210 238C300 132 498 126 638 174C755 214 842 312 864 430C832 306 729 218 604 192C454 160 300 188 210 238Z" fill="#FFFFFF" opacity="0.16"/>
-  <path d="M207 709C312 778 684 774 817 699" fill="none" stroke="#DFFBFF" stroke-width="56" stroke-linecap="round" opacity="0.35"/>
-
-  <g filter="url(#screenShadow)">
-    <rect x="244" y="280" width="536" height="350" rx="82" fill="#0F4C73" opacity="0.32"/>
-    <rect x="267" y="258" width="490" height="344" rx="78" fill="url(#screen)"/>
-    <rect x="292" y="282" width="440" height="296" rx="56" fill="#F9FEFF"/>
-    <path d="M292 338C405 286 604 282 732 328V282H292V338Z" fill="url(#screenGlass)"/>
-    <path d="M323 552L438 408L520 514L582 442L713 552H323Z" fill="url(#mountain)"/>
-    <path d="M323 552L438 408L520 514L582 442L713 552H323Z" fill="#0A4EA6" opacity="0.10"/>
-    <circle cx="666" cy="352" r="54" fill="#FFC72D"/>
+  <g id="projection" opacity="0.96">
+    <path d="M365 706L662 706L724 442L584 333L432 363Z" fill="url(#beam)"/>
+    <path d="M438 706L568 706L600 366L496 354Z" fill="#BFFFFF" opacity="0.16"/>
   </g>
 
-  <path d="M714 226C780 226 834 280 834 346" fill="none" stroke="#78FFF0" stroke-width="38" stroke-linecap="round"/>
-  <path d="M714 287C746 287 773 314 773 346" fill="none" stroke="#E4FFFC" stroke-width="34" stroke-linecap="round" opacity="0.95"/>
-  <path d="M352 692H672C700 692 722 714 722 741C722 768 700 790 672 790H352C324 790 302 768 302 741C302 714 324 692 352 692Z" fill="#E4FAFF" opacity="0.82"/>
-  <path d="M396 656H628C650 656 668 674 668 696C668 718 650 736 628 736H396C374 736 356 718 356 696C356 674 374 656 396 656Z" fill="#CFF4FF" opacity="0.38"/>
+  <g id="floor-pad" filter="url(#padShadow)">
+    <ellipse cx="512" cy="848" rx="320" ry="74" fill="#001126" opacity="0.36"/>
+    <path d="M512 626L842 766L512 908L182 766Z" fill="#030711" opacity="0.64"/>
+    <path d="M512 586L842 728L512 872L182 728Z" fill="url(#padTop)"/>
+    <path d="M512 652L714 730L512 812L310 730Z" fill="url(#padInner)" stroke="#D7FFFF" stroke-width="18" stroke-linejoin="round"/>
+    <path d="M306 715L512 624L724 715" fill="none" stroke="#FFFFFF" stroke-width="10" stroke-linecap="round" opacity="0.34"/>
+    <ellipse cx="512" cy="740" rx="238" ry="110" fill="url(#padGlow)"/>
+  </g>
+
+  <g id="floating-photo" filter="url(#softShadow)" transform="rotate(-6 520 420)">
+    <path d="M343 333C349 289 379 262 426 257L689 228C734 223 768 248 774 293L802 496C809 546 780 583 729 590L367 631C315 637 283 607 289 554Z" fill="url(#photoEdge)"/>
+    <path d="M321 314C327 272 357 246 402 241L676 211C721 206 754 231 760 275L789 497C795 545 767 581 717 587L354 629C304 635 273 606 279 556Z" fill="url(#photoFace)"/>
+    <g clip-path="url(#photoClip)">
+      <path d="M279 556L456 392C469 380 485 383 495 398L620 560Z" fill="url(#mountainA)"/>
+      <path d="M544 544L649 432C661 420 677 420 689 434L810 564Z" fill="url(#mountainB)" opacity="0.94"/>
+      <circle cx="634" cy="325" r="48" fill="url(#sun)"/>
+      <path d="M348 286L718 245C738 243 754 254 758 273" fill="none" stroke="#FFFFFF" stroke-width="12" stroke-linecap="round" opacity="0.52"/>
+      <path d="M310 334L294 542C291 584 314 608 354 605" fill="#FFFFFF" opacity="0.14"/>
+    </g>
+    <path d="M321 314C327 272 357 246 402 241L676 211C721 206 754 231 760 275L789 497C795 545 767 581 717 587L354 629C304 635 273 606 279 556Z" fill="none" stroke="#FFFFFF" stroke-width="18" stroke-linejoin="round" opacity="0.92"/>
+    <path d="M340 323C344 288 369 268 409 264L674 235C711 231 738 250 743 286L768 489C773 529 750 557 710 562L362 601C322 606 299 584 304 546Z" fill="none" stroke="#8CF5FF" stroke-width="7" stroke-linejoin="round" opacity="0.72"/>
+  </g>
+
+  <g id="encoded-data" fill="#91FFFF" filter="url(#softShadow)">
+    <rect x="706" y="284" width="42" height="42" rx="8"/>
+    <rect x="764" y="316" width="34" height="34" rx="7" opacity="0.92"/>
+    <rect x="730" y="370" width="38" height="38" rx="8" opacity="0.86"/>
+    <rect x="672" y="392" width="34" height="34" rx="7" opacity="0.80"/>
+    <rect x="744" y="440" width="30" height="30" rx="7" opacity="0.74"/>
+    <rect x="684" y="476" width="29" height="29" rx="6" opacity="0.68"/>
+    <rect x="716" y="526" width="25" height="25" rx="6" opacity="0.62"/>
+    <rect x="650" y="562" width="24" height="24" rx="6" opacity="0.56"/>
+    <rect x="612" y="626" width="21" height="21" rx="5" opacity="0.50"/>
+  </g>
 </svg>
