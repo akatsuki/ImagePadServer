@@ -29,7 +29,9 @@ jobs:
             exit 1
           fi
       - name: Install ffmpeg
-        run: brew install ffmpeg
+        run: |
+          brew reinstall ffmpeg
+          ffmpeg -hide_banner -encoders | grep libwebp
       - run: go test ./...
       - run: sh ./scripts/build-release.sh
       - name: Publish dev GitHub Release
