@@ -148,15 +148,16 @@ const dashboardScriptUploadState = `
         videoPlayerText.textContent = '確認できません';
         musicModeRow.hidden = true;
         musicModeToggle.checked = false;
+        musicModeToggle.disabled = true;
         updateUploadControlsVisibility();
         return;
       }
       videoPlayerToggle.checked = !!data.enabled;
       videoPlayerToggle.disabled = videoPlayerPending;
       videoPlayerText.textContent = data.enabled ? '有効 / 自動コピーはHLS優先' : '無効 / 自動コピーは画像URL';
-      musicModeRow.hidden = !data.enabled;
+      musicModeRow.hidden = !musicWorkspaceEnabled || !data.enabled;
       musicModeToggle.checked = !!data.musicModeEnabled;
-      musicModeToggle.disabled = musicModePending || !data.enabled;
+      musicModeToggle.disabled = !musicWorkspaceEnabled || musicModePending || !data.enabled;
       musicModeText.textContent = data.musicModeEnabled ? '有効 / URLは音声のみ取得' : '無効 / URLは動画として取得';
       imageInput.accept = data.enabled ? '' : imageAccept;
       if (!data.enabled) mediaIntent = 'image';

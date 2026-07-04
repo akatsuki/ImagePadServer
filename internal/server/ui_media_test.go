@@ -483,7 +483,8 @@ func TestMusicModeUIIsNestedUnderVideoPlayerMode(t *testing.T) {
 		`id="musicModeToggle"`,
 		`ミュージックモード`,
 		`fetch('/api/music-mode'`,
-		`musicModeRow.hidden = !data.enabled`,
+		`.settings-row[hidden]`,
+		`musicModeRow.hidden = !musicWorkspaceEnabled || !data.enabled`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("music mode UI is missing %q", want)
@@ -495,7 +496,8 @@ func TestMusicWorkspaceUIIsFeatureFlagged(t *testing.T) {
 	html := getIndexHTML(t)
 	for _, want := range []string{
 		`const musicWorkspaceEnabled = false`,
-		`id="musicIntentButton"`,
+		`#musicIntentButton[hidden]`,
+		`id="musicIntentButton" data-media-intent="music" hidden`,
 		`id="musicModeMenu"`,
 		`aria-haspopup="menu"`,
 		`music-caret`,

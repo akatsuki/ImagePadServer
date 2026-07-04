@@ -35,6 +35,9 @@ const dashboardCSSUpload = `
       justify-content: center;
       gap: 4px;
     }
+    #musicIntentButton[hidden] {
+      display: none;
+    }
     #musicIntentButton .music-caret {
       width: 12px;
       height: 12px;

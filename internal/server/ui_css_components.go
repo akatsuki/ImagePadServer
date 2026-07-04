@@ -241,6 +241,7 @@ const dashboardCSSComponents = `
       border-top: 1px solid var(--line);
     }
     .settings-row:first-of-type { border-top: 0; }
+    .settings-row[hidden] { display: none; }
     .settings-row p { margin: 2px 0 0; color: var(--muted); }
     .settings-section {
       display: grid;

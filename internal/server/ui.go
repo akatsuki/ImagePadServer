@@ -41,7 +41,7 @@ const indexHTML = `<!doctype html>
             <div class="media-kind-switch" id="mediaKindSwitch" role="group" aria-label="メディア種別" hidden>
               <button type="button" class="active" id="imageIntentButton" data-media-intent="image" aria-pressed="true">静止画</button>
               <button type="button" id="videoIntentButton" data-media-intent="video" aria-pressed="false">動画</button>
-              <button type="button" id="musicIntentButton" data-media-intent="music" aria-pressed="false" aria-haspopup="menu" aria-expanded="false">
+              <button type="button" id="musicIntentButton" data-media-intent="music" hidden aria-pressed="false" aria-haspopup="menu" aria-expanded="false">
                 <span>ミュージック</span>
                 <svg class="music-caret" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path fill="currentColor" d="M2.2 4.2 6 8l3.8-3.8H2.2Z"/></svg>
               </button>
