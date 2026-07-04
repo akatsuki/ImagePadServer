@@ -3,14 +3,14 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>ImagePadServer - VRChat向け画像・動画・OBS配信URL発行ツール</title>
-    <meta name="description" content="ImagePadServerは、PCやスマホから画像・動画をアップロードし、OBS配信も含めてVRChatのImagePadやAVPro系動画プレーヤーへ渡せるURLを発行するローカル補助アプリです。">
+    <title>ImagePadServer - VRChat Android/PC向け低遅延メディア配信ツール</title>
+    <meta name="description" content="ImagePadServerは、PCやスマホから画像・動画・OBS配信を受け取り、VRChatのAndroid/PC環境で使いやすい低遅延URLとしてImagePadやAVPro系ビデオプレーヤーへ渡すローカル補助アプリです。">
     <meta name="robots" content="index,follow,max-image-preview:large">
     <meta name="theme-color" content="#0f7aa5">
     <link rel="canonical" href="https://akatsuki.github.io/ImagePadServer/">
     <meta property="og:site_name" content="ImagePadServer">
-    <meta property="og:title" content="ImagePadServer - VRChat向け画像・動画・OBS配信URL発行ツール">
-    <meta property="og:description" content="PCやスマホから画像・動画をアップロードし、OBS配信も含めてVRChatのImagePadやAVPro系動画プレーヤーへ渡せるURLを発行します。">
+    <meta property="og:title" content="ImagePadServer - VRChat Android/PC向け低遅延メディア配信ツール">
+    <meta property="og:description" content="画像・動画・OBS配信を、VRChatのAndroid/PC環境で扱いやすい低遅延URLとしてImagePadやAVPro系ビデオプレーヤーへ渡します。">
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://akatsuki.github.io/ImagePadServer/">
     <meta property="og:locale" content="ja_JP">
@@ -20,24 +20,24 @@
     <meta property="og:image:height" content="900">
     <meta property="og:image:alt" content="ImagePadServerの公式サイトカード画像">
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="ImagePadServer - VRChat向け画像・動画・OBS配信URL発行ツール">
-    <meta name="twitter:description" content="PCやスマホから画像・動画をアップロードし、VRChatのImagePadやAVPro系動画プレーヤーへURLとして渡せるローカル補助アプリ。">
+    <meta name="twitter:title" content="ImagePadServer - VRChat Android/PC向け低遅延メディア配信ツール">
+    <meta name="twitter:description" content="画像・動画・OBS配信を、VRChatのAndroid/PCで使いやすい低遅延URLとしてImagePadやAVPro系ビデオプレーヤーへ渡せるローカル補助アプリ。">
     <meta name="twitter:image" content="https://akatsuki.github.io/ImagePadServer/assets/promo/x-official-site-promo.png">
     <meta name="twitter:image:alt" content="ImagePadServerの公式サイトカード画像">
-    <link rel="icon" href="assets/imagepad-icon-256.png">
-    <link rel="apple-touch-icon" href="assets/imagepad-icon-256.png">
+    <link rel="icon" href="assets/imagepad-icon-256.png?v=20260705-diamond-pad">
+    <link rel="apple-touch-icon" href="assets/imagepad-icon-256.png?v=20260705-diamond-pad">
     <link rel="stylesheet" href="styles.css">
     <script type="application/ld+json">
       {
         "@context": "https://schema.org",
         "@type": "SoftwareApplication",
         "name": "ImagePadServer",
-        "description": "PCやスマホから画像・動画をアップロードし、OBS配信も含めてVRChatのImagePadやAVPro系動画プレーヤーへ渡せるURLを発行するローカル補助アプリです。",
+        "description": "PCやスマホから画像・動画・OBS配信を受け取り、VRChatのAndroid/PC環境で使いやすい低遅延URLとしてImagePadやAVPro系ビデオプレーヤーへ渡すローカル補助アプリです。",
         "url": "https://akatsuki.github.io/ImagePadServer/",
         "image": "https://akatsuki.github.io/ImagePadServer/assets/promo/x-official-site-promo.png",
         "applicationCategory": "MultimediaApplication",
         "operatingSystem": "Windows, macOS",
-        "softwareVersion": "v1.2.1",
+        "softwareVersion": "v1.4.6",
         "license": "https://github.com/akatsuki/ImagePadServer/blob/main/LICENSE",
         "downloadUrl": "https://github.com/akatsuki/ImagePadServer/releases/latest",
         "author": {
@@ -55,7 +55,7 @@
   <body>
     <header class="site-header">
       <a class="brand" href="#top" aria-label="ImagePadServer">
-        <img src="assets/imagepad-icon-256.png" alt="" width="40" height="40">
+        <img src="assets/imagepad-icon-256.png?v=20260705-diamond-pad" alt="" width="40" height="40">
         <span>ImagePadServer</span>
       </a>
       <nav aria-label="ページ内リンク">
@@ -72,14 +72,20 @@
           <img src="assets/hero-abstract.png" alt="">
         </div>
         <div class="hero-product-icon" aria-hidden="true">
-          <img src="assets/imagepad-icon-256.png" alt="">
+          <img src="assets/imagepad-icon-256.png?v=20260705-diamond-pad" alt="">
         </div>
         <div class="hero-content">
-          <p class="eyebrow">VRChat向け画像・動画・OBS配信ツール</p>
+          <p class="eyebrow">VRChat Android / PC 低遅延メディア配信</p>
           <h1 id="hero-title">ImagePadServer</h1>
           <p class="lead">
-            PCやスマホからアップロードした画像・動画、またはOBSから送ったRTMP配信を、VRChatワールド内のImagePad系ツールやAVPro系ビデオプレーヤーへ渡せるURLとして配信します。
+            PCやスマホからアップロードした画像・動画、またはOBSから送ったライブ配信を、VRChatのAndroid/PCどちらでも扱いやすいURLとして配信します。ImagePad系ツールからAVPro系ビデオプレーヤーまで、ワールド内の再生先へすぐ貼れる導線をまとめます。
           </p>
+          <div class="compat-strip" aria-label="対応の要点">
+            <span>Android / PC</span>
+            <span>低遅延モード</span>
+            <span>HLS / LHLS / RTSPT</span>
+            <span>主要VRCプレーヤー向け</span>
+          </div>
           <div class="hero-actions" aria-label="主要アクション">
             <a class="button primary" id="hero-download-link" href="https://github.com/akatsuki/ImagePadServer/releases/latest">最新版をダウンロード</a>
             <a class="button secondary" href="https://github.com/akatsuki/ImagePadServer">GitHubで見る</a>
@@ -87,11 +93,11 @@
           <dl class="release-facts" aria-label="リリース情報">
             <div>
               <dt>Latest</dt>
-              <dd id="latest-version">v1.2.1</dd>
+              <dd id="latest-version">v1.4.6</dd>
             </div>
             <div>
               <dt>Platform</dt>
-              <dd>Windows / macOS</dd>
+              <dd>Windows / macOS / Linux</dd>
             </div>
             <div>
               <dt>License</dt>
@@ -104,9 +110,21 @@
       <section id="features" class="section">
         <div class="section-heading">
           <p class="eyebrow">Features</p>
-          <h2>VRChatへメディアを渡すまでを短く</h2>
+          <h2>AndroidとPCへ同じ配信導線で届ける</h2>
         </div>
         <div class="feature-grid">
+          <article>
+            <h3>Android/PC 同時対応</h3>
+            <p>VRChatのAndroidクライアントとPCクライアントで扱いやすい形式を選び、同じ画面から共有URLを発行できます。</p>
+          </article>
+          <article>
+            <h3>低遅延ライブ配信</h3>
+            <p>OBS入力をHLS / LHLS / RTSPTへつなぎ、環境に合わせて遅延を抑えたライブ再生を狙えます。</p>
+          </article>
+          <article>
+            <h3>VRCプレーヤーに貼るだけ</h3>
+            <p>ImagePad系ツール、AVPro系ビデオプレーヤー、ライブ対応プレーヤーへ渡しやすいURLをまとめて発行します。</p>
+          </article>
           <article>
             <h3>ImagePad向けURL発行</h3>
             <p>画像をアップロードすると、VRChatで扱いやすいサイズ・形式へ変換し、貼り付け用URLを発行します。</p>
@@ -141,7 +159,7 @@
       <section id="screenshots" class="section screenshots">
         <div class="section-heading">
           <p class="eyebrow">Screens</p>
-          <h2>ブラウザUIで操作</h2>
+          <h2>最新版のブラウザUIで操作</h2>
         </div>
         <div class="screenshot-grid">
           <figure class="wide">
@@ -168,7 +186,7 @@
           <p class="eyebrow">Download</p>
           <h2 id="download-title">最新版を直接ダウンロード</h2>
           <p>
-            Windowsではビルド済みexeを、macOSではApple Silicon / Intel向けのtar.gzをダウンロードして起動できます。依存ツールが見つからない場合、FFmpeg / yt-dlp / cloudflaredはアプリのローカルフォルダへ自動配置されます。
+            Windowsではビルド済みexeを、macOSではApple Silicon / Intel向けのtar.gzをダウンロードして起動できます。Linuxではリリースアセットまたはソースビルドで利用できます。依存ツールが見つからない場合、FFmpeg / yt-dlp / cloudflaredはアプリのローカルフォルダへ自動配置されます。
           </p>
         </div>
         <div class="download-actions">
@@ -198,7 +216,7 @@
           </li>
           <li>
             <span>4</span>
-            <p>VRChatのImagePad系ツール、またはAVPro系ビデオプレーヤーへURLを貼り付けます。配信終了後のOBS録画はVODとして履歴から再利用できます。</p>
+            <p>VRChatのImagePad系ツール、またはAVPro系ビデオプレーヤーへURLを貼り付けます。Android/PCのどちらで再生するかに合わせて、HLS / LHLS / RTSPTなどのURLを選びます。</p>
           </li>
         </ol>
       </section>
@@ -218,8 +236,8 @@
             <p>VRChatが取得するため、画像・動画の公開URLは外部から読める必要があります。公開したくないメディアは扱わないでください。</p>
           </article>
           <article>
-            <h3>HLSはAVPro系向け</h3>
-            <p>VRChat内でHLSやライブ系URLを読む場合は、AVPro系プレーヤーでの利用を想定しています。</p>
+            <h3>低遅延は環境に合わせて選ぶ</h3>
+            <p>VRChat内でライブ系URLを読む場合は、Android/PC、プレーヤー実装、ワールド側の設定によって最適な方式が変わります。</p>
           </article>
         </div>
       </section>

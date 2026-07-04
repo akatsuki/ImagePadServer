@@ -218,6 +218,28 @@ h3 {
   margin-top: 30px;
 }
 
+.compat-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  margin-top: 22px;
+}
+
+.compat-strip span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 6px 11px;
+  border: 1px solid rgba(161, 232, 244, 0.34);
+  border-radius: 8px;
+  color: rgba(255, 255, 255, 0.9);
+  background: rgba(5, 22, 31, 0.34);
+  font-size: 0.84rem;
+  font-weight: 800;
+  line-height: 1.25;
+  backdrop-filter: blur(10px);
+}
+
 .button {
   display: inline-flex;
   align-items: center;
