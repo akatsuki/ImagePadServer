@@ -6,6 +6,7 @@
 /.worktrees/
 /.tools/
 /.serena/
+/.superpowers/
 *.log
 *.tmp
 *.exe
