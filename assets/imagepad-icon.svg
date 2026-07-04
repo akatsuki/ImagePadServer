@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="ImagePadServer icon">
+  <defs>
+    <linearGradient id="tile" x1="178" y1="120" x2="846" y2="900" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#113650"/>
+      <stop offset="0.48" stop-color="#168FE8"/>
+      <stop offset="1" stop-color="#43DFCF"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="275" y1="258" x2="760" y2="626" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F4FCFF"/>
+      <stop offset="1" stop-color="#BDEFFF"/>
+    </linearGradient>
+    <linearGradient id="screenGlass" x1="300" y1="275" x2="746" y2="600" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.52"/>
+      <stop offset="0.55" stop-color="#FFFFFF" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="mountain" x1="318" y1="386" x2="716" y2="590" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1DA4FF"/>
+      <stop offset="1" stop-color="#1067D4"/>
+    </linearGradient>
+    <filter id="tileShadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="34" stdDeviation="38" flood-color="#07344F" flood-opacity="0.30"/>
+    </filter>
+    <filter id="screenShadow" x="-20%" y="-25%" width="140%" height="155%">
+      <feDropShadow dx="0" dy="26" stdDeviation="24" flood-color="#073A5A" flood-opacity="0.32"/>
+    </filter>
+  </defs>
+
+  <rect x="128" y="104" width="768" height="768" rx="196" fill="url(#tile)" filter="url(#tileShadow)"/>
+  <path d="M210 238C300 132 498 126 638 174C755 214 842 312 864 430C832 306 729 218 604 192C454 160 300 188 210 238Z" fill="#FFFFFF" opacity="0.16"/>
+  <path d="M207 709C312 778 684 774 817 699" fill="none" stroke="#DFFBFF" stroke-width="56" stroke-linecap="round" opacity="0.35"/>
+
+  <g filter="url(#screenShadow)">
+    <rect x="244" y="280" width="536" height="350" rx="82" fill="#0F4C73" opacity="0.32"/>
+    <rect x="267" y="258" width="490" height="344" rx="78" fill="url(#screen)"/>
+    <rect x="292" y="282" width="440" height="296" rx="56" fill="#F9FEFF"/>
+    <path d="M292 338C405 286 604 282 732 328V282H292V338Z" fill="url(#screenGlass)"/>
+    <path d="M323 552L438 408L520 514L582 442L713 552H323Z" fill="url(#mountain)"/>
+    <path d="M323 552L438 408L520 514L582 442L713 552H323Z" fill="#0A4EA6" opacity="0.10"/>
+    <circle cx="666" cy="352" r="54" fill="#FFC72D"/>
+  </g>
+
+  <path d="M714 226C780 226 834 280 834 346" fill="none" stroke="#78FFF0" stroke-width="38" stroke-linecap="round"/>
+  <path d="M714 287C746 287 773 314 773 346" fill="none" stroke="#E4FFFC" stroke-width="34" stroke-linecap="round" opacity="0.95"/>
+  <path d="M352 692H672C700 692 722 714 722 741C722 768 700 790 672 790H352C324 790 302 768 302 741C302 714 324 692 352 692Z" fill="#E4FAFF" opacity="0.82"/>
+  <path d="M396 656H628C650 656 668 674 668 696C668 718 650 736 628 736H396C374 736 356 718 356 696C356 674 374 656 396 656Z" fill="#CFF4FF" opacity="0.38"/>
+</svg>
