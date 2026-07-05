@@ -361,6 +361,59 @@ func TestCopyURLPrefersCurrentImageOverStaleVideoShare(t *testing.T) {
 	}
 }
 
+func TestResolvedShareTargetsCentralizeModeURLs(t *testing.T) {
+	state := withResolvedShareURLs(map[string]interface{}{
+		"shareMode": "file",
+		"current": library.CurrentImage{
+			ID:   "image-1",
+			Kind: "image",
+		},
+		"imageURL": "https://example.com/image/current.png?v=image-1",
+		"hlsURL":   "https://example.com/stream/image-1/current-image-1.m3u8",
+		"videoPlayer": map[string]interface{}{
+			"enabled": true,
+		},
+	})
+	targets, ok := state["shareTargets"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("shareTargets missing or wrong type: %#v", state["shareTargets"])
+	}
+	fileTarget, ok := targets["file"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("shareTargets[file] missing: %#v", targets["file"])
+	}
+	if got := fileTarget["shareURL"]; got != "https://example.com/image/current.png?v=image-1" {
+		t.Fatalf("shareTargets[file].shareURL = %q, want image URL", got)
+	}
+	linkTarget, ok := targets["link"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("shareTargets[link] missing: %#v", targets["link"])
+	}
+	if got := linkTarget["shareURL"]; got != "https://example.com/stream/image-1/current-image-1.m3u8" {
+		t.Fatalf("shareTargets[link].shareURL = %q, want current HLS URL", got)
+	}
+	if got := state["shareURL"]; got != "https://example.com/image/current.png?v=image-1" {
+		t.Fatalf("shareURL = %q, want image URL", got)
+	}
+
+	state = withResolvedShareURLs(map[string]interface{}{
+		"shareMode": "link",
+		"current": library.CurrentImage{
+			ID:   "video-1",
+			Kind: "video",
+		},
+		"hlsURL": "https://example.com/stream/video-1/current-video-1.m3u8",
+		"videoPlayer": map[string]interface{}{
+			"enabled": true,
+		},
+	})
+	targets = state["shareTargets"].(map[string]interface{})
+	linkTarget = targets["link"].(map[string]interface{})
+	if got := linkTarget["shareURL"]; got != "https://example.com/stream/video-1/current-video-1.m3u8" {
+		t.Fatalf("video link shareURL = %q, want HLS URL", got)
+	}
+}
+
 func TestStateExposesHLSURLOnlyAfterFirstSegment(t *testing.T) {
 	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
 	if err := settings.Update(func(s *settings.Settings) error {

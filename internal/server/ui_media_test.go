@@ -115,11 +115,8 @@ func TestUIModeSwitchRefreshesShareURLDisplay(t *testing.T) {
 		`function renderShareURL(data)`,
 		`function shareURLForCurrentMode(data)`,
 		`function shareURLForMode(data, mode)`,
-		`if (mode === 'obs')`,
-		`if (mode === 'link')`,
-		`if (mode === 'file')`,
-		`function mediaShareURL(data)`,
-		`function fileShareURL(data)`,
+		`const targets = data.shareTargets || {};`,
+		`return targets[mode] || { shareURL: data.shareURL || '', shareURLLabel: data.shareURLLabel || 'URL', obs: data.obs || {} };`,
 		`function displayedShareURL()`,
 		`const view = shareURLForCurrentMode(data)`,
 		`text = displayedShareURL().shareURL || ''`,
@@ -139,6 +136,9 @@ func TestUIModeSwitchRefreshesShareURLDisplay(t *testing.T) {
 		if strings.Contains(html, forbidden) {
 			t.Fatalf("mode switch must not destroy saved OBS share URL: %q", forbidden)
 		}
+	}
+	if strings.Contains(html, `function mediaShareURL(data)`) || strings.Contains(html, `function fileShareURL(data)`) {
+		t.Fatal("browser UI must use server-resolved shareTargets instead of reimplementing URL selection")
 	}
 }
 

@@ -1771,10 +1771,7 @@ func (s *Server) handleHistorySelect(w http.ResponseWriter, r *http.Request) {
 func (s *Server) stateWithHistoryTargetMode(r *http.Request, current library.CurrentImage) map[string]interface{} {
 	state := s.state(r)
 	state["historyTargetMode"] = historyTargetMode(current)
-	shareURL, shareURLLabel := primaryShareURL(state)
-	state["shareURL"] = shareURL
-	state["shareURLLabel"] = shareURLLabel
-	return state
+	return withResolvedShareURLs(state)
 }
 
 func (s *Server) enqueueHistoryItem(id string) error {
@@ -2599,7 +2596,7 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 		}
 	} else {
 		videoPlayer := s.videoPlayerEmptyState()
-		shareURL, shareURLLabel := primaryShareURL(map[string]interface{}{
+		state := map[string]interface{}{
 			"imageURL":      imageURL,
 			"videoURL":      videoURL,
 			"hlsURL":        hlsURL,
@@ -2607,8 +2604,9 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 			"videoPlayer":   videoPlayer,
 			"obs":           obsStatus,
 			"obsLatency":    s.obsLatencyProfile(),
-		})
-		return s.stateWithMedia(r, upnpResult, tunnelStatus, videoPlayer, obsStatus, imageURL, videoURL, hlsURL, shareURL, shareURLLabel, publicImageURL, publicVideoURL, publicHLSURL, localImageURL, previewImageURL)
+		}
+		shareURL, shareURLLabel := primaryShareURL(state)
+		return withResolvedShareURLs(s.stateWithMedia(r, upnpResult, tunnelStatus, videoPlayer, obsStatus, imageURL, videoURL, hlsURL, shareURL, shareURLLabel, publicImageURL, publicVideoURL, publicHLSURL, localImageURL, previewImageURL))
 	}
 	if imageURL == "" {
 		imageURL = ""
@@ -2628,7 +2626,7 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 		"current":       currentMedia,
 	})
 
-	return map[string]interface{}{
+	return withResolvedShareURLs(map[string]interface{}{
 		"appName":         about.AppName,
 		"version":         about.Version,
 		"author":          about.Author,
@@ -2661,11 +2659,11 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 		"current":         s.store.Current(),
 		"history":         s.historyState(),
 		"remoteAddr":      r.RemoteAddr,
-	}
+	})
 }
 
 func (s *Server) stateWithMedia(r *http.Request, upnpResult upnp.Result, tunnelStatus map[string]interface{}, videoPlayer map[string]interface{}, obsStatus obsrtmp.Status, imageURL, videoURL, hlsURL, shareURL, shareURLLabel, publicImageURL, publicVideoURL, publicHLSURL, localImageURL, previewImageURL string) map[string]interface{} {
-	return map[string]interface{}{
+	return withResolvedShareURLs(map[string]interface{}{
 		"appName":         about.AppName,
 		"version":         about.Version,
 		"author":          about.Author,
@@ -2698,7 +2696,7 @@ func (s *Server) stateWithMedia(r *http.Request, upnpResult upnp.Result, tunnelS
 		"current":         s.store.Current(),
 		"history":         s.historyState(),
 		"remoteAddr":      r.RemoteAddr,
-	}
+	})
 }
 
 func (s *Server) historyState() []map[string]interface{} {
@@ -3069,16 +3067,45 @@ func urlForClipboard(state map[string]interface{}) string {
 }
 
 func primaryShareURL(state map[string]interface{}) (string, string) {
-	switch shareModeFromState(state) {
+	return shareURLForMode(state, shareModeFromState(state))
+}
+
+func shareURLForMode(state map[string]interface{}, mode string) (string, string) {
+	switch mode {
 	case "obs":
 		return obsShareURL(state)
 	case "link":
+		if currentMediaKind(state) == "image" && !currentScopedHLSURLForState(state) {
+			return fileShareURL(state)
+		}
 		return mediaShareURL(state)
 	case "file":
-		return fileShareURL(state)
+		if currentMediaKind(state) == "image" {
+			return fileShareURL(state)
+		}
+		return mediaShareURL(state)
 	default:
 		return mediaShareURL(state)
 	}
+}
+
+func withResolvedShareURLs(state map[string]interface{}) map[string]interface{} {
+	if state == nil {
+		return nil
+	}
+	targets := map[string]interface{}{}
+	for _, mode := range []string{"file", "link", "obs"} {
+		shareURL, shareURLLabel := shareURLForMode(state, mode)
+		targets[mode] = map[string]interface{}{
+			"shareURL":      shareURL,
+			"shareURLLabel": shareURLLabel,
+		}
+	}
+	state["shareTargets"] = targets
+	shareURL, shareURLLabel := primaryShareURL(state)
+	state["shareURL"] = shareURL
+	state["shareURLLabel"] = shareURLLabel
+	return state
 }
 
 func shareModeFromState(state map[string]interface{}) string {
@@ -3110,6 +3137,16 @@ func shareModeFromState(state map[string]interface{}) string {
 		return "link"
 	}
 	return ""
+}
+
+func currentScopedHLSURLForState(state map[string]interface{}) bool {
+	if current, _ := state["current"].(*library.CurrentImage); current != nil {
+		return currentScopedHLSURL(state, current.ID)
+	}
+	if current, _ := state["current"].(library.CurrentImage); current.ID != "" {
+		return currentScopedHLSURL(state, current.ID)
+	}
+	return false
 }
 
 func currentScopedHLSURL(state map[string]interface{}, id string) bool {

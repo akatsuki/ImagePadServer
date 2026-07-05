@@ -13,36 +13,8 @@ const dashboardScriptPreview = `
 
     function shareURLForMode(data, mode) {
       data = data || {};
-      if (mode === 'obs') {
-        const obs = data.obs || {};
-        const url = obs.rtsptURL || '';
-        if (String(url).startsWith('rtsp://')) {
-          return { shareURL: url, shareURLLabel: 'RTSP TCP URL', obs };
-        }
-        return { shareURL: '', shareURLLabel: 'RTSP TCP URL', obs };
-      }
-      if (mode === 'link') {
-        return mediaIntent === 'video' ? mediaShareURL(data) : fileShareURL(data);
-      }
-      if (mode === 'file') {
-        return mediaIntent === 'video' ? mediaShareURL(data) : fileShareURL(data);
-      }
-      return data || {};
-    }
-
-    function mediaShareURL(data) {
-      if (data && data.videoPlayerEnabled) {
-        if (data.hlsURL) return { shareURL: data.hlsURL, shareURLLabel: 'HLS URL' };
-        if (data.videoURL) return { shareURL: data.videoURL, shareURLLabel: 'MP4 URL' };
-      }
-      return fileShareURL(data);
-    }
-
-    function fileShareURL(data) {
-      if (data && data.imageURL) return { shareURL: data.imageURL, shareURLLabel: 'ImagePad URL' };
-      if (data && data.publicImageURL) return { shareURL: data.publicImageURL, shareURLLabel: 'ImagePad URL' };
-      if (data && data.localImageURL) return { shareURL: data.localImageURL, shareURLLabel: 'Local URL' };
-      return { shareURL: '', shareURLLabel: 'URL' };
+      const targets = data.shareTargets || {};
+      return targets[mode] || { shareURL: data.shareURL || '', shareURLLabel: data.shareURLLabel || 'URL', obs: data.obs || {} };
     }
 
     function displayShareLabel(label) {
