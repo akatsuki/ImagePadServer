@@ -267,6 +267,8 @@ func TestUIHistoryControllerIsWired(t *testing.T) {
 		`function queueHistoryItem(id)`,
 		`HistoryController.render(state)`,
 		`HistoryController.publishHistoryItem(publish.dataset.historyPublish)`,
+		`lastHistoryRenderSignature`,
+		`if (signature === lastHistoryRenderSignature) return;`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("HistoryController wiring missing %q", want)

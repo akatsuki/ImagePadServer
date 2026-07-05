@@ -1,6 +1,8 @@
 package server
 
 const dashboardScriptHistoryQueue = `
+    let lastHistoryRenderSignature = '';
+
     function setWingMode(mode) {
       wingMode = mode;
       for (const button of wingTabButtons) {
@@ -23,6 +25,9 @@ const dashboardScriptHistoryQueue = `
       const visibleItems = wingMode === 'favorites'
         ? (items || []).filter((item) => item.favorite).slice().reverse()
         : (items || []);
+      const signature = historyRenderSignature(visibleItems, currentID);
+      if (signature === lastHistoryRenderSignature) return;
+      lastHistoryRenderSignature = signature;
       if (!visibleItems.length) {
         historyList.innerHTML = '<div class="empty">' + (wingMode === 'favorites' ? 'まだお気に入りがありません' : 'まだ履歴がありません') + '</div>';
         return;
@@ -98,6 +103,9 @@ const dashboardScriptHistoryQueue = `
 
     function renderVideoQueue(items) {
       if (!historyList) return;
+      const signature = videoQueueRenderSignature(items);
+      if (signature === lastHistoryRenderSignature) return;
+      lastHistoryRenderSignature = signature;
       if (!items || !items.length) {
         historyList.innerHTML = '<div class="empty">動画変換は空です</div>';
         return;
@@ -155,6 +163,43 @@ const dashboardScriptHistoryQueue = `
       }
       row.appendChild(detail);
       return row;
+    }
+
+    function historyRenderSignature(items, currentID) {
+      return JSON.stringify({
+        mode: wingMode,
+        currentID: currentID || '',
+        videoPlayerEnabled: !!state.videoPlayerEnabled,
+        items: (items || []).map((item) => ({
+          id: item.id || '',
+          kind: item.kind || '',
+          title: item.title || '',
+          thumbnailURL: item.thumbnailURL || '',
+          hasThumbnail: !!item.hasThumbnail,
+          favorite: !!item.favorite,
+          width: item.width || 0,
+          height: item.height || 0,
+          sizeBytes: item.sizeBytes || 0,
+          persistent: !!item.persistent,
+        })),
+      });
+    }
+
+    function videoQueueRenderSignature(items) {
+      return JSON.stringify({
+        mode: wingMode,
+        items: (items || []).map((item) => ({
+          id: item.id || '',
+          kind: item.kind || '',
+          title: item.title || '',
+          status: item.status || '',
+          thumbnailURL: item.thumbnailURL || '',
+          quality: item.quality || '',
+          progressPercent: item.progressPercent || 0,
+          progressText: item.progressText || '',
+          message: item.message || '',
+        })),
+      });
     }
 
     function queueStatusText(status) {
