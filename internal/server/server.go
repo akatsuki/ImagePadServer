@@ -1735,8 +1735,8 @@ func (s *Server) handleHistorySelect(w http.ResponseWriter, r *http.Request) {
 	}
 	current := s.store.Current()
 	if current != nil && current.Converted {
-		state := s.withClipboardResult(s.state(r))
-		state["historyTargetMode"] = historyTargetMode(*current)
+		state := s.stateWithHistoryTargetMode(r, *current)
+		state = s.withClipboardResult(state)
 		writeJSON(w, state)
 		return
 	}
@@ -1759,11 +1759,22 @@ func (s *Server) handleHistorySelect(w http.ResponseWriter, r *http.Request) {
 			s.enqueueStillConversion(path, current.ID, current.OriginalName)
 		}
 	}
-	state := s.withClipboardResult(s.state(r))
 	if current := s.store.Current(); current != nil {
-		state["historyTargetMode"] = historyTargetMode(*current)
+		state := s.stateWithHistoryTargetMode(r, *current)
+		state = s.withClipboardResult(state)
+		writeJSON(w, state)
+		return
 	}
-	writeJSON(w, state)
+	writeJSON(w, s.withClipboardResult(s.state(r)))
+}
+
+func (s *Server) stateWithHistoryTargetMode(r *http.Request, current library.CurrentImage) map[string]interface{} {
+	state := s.state(r)
+	state["historyTargetMode"] = historyTargetMode(current)
+	shareURL, shareURLLabel := primaryShareURL(state)
+	state["shareURL"] = shareURL
+	state["shareURLLabel"] = shareURLLabel
+	return state
 }
 
 func (s *Server) enqueueHistoryItem(id string) error {
@@ -3078,12 +3089,18 @@ func shareModeFromState(state map[string]interface{}) string {
 		return mode
 	}
 	if current, _ := state["current"].(*library.CurrentImage); current != nil {
+		if currentScopedHLSURL(state, current.ID) {
+			return "link"
+		}
 		mode := historyTargetMode(*current)
 		if mode != "obs" {
 			return mode
 		}
 	}
 	if current, _ := state["current"].(library.CurrentImage); current.ID != "" {
+		if currentScopedHLSURL(state, current.ID) {
+			return "link"
+		}
 		mode := historyTargetMode(current)
 		if mode != "obs" {
 			return mode
@@ -3093,6 +3110,14 @@ func shareModeFromState(state map[string]interface{}) string {
 		return "link"
 	}
 	return ""
+}
+
+func currentScopedHLSURL(state map[string]interface{}, id string) bool {
+	if id == "" {
+		return false
+	}
+	hlsURL, _ := state["hlsURL"].(string)
+	return strings.HasPrefix(hlsURL, "http") && strings.Contains(hlsURL, "/stream/"+url.PathEscape(id)+"/")
 }
 
 func obsShareURL(state map[string]interface{}) (string, string) {

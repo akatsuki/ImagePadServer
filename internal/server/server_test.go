@@ -637,7 +637,7 @@ func TestHistorySelectImageClearsStaleHLSClipboardURL(t *testing.T) {
 		t.Fatalf("image copiedURL = %q, want image shareURL %q", got, imageShareURL)
 	}
 
-	req = httptest.NewRequest(http.MethodPost, "/api/copy-url", strings.NewReader(`{"target":"shareURL"}`))
+	req = httptest.NewRequest(http.MethodPost, "/api/copy-url", strings.NewReader(`{"target":"shareURL","mode":"file"}`))
 	rec = adminJSON(t, mux, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("copy status = %d, want 200; body = %q", rec.Code, rec.Body.String())
