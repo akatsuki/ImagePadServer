@@ -337,6 +337,30 @@ func TestPrimaryShareURL(t *testing.T) {
 	}
 }
 
+func TestCopyURLPrefersCurrentImageOverStaleVideoShare(t *testing.T) {
+	state := map[string]interface{}{
+		"shareURL": "https://example.com/stream/old/current-old.m3u8",
+		"shareMode": "file",
+		"current": library.CurrentImage{
+			ID:   "image-1",
+			Kind: "image",
+		},
+		"imageURL": "https://example.com/image/current.png",
+		"hlsURL":   "https://example.com/stream/old/current-old.m3u8",
+		"videoPlayer": map[string]interface{}{
+			"enabled": true,
+		},
+	}
+
+	const want = "https://example.com/image/current.png"
+	if got := urlForClipboard(state); got != want {
+		t.Fatalf("urlForClipboard() = %q, want %q", got, want)
+	}
+	if got := urlForCopyTarget(state, "shareURL"); got != want {
+		t.Fatalf("urlForCopyTarget(shareURL) = %q, want %q", got, want)
+	}
+}
+
 func TestStateExposesHLSURLOnlyAfterFirstSegment(t *testing.T) {
 	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
 	if err := settings.Update(func(s *settings.Settings) error {

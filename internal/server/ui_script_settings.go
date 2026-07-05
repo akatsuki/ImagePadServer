@@ -15,21 +15,6 @@ const dashboardScriptSettings = `
     if (phoneConnectCloseButton) {
       phoneConnectCloseButton.addEventListener('click', () => SettingsController.closePhoneConnect());
     }
-    if (quitButton) {
-      quitButton.addEventListener('click', async () => {
-        quitButton.disabled = true;
-        toast.textContent = 'アプリを終了しています...';
-        try {
-          const res = await apiFetch('/api/quit', { method: 'POST' });
-          if (!res.ok) throw new Error(await res.text());
-          const data = await res.json();
-          toast.textContent = data.message || 'アプリを終了します';
-        } catch (error) {
-          quitButton.disabled = false;
-          toast.textContent = error.message || '終了に失敗しました';
-        }
-      });
-    }
     if (phoneConnectDialog) {
       phoneConnectDialog.addEventListener('click', (event) => {
         if (event.target === phoneConnectDialog) hidePhoneConnectDialog();
@@ -197,24 +182,25 @@ const dashboardScriptSettings = `
     if (ytdlpLoginButton) ytdlpLoginButton.addEventListener('click', loginYTDLP);
     if (toastYTDLPLoginButton) toastYTDLPLoginButton.addEventListener('click', loginYTDLP);
     if (ytdlpCookieDeleteButton) ytdlpCookieDeleteButton.addEventListener('click', deleteYTDLPCookies);
-    const quitButton = document.getElementById('quitButton');
-    if (quitButton) {
+    const quitButtons = [document.getElementById('quitHeaderButton'), document.getElementById('quitButton')].filter(Boolean);
+    quitButtons.forEach((quitButton) => {
       quitButton.addEventListener('click', async () => {
         if (!confirm('アプリを終了しますか？\n配信中のストリームも停止します。')) return;
-        quitButton.disabled = true;
+        quitButtons.forEach((button) => { button.disabled = true; });
         toast.textContent = 'アプリを終了しています...';
         try {
           const res = await apiFetch('/api/quit', { method: 'POST' });
           if (!res.ok) throw new Error(await res.text());
-          quitButton.classList.add('done');
-          quitButton.textContent = '終了しました（この画面は閉じてかまいません）';
+          quitButtons.forEach((button) => { button.classList.add('done'); });
+          const modalQuitButton = document.getElementById('quitButton');
+          if (modalQuitButton) modalQuitButton.textContent = '終了しました（この画面は閉じてかまいません）';
           toast.textContent = 'アプリを終了しました';
         } catch (error) {
-          quitButton.disabled = false;
+          quitButtons.forEach((button) => { button.disabled = false; });
           toast.textContent = error.message || 'アプリの終了に失敗しました';
         }
       });
-    }
+    });
     fileModeButton.addEventListener('click', () => setUploadMode('file'));
     linkModeButton.addEventListener('click', () => setUploadMode('link'));
     obsModeButton.addEventListener('click', () => setUploadMode('obs'));

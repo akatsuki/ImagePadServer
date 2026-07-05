@@ -3047,11 +3047,11 @@ func versionParts(version string) [3]int {
 }
 
 func urlForClipboard(state map[string]interface{}) string {
-	if shareURL, _ := state["shareURL"].(string); strings.HasPrefix(shareURL, "http") {
-		return shareURL
-	}
 	shareURL, _ := primaryShareURL(state)
 	if strings.HasPrefix(shareURL, "http") {
+		return shareURL
+	}
+	if shareURL, _ := state["shareURL"].(string); strings.HasPrefix(shareURL, "http") {
 		return shareURL
 	}
 	return urlForCopyTarget(state, "imageURL")
@@ -3180,11 +3180,13 @@ func activeOBSLatency(selected obsrtmp.LatencyProfile, status obsrtmp.Status) ob
 func urlForCopyTarget(state map[string]interface{}, target string) string {
 	switch target {
 	case "shareURL":
+		shareURL, _ := primaryShareURL(state)
+		if shareURL != "" {
+			return shareURL
+		}
 		if shareURL, ok := state["shareURL"].(string); ok {
 			return shareURL
 		}
-		shareURL, _ := primaryShareURL(state)
-		return shareURL
 	case "phoneURL", "phoneURLMobile":
 		if phoneURL, ok := state["phoneURL"].(string); ok {
 			return phoneURL
