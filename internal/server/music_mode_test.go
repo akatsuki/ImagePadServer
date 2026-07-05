@@ -301,3 +301,18 @@ func TestMusicModeEndpointEnablesWithVideoPlayer(t *testing.T) {
 		t.Fatalf("musicModeEnabled = %#v, want true", state["musicModeEnabled"])
 	}
 }
+
+func TestMusicQualityUsesVideoQualitySetting(t *testing.T) {
+	s, mux := testServer(t, true)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/video-quality", strings.NewReader(`{"mode":"360"}`))
+	rec := adminJSON(t, mux, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+
+	preset := s.musicQualityPreset()
+	if preset.Mode != "360" || preset.Height != 360 {
+		t.Fatalf("music preset = mode %q height %d, want 360/360", preset.Mode, preset.Height)
+	}
+}

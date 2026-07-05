@@ -50,15 +50,7 @@ const indexHTML = `<!doctype html>
             <div class="media-kind-switch" id="mediaKindSwitch" role="group" aria-label="メディア種別" hidden>
               <button type="button" class="active" id="imageIntentButton" data-media-intent="image" aria-pressed="true">静止画</button>
               <button type="button" id="videoIntentButton" data-media-intent="video" aria-pressed="false">動画</button>
-              <button type="button" id="musicIntentButton" data-media-intent="music" hidden aria-pressed="false" aria-haspopup="menu" aria-expanded="false">
-                <span>ミュージック</span>
-                <svg class="music-caret" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path fill="currentColor" d="M2.2 4.2 6 8l3.8-3.8H2.2Z"/></svg>
-              </button>
-              <div class="music-mode-menu" id="musicModeMenu" role="menu" aria-label="ミュージックモード" hidden>
-                <button type="button" role="menuitemradio" aria-checked="true" data-music-mode-choice="single">シングル</button>
-                <button type="button" role="menuitemradio" aria-checked="false" data-music-mode-choice="playlist">プレイリスト</button>
-                <button type="button" role="menuitemradio" aria-checked="false" data-music-mode-choice="party">パーティーモード</button>
-              </div>
+              <button type="button" id="musicIntentButton" data-media-intent="music" hidden aria-pressed="false">ミュージック</button>
             </div>
           </div>
         </div>
@@ -238,39 +230,6 @@ const indexHTML = `<!doctype html>
           </div>
         </div>
       </section>
-      <section class="hero-panel music-playlist-panel" id="musicPlaylistPanel" hidden>
-        <div class="section-head">
-          <div class="section-title-copy">
-            <h2>プレイリスト</h2>
-            <p class="section-kicker">曲順、再生状態、次の曲をここで管理する</p>
-          </div>
-        </div>
-        <div class="music-player">
-          <div class="music-now">
-            <strong>未再生</strong>
-            <span>曲を追加してください</span>
-          </div>
-          <div class="music-player-controls" aria-label="ミュージックプレーヤー操作">
-            <button type="button" class="secondary icon-button" id="musicPlayerPlayButton" aria-label="再生">
-              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 5v14l11-7L8 5Z"/></svg>
-            </button>
-            <button type="button" class="secondary icon-button" id="musicPlayerStopButton" aria-label="停止">
-              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M7 7h10v10H7V7Z"/></svg>
-            </button>
-            <button type="button" class="secondary icon-button" id="musicPlayerRepeatButton" aria-label="繰り返し再生">
-              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M17 2l4 4-4 4M3 11V9a3 3 0 0 1 3-3h15M7 22l-4-4 4-4m14-1v2a3 3 0 0 1-3 3H3"/></svg>
-            </button>
-            <button type="button" class="secondary icon-button" id="musicPlayerShuffleButton" aria-label="ランダム再生">
-              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M16 3h5v5M4 7h3c2.6 0 4.2 2 5.8 5s3.2 5 5.8 5H21M21 16v5h-5M4 17h3c1.2 0 2.2-.4 3.1-1.2M14 8.2c1.1-.8 2.3-1.2 4-1.2h3"/></svg>
-            </button>
-          </div>
-          <ol class="music-playlist-list" aria-label="曲順をドラッグして変更">
-            <li draggable="true"><span>01</span><strong>曲を追加</strong><em>待機</em></li>
-            <li draggable="true"><span>02</span><strong>YouTubeプレイリストから取得</strong><em>待機</em></li>
-            <li draggable="true"><span>03</span><strong>次の曲</strong><em>先読みなし</em></li>
-          </ol>
-        </div>
-      </section>
     </div>
 
   </main>
@@ -369,29 +328,6 @@ const indexHTML = `<!doctype html>
             <strong>更新</strong>
             <p id="updateText">確認中</p>
           </div>
-        </div>
-      </div>
-      <div class="settings-section">
-        <div class="settings-section-title">動画</div>
-        <div class="settings-row">
-          <div>
-            <strong>ビデオプレーヤー対応</strong>
-            <p id="videoPlayerText">確認中</p>
-          </div>
-          <label class="switch" title="VRChatビデオプレーヤー向けMP4/HLS生成を切り替え">
-            <input id="videoPlayerToggle" type="checkbox">
-            <span class="switch-slider"></span>
-          </label>
-        </div>
-        <div class="settings-row" id="musicModeRow" hidden>
-          <div>
-            <strong>ミュージックモード</strong>
-            <p id="musicModeText">無効</p>
-          </div>
-          <label class="switch" title="YouTubeやニコニコ動画などを音声のみ取得してミュージックプレーヤーで再生">
-            <input id="musicModeToggle" type="checkbox">
-            <span class="switch-slider"></span>
-          </label>
         </div>
       </div>
       <div class="settings-section">

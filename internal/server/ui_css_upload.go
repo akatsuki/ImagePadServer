@@ -38,47 +38,10 @@ const dashboardCSSUpload = `
     #musicIntentButton[hidden] {
       display: none;
     }
-    #musicIntentButton .music-caret {
-      width: 12px;
-      height: 12px;
-      margin: 0;
-    }
     .media-kind-switch button.active {
       background: var(--tab-active-bg);
       color: var(--tab-active-ink);
       box-shadow: var(--shadow-active);
-    }
-    .music-mode-menu {
-      position: absolute;
-      right: 0;
-      top: calc(100% + 6px);
-      z-index: 30;
-      width: min(220px, 76vw);
-      display: grid;
-      gap: 4px;
-      padding: 6px;
-      border: 1px solid var(--line);
-      border-radius: var(--radius-card);
-      background: var(--panel);
-      box-shadow: var(--shadow-overlay);
-    }
-    .music-mode-menu[hidden] {
-      display: none;
-    }
-    .music-mode-menu button {
-      min-height: 36px;
-      justify-content: flex-start;
-      border-radius: var(--radius-small);
-      background: transparent;
-      color: var(--control-ink);
-      box-shadow: none;
-      text-align: left;
-    }
-    .music-mode-menu button.active,
-    .music-mode-menu button:hover {
-      background: var(--control-bg-strong);
-      color: var(--control-ink);
-      transform: none;
     }
     .section-kicker {
       margin: 0;

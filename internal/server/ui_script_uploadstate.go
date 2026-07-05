@@ -36,9 +36,6 @@ const dashboardScriptUploadState = `
     function uploadActionLabel() {
       if (uploadMode === 'obs') return '配信開始';
       if (mediaIntent === 'music') {
-        const mode = MusicController && MusicController.mode ? MusicController.mode() : 'single';
-        if (mode === 'playlist') return '曲を追加';
-        if (mode === 'party') return '準備中';
         return 'ミュージックHLSを生成';
       }
       if (uploadMode === 'link') {
@@ -47,7 +44,35 @@ const dashboardScriptUploadState = `
       return mediaIntent === 'video' ? '動画を変換して公開' : '画像を公開';
     }
 
-    function setMediaIntent(intent) {
+    async function syncLegacyMusicMode(enabled) {
+      const desired = !!enabled && !!state.videoPlayerEnabled;
+      if (!musicWorkspaceEnabled) return;
+      legacyMusicModeDesired = desired;
+      if (state.musicModeEnabled === desired && !legacyMusicModeSyncPending) return;
+      if (legacyMusicModeSyncPending) return;
+      legacyMusicModeSyncPending = true;
+      try {
+        const res = await apiFetch('/api/music-mode', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: desired })
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        applyVideoPlayer(data);
+        announceLocalChange();
+      } catch (error) {
+        await refreshState();
+        showToast(error.message || 'ミュージックモードの同期に失敗しました', { error: true });
+      } finally {
+        legacyMusicModeSyncPending = false;
+        if (legacyMusicModeDesired !== state.musicModeEnabled) {
+          syncLegacyMusicMode(legacyMusicModeDesired);
+        }
+      }
+    }
+
+    function setMediaIntent(intent, syncLegacy = true) {
       if (!musicWorkspaceEnabled && intent === 'music') {
         intent = 'image';
       }
@@ -60,6 +85,7 @@ const dashboardScriptUploadState = `
         if (videoInfoPanel) videoInfoPanel.hidden = true;
         uploadMode = 'file';
       }
+      if (syncLegacy) syncLegacyMusicMode(mediaIntent === 'music');
       if (imageIntentButton) imageIntentButton.classList.toggle('active', mediaIntent === 'image');
       if (videoIntentButton) videoIntentButton.classList.toggle('active', mediaIntent === 'video');
       if (musicIntentButton) musicIntentButton.classList.toggle('active', mediaIntent === 'music');
@@ -84,12 +110,7 @@ const dashboardScriptUploadState = `
           : '画像またはRAWファイルを選択します';
       }
       if (uploadKicker) {
-        const mode = MusicController && MusicController.mode ? MusicController.mode() : 'single';
-        uploadKicker.textContent = mediaIntent === 'music' && mode === 'playlist'
-          ? '曲を追加して、再生順と配信状態を管理する'
-          : mediaIntent === 'music' && mode === 'party'
-          ? '外部入力を受け付ける準備中のモード'
-          : mediaIntent === 'music'
+        uploadKicker.textContent = mediaIntent === 'music'
           ? 'ファイルまたはアドレスから音楽配信を準備する'
           : state.videoPlayerEnabled && mediaIntent === 'video'
           ? '動画や音声を変換し、VRChat向けURLとして公開する'
@@ -112,15 +133,13 @@ const dashboardScriptUploadState = `
       }
       if (uploadButton) {
         uploadButton.textContent = uploadActionLabel();
-        uploadButton.disabled = mediaIntent === 'music' && MusicController && MusicController.mode && MusicController.mode() === 'party';
+        uploadButton.disabled = false;
       }
       if (fileModeButton) {
         fileModeButton.textContent = mediaIntent === 'music' ? 'ファイル' : 'ファイル';
       }
       if (imageURLInput && mediaIntent === 'music') {
-        imageURLInput.placeholder = MusicController && MusicController.mode && MusicController.mode() === 'playlist'
-          ? 'YouTubeプレイリストURL'
-          : 'https://example.com/music.mp3';
+        imageURLInput.placeholder = 'https://example.com/music.mp3';
       }
       if (queueUploadButton) {
         queueUploadButton.hidden = !state.videoPlayerEnabled || uploadMode === 'obs' || mediaIntent !== 'video' || mediaIntent === 'music';
@@ -128,9 +147,10 @@ const dashboardScriptUploadState = `
       imageTransformOptions.forEach((option) => {
         option.hidden = mediaIntent !== 'image';
       });
-      if (qualityRow) {
-        qualityRow.hidden = uploadMode === 'obs' || mediaIntent !== 'video';
-      }
+	if (qualityRow) {
+		qualityRow.hidden = uploadMode === 'obs' || (mediaIntent !== 'video' && mediaIntent !== 'music');
+		qualityRow.classList.toggle('standalone', mediaIntent === 'video' || mediaIntent === 'music');
+	}
       if (obsLatencyOption) {
         obsLatencyOption.hidden = uploadMode !== 'obs';
       }
@@ -144,21 +164,11 @@ const dashboardScriptUploadState = `
 
     function applyVideoPlayer(data) {
       if (!data) {
-        videoPlayerToggle.checked = false;
-        videoPlayerText.textContent = '確認できません';
-        musicModeRow.hidden = true;
-        musicModeToggle.checked = false;
-        musicModeToggle.disabled = true;
         updateUploadControlsVisibility();
         return;
       }
-      videoPlayerToggle.checked = !!data.enabled;
-      videoPlayerToggle.disabled = videoPlayerPending;
-      videoPlayerText.textContent = data.enabled ? '有効 / 自動コピーはHLS優先' : '無効 / 自動コピーは画像URL';
-      musicModeRow.hidden = !musicWorkspaceEnabled || !data.enabled;
-      musicModeToggle.checked = !!data.musicModeEnabled;
-      musicModeToggle.disabled = !musicWorkspaceEnabled || musicModePending || !data.enabled;
-      musicModeText.textContent = data.musicModeEnabled ? '有効 / URLは音声のみ取得' : '無効 / URLは動画として取得';
+      state.videoPlayerEnabled = !!data.enabled;
+      state.musicModeEnabled = !!data.musicModeEnabled;
       imageInput.accept = data.enabled ? '' : imageAccept;
       if (!data.enabled) mediaIntent = 'image';
       if (mediaKindSwitch) mediaKindSwitch.hidden = !data.enabled;
@@ -175,7 +185,7 @@ const dashboardScriptUploadState = `
       if ((!data.enabled || mediaIntent !== 'video') && uploadMode === 'obs') {
         setUploadMode('file');
       }
-      setMediaIntent(mediaIntent);
+      setMediaIntent(mediaIntent, false);
       updateUploadControlsVisibility();
     }
 `

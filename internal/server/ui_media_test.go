@@ -495,43 +495,49 @@ func TestUIContainsImagePresetControls(t *testing.T) {
 	}
 }
 
-func TestMusicModeUIIsNestedUnderVideoPlayerMode(t *testing.T) {
+func TestVideoAndMusicModeTogglesAreNotInSettings(t *testing.T) {
 	html := getIndexHTML(t)
 	for _, want := range []string{
-		`id="musicModeRow"`,
-		`id="musicModeToggle"`,
-		`ミュージックモード`,
-		`fetch('/api/music-mode'`,
-		`.settings-row[hidden]`,
-		`musicModeRow.hidden = !musicWorkspaceEnabled || !data.enabled`,
+		`id="musicIntentButton" data-media-intent="music"`,
+		`syncLegacyMusicMode(mediaIntent === 'music')`,
 	} {
 		if !strings.Contains(html, want) {
-			t.Fatalf("music mode UI is missing %q", want)
+			t.Fatalf("upload music mode wiring is missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		`id="videoPlayerToggle"`,
+		`id="videoPlayerText"`,
+		`id="musicModeRow"`,
+		`id="musicModeToggle"`,
+		`id="musicModeText"`,
+		`<strong>ミュージックモード</strong>`,
+		`videoPlayerToggle.addEventListener('change'`,
+		`musicModeToggle.addEventListener('change'`,
+		`musicModeRow.hidden = !musicWorkspaceEnabled || !data.enabled`,
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("settings must not expose video/music mode control %q", forbidden)
 		}
 	}
 }
 
-func TestMusicWorkspaceUIIsFeatureFlagged(t *testing.T) {
+func TestMusicWorkspaceUIRestoresSingleModeOnly(t *testing.T) {
 	html := getIndexHTML(t)
 	for _, want := range []string{
-		`const musicWorkspaceEnabled = false`,
-		`#musicIntentButton[hidden]`,
-		`id="musicIntentButton" data-media-intent="music" hidden`,
-		`id="musicModeMenu"`,
-		`aria-haspopup="menu"`,
-		`music-caret`,
-		`data-music-mode-choice="single"`,
-		`data-music-mode-choice="playlist"`,
-		`data-music-mode-choice="party"`,
-		`id="musicPlaylistPanel"`,
+		`const musicWorkspaceEnabled = true`,
+		`id="musicIntentButton" data-media-intent="music"`,
+		`syncLegacyMusicMode(mediaIntent === 'music')`,
+		`function syncLegacyMusicMode(enabled)`,
+		`apiFetch('/api/music-mode'`,
+		`if (mediaIntent === 'music') {
+        MusicController.render({ active: true });
+      }`,
+		`return 'ミュージックHLSを生成';`,
 		`MusicController.init({`,
 		`MusicController.render({`,
-		`musicModeMenu.addEventListener('click'`,
-		`event.target.closest('[data-music-mode-choice]')`,
-		`if (!musicWorkspaceEnabled && intent === 'music')`,
 		`mediaIntent = intent === 'music' && musicWorkspaceEnabled`,
 		`flowGrid.hidden = false`,
-		`musicPlaylistPanel.hidden = !active || mode === 'single'`,
 		`PreviewController.setVisible(!active || mode === 'single')`,
 		`.preview-panel[hidden]`,
 		`obsModeButton.hidden = !state.videoPlayerEnabled || mediaIntent !== 'video'`,
@@ -547,12 +553,38 @@ func TestMusicWorkspaceUIIsFeatureFlagged(t *testing.T) {
 	if strings.Contains(html, `uploadHeading.textContent = mediaIntent === 'video' ? '動画アップロード' : '画像アップロード'`) {
 		t.Fatal("applyVideoPlayer must not overwrite music headings back to image")
 	}
+	for _, forbidden := range []string{
+		`id="musicModeMenu"`,
+		`aria-haspopup="menu"`,
+		`music-caret`,
+		`data-music-mode-choice=`,
+		`musicModeMenu.addEventListener('click'`,
+		`event.target.closest('[data-music-mode-choice]')`,
+		`ミュージック機能はGUI準備中です`,
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("music upload must be single-mode only, but UI still contains %q", forbidden)
+		}
+	}
 }
 
-func TestMusicWorkspaceHasRequiredModes(t *testing.T) {
+func TestMusicWorkspaceHasSingleModeOnly(t *testing.T) {
 	html := getIndexHTML(t)
 	for _, want := range []string{
 		`シングル`,
+		`ミュージックHLSを生成`,
+		`https://example.com/music.mp3`,
+		`qualityRow.hidden = uploadMode === 'obs' || (mediaIntent !== 'video' && mediaIntent !== 'music')`,
+		`qualityRow.hidden = protectedMode || (mediaIntent !== 'video' && mediaIntent !== 'music')`,
+		`qualityRow.classList.toggle('standalone', mediaIntent === 'video' || mediaIntent === 'music')`,
+		`.quality-row.standalone`,
+		`/api/video-quality`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("single music UI missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
 		`プレイリスト`,
 		`パーティーモード`,
 		`YouTubeプレイリストURL`,
@@ -563,8 +595,8 @@ func TestMusicWorkspaceHasRequiredModes(t *testing.T) {
 		`draggable="true"`,
 		`aria-label="曲順をドラッグして変更"`,
 	} {
-		if !strings.Contains(html, want) {
-			t.Fatalf("music menu/player UI missing %q", want)
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("single music UI must not expose %q", forbidden)
 		}
 	}
 	if strings.Contains(html, `ミュージックHLSアドレス`) {

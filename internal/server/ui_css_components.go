@@ -659,6 +659,11 @@ const dashboardCSSComponents = `
       padding-top: 8px;
       border-top: 1px solid var(--line);
     }
+    .quality-row.standalone {
+      margin-top: 0;
+      padding-top: 0;
+      border-top: 0;
+    }
     .video-quality-options {
       grid-template-columns: minmax(0, 1fr);
       margin-top: 10px;

@@ -127,9 +127,10 @@ const dashboardScriptOBS = `
       if (uploadButton) {
         uploadButton.textContent = uploadActionLabel();
       }
-      if (qualityRow) {
-        qualityRow.hidden = protectedMode || mediaIntent !== 'video';
-      }
+	if (qualityRow) {
+		qualityRow.hidden = protectedMode || (mediaIntent !== 'video' && mediaIntent !== 'music');
+		qualityRow.classList.toggle('standalone', mediaIntent === 'video' || mediaIntent === 'music');
+	}
       if (obsLatencyOption) {
         obsLatencyOption.hidden = !protectedMode;
       }

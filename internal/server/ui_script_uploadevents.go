@@ -53,8 +53,6 @@ const dashboardScriptUploadEvents = `
       event.preventDefault();
       if (mediaIntent === 'music') {
         MusicController.render({ active: true });
-        showToast('ミュージック機能はGUI準備中です', { error: false });
-        return;
       }
       if (uploadMode === 'obs') {
         if (!(state.obs && state.obs.connected) || (state.obs && state.obs.publishing)) {
@@ -92,7 +90,7 @@ const dashboardScriptUploadEvents = `
       const linkDownload = uploadMode === 'link';
       if (linkDownload) {
         const pendingURL = imageURLInput.value.trim();
-        toast.textContent = '動画をダウンロード中...';
+        toast.textContent = mediaIntent === 'music' ? '音楽を取得中...' : '動画をダウンロード中...';
         renderIngestPreview('downloading', pendingURL, 0, '', true);
         scrollProgressIntoView();
       } else {
@@ -119,9 +117,6 @@ const dashboardScriptUploadEvents = `
     });
 
     function setUploadMode(mode) {
-      if (mediaIntent === 'music') {
-        mode = 'file';
-      }
       if (mode === 'obs' && (!state.videoPlayerEnabled || mediaIntent !== 'video')) {
         mode = 'file';
       }
@@ -145,7 +140,7 @@ const dashboardScriptUploadEvents = `
       imageURLInput.required = linkMode;
       uploadButton.hidden = false;
       if (!obsMode) {
-        uploadButton.disabled = mediaIntent === 'music' && MusicController && MusicController.mode && MusicController.mode() === 'party';
+        uploadButton.disabled = false;
       }
       queueUploadButton.hidden = obsMode || !state.videoPlayerEnabled || mediaIntent !== 'video' || mediaIntent === 'music';
       if (videoInfoPanel) {
