@@ -339,7 +339,7 @@ func TestPrimaryShareURL(t *testing.T) {
 
 func TestCopyURLPrefersCurrentImageOverStaleVideoShare(t *testing.T) {
 	state := map[string]interface{}{
-		"shareURL": "https://example.com/stream/old/current-old.m3u8",
+		"shareURL":  "https://example.com/stream/old/current-old.m3u8",
 		"shareMode": "file",
 		"current": library.CurrentImage{
 			ID:   "image-1",
@@ -546,6 +546,108 @@ func TestHistorySelectReturnsRecordedHLSForOBSHistoryEvenWhenRTSPModeSelected(t 
 	}
 	if got, _ := state["historyTargetMode"].(string); got != "file" {
 		t.Fatalf("historyTargetMode = %q, want file", got)
+	}
+}
+
+func TestHistorySelectImageClearsStaleHLSClipboardURL(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	if err := settings.Update(func(s *settings.Settings) error {
+		s.VideoPlayerEnabled = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	videoSource := filepath.Join(t.TempDir(), "clip.mp4")
+	if err := os.WriteFile(videoSource, []byte("mp4"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	videoItem, err := store.AddHistory(videoSource, library.CurrentImage{
+		Kind:        "video",
+		PublicName:  "clip.mp4",
+		ContentType: "video/mp4",
+		Converted:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	convertedDir := filepath.Join(filepath.Dir(store.Dir()), "converted", videoItem.ID)
+	if err := os.MkdirAll(convertedDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(convertedDir, video.PlaylistName(videoItem.ID)), []byte("#EXTM3U\n#EXTINF:1,\ncurrent-"+videoItem.ID+"-000.ts\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(convertedDir, "current-"+videoItem.ID+"-000.ts"), []byte("segment"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	imageSource := filepath.Join(t.TempDir(), "photo.png")
+	if err := os.WriteFile(imageSource, []byte("image"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	imageItem, err := store.AddHistory(imageSource, library.CurrentImage{
+		Kind:        "image",
+		PublicName:  "photo.png",
+		ContentType: "image/png",
+		Width:       640,
+		Height:      480,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+	srv.SetTunnelStatus(true, "https://example.trycloudflare.com", "connected")
+	mux := http.NewServeMux()
+	srv.Register(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/history/select", strings.NewReader(fmt.Sprintf(`{"id":%q}`, videoItem.ID)))
+	rec := adminJSON(t, mux, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("video select status = %d, want 200; body = %q", rec.Code, rec.Body.String())
+	}
+	var videoState map[string]interface{}
+	if err := json.NewDecoder(rec.Body).Decode(&videoState); err != nil {
+		t.Fatal(err)
+	}
+	videoShareURL, _ := videoState["shareURL"].(string)
+	if !strings.Contains(videoShareURL, "/stream/"+videoItem.ID+"/") {
+		t.Fatalf("video shareURL = %q, want selected HLS URL", videoShareURL)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/history/select", strings.NewReader(fmt.Sprintf(`{"id":%q}`, imageItem.ID)))
+	rec = adminJSON(t, mux, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("image select status = %d, want 200; body = %q", rec.Code, rec.Body.String())
+	}
+	var imageState map[string]interface{}
+	if err := json.NewDecoder(rec.Body).Decode(&imageState); err != nil {
+		t.Fatal(err)
+	}
+	imageShareURL, _ := imageState["shareURL"].(string)
+	if strings.Contains(imageShareURL, "/stream/") || !strings.Contains(imageShareURL, "/image/current") || !strings.Contains(imageShareURL, imageItem.ID) {
+		t.Fatalf("image shareURL = %q, want selected image URL", imageShareURL)
+	}
+	if got, _ := imageState["copiedURL"].(string); got != imageShareURL {
+		t.Fatalf("image copiedURL = %q, want image shareURL %q", got, imageShareURL)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/copy-url", strings.NewReader(`{"target":"shareURL"}`))
+	rec = adminJSON(t, mux, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("copy status = %d, want 200; body = %q", rec.Code, rec.Body.String())
+	}
+	var copyState map[string]interface{}
+	if err := json.NewDecoder(rec.Body).Decode(&copyState); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := copyState["copiedURL"].(string); strings.Contains(got, "/stream/") || !strings.Contains(got, "/image/current") || !strings.Contains(got, imageItem.ID) {
+		t.Fatalf("copy copiedURL = %q, want selected image URL", got)
 	}
 }
 

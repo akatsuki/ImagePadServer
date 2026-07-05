@@ -3077,9 +3077,6 @@ func shareModeFromState(state map[string]interface{}) string {
 	if mode, _ := state["historyTargetMode"].(string); mode == "link" || mode == "file" {
 		return mode
 	}
-	if hlsURL, _ := state["hlsURL"].(string); strings.HasPrefix(hlsURL, "http") {
-		return "link"
-	}
 	if current, _ := state["current"].(*library.CurrentImage); current != nil {
 		mode := historyTargetMode(*current)
 		if mode != "obs" {
@@ -3091,6 +3088,9 @@ func shareModeFromState(state map[string]interface{}) string {
 		if mode != "obs" {
 			return mode
 		}
+	}
+	if hlsURL, _ := state["hlsURL"].(string); strings.HasPrefix(hlsURL, "http") {
+		return "link"
 	}
 	return ""
 }
