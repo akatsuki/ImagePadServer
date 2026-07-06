@@ -139,6 +139,32 @@ func (q *Queue) find(id string) *Track {
 	return nil
 }
 
+// Mutate applies fn to the stored track under the queue lock.
+func (q *Queue) Mutate(id string, fn func(*Track)) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	t := q.find(id)
+	if t == nil {
+		return false
+	}
+	fn(t)
+	return true
+}
+
+// ReplaceAll swaps the entire queue contents (e.g. loading a saved playlist)
+// and resets playback state. Track IDs are kept as provided.
+func (q *Queue) ReplaceAll(tracks []Track) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.tracks = q.tracks[:0]
+	for i := range tracks {
+		stored := tracks[i]
+		q.tracks = append(q.tracks, &stored)
+	}
+	q.currentID = ""
+	q.played = map[string]bool{}
+}
+
 func (q *Queue) CurrentID() string {
 	q.mu.Lock()
 	defer q.mu.Unlock()

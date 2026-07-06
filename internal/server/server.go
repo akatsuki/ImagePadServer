@@ -28,6 +28,7 @@ import (
 	"imagepadserver/internal/library"
 	"imagepadserver/internal/network"
 	"imagepadserver/internal/obsrtmp"
+	"imagepadserver/internal/playlist"
 	"imagepadserver/internal/settings"
 	"imagepadserver/internal/upnp"
 	"imagepadserver/internal/video"
@@ -90,6 +91,13 @@ type Server struct {
 	stateEvents    map[chan struct{}]struct{}
 	lastStateEvent time.Time
 	stateEventDue  bool
+
+	musicQueue        *playlist.Queue
+	playlistStore     *playlist.Store
+	radio             *obsrtmp.RadioManager
+	musicJobs         chan func()
+	musicPendingMu    sync.Mutex
+	musicPendingTrack string
 }
 
 type rtspMappingHandle interface {
@@ -180,6 +188,7 @@ func New(cfg config.Config, store *library.Store, imageURLBase string) *Server {
 		return mapping, result
 	}
 	srv.setRTSPURL = srv.obs.SetRTSPURL
+	srv.initMusicPlaylist(advertisedHost)
 	return srv
 }
 
@@ -215,6 +224,19 @@ func (s *Server) Register(mux *http.ServeMux) {
 	// archived asset, but do not expose its management API.
 	mux.HandleFunc("/api/video-player", s.admin(s.handleVideoPlayer))
 	mux.HandleFunc("/api/music-mode", s.admin(s.handleMusicMode))
+	mux.HandleFunc("/api/music/playlist", s.admin(s.handleMusicPlaylist))
+	mux.HandleFunc("/api/music/playlist/add", s.admin(s.handleMusicPlaylistAdd))
+	mux.HandleFunc("/api/music/playlist/remove", s.admin(s.handleMusicPlaylistRemove))
+	mux.HandleFunc("/api/music/playlist/reorder", s.admin(s.handleMusicPlaylistReorder))
+	mux.HandleFunc("/api/music/playlist/play", s.admin(s.handleMusicPlaylistPlay))
+	mux.HandleFunc("/api/music/playlist/next", s.admin(s.handleMusicPlaylistNext))
+	mux.HandleFunc("/api/music/playlist/stop", s.admin(s.handleMusicPlaylistStop))
+	mux.HandleFunc("/api/music/playlist/options", s.admin(s.handleMusicPlaylistOptions))
+	mux.HandleFunc("/api/music/playlist/artwork", s.admin(s.handleMusicPlaylistArtwork))
+	mux.HandleFunc("/api/music/playlists", s.admin(s.handleMusicPlaylists))
+	mux.HandleFunc("/api/music/playlists/load", s.admin(s.handleMusicPlaylistsLoad))
+	mux.HandleFunc("/api/music/playlists/delete", s.admin(s.handleMusicPlaylistsDelete))
+	mux.HandleFunc("/radio/", s.handleRadioHLS)
 	mux.HandleFunc("/api/ffmpeg", s.admin(s.handleFFmpeg))
 	mux.HandleFunc("/api/video-quality", s.admin(s.handleVideoQuality))
 	mux.HandleFunc("/api/network-check", s.admin(s.handleNetworkCheck))
@@ -366,6 +388,9 @@ func (s *Server) StopOBSReceiver() {
 	s.closeRTSPMapping("")
 	if s.obs != nil {
 		s.obs.StopAndWait(8 * time.Second)
+	}
+	if s.radio != nil {
+		s.radio.Stop(8 * time.Second)
 	}
 }
 

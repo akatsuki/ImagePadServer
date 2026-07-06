@@ -214,6 +214,42 @@ func TestNextShuffleLoopResets(t *testing.T) {
 	}
 }
 
+func TestMutateUpdatesFields(t *testing.T) {
+	q := NewQueue()
+	tr := q.Add(Track{Title: "raw"})
+	if !q.Mutate(tr.ID, func(t *Track) { t.Title = "Polished"; t.Artist = "Band" }) {
+		t.Fatal("Mutate returned false")
+	}
+	got, _ := q.Get(tr.ID)
+	if got.Title != "Polished" || got.Artist != "Band" {
+		t.Fatalf("Mutate not applied: %+v", got)
+	}
+	if q.Mutate("bogus", func(t *Track) {}) {
+		t.Fatal("Mutate on unknown ID must return false")
+	}
+}
+
+func TestReplaceAllResetsQueue(t *testing.T) {
+	q := NewQueue()
+	addReady(t, q, "old")
+	q.SetCurrent(q.Snapshot()[0].ID)
+	q.ReplaceAll([]Track{
+		{ID: "n1", Title: "New1", Status: TrackReady, MediaPath: "n1.ts"},
+		{ID: "n2", Title: "New2", Status: TrackReady, MediaPath: "n2.ts"},
+	})
+	snap := q.Snapshot()
+	if len(snap) != 2 || snap[0].ID != "n1" || snap[1].ID != "n2" {
+		t.Fatalf("ReplaceAll result: %+v", snap)
+	}
+	if q.CurrentID() != "" {
+		t.Fatal("ReplaceAll must clear current")
+	}
+	got, ok := q.Next()
+	if !ok || got.ID != "n1" {
+		t.Fatalf("Next after ReplaceAll = %+v ok=%v", got, ok)
+	}
+}
+
 func TestSetCurrentMarksPlayedForShuffle(t *testing.T) {
 	q := NewQueue()
 	a := addReady(t, q, "A")
