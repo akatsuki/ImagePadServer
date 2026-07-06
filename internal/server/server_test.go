@@ -1,11 +1,14 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -292,8 +295,8 @@ func TestPrimaryShareURL(t *testing.T) {
 			"enabled": true,
 		},
 	})
-	if url != "" || label != "URL" {
-		t.Fatalf("share URL = %q (%s), want OBS mode to wait for RTSP instead of HLS", url, label)
+	if url != "https://example.com/stream/abc123/current-abc123.m3u8" || label != "HLS URL" {
+		t.Fatalf("share URL = %q (%s), want OBS mode to fall back to HLS while public RTSP is not ready", url, label)
 	}
 
 	url, label = primaryShareURL(map[string]interface{}{
@@ -314,9 +317,13 @@ func TestPrimaryShareURL(t *testing.T) {
 
 	url, label = primaryShareURL(map[string]interface{}{
 		"shareMode": "file",
-		"imageURL":  "https://example.com/image/current.png",
-		"videoURL":  "https://example.com/video/current.mp4",
-		"hlsURL":    "https://example.com/stream/abc123/current-abc123.m3u8",
+		"current": library.CurrentImage{
+			ID:   "abc123",
+			Kind: "video",
+		},
+		"imageURL": "https://example.com/image/current.png",
+		"videoURL": "https://example.com/video/current.mp4",
+		"hlsURL":   "https://example.com/stream/abc123/current-abc123.m3u8",
 		"videoPlayer": map[string]interface{}{
 			"enabled": true,
 		},
@@ -359,6 +366,10 @@ func TestCopyURLPrefersCurrentImageOverStaleVideoShare(t *testing.T) {
 	if got := urlForCopyTarget(state, "shareURL"); got != want {
 		t.Fatalf("urlForCopyTarget(shareURL) = %q, want %q", got, want)
 	}
+	state["shareMode"] = "link"
+	if got := urlForCopyTarget(state, "shareURL"); got != want {
+		t.Fatalf("urlForCopyTarget(shareURL) with link mode = %q, want %q", got, want)
+	}
 }
 
 func TestResolvedShareTargetsCentralizeModeURLs(t *testing.T) {
@@ -389,8 +400,8 @@ func TestResolvedShareTargetsCentralizeModeURLs(t *testing.T) {
 	if !ok {
 		t.Fatalf("shareTargets[link] missing: %#v", targets["link"])
 	}
-	if got := linkTarget["shareURL"]; got != "https://example.com/stream/image-1/current-image-1.m3u8" {
-		t.Fatalf("shareTargets[link].shareURL = %q, want current HLS URL", got)
+	if got := linkTarget["shareURL"]; got != "https://example.com/image/current.png?v=image-1" {
+		t.Fatalf("shareTargets[link].shareURL = %q, want image URL", got)
 	}
 	if got := state["shareURL"]; got != "https://example.com/image/current.png?v=image-1" {
 		t.Fatalf("shareURL = %q, want image URL", got)
@@ -412,10 +423,200 @@ func TestResolvedShareTargetsCentralizeModeURLs(t *testing.T) {
 	if got := linkTarget["shareURL"]; got != "https://example.com/stream/video-1/current-video-1.m3u8" {
 		t.Fatalf("video link shareURL = %q, want HLS URL", got)
 	}
+
+	state = withResolvedShareURLs(map[string]interface{}{
+		"shareMode": "file",
+		"current": library.CurrentImage{
+			ID:         "music-1",
+			Kind:       "video",
+			SourceKind: "local_audio",
+		},
+		"hlsURL": "https://example.com/stream/music-1/current-music-1.m3u8",
+		"videoPlayer": map[string]interface{}{
+			"enabled": true,
+		},
+	})
+	targets = state["shareTargets"].(map[string]interface{})
+	for _, mode := range []string{"file", "link"} {
+		target := targets[mode].(map[string]interface{})
+		if got := target["shareURL"]; got != "https://example.com/stream/music-1/current-music-1.m3u8" {
+			t.Fatalf("music shareTargets[%s].shareURL = %q, want HLS URL", mode, got)
+		}
+	}
+}
+
+func TestURLEngineModeMatrix(t *testing.T) {
+	const (
+		imageURL = "https://example.com/image/current.png?v=image-1"
+		hlsURL   = "https://example.com/stream/media-1/current-media-1.m3u8"
+		rtspURL  = "rtsp://8.8.8.8:52000/obs_session"
+	)
+	tests := []struct {
+		name      string
+		current   library.CurrentImage
+		mode      string
+		obs       obsrtmp.Status
+		wantURL   string
+		wantLabel string
+	}{
+		{
+			name:      "image file fixed to imagepad",
+			current:   library.CurrentImage{ID: "image-1", Kind: "image"},
+			mode:      "file",
+			wantURL:   imageURL,
+			wantLabel: "ImagePad URL",
+		},
+		{
+			name:      "image link fixed to imagepad",
+			current:   library.CurrentImage{ID: "image-1", Kind: "image"},
+			mode:      "link",
+			wantURL:   imageURL,
+			wantLabel: "ImagePad URL",
+		},
+		{
+			name:      "video file fixed to hls",
+			current:   library.CurrentImage{ID: "media-1", Kind: "video"},
+			mode:      "file",
+			wantURL:   hlsURL,
+			wantLabel: "HLS URL",
+		},
+		{
+			name:      "video link fixed to hls",
+			current:   library.CurrentImage{ID: "media-1", Kind: "video"},
+			mode:      "link",
+			wantURL:   hlsURL,
+			wantLabel: "HLS URL",
+		},
+		{
+			name:      "music file fixed to hls",
+			current:   library.CurrentImage{ID: "media-1", Kind: "video", SourceKind: "local_audio"},
+			mode:      "file",
+			wantURL:   hlsURL,
+			wantLabel: "HLS URL",
+		},
+		{
+			name:      "music link fixed to hls",
+			current:   library.CurrentImage{ID: "media-1", Kind: "video", SourceKind: "soundcloud"},
+			mode:      "link",
+			wantURL:   hlsURL,
+			wantLabel: "HLS URL",
+		},
+		{
+			name:      "obs hls mode fixed to hls",
+			current:   library.CurrentImage{ID: "media-1", Kind: "video", SourceKind: "obs"},
+			mode:      "file",
+			wantURL:   hlsURL,
+			wantLabel: "HLS URL",
+		},
+		{
+			name:    "obs protocol prefers rtsp when ready",
+			current: library.CurrentImage{ID: "media-1", Kind: "video", SourceKind: "obs"},
+			mode:    "obs",
+			obs: obsrtmp.Status{
+				Connected: true,
+				RTSPTURL:  rtspURL,
+			},
+			wantURL:   rtspURL,
+			wantLabel: "RTSP TCP URL",
+		},
+		{
+			name:      "obs protocol falls back to hls before rtsp is ready",
+			current:   library.CurrentImage{ID: "media-1", Kind: "video", SourceKind: "obs"},
+			mode:      "obs",
+			obs:       obsrtmp.Status{Connected: true},
+			wantURL:   hlsURL,
+			wantLabel: "HLS URL",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := map[string]interface{}{
+				"shareMode":  tt.mode,
+				"current":    tt.current,
+				"imageURL":   imageURL,
+				"hlsURL":     hlsURL,
+				"obsLatency": obsrtmp.NormalizeLatencyProfile(obsrtmp.LatencyModeRTSPT),
+				"obs":        tt.obs,
+				"videoPlayer": map[string]interface{}{
+					"enabled": true,
+				},
+			}
+			gotURL, gotLabel := primaryShareURL(state)
+			if gotURL != tt.wantURL || gotLabel != tt.wantLabel {
+				t.Fatalf("primaryShareURL() = %q (%s), want %q (%s)", gotURL, gotLabel, tt.wantURL, tt.wantLabel)
+			}
+			targets := withResolvedShareURLs(state)["shareTargets"].(map[string]interface{})
+			target := targets[tt.mode].(map[string]interface{})
+			if target["shareURL"] != tt.wantURL || target["shareURLLabel"] != tt.wantLabel {
+				t.Fatalf("shareTargets[%s] = %#v, want %q (%s)", tt.mode, target, tt.wantURL, tt.wantLabel)
+			}
+		})
+	}
+}
+
+func TestClipboardResultUsesRequestedShareMode(t *testing.T) {
+	srv, _ := testServer(t, false)
+	const imageURL = "https://example.com/image/current.png?v=image-1"
+	const hlsURL = "https://example.com/stream/video-1/current-video-1.m3u8"
+
+	imageState := map[string]interface{}{
+		"current": library.CurrentImage{
+			ID:   "image-1",
+			Kind: "image",
+		},
+		"imageURL": imageURL,
+		"hlsURL":   hlsURL,
+		"videoPlayer": map[string]interface{}{
+			"enabled": true,
+		},
+	}
+	req := requestWithShareMode(adminRequest("http://127.0.0.1:8080/", "127.0.0.1:50000"), "link")
+	got := srv.withClipboardResult(req, withResolvedShareURLs(imageState))
+	if copied, _ := got["copiedURL"].(string); copied != imageURL {
+		t.Fatalf("image copiedURL = %q, want image URL", copied)
+	}
+
+	videoState := map[string]interface{}{
+		"current": library.CurrentImage{
+			ID:   "video-1",
+			Kind: "video",
+		},
+		"imageURL": imageURL,
+		"hlsURL":   hlsURL,
+		"videoPlayer": map[string]interface{}{
+			"enabled": true,
+		},
+	}
+	req = requestWithShareMode(adminRequest("http://127.0.0.1:8080/", "127.0.0.1:50000"), "file")
+	got = srv.withClipboardResult(req, withResolvedShareURLs(videoState))
+	if copied, _ := got["copiedURL"].(string); copied != hlsURL {
+		t.Fatalf("video copiedURL = %q, want HLS URL", copied)
+	}
+
+	obsState := map[string]interface{}{
+		"current": library.CurrentImage{
+			ID:         "obs-1",
+			Kind:       "video",
+			SourceKind: "obs",
+		},
+		"hlsURL":     hlsURL,
+		"obsLatency": obsrtmp.NormalizeLatencyProfile(obsrtmp.LatencyModeRTSPT),
+		"obs":        obsrtmp.Status{Connected: true},
+		"videoPlayer": map[string]interface{}{
+			"enabled": true,
+		},
+	}
+	req = requestWithShareMode(adminRequest("http://127.0.0.1:8080/", "127.0.0.1:50000"), "obs")
+	got = srv.withClipboardResult(req, withResolvedShareURLs(obsState))
+	if copied, _ := got["copiedURL"].(string); copied != hlsURL {
+		t.Fatalf("obs fallback copiedURL = %q, want HLS URL", copied)
+	}
 }
 
 func TestStateExposesHLSURLOnlyAfterFirstSegment(t *testing.T) {
 	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	t.Setenv("IMAGEPAD_FFMPEG", slowFFmpegPath(t))
 	if err := settings.Update(func(s *settings.Settings) error {
 		s.VideoPlayerEnabled = true
 		return nil
@@ -459,7 +660,7 @@ func TestStateExposesHLSURLOnlyAfterFirstSegment(t *testing.T) {
 	}
 }
 
-func TestStateExposesHLSURLForPendingStillConversion(t *testing.T) {
+func TestStateDefaultsToImageURLForPendingStillConversion(t *testing.T) {
 	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
 	t.Setenv("IMAGEPAD_FFMPEG", slowFFmpegPath(t))
 	if err := settings.Update(func(s *settings.Settings) error {
@@ -491,12 +692,113 @@ func TestStateExposesHLSURLForPendingStillConversion(t *testing.T) {
 	srv.SetTunnelStatus(true, "https://example.trycloudflare.com", "connected")
 	state := srv.state(adminRequest("http://127.0.0.1:8080/", "127.0.0.1:50000"))
 
-	if got, _ := state["shareURL"].(string); !strings.Contains(got, "/stream/"+current.ID+"/") {
-		t.Fatalf("shareURL = %q, want pending still conversion HLS URL", got)
+	if got, _ := state["hlsURL"].(string); !strings.Contains(got, "/stream/"+current.ID+"/") {
+		t.Fatalf("hlsURL = %q, want pending still conversion HLS URL", got)
 	}
-	if got, _ := state["shareURLLabel"].(string); got != "HLS URL" {
-		t.Fatalf("shareURLLabel = %q, want HLS URL", got)
+	if got, _ := state["shareURL"].(string); !strings.Contains(got, "/image/current") || strings.Contains(got, "/stream/") {
+		t.Fatalf("shareURL = %q, want image URL while current media is an image", got)
 	}
+	if got, _ := state["shareURLLabel"].(string); got != "ImagePad URL" {
+		t.Fatalf("shareURLLabel = %q, want ImagePad URL", got)
+	}
+	if got := urlForClipboard(state); !strings.Contains(got, "/image/current") || strings.Contains(got, "/stream/") {
+		t.Fatalf("urlForClipboard() = %q, want image URL while current media is an image", got)
+	}
+}
+
+func TestPublishingVideoThenImageUsesImageURLAndCancelsVideoJob(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	t.Setenv("IMAGEPAD_FFMPEG", slowFFmpegPath(t))
+	if err := settings.Update(func(s *settings.Settings) error {
+		s.VideoPlayerEnabled = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer video.CancelQueue(store.Dir())
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+	srv.SetTunnelStatus(true, "https://example.trycloudflare.com", "connected")
+
+	videoPath := filepath.Join(t.TempDir(), "clip.mp4")
+	if err := os.WriteFile(videoPath, []byte("mp4"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	videoReq := requestWithShareMode(adminRequest("http://127.0.0.1:8080/", "127.0.0.1:50000"), "file")
+	if _, err := srv.processVideoFileAndPublish(videoReq, videoPath, "clip.mp4", ""); err != nil {
+		t.Fatal(err)
+	}
+	videoCurrent := store.Current()
+	if videoCurrent == nil || videoCurrent.Kind != "video" || videoCurrent.ID == "" {
+		t.Fatalf("current after video publish = %#v, want video current", videoCurrent)
+	}
+
+	imageReq := requestWithShareMode(adminRequest("http://127.0.0.1:8080/", "127.0.0.1:50000"), "file")
+	state, err := srv.processAndPublish(imageReq, testPNGReader(t), "photo.png", "image/png", optionsFromValues(func(string) string { return "" }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	imageCurrent := store.Current()
+	if imageCurrent == nil || imageCurrent.Kind == "video" || imageCurrent.ID == "" || imageCurrent.ID == videoCurrent.ID {
+		t.Fatalf("current after image publish = %#v, want new still image current", imageCurrent)
+	}
+	assertURLContainsOnly(t, state, "shareURL", "/image/current", "/stream/")
+	assertURLContainsOnly(t, state, "copiedURL", "/image/current", "/stream/")
+	assertShareTargetContains(t, state, "file", "/image/current")
+	assertShareTargetContains(t, state, "link", "/image/current")
+	assertNoActiveQueueItemForMedia(t, store.Dir(), videoCurrent.ID)
+}
+
+func TestPublishingImageThenVideoUsesHLSURLAndCancelsImageJob(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	t.Setenv("IMAGEPAD_FFMPEG", slowFFmpegPath(t))
+	if err := settings.Update(func(s *settings.Settings) error {
+		s.VideoPlayerEnabled = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer video.CancelQueue(store.Dir())
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+	srv.SetTunnelStatus(true, "https://example.trycloudflare.com", "connected")
+
+	imageReq := requestWithShareMode(adminRequest("http://127.0.0.1:8080/", "127.0.0.1:50000"), "file")
+	if _, err := srv.processAndPublish(imageReq, testPNGReader(t), "photo.png", "image/png", optionsFromValues(func(string) string { return "" })); err != nil {
+		t.Fatal(err)
+	}
+	imageCurrent := store.Current()
+	if imageCurrent == nil || imageCurrent.Kind == "video" || imageCurrent.ID == "" {
+		t.Fatalf("current after image publish = %#v, want still image current", imageCurrent)
+	}
+
+	videoPath := filepath.Join(t.TempDir(), "clip.mp4")
+	if err := os.WriteFile(videoPath, []byte("mp4"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	videoReq := requestWithShareMode(adminRequest("http://127.0.0.1:8080/", "127.0.0.1:50000"), "file")
+	state, err := srv.processVideoFileAndPublish(videoReq, videoPath, "clip.mp4", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	videoCurrent := store.Current()
+	if videoCurrent == nil || videoCurrent.Kind != "video" || videoCurrent.ID == "" || videoCurrent.ID == imageCurrent.ID {
+		t.Fatalf("current after video publish = %#v, want new video current", videoCurrent)
+	}
+	assertURLContainsOnly(t, state, "shareURL", "/stream/"+videoCurrent.ID+"/", "/image/current")
+	assertURLContainsOnly(t, state, "copiedURL", "/stream/"+videoCurrent.ID+"/", "/image/current")
+	assertShareTargetContains(t, state, "file", "/stream/"+videoCurrent.ID+"/")
+	assertShareTargetContains(t, state, "link", "/stream/"+videoCurrent.ID+"/")
+	assertShareTargetContains(t, state, "obs", "/stream/"+videoCurrent.ID+"/")
+	assertNoActiveQueueItemForMedia(t, store.Dir(), imageCurrent.ID)
 }
 
 func TestHistorySelectReturnsClipboardURL(t *testing.T) {
@@ -702,6 +1004,238 @@ func TestHistorySelectImageClearsStaleHLSClipboardURL(t *testing.T) {
 	if got, _ := copyState["copiedURL"].(string); strings.Contains(got, "/stream/") || !strings.Contains(got, "/image/current") || !strings.Contains(got, imageItem.ID) {
 		t.Fatalf("copy copiedURL = %q, want selected image URL", got)
 	}
+}
+
+func TestHistorySelectURLIssuingMatrix(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	if err := settings.Update(func(s *settings.Settings) error {
+		s.VideoPlayerEnabled = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+	srv.SetTunnelStatus(true, "https://example.trycloudflare.com", "connected")
+	mux := http.NewServeMux()
+	srv.Register(mux)
+
+	imageItem := addHistoryItemForURLMatrix(t, store, "photo.png", library.CurrentImage{
+		Kind:        "image",
+		PublicName:  "photo.png",
+		ContentType: "image/png",
+		Width:       640,
+		Height:      480,
+	})
+	videoItem := addHistoryItemForURLMatrix(t, store, "clip.mp4", library.CurrentImage{
+		Kind:        "video",
+		PublicName:  "clip.mp4",
+		ContentType: "video/mp4",
+		Converted:   true,
+	})
+	pendingVideoItem := addHistoryItemForURLMatrix(t, store, "pending.mp4", library.CurrentImage{
+		Kind:        "video",
+		PublicName:  "pending.mp4",
+		ContentType: "video/mp4",
+	})
+	musicItem := addHistoryItemForURLMatrix(t, store, "song.m4a", library.CurrentImage{
+		Kind:        "video",
+		SourceKind:  "local_audio",
+		PublicName:  "song.m4a",
+		ContentType: "audio/mp4",
+		Converted:   true,
+	})
+	obsItem := addHistoryItemForURLMatrix(t, store, "obs.mp4", library.CurrentImage{
+		Kind:        "video",
+		SourceKind:  "obs",
+		PublicName:  "obs-session.mp4",
+		ContentType: "video/mp4",
+		Converted:   true,
+	})
+	for _, item := range []*library.CurrentImage{videoItem, musicItem, obsItem} {
+		writeConvertedHLSForHistory(t, store, item.ID)
+	}
+
+	tests := []struct {
+		name              string
+		id                string
+		wantMode          string
+		wantShareContains string
+		wantNoStream      bool
+		wantLabel         string
+		wantFileContains  string
+		wantLinkContains  string
+		wantOBSContains   string
+	}{
+		{
+			name:              "image history issues imagepad URL for every non-OBS surface",
+			id:                imageItem.ID,
+			wantMode:          "file",
+			wantShareContains: "/image/current",
+			wantNoStream:      true,
+			wantLabel:         "ImagePad URL",
+			wantFileContains:  "/image/current",
+			wantLinkContains:  "/image/current",
+		},
+		{
+			name:              "video history issues hls URL",
+			id:                videoItem.ID,
+			wantMode:          "file",
+			wantShareContains: "/stream/" + videoItem.ID + "/",
+			wantLabel:         "HLS URL",
+			wantFileContains:  "/stream/" + videoItem.ID + "/",
+			wantLinkContains:  "/stream/" + videoItem.ID + "/",
+			wantOBSContains:   "/stream/" + videoItem.ID + "/",
+		},
+		{
+			name:              "pending video history immediately issues hls URL",
+			id:                pendingVideoItem.ID,
+			wantMode:          "file",
+			wantShareContains: "/stream/" + pendingVideoItem.ID + "/",
+			wantLabel:         "HLS URL",
+			wantFileContains:  "/stream/" + pendingVideoItem.ID + "/",
+			wantLinkContains:  "/stream/" + pendingVideoItem.ID + "/",
+			wantOBSContains:   "/stream/" + pendingVideoItem.ID + "/",
+		},
+		{
+			name:              "music history issues hls URL",
+			id:                musicItem.ID,
+			wantMode:          "link",
+			wantShareContains: "/stream/" + musicItem.ID + "/",
+			wantLabel:         "HLS URL",
+			wantFileContains:  "/stream/" + musicItem.ID + "/",
+			wantLinkContains:  "/stream/" + musicItem.ID + "/",
+			wantOBSContains:   "/stream/" + musicItem.ID + "/",
+		},
+		{
+			name:              "obs recording history issues recorded hls URL",
+			id:                obsItem.ID,
+			wantMode:          "file",
+			wantShareContains: "/stream/" + obsItem.ID + "/",
+			wantLabel:         "HLS URL",
+			wantFileContains:  "/stream/" + obsItem.ID + "/",
+			wantLinkContains:  "/stream/" + obsItem.ID + "/",
+			wantOBSContains:   "/stream/" + obsItem.ID + "/",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/history/select", strings.NewReader(fmt.Sprintf(`{"id":%q}`, tt.id)))
+			rec := adminJSON(t, mux, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body = %q", rec.Code, rec.Body.String())
+			}
+			var state map[string]interface{}
+			if err := json.NewDecoder(rec.Body).Decode(&state); err != nil {
+				t.Fatal(err)
+			}
+			assertHistoryURLMatrixState(t, state, tt.wantMode, tt.wantShareContains, tt.wantLabel, tt.wantNoStream)
+			assertShareTargetContains(t, state, "file", tt.wantFileContains)
+			assertShareTargetContains(t, state, "link", tt.wantLinkContains)
+			if tt.wantOBSContains != "" {
+				assertShareTargetContains(t, state, "obs", tt.wantOBSContains)
+			}
+		})
+	}
+}
+
+func addHistoryItemForURLMatrix(t *testing.T, store *library.Store, filename string, info library.CurrentImage) *library.CurrentImage {
+	t.Helper()
+	source := filepath.Join(t.TempDir(), filename)
+	if err := os.WriteFile(source, []byte(filename), 0600); err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.AddHistory(source, info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return item
+}
+
+func writeConvertedHLSForHistory(t *testing.T, store *library.Store, id string) {
+	t.Helper()
+	convertedDir := filepath.Join(filepath.Dir(store.Dir()), "converted", id)
+	if err := os.MkdirAll(convertedDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(convertedDir, video.PlaylistName(id)), []byte("#EXTM3U\n#EXTINF:1,\ncurrent-"+id+"-000.ts\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(convertedDir, "current-"+id+"-000.ts"), []byte("segment"), 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertHistoryURLMatrixState(t *testing.T, state map[string]interface{}, wantMode, wantShareContains, wantLabel string, wantNoStream bool) {
+	t.Helper()
+	if got, _ := state["historyTargetMode"].(string); got != wantMode {
+		t.Fatalf("historyTargetMode = %q, want %q", got, wantMode)
+	}
+	shareURL, _ := state["shareURL"].(string)
+	if !strings.Contains(shareURL, wantShareContains) {
+		t.Fatalf("shareURL = %q, want containing %q", shareURL, wantShareContains)
+	}
+	if wantNoStream && strings.Contains(shareURL, "/stream/") {
+		t.Fatalf("shareURL = %q, want non-stream image URL", shareURL)
+	}
+	if got, _ := state["shareURLLabel"].(string); got != wantLabel {
+		t.Fatalf("shareURLLabel = %q, want %q", got, wantLabel)
+	}
+	if copied, _ := state["copiedURL"].(string); copied != shareURL {
+		t.Fatalf("copiedURL = %q, want shareURL %q", copied, shareURL)
+	}
+}
+
+func assertShareTargetContains(t *testing.T, state map[string]interface{}, mode, want string) {
+	t.Helper()
+	targets, ok := state["shareTargets"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("shareTargets missing or wrong type: %#v", state["shareTargets"])
+	}
+	target, ok := targets[mode].(map[string]interface{})
+	if !ok {
+		t.Fatalf("shareTargets[%s] missing: %#v", mode, targets[mode])
+	}
+	got, _ := target["shareURL"].(string)
+	if !strings.Contains(got, want) {
+		t.Fatalf("shareTargets[%s].shareURL = %q, want containing %q", mode, got, want)
+	}
+}
+
+func assertURLContainsOnly(t *testing.T, state map[string]interface{}, key, want, forbidden string) {
+	t.Helper()
+	got, _ := state[key].(string)
+	if !strings.Contains(got, want) {
+		t.Fatalf("%s = %q, want containing %q", key, got, want)
+	}
+	if forbidden != "" && strings.Contains(got, forbidden) {
+		t.Fatalf("%s = %q, want without %q", key, got, forbidden)
+	}
+}
+
+func assertNoActiveQueueItemForMedia(t *testing.T, outDir, mediaID string) {
+	t.Helper()
+	for _, item := range video.QueueStatus(outDir) {
+		if item.MediaID != mediaID {
+			continue
+		}
+		if item.Status == "pending" || item.Status == "running" {
+			t.Fatalf("queue item for media %s still active: %#v", mediaID, item)
+		}
+	}
+}
+
+func testPNGReader(t *testing.T) *bytes.Reader {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 32, 24))); err != nil {
+		t.Fatal(err)
+	}
+	return bytes.NewReader(buf.Bytes())
 }
 
 func TestStateIgnoresHLSConversionForDifferentCurrentMedia(t *testing.T) {

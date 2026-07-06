@@ -121,6 +121,8 @@ func TestUIModeSwitchRefreshesShareURLDisplay(t *testing.T) {
 		`const view = shareURLForCurrentMode(data)`,
 		`text = displayedShareURL().shareURL || ''`,
 		`body: JSON.stringify({ target, mode: uploadMode })`,
+		`formData.set('shareMode', uploadMode)`,
+		`shareMode: uploadMode`,
 		`renderShareURL(state)`,
 		`setUploadMode('file')`,
 		`setUploadMode('link')`,
@@ -616,7 +618,6 @@ func TestOBSConnectionDetailsUIAndUnifiedRTSPURL(t *testing.T) {
 		`品質</th>`,
 		`推定ラグ</th>`,
 		`renderOBSConnections`,
-		`const url = data && data.obs && data.obs.rtsptURL ? String(data.obs.rtsptURL) : ''`,
 		`https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js`,
 		`function attachPreviewHLS(video, src)`,
 		`window.Hls && window.Hls.isSupported()`,
@@ -627,11 +628,11 @@ func TestOBSConnectionDetailsUIAndUnifiedRTSPURL(t *testing.T) {
 		`超低遅延RTSP（1-2s）`,
 		`リアルタイムRTSP（0.5s+）`,
 		`pendingOBSAutoCopy = true`,
-		`function publicOBSRTSPURL(data)`,
 		`function maybeAutoCopyOBSURL(data)`,
+		`const view = shareURLForMode(data, 'obs')`,
 		`maybeAutoCopyOBSURL(data)`,
 		`copyURLOnPC('shareURL')`,
-		`グローバルRTSP URLをPCにコピーしました`,
+		`配信用URLをPCにコピーしました`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("OBS connection detail UI missing %q", want)

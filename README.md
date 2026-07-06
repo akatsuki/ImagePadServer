@@ -12,14 +12,14 @@ https://akatsuki.github.io/ImagePadServer/
 
 最新版の GitHub Release:
 
-https://github.com/akatsuki/ImagePadServer/releases/tag/v1.5.2
+https://github.com/akatsuki/ImagePadServer/releases/tag/v1.5.7
 
 ## まず使う
 
-Windows では GitHub Release から `imagepadserver-v1.5.2-windows-amd64.zip` をダウンロードして展開し、exe を起動します。
+Windows では GitHub Release から `imagepadserver-v1.5.7-windows-amd64.zip` をダウンロードして展開し、exe を起動します。
 
 ```powershell
-.\imagepadserver-v1.5.2-windows-amd64.exe
+.\imagepadserver-v1.5.7-windows-amd64.exe
 ```
 
 起動するとブラウザ UI が開きます。スマホからアップロードする場合は、UI に表示される QR コードをスマホで読み取ってください。スマホは PC と同じ LAN / Wi-Fi に接続している必要があります。
@@ -93,7 +93,7 @@ ImagePadServer は自分の PC 上で動かすローカルアプリです。管�
 
 ## バージョン
 
-- Version: `v1.5.2`
+- Version: `v1.5.7`
 - Author: Akat / 赤月さん
 - Copyright: Copyright (c) 2026 Akat / 赤月さん
 - License: MIT License

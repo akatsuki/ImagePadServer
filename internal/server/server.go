@@ -41,6 +41,8 @@ const (
 	maxLocalVideoUploadBytesText = "8 GiB"
 )
 
+type shareModeContextKey struct{}
+
 var (
 	pageMediaDownloader    = video.DownloadMediaURL
 	pageHLSMediaDownloader = downloadPageHLSMedia
@@ -687,11 +689,13 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 		Quality      string `json:"quality"`
 		MaxDimension string `json:"maxDimension"`
 		MaxMB        string `json:"maxMB"`
+		ShareMode    string `json:"shareMode"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid URL upload request", http.StatusBadRequest)
 		return
 	}
+	r = requestWithShareMode(r, req.ShareMode)
 
 	values := map[string]string{
 		"format":       req.Format,
@@ -890,11 +894,13 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 		Quality      string `json:"quality"`
 		MaxDimension string `json:"maxDimension"`
 		MaxMB        string `json:"maxMB"`
+		ShareMode    string `json:"shareMode"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid URL upload request", http.StatusBadRequest)
 		return
 	}
+	r = requestWithShareMode(r, req.ShareMode)
 	values := map[string]string{
 		"format":       req.Format,
 		"quality":      req.Quality,
@@ -1111,6 +1117,12 @@ func (s *Server) processAndPublish(r *http.Request, reader io.Reader, name, cont
 		Height:       result.Height,
 		OriginalName: name,
 	}
+	// Replacing the published media with a still image must also discard the
+	// previous video's in-flight conversion, otherwise the old HLS job can
+	// resume after the image URL has been issued.
+	if prev := s.store.Current(); prev != nil && prev.ID != "" {
+		video.CancelConversion(s.store.Dir(), prev.ID)
+	}
 	if err := s.store.SetCurrent(result.Path, info); err != nil {
 		return nil, fmt.Errorf("failed to save image")
 	}
@@ -1122,7 +1134,7 @@ func (s *Server) processAndPublish(r *http.Request, reader io.Reader, name, cont
 	}
 
 	state := s.state(r)
-	return s.withClipboardResult(state), nil
+	return s.withClipboardResult(r, state), nil
 }
 
 func (s *Server) processAndQueue(r *http.Request, reader io.Reader, name, contentType string, opts imageproc.Options) (map[string]interface{}, error) {
@@ -1257,7 +1269,7 @@ func (s *Server) processVideoFileAndPublish(r *http.Request, sourcePath, name, p
 	s.enqueueUploadedConversion(sourcePath, currentID, name)
 
 	state := s.state(r)
-	return s.withClipboardResult(state), nil
+	return s.withClipboardResult(r, state), nil
 }
 
 func (s *Server) processVideoFileAndQueue(r *http.Request, sourcePath, name, providedThumbnail string) (map[string]interface{}, error) {
@@ -1392,7 +1404,10 @@ func (s *Server) handleOBSStreamDone(session obsrtmp.Session) {
 	s.broadcastStateChanged()
 }
 
-func (s *Server) withClipboardResult(state map[string]interface{}) map[string]interface{} {
+func (s *Server) withClipboardResult(r *http.Request, state map[string]interface{}) map[string]interface{} {
+	if mode := requestedShareMode(r); mode != "" {
+		state["shareMode"] = mode
+	}
 	copiedURL := urlForClipboard(state)
 	clipboardCopied := false
 	if copiedURL != "" {
@@ -1403,6 +1418,32 @@ func (s *Server) withClipboardResult(state map[string]interface{}) map[string]in
 	state["copiedURL"] = copiedURL
 	state["clipboardCopied"] = clipboardCopied
 	return state
+}
+
+func requestWithShareMode(r *http.Request, mode string) *http.Request {
+	if normalizeShareMode(mode) == "" {
+		return r
+	}
+	return r.WithContext(context.WithValue(r.Context(), shareModeContextKey{}, normalizeShareMode(mode)))
+}
+
+func requestedShareMode(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if mode, _ := r.Context().Value(shareModeContextKey{}).(string); mode != "" {
+		return normalizeShareMode(mode)
+	}
+	return normalizeShareMode(r.FormValue("shareMode"))
+}
+
+func normalizeShareMode(mode string) string {
+	switch mode {
+	case "file", "link", "obs":
+		return mode
+	default:
+		return ""
+	}
 }
 
 func (s *Server) clearPublication() {
@@ -1736,7 +1777,7 @@ func (s *Server) handleHistorySelect(w http.ResponseWriter, r *http.Request) {
 	current := s.store.Current()
 	if current != nil && current.Converted {
 		state := s.stateWithHistoryTargetMode(r, *current)
-		state = s.withClipboardResult(state)
+		state = s.withClipboardResult(r, state)
 		writeJSON(w, state)
 		return
 	}
@@ -1761,11 +1802,11 @@ func (s *Server) handleHistorySelect(w http.ResponseWriter, r *http.Request) {
 	}
 	if current := s.store.Current(); current != nil {
 		state := s.stateWithHistoryTargetMode(r, *current)
-		state = s.withClipboardResult(state)
+		state = s.withClipboardResult(r, state)
 		writeJSON(w, state)
 		return
 	}
-	writeJSON(w, s.withClipboardResult(s.state(r)))
+	writeJSON(w, s.withClipboardResult(r, s.state(r)))
 }
 
 func (s *Server) stateWithHistoryTargetMode(r *http.Request, current library.CurrentImage) map[string]interface{} {
@@ -3053,250 +3094,6 @@ func versionParts(version string) [3]int {
 		result[i] = n
 	}
 	return result
-}
-
-func urlForClipboard(state map[string]interface{}) string {
-	shareURL, _ := primaryShareURL(state)
-	if strings.HasPrefix(shareURL, "http") {
-		return shareURL
-	}
-	if shareURL, _ := state["shareURL"].(string); strings.HasPrefix(shareURL, "http") {
-		return shareURL
-	}
-	return urlForCopyTarget(state, "imageURL")
-}
-
-func primaryShareURL(state map[string]interface{}) (string, string) {
-	return shareURLForMode(state, shareModeFromState(state))
-}
-
-func shareURLForMode(state map[string]interface{}, mode string) (string, string) {
-	switch mode {
-	case "obs":
-		return obsShareURL(state)
-	case "link":
-		if currentMediaKind(state) == "image" && !currentScopedHLSURLForState(state) {
-			return fileShareURL(state)
-		}
-		return mediaShareURL(state)
-	case "file":
-		if currentMediaKind(state) == "image" {
-			return fileShareURL(state)
-		}
-		return mediaShareURL(state)
-	default:
-		return mediaShareURL(state)
-	}
-}
-
-func withResolvedShareURLs(state map[string]interface{}) map[string]interface{} {
-	if state == nil {
-		return nil
-	}
-	targets := map[string]interface{}{}
-	for _, mode := range []string{"file", "link", "obs"} {
-		shareURL, shareURLLabel := shareURLForMode(state, mode)
-		targets[mode] = map[string]interface{}{
-			"shareURL":      shareURL,
-			"shareURLLabel": shareURLLabel,
-		}
-	}
-	state["shareTargets"] = targets
-	shareURL, shareURLLabel := primaryShareURL(state)
-	state["shareURL"] = shareURL
-	state["shareURLLabel"] = shareURLLabel
-	return state
-}
-
-func shareModeFromState(state map[string]interface{}) string {
-	if mode, _ := state["shareMode"].(string); mode == "obs" || mode == "link" || mode == "file" {
-		return mode
-	}
-	if mode, _ := state["historyTargetMode"].(string); mode == "link" || mode == "file" {
-		return mode
-	}
-	if current, _ := state["current"].(*library.CurrentImage); current != nil {
-		if currentScopedHLSURL(state, current.ID) {
-			return "link"
-		}
-		mode := historyTargetMode(*current)
-		if mode != "obs" {
-			return mode
-		}
-	}
-	if current, _ := state["current"].(library.CurrentImage); current.ID != "" {
-		if currentScopedHLSURL(state, current.ID) {
-			return "link"
-		}
-		mode := historyTargetMode(current)
-		if mode != "obs" {
-			return mode
-		}
-	}
-	if hlsURL, _ := state["hlsURL"].(string); strings.HasPrefix(hlsURL, "http") {
-		return "link"
-	}
-	return ""
-}
-
-func currentScopedHLSURLForState(state map[string]interface{}) bool {
-	if current, _ := state["current"].(*library.CurrentImage); current != nil {
-		return currentScopedHLSURL(state, current.ID)
-	}
-	if current, _ := state["current"].(library.CurrentImage); current.ID != "" {
-		return currentScopedHLSURL(state, current.ID)
-	}
-	return false
-}
-
-func currentScopedHLSURL(state map[string]interface{}, id string) bool {
-	if id == "" {
-		return false
-	}
-	hlsURL, _ := state["hlsURL"].(string)
-	return strings.HasPrefix(hlsURL, "http") && strings.Contains(hlsURL, "/stream/"+url.PathEscape(id)+"/")
-}
-
-func obsShareURL(state map[string]interface{}) (string, string) {
-	obsLatency, _ := state["obsLatency"].(obsrtmp.LatencyProfile)
-	if obsStatus, ok := state["obs"].(obsrtmp.Status); ok &&
-		activeOBSLatency(obsLatency, obsStatus).Transport == obsrtmp.LatencyModeRTSPT &&
-		(obsStatus.Connected || obsStatus.Publishing) {
-		if strings.HasPrefix(obsStatus.RTSPTURL, "rtsp://") {
-			return obsStatus.RTSPTURL, "RTSP TCP URL"
-		}
-	}
-	return "", "URL"
-}
-
-func mediaShareURL(state map[string]interface{}) (string, string) {
-	if videoPlayer, ok := state["videoPlayer"].(map[string]interface{}); ok {
-		if enabled, _ := videoPlayer["enabled"].(bool); enabled {
-			if hlsURL, ok := state["hlsURL"].(string); ok && strings.HasPrefix(hlsURL, "http") {
-				return hlsURL, "HLS URL"
-			}
-			if videoURL, ok := state["videoURL"].(string); ok && strings.HasPrefix(videoURL, "http") {
-				return videoURL, "MP4 URL"
-			}
-		}
-	}
-	return fileShareURL(state)
-}
-
-func fileShareURL(state map[string]interface{}) (string, string) {
-	if currentMediaKind(state) == "image" {
-		if imageURL, ok := state["imageURL"].(string); ok && strings.HasPrefix(imageURL, "http") {
-			return imageURL, "ImagePad URL"
-		}
-		if publicURL, ok := state["publicImageURL"].(string); ok && strings.HasPrefix(publicURL, "http") {
-			return publicURL, "ImagePad URL"
-		}
-		if localURL, ok := state["localImageURL"].(string); ok && strings.HasPrefix(localURL, "http") {
-			return localURL, "Local URL"
-		}
-	}
-	if videoPlayer, ok := state["videoPlayer"].(map[string]interface{}); ok {
-		if enabled, _ := videoPlayer["enabled"].(bool); enabled {
-			if hlsURL, ok := state["hlsURL"].(string); ok && strings.HasPrefix(hlsURL, "http") {
-				return hlsURL, "HLS URL"
-			}
-			if videoURL, ok := state["videoURL"].(string); ok && strings.HasPrefix(videoURL, "http") {
-				return videoURL, "MP4 URL"
-			}
-		}
-	}
-	if imageURL, ok := state["imageURL"].(string); ok && strings.HasPrefix(imageURL, "http") {
-		return imageURL, "ImagePad URL"
-	}
-	if publicURL, ok := state["publicImageURL"].(string); ok && strings.HasPrefix(publicURL, "http") {
-		return publicURL, "ImagePad URL"
-	}
-	if localURL, ok := state["localImageURL"].(string); ok && strings.HasPrefix(localURL, "http") {
-		return localURL, "Local URL"
-	}
-	return "", "URL"
-}
-
-func currentMediaKind(state map[string]interface{}) string {
-	if current, _ := state["current"].(*library.CurrentImage); current != nil {
-		return current.Kind
-	}
-	if current, _ := state["current"].(library.CurrentImage); current.ID != "" {
-		return current.Kind
-	}
-	if current, _ := state["current"].(map[string]interface{}); current != nil {
-		if kind, _ := current["kind"].(string); kind != "" {
-			return kind
-		}
-	}
-	return ""
-}
-
-func activeOBSLatency(selected obsrtmp.LatencyProfile, status obsrtmp.Status) obsrtmp.LatencyProfile {
-	if selected.Mode != "" {
-		return selected
-	}
-	return status.Latency
-}
-
-func urlForCopyTarget(state map[string]interface{}, target string) string {
-	switch target {
-	case "shareURL":
-		shareURL, _ := primaryShareURL(state)
-		if shareURL != "" {
-			return shareURL
-		}
-		if shareURL, ok := state["shareURL"].(string); ok {
-			return shareURL
-		}
-	case "phoneURL", "phoneURLMobile":
-		if phoneURL, ok := state["phoneURL"].(string); ok {
-			return phoneURL
-		}
-	case "localImageURL":
-		if localURL, ok := state["localImageURL"].(string); ok {
-			return localURL
-		}
-	case "publicImageURL":
-		if publicURL, ok := state["publicImageURL"].(string); ok {
-			return publicURL
-		}
-	case "videoURL":
-		if videoURL, ok := state["videoURL"].(string); ok {
-			return videoURL
-		}
-	case "hlsURL":
-		if hlsURL, ok := state["hlsURL"].(string); ok {
-			return hlsURL
-		}
-	case "publicVideoURL":
-		if publicURL, ok := state["publicVideoURL"].(string); ok {
-			return publicURL
-		}
-	case "publicHLSURL":
-		if publicURL, ok := state["publicHLSURL"].(string); ok {
-			return publicURL
-		}
-	case "obsServerAddress":
-		if obs, ok := state["obs"].(obsrtmp.Status); ok {
-			return obs.ServerAddress
-		}
-	case "obsStreamKey":
-		if obs, ok := state["obs"].(obsrtmp.Status); ok {
-			return obs.StreamKey
-		}
-	default:
-		if imageURL, ok := state["imageURL"].(string); ok && strings.HasPrefix(imageURL, "http") {
-			return imageURL
-		}
-		if publicURL, ok := state["publicImageURL"].(string); ok && publicURL != "" {
-			return publicURL
-		}
-		if localURL, ok := state["localImageURL"].(string); ok {
-			return localURL
-		}
-	}
-	return ""
 }
 
 func safeFileName(name string) string {

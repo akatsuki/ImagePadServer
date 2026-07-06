@@ -50,7 +50,7 @@ https://.../stream/{video-id}/current-{video-id}.m3u8
 $env:IMAGEPAD_FFMPEG="C:\tools\ffmpeg\bin\ffmpeg.exe"
 $env:IMAGEPAD_YTDLP="C:\tools\yt-dlp\yt-dlp.exe"
 $env:IMAGEPAD_CLOUDFLARED="C:\tools\cloudflared\cloudflared.exe"
-.\imagepadserver-v1.5.2-windows-amd64.exe
+.\imagepadserver-v1.5.7-windows-amd64.exe
 ```
 
 macOS で Homebrew 版を使う場合:
@@ -107,5 +107,5 @@ IMAGEPAD_PORT=8080
 
 ```powershell
 $env:IMAGEPAD_PORT="8095"
-.\imagepadserver-v1.5.2-windows-amd64.exe
+.\imagepadserver-v1.5.7-windows-amd64.exe
 ```

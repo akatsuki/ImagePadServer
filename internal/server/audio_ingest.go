@@ -92,7 +92,7 @@ func (s *Server) processAudioFileAndPublish(r *http.Request, acquired video.Acqu
 	s.enqueueAudioConversion(input, currentID, acquired.SourceName)
 
 	state := s.state(r)
-	return s.withClipboardResult(state), nil
+	return s.withClipboardResult(r, state), nil
 }
 
 // processAudioFileAndQueue resolves audio metadata, selects artwork, saves

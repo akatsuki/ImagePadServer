@@ -157,6 +157,7 @@ const dashboardScriptUploadEvents = `
 
     function uploadFromFile(action) {
       const formData = new FormData(uploadForm);
+      formData.set('shareMode', uploadMode);
       const file = selectedUploadFile();
       const title = file ? file.name : 'ファイル';
       return apiUploadForm(action === 'queue' ? '/api/upload-queue' : '/api/upload', formData, (event) => {
@@ -216,27 +217,12 @@ const dashboardScriptUploadEvents = `
       }
     }
 
-    function publicOBSRTSPURL(data) {
-      const url = data && data.obs && data.obs.rtsptURL ? String(data.obs.rtsptURL) : '';
-      if (!url.startsWith('rtsp://')) {
-        return '';
-      }
-      try {
-        const host = new URL(url).hostname;
-        if (/^(localhost|127\.|10\.|192\.168\.|169\.254\.|0\.0\.0\.0$)/i.test(host)) return '';
-        if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host)) return '';
-        if (/^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\./.test(host)) return '';
-      } catch (error) {
-        return '';
-      }
-      return url;
-    }
-
     async function maybeAutoCopyOBSURL(data) {
       if (!pendingOBSAutoCopy) {
         return;
       }
-      const url = publicOBSRTSPURL(data);
+      const view = shareURLForMode(data, 'obs');
+      const url = view && view.shareURL ? String(view.shareURL) : '';
       if (!url || url === lastAutoCopiedOBSURL) {
         return;
       }
@@ -255,13 +241,13 @@ const dashboardScriptUploadEvents = `
       } catch (error) {
       }
       if (pcCopied && browserCopied) {
-        toast.textContent = 'グローバルRTSP URLをコピーしました。PCにもコピー済みです';
+        toast.textContent = '配信用URLをコピーしました。PCにもコピー済みです';
       } else if (pcCopied) {
-        toast.textContent = 'グローバルRTSP URLをPCにコピーしました';
+        toast.textContent = '配信用URLをPCにコピーしました';
       } else if (browserCopied) {
-        toast.textContent = 'グローバルRTSP URLをこの端末にコピーしました';
+        toast.textContent = '配信用URLをこの端末にコピーしました';
       } else {
-        toast.textContent = 'グローバルRTSP URLを表示しました。コピーできない場合は手動でコピーしてください';
+        toast.textContent = '配信用URLを表示しました。コピーできない場合は手動でコピーしてください';
       }
     }
 
@@ -276,7 +262,8 @@ const dashboardScriptUploadEvents = `
           format: formData.get('format'),
           quality: formData.get('quality'),
           maxDimension: formData.get('maxDimension'),
-          maxMB: formData.get('maxMB')
+          maxMB: formData.get('maxMB'),
+          shareMode: uploadMode
         })
       });
     }
