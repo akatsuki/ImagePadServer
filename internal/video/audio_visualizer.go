@@ -31,6 +31,22 @@ func audioVisualizerFFmpegArgs(audioPath, assPath, fontDir, id string, preset Qu
 // signal; the audio is split after filtering to feed showwaves and the muxed
 // output from the same filtered stream.
 func audioVisualizerFFmpegArgsWithEncoder(audioPath, assPath, fontDir, id string, preset QualityPreset, mode *ForegroundMode, encoder VideoEncoderProfile, audioFilter string) []string {
+	args := audioVisualizerCoreArgsWithEncoder(audioPath, assPath, fontDir, preset, mode, encoder, audioFilter)
+	return append(args,
+		"-f", "hls",
+		"-hls_time", "4",
+		"-hls_list_size", "0",
+		"-hls_playlist_type", "event",
+		"-hls_segment_filename", "%s/"+segmentPattern(id),
+		"-hls_flags", "independent_segments",
+		"%s/"+playlistName(id),
+	)
+}
+
+// audioVisualizerCoreArgsWithEncoder builds the shared render command up to
+// (but excluding) the output muxer: inputs, filter graph, stream maps, video
+// encoder, and audio encode options. Callers append an HLS or MPEG-TS tail.
+func audioVisualizerCoreArgsWithEncoder(audioPath, assPath, fontDir string, preset QualityPreset, mode *ForegroundMode, encoder VideoEncoderProfile, audioFilter string) []string {
 	height := preset.Height
 	if height <= 0 {
 		height = 720
@@ -83,13 +99,6 @@ func audioVisualizerFFmpegArgsWithEncoder(audioPath, assPath, fontDir, id string
 		"-ar", "48000",
 		"-ac", "2",
 		"-pix_fmt", "yuv420p",
-		"-f", "hls",
-		"-hls_time", "4",
-		"-hls_list_size", "0",
-		"-hls_playlist_type", "event",
-		"-hls_segment_filename", "%s/"+segmentPattern(id),
-		"-hls_flags", "independent_segments",
-		"%s/"+playlistName(id),
 	)
 }
 
@@ -482,6 +491,16 @@ func drawCircle(canvas *image.RGBA, cx, cy, radius int, c color.RGBA) {
 // ---------------------------------------------------------------------------
 
 func RunAudioVisualizerHLS(ctx context.Context, outDir, ffmpeg string, input AudioRenderInput, id string, preset QualityPreset) error {
+	buildArgs := func(assPath, fontDir string, mode *ForegroundMode, encoder VideoEncoderProfile) []string {
+		return formatVisualizerOutputArgs(audioVisualizerFFmpegArgsWithEncoder(input.SourcePath, assPath, fontDir, id, preset, mode, encoder, audioLoudnormFilter(input.Kind)), outDir)
+	}
+	return runAudioVisualizerEncode(ctx, outDir, ffmpeg, input, id, preset, buildArgs, func() { removeHLSForID(outDir, id) })
+}
+
+// runAudioVisualizerEncode drives the shared visualizer pipeline (base image,
+// ASS subtitles, frame streaming into ffmpeg) with the output format supplied
+// by buildArgs; cleanup removes partial output when an encode attempt fails.
+func runAudioVisualizerEncode(ctx context.Context, outDir, ffmpeg string, input AudioRenderInput, id string, preset QualityPreset, buildArgs func(assPath, fontDir string, mode *ForegroundMode, encoder VideoEncoderProfile) []string, cleanup func()) error {
 	height := preset.Height
 	if height <= 0 {
 		height = 720
@@ -580,7 +599,7 @@ func RunAudioVisualizerHLS(ctx context.Context, outDir, ffmpeg string, input Aud
 
 	selected := SelectVideoEncoder(ctx, ffmpeg, EncoderStandard)
 	attempt := func(encoder VideoEncoderProfile) error {
-		args := formatVisualizerOutputArgs(audioVisualizerFFmpegArgsWithEncoder(input.SourcePath, assPath, fontDir, id, preset, &mode, encoder, audioLoudnormFilter(input.Kind)), outDir)
+		args := buildArgs(assPath, fontDir, &mode, encoder)
 		cmd := exec.CommandContext(ctx, ffmpeg, args...)
 		hideWindow(cmd)
 		frameReader, frameWriter, pipeErr := os.Pipe()
@@ -611,5 +630,5 @@ func RunAudioVisualizerHLS(ctx context.Context, outDir, ffmpeg string, input Aud
 		}
 		return nil
 	}
-	return runVideoEncodeWithFallback(ctx, selected, func() { removeHLSForID(outDir, id) }, attempt)
+	return runVideoEncodeWithFallback(ctx, selected, cleanup, attempt)
 }
