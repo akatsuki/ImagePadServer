@@ -47,6 +47,7 @@ const dashboardScriptStateSync = `
       state.hlsURL = data.hlsURL;
       state.shareURL = data.shareURL;
       state.shareURLLabel = data.shareURLLabel;
+      state.shareTargets = data.shareTargets || {};
       state.phoneURL = data.phoneURL;
       state.localImageURL = data.localImageURL;
       state.previewImageURL = data.previewImageURL;

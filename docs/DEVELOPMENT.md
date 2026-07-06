@@ -28,7 +28,7 @@ Windows PowerShell で exe を直接ビルドする例:
 $env:CGO_ENABLED="0"
 $env:GOOS="windows"
 $env:GOARCH="amd64"
-go build -trimpath -ldflags "-H=windowsgui" -o dist\1.5.7\release\win\imagepadserver-v1.5.7-windows-amd64.exe .\cmd\imagepadserver
+go build -trimpath -ldflags "-H=windowsgui" -o dist\1.5.8\release\win\imagepadserver-v1.5.8-windows-amd64.exe .\cmd\imagepadserver
 ```
 
 ## 配布物の出力先
@@ -49,8 +49,8 @@ dist/<version>/dev/<devN>/<platform>/
 
 例:
 
-- `v1.5.7` は `dist/1.5.7/release/win/`
-- `v1.5.7-dev1` は `dist/1.5.7/dev/dev1/win/`
+- `v1.5.8` は `dist/1.5.8/release/win/`
+- `v1.5.8-dev1` は `dist/1.5.8/dev/dev1/win/`
 
 ## GitHub Actions リリース
 
@@ -59,13 +59,13 @@ dist/<version>/dev/<devN>/<platform>/
 安定版タグ:
 
 ```text
-v1.5.7
+v1.5.8
 ```
 
 dev 版タグ:
 
 ```text
-v1.5.7-dev1
+v1.5.8-dev1
 ```
 
 dev タグは `dev-release` の prerelease として公開されます。

@@ -8,7 +8,13 @@ const dashboardScriptPreview = `
     }
 
     function shareURLForCurrentMode(data) {
-      return shareURLForMode(data, uploadMode);
+      return shareURLForMode(data, shareModeForUpload(data));
+    }
+
+    function shareModeForUpload(data) {
+      if (uploadMode !== 'obs') return uploadMode;
+      const latency = data && data.obs && data.obs.latency ? data.obs.latency : {};
+      return latency.transport === 'rtspt' ? 'obs_rtsp' : 'obs_hls';
     }
 
     function shareURLForMode(data, mode) {

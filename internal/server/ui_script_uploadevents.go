@@ -157,7 +157,7 @@ const dashboardScriptUploadEvents = `
 
     function uploadFromFile(action) {
       const formData = new FormData(uploadForm);
-      formData.set('shareMode', uploadMode);
+      formData.set('shareMode', shareModeForUpload(state));
       const file = selectedUploadFile();
       const title = file ? file.name : 'ファイル';
       return apiUploadForm(action === 'queue' ? '/api/upload-queue' : '/api/upload', formData, (event) => {
@@ -221,7 +221,7 @@ const dashboardScriptUploadEvents = `
       if (!pendingOBSAutoCopy) {
         return;
       }
-      const view = shareURLForMode(data, 'obs');
+      const view = shareURLForMode(data, shareModeForUpload(data));
       const url = view && view.shareURL ? String(view.shareURL) : '';
       if (!url || url === lastAutoCopiedOBSURL) {
         return;
@@ -263,7 +263,7 @@ const dashboardScriptUploadEvents = `
           quality: formData.get('quality'),
           maxDimension: formData.get('maxDimension'),
           maxMB: formData.get('maxMB'),
-          shareMode: uploadMode
+          shareMode: shareModeForUpload(state)
         })
       });
     }
@@ -619,7 +619,7 @@ const dashboardScriptUploadEvents = `
       const res = await apiFetch('/api/copy-url', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ target, mode: uploadMode })
+        body: JSON.stringify({ target, mode: shareModeForUpload(state) })
       });
       if (!res.ok) {
         throw new Error(await res.text());

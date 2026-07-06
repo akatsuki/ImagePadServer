@@ -86,24 +86,12 @@ func (obsRTSPURLEngine) Issue(req urlIssueRequest) urlIssueResult {
 	return urlIssueResult{Label: "URL"}
 }
 
-type obsHLSURLEngine struct {
-	hls hlsURLEngine
-}
-
-func (e obsHLSURLEngine) Issue(req urlIssueRequest) urlIssueResult {
-	return e.hls.Issue(req)
-}
-
 type obsURLEngine struct {
 	rtsp obsRTSPURLEngine
-	hls  obsHLSURLEngine
 }
 
 func (e obsURLEngine) Issue(req urlIssueRequest) urlIssueResult {
-	if result := e.rtsp.Issue(req); result.URL != "" {
-		return result
-	}
-	return e.hls.Issue(req)
+	return e.rtsp.Issue(req)
 }
 
 type urlEngineRegistry struct {
@@ -117,7 +105,6 @@ var defaultURLEngines = urlEngineRegistry{
 	hls:   hlsURLEngine{},
 	obs: obsURLEngine{
 		rtsp: obsRTSPURLEngine{},
-		hls:  obsHLSURLEngine{hls: hlsURLEngine{}},
 	},
 }
 
@@ -140,8 +127,15 @@ func (r urlEngineRegistry) Issue(req urlIssueRequest) urlIssueResult {
 func urlRequestForShareMode(state map[string]interface{}, mode string) urlIssueRequest {
 	source := urlSourceFromState(state)
 	switch mode {
-	case "obs":
+	case "obs_rtsp":
 		return urlIssueRequest{State: state, Source: urlSourceOBS, Protocol: outputRTSP}
+	case "obs_hls":
+		return urlIssueRequest{State: state, Source: urlSourceOBS, Protocol: outputHLS}
+	case "obs":
+		if obsLatency, _ := state["obsLatency"].(obsrtmp.LatencyProfile); obsLatency.Transport == obsrtmp.LatencyModeRTSPT {
+			return urlIssueRequest{State: state, Source: urlSourceOBS, Protocol: outputRTSP}
+		}
+		return urlIssueRequest{State: state, Source: urlSourceOBS, Protocol: outputHLS}
 	case "file", "link":
 		return urlIssueRequest{State: state, Source: source, Protocol: defaultProtocolForSource(source)}
 	default:
@@ -234,7 +228,7 @@ func withResolvedShareURLs(state map[string]interface{}) map[string]interface{} 
 		return nil
 	}
 	targets := map[string]interface{}{}
-	for _, mode := range []string{"file", "link", "obs"} {
+	for _, mode := range []string{"file", "link", "obs", "obs_rtsp", "obs_hls"} {
 		shareURL, shareURLLabel := shareURLForMode(state, mode)
 		targets[mode] = map[string]interface{}{
 			"shareURL":      shareURL,
@@ -249,7 +243,7 @@ func withResolvedShareURLs(state map[string]interface{}) map[string]interface{} 
 }
 
 func shareModeFromState(state map[string]interface{}) string {
-	if mode, _ := state["shareMode"].(string); mode == "obs" || mode == "link" || mode == "file" {
+	if mode, _ := state["shareMode"].(string); mode == "obs" || mode == "obs_rtsp" || mode == "obs_hls" || mode == "link" || mode == "file" {
 		return mode
 	}
 	if mode, _ := state["historyTargetMode"].(string); mode == "link" || mode == "file" {

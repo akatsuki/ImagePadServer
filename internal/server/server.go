@@ -1439,7 +1439,7 @@ func requestedShareMode(r *http.Request) string {
 
 func normalizeShareMode(mode string) string {
 	switch mode {
-	case "file", "link", "obs":
+	case "file", "link", "obs", "obs_rtsp", "obs_hls":
 		return mode
 	default:
 		return ""
@@ -2020,8 +2020,8 @@ func (s *Server) handleCopyURL(w http.ResponseWriter, r *http.Request) {
 	}
 
 	state := s.state(r)
-	if req.Mode == "obs" || req.Mode == "link" || req.Mode == "file" {
-		state["shareMode"] = req.Mode
+	if mode := normalizeShareMode(req.Mode); mode != "" {
+		state["shareMode"] = mode
 	}
 	copiedURL := urlForCopyTarget(state, req.Target)
 	if copiedURL == "" {

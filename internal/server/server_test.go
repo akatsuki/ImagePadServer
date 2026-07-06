@@ -295,8 +295,8 @@ func TestPrimaryShareURL(t *testing.T) {
 			"enabled": true,
 		},
 	})
-	if url != "https://example.com/stream/abc123/current-abc123.m3u8" || label != "HLS URL" {
-		t.Fatalf("share URL = %q (%s), want OBS mode to fall back to HLS while public RTSP is not ready", url, label)
+	if url != "" || label != "URL" {
+		t.Fatalf("share URL = %q (%s), want no URL in OBS RTSP mode before public RTSP is ready", url, label)
 	}
 
 	url, label = primaryShareURL(map[string]interface{}{
@@ -504,14 +504,14 @@ func TestURLEngineModeMatrix(t *testing.T) {
 		{
 			name:      "obs hls mode fixed to hls",
 			current:   library.CurrentImage{ID: "media-1", Kind: "video", SourceKind: "obs"},
-			mode:      "file",
+			mode:      "obs_hls",
 			wantURL:   hlsURL,
 			wantLabel: "HLS URL",
 		},
 		{
 			name:    "obs protocol prefers rtsp when ready",
 			current: library.CurrentImage{ID: "media-1", Kind: "video", SourceKind: "obs"},
-			mode:    "obs",
+			mode:    "obs_rtsp",
 			obs: obsrtmp.Status{
 				Connected: true,
 				RTSPTURL:  rtspURL,
@@ -520,12 +520,12 @@ func TestURLEngineModeMatrix(t *testing.T) {
 			wantLabel: "RTSP TCP URL",
 		},
 		{
-			name:      "obs protocol falls back to hls before rtsp is ready",
+			name:      "obs protocol waits before rtsp is ready",
 			current:   library.CurrentImage{ID: "media-1", Kind: "video", SourceKind: "obs"},
-			mode:      "obs",
+			mode:      "obs_rtsp",
 			obs:       obsrtmp.Status{Connected: true},
-			wantURL:   hlsURL,
-			wantLabel: "HLS URL",
+			wantURL:   "",
+			wantLabel: "URL",
 		},
 	}
 
@@ -797,7 +797,7 @@ func TestPublishingImageThenVideoUsesHLSURLAndCancelsImageJob(t *testing.T) {
 	assertURLContainsOnly(t, state, "copiedURL", "/stream/"+videoCurrent.ID+"/", "/image/current")
 	assertShareTargetContains(t, state, "file", "/stream/"+videoCurrent.ID+"/")
 	assertShareTargetContains(t, state, "link", "/stream/"+videoCurrent.ID+"/")
-	assertShareTargetContains(t, state, "obs", "/stream/"+videoCurrent.ID+"/")
+	assertShareTargetContains(t, state, "obs_hls", "/stream/"+videoCurrent.ID+"/")
 	assertNoActiveQueueItemForMedia(t, store.Dir(), imageCurrent.ID)
 }
 
@@ -1060,15 +1060,15 @@ func TestHistorySelectURLIssuingMatrix(t *testing.T) {
 	}
 
 	tests := []struct {
-		name              string
-		id                string
-		wantMode          string
-		wantShareContains string
-		wantNoStream      bool
-		wantLabel         string
-		wantFileContains  string
-		wantLinkContains  string
-		wantOBSContains   string
+		name               string
+		id                 string
+		wantMode           string
+		wantShareContains  string
+		wantNoStream       bool
+		wantLabel          string
+		wantFileContains   string
+		wantLinkContains   string
+		wantOBSHLSContains string
 	}{
 		{
 			name:              "image history issues imagepad URL for every non-OBS surface",
@@ -1081,44 +1081,44 @@ func TestHistorySelectURLIssuingMatrix(t *testing.T) {
 			wantLinkContains:  "/image/current",
 		},
 		{
-			name:              "video history issues hls URL",
-			id:                videoItem.ID,
-			wantMode:          "file",
-			wantShareContains: "/stream/" + videoItem.ID + "/",
-			wantLabel:         "HLS URL",
-			wantFileContains:  "/stream/" + videoItem.ID + "/",
-			wantLinkContains:  "/stream/" + videoItem.ID + "/",
-			wantOBSContains:   "/stream/" + videoItem.ID + "/",
+			name:               "video history issues hls URL",
+			id:                 videoItem.ID,
+			wantMode:           "file",
+			wantShareContains:  "/stream/" + videoItem.ID + "/",
+			wantLabel:          "HLS URL",
+			wantFileContains:   "/stream/" + videoItem.ID + "/",
+			wantLinkContains:   "/stream/" + videoItem.ID + "/",
+			wantOBSHLSContains: "/stream/" + videoItem.ID + "/",
 		},
 		{
-			name:              "pending video history immediately issues hls URL",
-			id:                pendingVideoItem.ID,
-			wantMode:          "file",
-			wantShareContains: "/stream/" + pendingVideoItem.ID + "/",
-			wantLabel:         "HLS URL",
-			wantFileContains:  "/stream/" + pendingVideoItem.ID + "/",
-			wantLinkContains:  "/stream/" + pendingVideoItem.ID + "/",
-			wantOBSContains:   "/stream/" + pendingVideoItem.ID + "/",
+			name:               "pending video history immediately issues hls URL",
+			id:                 pendingVideoItem.ID,
+			wantMode:           "file",
+			wantShareContains:  "/stream/" + pendingVideoItem.ID + "/",
+			wantLabel:          "HLS URL",
+			wantFileContains:   "/stream/" + pendingVideoItem.ID + "/",
+			wantLinkContains:   "/stream/" + pendingVideoItem.ID + "/",
+			wantOBSHLSContains: "/stream/" + pendingVideoItem.ID + "/",
 		},
 		{
-			name:              "music history issues hls URL",
-			id:                musicItem.ID,
-			wantMode:          "link",
-			wantShareContains: "/stream/" + musicItem.ID + "/",
-			wantLabel:         "HLS URL",
-			wantFileContains:  "/stream/" + musicItem.ID + "/",
-			wantLinkContains:  "/stream/" + musicItem.ID + "/",
-			wantOBSContains:   "/stream/" + musicItem.ID + "/",
+			name:               "music history issues hls URL",
+			id:                 musicItem.ID,
+			wantMode:           "link",
+			wantShareContains:  "/stream/" + musicItem.ID + "/",
+			wantLabel:          "HLS URL",
+			wantFileContains:   "/stream/" + musicItem.ID + "/",
+			wantLinkContains:   "/stream/" + musicItem.ID + "/",
+			wantOBSHLSContains: "/stream/" + musicItem.ID + "/",
 		},
 		{
-			name:              "obs recording history issues recorded hls URL",
-			id:                obsItem.ID,
-			wantMode:          "file",
-			wantShareContains: "/stream/" + obsItem.ID + "/",
-			wantLabel:         "HLS URL",
-			wantFileContains:  "/stream/" + obsItem.ID + "/",
-			wantLinkContains:  "/stream/" + obsItem.ID + "/",
-			wantOBSContains:   "/stream/" + obsItem.ID + "/",
+			name:               "obs recording history issues recorded hls URL",
+			id:                 obsItem.ID,
+			wantMode:           "file",
+			wantShareContains:  "/stream/" + obsItem.ID + "/",
+			wantLabel:          "HLS URL",
+			wantFileContains:   "/stream/" + obsItem.ID + "/",
+			wantLinkContains:   "/stream/" + obsItem.ID + "/",
+			wantOBSHLSContains: "/stream/" + obsItem.ID + "/",
 		},
 	}
 
@@ -1136,8 +1136,8 @@ func TestHistorySelectURLIssuingMatrix(t *testing.T) {
 			assertHistoryURLMatrixState(t, state, tt.wantMode, tt.wantShareContains, tt.wantLabel, tt.wantNoStream)
 			assertShareTargetContains(t, state, "file", tt.wantFileContains)
 			assertShareTargetContains(t, state, "link", tt.wantLinkContains)
-			if tt.wantOBSContains != "" {
-				assertShareTargetContains(t, state, "obs", tt.wantOBSContains)
+			if tt.wantOBSHLSContains != "" {
+				assertShareTargetContains(t, state, "obs_hls", tt.wantOBSHLSContains)
 			}
 		})
 	}
