@@ -94,7 +94,7 @@ type RadioManager struct {
 	// test seams
 	buildRuntime   func(ctx context.Context) (radioRuntime, radioGate, RTSPEndpoint, error)
 	startPublisher func(ctx context.Context, publishURL string) (radioPublisher, error)
-	runFeeder      func(ctx context.Context, mediaPath string, startSeconds int, loop bool, sink io.Writer) error
+	runFeeder      func(ctx context.Context, mediaPath string, startSeconds int, loop bool, timestampOffset float64, sink io.Writer) error
 }
 
 func NewRadioManager(outDir, host string, next func() (mediaPath, trackID string, startSeconds int, ok bool), cb RadioCallbacks) *RadioManager {
@@ -179,6 +179,7 @@ func (m *RadioManager) run(ctx context.Context, done chan struct{}, runtime radi
 	}
 	defer publisher.close()
 
+	timestampOffset := 0.0
 	for {
 		if ctx.Err() != nil {
 			return
@@ -194,7 +195,7 @@ func (m *RadioManager) run(ctx context.Context, done chan struct{}, runtime radi
 			if m.cb.OnIdle != nil {
 				m.cb.OnIdle()
 			}
-			m.feedFillerUntilWake(ctx, publisher)
+			timestampOffset += m.feedFillerUntilWake(ctx, publisher, timestampOffset)
 			continue
 		}
 
@@ -210,7 +211,9 @@ func (m *RadioManager) run(ctx context.Context, done chan struct{}, runtime radi
 			m.cb.OnTrackStart(trackID)
 		}
 
-		err := m.runFeeder(pushCtx, mediaPath, startSeconds, false, publisher.sink())
+		feedStarted := time.Now()
+		err := m.runFeeder(pushCtx, mediaPath, startSeconds, false, timestampOffset, publisher.sink())
+		timestampOffset += elapsedFeedSeconds(feedStarted)
 		cancelPush()
 		m.mu.Lock()
 		skipped := m.skipped
@@ -235,12 +238,12 @@ func (m *RadioManager) run(ctx context.Context, done chan struct{}, runtime radi
 
 // feedFillerUntilWake broadcasts the filler loop until Wake/Skip arrives (or
 // the session ends). Without a filler source it degrades to a plain wait.
-func (m *RadioManager) feedFillerUntilWake(ctx context.Context, publisher radioPublisher) {
+func (m *RadioManager) feedFillerUntilWake(ctx context.Context, publisher radioPublisher, timestampOffset float64) float64 {
 	// A wake queued during the previous track means new work is already
 	// waiting — skip the filler entirely.
 	select {
 	case <-m.wake:
-		return
+		return 0
 	default:
 	}
 	filler := ""
@@ -255,7 +258,7 @@ func (m *RadioManager) feedFillerUntilWake(ctx context.Context, publisher radioP
 		case <-ctx.Done():
 		case <-publisher.done():
 		}
-		return
+		return 0
 	}
 	fctx, cancel := context.WithCancel(ctx)
 	m.mu.Lock()
@@ -268,11 +271,21 @@ func (m *RadioManager) feedFillerUntilWake(ctx context.Context, publisher radioP
 		case <-fctx.Done():
 		}
 	}()
-	_ = m.runFeeder(fctx, filler, 0, true, publisher.sink())
+	feedStarted := time.Now()
+	_ = m.runFeeder(fctx, filler, 0, true, timestampOffset, publisher.sink())
 	cancel()
 	m.mu.Lock()
 	m.fillerCancel = nil
 	m.mu.Unlock()
+	return elapsedFeedSeconds(feedStarted)
+}
+
+func elapsedFeedSeconds(start time.Time) float64 {
+	elapsed := time.Since(start).Seconds()
+	if elapsed <= 0 {
+		return 0.001
+	}
+	return elapsed
 }
 
 func (m *RadioManager) setCurrent(trackID string) {
@@ -434,8 +447,8 @@ type ffmpegPublisher struct {
 	exit chan error
 }
 
-func (p *ffmpegPublisher) sink() io.Writer      { return p.in }
-func (p *ffmpegPublisher) done() <-chan error   { return p.exit }
+func (p *ffmpegPublisher) sink() io.Writer    { return p.in }
+func (p *ffmpegPublisher) done() <-chan error { return p.exit }
 func (p *ffmpegPublisher) close() {
 	_ = p.in.Close()
 	select {
@@ -473,12 +486,12 @@ func (m *RadioManager) startFFmpegPublisher(ctx context.Context, publishURL stri
 	return &ffmpegPublisher{cmd: cmd, in: stdin, exit: exit}, nil
 }
 
-func (m *RadioManager) runFFmpegFeeder(ctx context.Context, mediaPath string, startSeconds int, loop bool, sink io.Writer) error {
+func (m *RadioManager) runFFmpegFeeder(ctx context.Context, mediaPath string, startSeconds int, loop bool, timestampOffset float64, sink io.Writer) error {
 	ffmpeg, err := video.EnsureFFmpeg()
 	if err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(ctx, ffmpeg, video.RadioFeederArgs(mediaPath, startSeconds, loop)...)
+	cmd := exec.CommandContext(ctx, ffmpeg, video.RadioFeederArgs(mediaPath, startSeconds, loop, timestampOffset)...)
 	hideWindow(cmd)
 	cmd.Dir = m.outDir
 	var stderr bytes.Buffer

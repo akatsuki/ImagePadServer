@@ -101,16 +101,15 @@ func RenderRadioFiller(ctx context.Context, outDir, ffmpeg string, preset Qualit
 }
 
 // RadioPublisherArgs is the persistent RTMP publisher: it consumes an
-// endless MPEG-TS byte stream on stdin and republishes it to mediamtx.
-// Wallclock timestamps make the concatenated per-track segments (whose own
-// timestamps restart at zero) monotonic, so the publisher connection — and
-// therefore the viewer-facing stream — survives track changes and pauses.
+// endless MPEG-TS byte stream on stdin and republishes it to mediamtx. The
+// feeder side is responsible for making per-segment timestamps monotonic; the
+// publisher must preserve those PTS values so frame pacing is not derived from
+// pipe arrival timing.
 func RadioPublisherArgs(rtmpURL string) []string {
 	return []string{
 		"-hide_banner",
 		"-loglevel", "warning",
 		"-fflags", "+genpts",
-		"-use_wallclock_as_timestamps", "1",
 		"-f", "mpegts",
 		"-i", "pipe:0",
 		"-c", "copy",
@@ -122,8 +121,9 @@ func RadioPublisherArgs(rtmpURL string) []string {
 
 // RadioFeederArgs converts one pre-rendered MP4 into a real-time MPEG-TS
 // stream on stdout, for piping into the persistent publisher. loop repeats
-// the input forever (filler); startSeconds resumes mid-track.
-func RadioFeederArgs(mediaPath string, startSeconds int, loop bool) []string {
+// the input forever (filler); startSeconds resumes mid-track. timestampOffset
+// shifts output PTS so separately started feeders form one monotonic stream.
+func RadioFeederArgs(mediaPath string, startSeconds int, loop bool, timestampOffset float64) []string {
 	args := []string{
 		"-hide_banner",
 		"-loglevel", "error",
@@ -135,9 +135,14 @@ func RadioFeederArgs(mediaPath string, startSeconds int, loop bool) []string {
 	if startSeconds > 0 {
 		args = append(args, "-ss", strconv.Itoa(startSeconds))
 	}
-	return append(args,
+	args = append(args,
 		"-i", mediaPath,
 		"-c", "copy",
+	)
+	if timestampOffset > 0 {
+		args = append(args, "-output_ts_offset", strconv.FormatFloat(timestampOffset, 'f', 3, 64))
+	}
+	return append(args,
 		"-f", "mpegts",
 		"pipe:1",
 	)

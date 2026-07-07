@@ -56,7 +56,6 @@ func TestRadioPublisherArgs(t *testing.T) {
 	args := RadioPublisherArgs("rtmp://127.0.0.1:1935/radio?user=u&pass=p")
 	joined := strings.Join(args, " ")
 	for _, want := range []string{
-		"-use_wallclock_as_timestamps 1", // 曲をまたいで単調なタイムスタンプにする要
 		"-f mpegts -i pipe:0",
 		"-c copy",
 		"-bsf:a aac_adtstoasc", // TS の ADTS AAC を FLV 用 ASC に変換する要
@@ -66,26 +65,33 @@ func TestRadioPublisherArgs(t *testing.T) {
 			t.Fatalf("publisher args missing %q: %s", want, joined)
 		}
 	}
+	if strings.Contains(joined, "-use_wallclock_as_timestamps") {
+		t.Fatalf("publisher must preserve feeder PTS instead of deriving frame timing from pipe arrival: %s", joined)
+	}
 	if args[len(args)-1] != "rtmp://127.0.0.1:1935/radio?user=u&pass=p" {
 		t.Fatalf("last arg must be the RTMP URL, got %q", args[len(args)-1])
 	}
 }
 
 func TestRadioFeederArgs(t *testing.T) {
-	base := strings.Join(RadioFeederArgs("track.mp4", 0, false), " ")
+	base := strings.Join(RadioFeederArgs("track.mp4", 0, false, 0), " ")
 	for _, want := range []string{"-re", "-i track.mp4", "-c copy", "-f mpegts pipe:1"} {
 		if !strings.Contains(base, want) {
 			t.Fatalf("feeder args missing %q: %s", want, base)
 		}
 	}
-	if strings.Contains(base, "-stream_loop") || strings.Contains(base, "-ss") {
-		t.Fatalf("plain feeder must not loop or seek: %s", base)
+	if strings.Contains(base, "-stream_loop") || strings.Contains(base, "-ss") || strings.Contains(base, "-output_ts_offset") {
+		t.Fatalf("plain feeder must not loop, seek, or offset timestamps: %s", base)
 	}
-	resumed := strings.Join(RadioFeederArgs("track.mp4", 97, false), " ")
+	resumed := strings.Join(RadioFeederArgs("track.mp4", 97, false, 0), " ")
 	if !strings.Contains(resumed, "-ss 97 -i track.mp4") {
 		t.Fatalf("resume feeder must seek before the input: %s", resumed)
 	}
-	filler := strings.Join(RadioFeederArgs("filler.mp4", 0, true), " ")
+	offset := strings.Join(RadioFeederArgs("track.mp4", 0, false, 123.4567), " ")
+	if !strings.Contains(offset, "-output_ts_offset 123.457") {
+		t.Fatalf("offset feeder must shift output timestamps for a continuous publisher stream: %s", offset)
+	}
+	filler := strings.Join(RadioFeederArgs("filler.mp4", 0, true, 0), " ")
 	if !strings.Contains(filler, "-stream_loop -1") {
 		t.Fatalf("filler feeder must loop forever: %s", filler)
 	}

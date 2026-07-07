@@ -26,8 +26,10 @@ func (f *fakeRadioRuntime) wasStopped() bool {
 	defer f.mu.Unlock()
 	return f.stopped
 }
-func (f *fakeRadioRuntime) rtmpPublishURL() string { return "rtmp://127.0.0.1:9999/radio?user=u&pass=p" }
-func (f *fakeRadioRuntime) rtspURL() string        { return "rtsp://192.168.0.10:8554/radio" }
+func (f *fakeRadioRuntime) rtmpPublishURL() string {
+	return "rtmp://127.0.0.1:9999/radio?user=u&pass=p"
+}
+func (f *fakeRadioRuntime) rtspURL() string { return "rtsp://192.168.0.10:8554/radio" }
 func (f *fakeRadioRuntime) proxyHLS(w http.ResponseWriter, _ *http.Request, name string) {
 	w.Header().Set("X-Proxied", name)
 	w.WriteHeader(http.StatusOK)
@@ -116,7 +118,7 @@ func newRadioHarness(t *testing.T, next func() (string, string, bool), pushErr m
 	m.startPublisher = func(context.Context, string) (radioPublisher, error) {
 		return &fakePublisher{exit: make(chan error)}, nil
 	}
-	m.runFeeder = func(ctx context.Context, mediaPath string, _ int, loop bool, _ io.Writer) error {
+	m.runFeeder = func(ctx context.Context, mediaPath string, _ int, loop bool, _ float64, _ io.Writer) error {
 		if loop { // filler: run until interrupted
 			<-ctx.Done()
 			return nil
@@ -281,7 +283,7 @@ func TestRadioFillerLoopsWhileIdleAndWakeInterrupts(t *testing.T) {
 	m, h := newRadioHarness(t, next, nil, nil)
 	fillerStarted := make(chan struct{}, 8)
 	m.fillerPath = func() (string, error) { return "filler.mp4", nil }
-	m.runFeeder = func(ctx context.Context, mediaPath string, _ int, loop bool, _ io.Writer) error {
+	m.runFeeder = func(ctx context.Context, mediaPath string, _ int, loop bool, _ float64, _ io.Writer) error {
 		if loop {
 			if mediaPath != "filler.mp4" {
 				t.Errorf("filler feeder got %q", mediaPath)
@@ -310,6 +312,75 @@ func TestRadioFillerLoopsWhileIdleAndWakeInterrupts(t *testing.T) {
 	m.Wake()
 	if e := h.waitEvent(t, "start"); e.trackID != "t1" {
 		t.Fatalf("after wake, expected t1, got %+v", e)
+	}
+}
+
+func TestRadioOffsetsNextFeederTimestampsByElapsedStreamTime(t *testing.T) {
+	tracks := []string{"t1", "t2"}
+	i := 0
+	next := func() (string, string, bool) {
+		if i >= len(tracks) {
+			return "", "", false
+		}
+		id := tracks[i]
+		i++
+		return id, id, true
+	}
+	m, _ := newRadioHarness(t, next, nil, nil)
+	offsets := make(chan float64, 2)
+	m.runFeeder = func(_ context.Context, mediaPath string, _ int, loop bool, timestampOffset float64, _ io.Writer) error {
+		if loop {
+			return nil
+		}
+		offsets <- timestampOffset
+		if mediaPath == "t1" {
+			time.Sleep(700 * time.Millisecond)
+		}
+		return nil
+	}
+	if err := m.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	first := <-offsets
+	second := <-offsets
+	if first != 0 {
+		t.Fatalf("first feeder offset = %f, want 0", first)
+	}
+	if second <= first {
+		t.Fatalf("second feeder offset = %f, want greater than first offset %f", second, first)
+	}
+}
+
+func TestRadioOffsetsImmediateInterruptFeederTimestampsForward(t *testing.T) {
+	tracks := []string{"t1", "t2"}
+	i := 0
+	next := func() (string, string, bool) {
+		if i >= len(tracks) {
+			return "", "", false
+		}
+		id := tracks[i]
+		i++
+		return id, id, true
+	}
+	m, _ := newRadioHarness(t, next, nil, nil)
+	offsets := make(chan float64, 2)
+	m.runFeeder = func(_ context.Context, _ string, _ int, loop bool, timestampOffset float64, _ io.Writer) error {
+		if loop {
+			return nil
+		}
+		offsets <- timestampOffset
+		return nil
+	}
+	if err := m.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	first := <-offsets
+	second := <-offsets
+	if first != 0 {
+		t.Fatalf("first feeder offset = %f, want 0", first)
+	}
+	if second <= first {
+		t.Fatalf("immediate interrupt must still advance timestamp offset, got %f after %f", second, first)
 	}
 }
 
