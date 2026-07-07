@@ -82,12 +82,20 @@ func (h *radioHarness) waitEvent(t *testing.T, kind string) radioEvent {
 	}
 }
 
+// wrapNext adapts the older 3-value test scripts to the next() signature.
+func wrapNext(next func() (string, string, bool)) func() (string, string, int, bool) {
+	return func() (string, string, int, bool) {
+		mediaPath, trackID, ok := next()
+		return mediaPath, trackID, 0, ok
+	}
+}
+
 // newRadioHarness wires a RadioManager with fake runtime/gate and a scripted
 // pusher. push blocks until ctx is cancelled when the track ID is in blockers.
 func newRadioHarness(t *testing.T, next func() (string, string, bool), pushErr map[string]error, blockers map[string]bool) (*RadioManager, *radioHarness) {
 	t.Helper()
 	h := &radioHarness{eventCh: make(chan radioEvent, 64), runtime: &fakeRadioRuntime{}, gate: &fakeGate{}}
-	m := NewRadioManager(t.TempDir(), "192.168.0.10", next, RadioCallbacks{
+	m := NewRadioManager(t.TempDir(), "192.168.0.10", wrapNext(next), RadioCallbacks{
 		OnTrackStart: func(id string) { h.record(radioEvent{kind: "start", trackID: id}) },
 		OnTrackEnd:   func(id string, err error) { h.record(radioEvent{kind: "end", trackID: id, err: err}) },
 		OnIdle:       func() { h.record(radioEvent{kind: "idle"}) },
@@ -96,7 +104,7 @@ func newRadioHarness(t *testing.T, next func() (string, string, bool), pushErr m
 	m.buildRuntime = func(context.Context) (radioRuntime, radioGate, RTSPEndpoint, error) {
 		return h.runtime, h.gate, RTSPEndpoint{SessionID: "s1", Host: "192.168.0.10", Port: 8554, Path: "radio", LocalURL: h.runtime.rtspURL()}, nil
 	}
-	m.runPush = func(ctx context.Context, mediaPath, publishURL string) error {
+	m.runPush = func(ctx context.Context, mediaPath string, _ int, publishURL string) error {
 		id := mediaPath // tests pass trackID as mediaPath for simplicity
 		if blockers[id] {
 			<-ctx.Done()

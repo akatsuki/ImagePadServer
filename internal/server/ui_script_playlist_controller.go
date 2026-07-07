@@ -5,7 +5,7 @@ const dashboardScriptPlaylistController = `
       let active = false;
       let pollTimer = 0;
       let clockTimer = 0;
-      let plState = { tracks: [], currentTrackId: '', running: false, playing: false, shuffle: false, loop: false, rtspUrl: '', hlsUrl: '', publicHlsUrl: '', elapsedSeconds: 0 };
+      let plState = { tracks: [], currentTrackId: '', running: false, playing: false, paused: false, shuffle: false, loop: false, rtspUrl: '', hlsUrl: '', publicHlsUrl: '', elapsedSeconds: 0 };
       let plFetchedAt = 0;
       let urlMode = 'hls';
       let dragTrackId = null;
@@ -103,11 +103,12 @@ const dashboardScriptPlaylistController = `
       function renderClock() {
         const track = currentTrack();
         const duration = track ? Number(track.durationSeconds) || 0 : 0;
-        const elapsed = Math.min(estimatedElapsed(), duration || Infinity);
-        if (plTimeElapsed) plTimeElapsed.textContent = plState.playing ? fmtTime(elapsed) : '0:00';
-        if (plTimeRemaining) plTimeRemaining.textContent = plState.playing && duration > 0 ? '-' + fmtTime(Math.max(0, duration - elapsed)) : '-0:00';
+        const activeClock = plState.playing || plState.paused;
+        const elapsed = Math.min(plState.paused ? (Number(plState.elapsedSeconds) || 0) : estimatedElapsed(), duration || Infinity);
+        if (plTimeElapsed) plTimeElapsed.textContent = activeClock ? fmtTime(elapsed) : '0:00';
+        if (plTimeRemaining) plTimeRemaining.textContent = activeClock && duration > 0 ? '-' + fmtTime(Math.max(0, duration - elapsed)) : '-0:00';
         if (plProgressFill) {
-          const pct = plState.playing && duration > 0 ? Math.min(100, elapsed / duration * 100) : 0;
+          const pct = activeClock && duration > 0 ? Math.min(100, elapsed / duration * 100) : 0;
           plProgressFill.style.width = pct + '%';
         }
         if (plProgressTrack) {
@@ -178,18 +179,24 @@ const dashboardScriptPlaylistController = `
       function renderPlaylist() {
         const track = currentTrack();
         if (plNowTitle) {
-          plNowTitle.textContent = plState.playing && track
+          plNowTitle.textContent = (plState.playing || plState.paused) && track
             ? track.title || track.originalName || '再生中'
             : plState.running ? '次の曲を待っています' : 'プレイリストは停止中';
         }
         if (plNowArtist) {
-          plNowArtist.textContent = plState.playing && track
+          plNowArtist.textContent = plState.paused
+            ? '一時停止中'
+            : plState.playing && track
             ? (track.artist || ' ')
             : (plState.tracks || []).length ? '▶で再生を開始する' : '曲を追加して再生を始める';
         }
         renderClock();
         syncVideoPreview();
-        if (plPlayButton) plPlayButton.classList.toggle('active', !!plState.playing);
+        if (plPlayButton) {
+          plPlayButton.classList.toggle('is-playing', !!plState.playing);
+          plPlayButton.setAttribute('aria-label', plState.playing ? '一時停止' : '再生');
+          plPlayButton.title = plState.playing ? '一時停止' : '再生';
+        }
         if (plShuffleButton) {
           plShuffleButton.classList.toggle('active', !!plState.shuffle);
           plShuffleButton.setAttribute('aria-pressed', String(!!plState.shuffle));
@@ -473,7 +480,9 @@ const dashboardScriptPlaylistController = `
       }
 
       function initPlaylistController() {
-        if (plPlayButton) plPlayButton.addEventListener('click', () => playlistPost('/api/music/playlist/play', {}));
+        if (plPlayButton) plPlayButton.addEventListener('click', () => {
+          playlistPost(plState.playing ? '/api/music/playlist/pause' : '/api/music/playlist/play', {});
+        });
         if (plStopButton) plStopButton.addEventListener('click', () => playlistPost('/api/music/playlist/stop', {}));
         if (plNextButton) plNextButton.addEventListener('click', () => playlistPost('/api/music/playlist/next', {}));
         if (plShuffleButton) plShuffleButton.addEventListener('click', () => playlistPost('/api/music/playlist/options', { shuffle: !plState.shuffle }));

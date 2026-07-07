@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 )
 
 // RadioTrackFileName is the on-disk name of a pre-rendered playlist track.
@@ -45,25 +46,30 @@ func audioVisualizerMP4ArgsWithEncoder(audioPath, assPath, fontDir, outPath stri
 
 // RadioPushArgs streams a pre-rendered track to mediamtx in real time without
 // re-encoding. -re paces reads at native speed so the RTSP session behaves
-// like a live source.
-func RadioPushArgs(mediaPath, rtspURL string) []string {
-	return []string{
+// like a live source. startSeconds > 0 resumes mid-track (一時停止からの再開).
+func RadioPushArgs(mediaPath string, startSeconds int, rtspURL string) []string {
+	args := []string{
 		"-hide_banner",
 		"-loglevel", "warning",
 		"-re",
+	}
+	if startSeconds > 0 {
+		args = append(args, "-ss", strconv.Itoa(startSeconds))
+	}
+	return append(args,
 		"-i", mediaPath,
 		"-c", "copy",
 		"-f", "rtsp",
 		"-rtsp_transport", "tcp",
 		rtspURL,
-	}
+	)
 }
 
 // RunRadioPush executes the codec-copy push and, on failure, folds the tail
 // of ffmpeg's stderr into the returned error so the playlist UI can show the
 // real cause instead of a bare exit status.
-func RunRadioPush(ctx context.Context, dir, ffmpeg, mediaPath, rtspURL string) error {
-	cmd := exec.CommandContext(ctx, ffmpeg, RadioPushArgs(mediaPath, rtspURL)...)
+func RunRadioPush(ctx context.Context, dir, ffmpeg, mediaPath string, startSeconds int, rtspURL string) error {
+	cmd := exec.CommandContext(ctx, ffmpeg, RadioPushArgs(mediaPath, startSeconds, rtspURL)...)
 	hideWindow(cmd)
 	cmd.Dir = dir
 	var stderr bytes.Buffer

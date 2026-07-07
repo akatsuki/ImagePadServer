@@ -254,37 +254,42 @@ const indexHTML = `<!doctype html>
           </div>
         </div>
         <div class="pl-body">
-          <div class="pl-video" id="plVideoWrap">
-            <video id="plVideoPreview" muted playsinline autoplay></video>
-            <div class="pl-video-empty" id="plVideoEmpty">再生を開始すると映像プレビューが表示されます</div>
-          </div>
-          <div class="pl-now">
-            <strong id="plNowTitle">プレイリストは停止中</strong>
-            <span id="plNowArtist">曲を追加して再生を始める</span>
-          </div>
-          <div class="pl-progress-row">
-            <span class="pl-time" id="plTimeElapsed">0:00</span>
-            <div class="pl-progress" id="plProgressTrack" role="progressbar" aria-label="再生位置">
-              <div class="pl-progress-fill" id="plProgressFill"></div>
+          <div class="pl-player-row">
+            <div class="pl-video" id="plVideoWrap">
+              <video id="plVideoPreview" muted playsinline autoplay></video>
+              <div class="pl-video-empty" id="plVideoEmpty">停止中</div>
             </div>
-            <span class="pl-time" id="plTimeRemaining">-0:00</span>
-          </div>
-          <div class="pl-controls" role="group" aria-label="再生操作">
-            <button type="button" class="pl-toggle" id="plShuffleButton" aria-pressed="false" title="シャッフル" aria-label="シャッフル">
-              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M16 3h5v5M4 7h3c2.6 0 4.2 2 5.8 5s3.2 5 5.8 5H21M21 16v5h-5M4 17h3c1.2 0 2.2-.4 3.1-1.2M14 8.2c1.1-.8 2.3-1.2 4-1.2h3"/></svg>
-            </button>
-            <button type="button" class="pl-control" id="plStopButton" aria-label="停止">
-              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M7 7h10v10H7V7Z"/></svg>
-            </button>
-            <button type="button" class="pl-control pl-control-play" id="plPlayButton" aria-label="再生">
-              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 5v14l11-7L8 5Z"/></svg>
-            </button>
-            <button type="button" class="pl-control" id="plNextButton" aria-label="次の曲">
-              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M6 5v14l9-7-9-7Zm10 0h2v14h-2V5Z"/></svg>
-            </button>
-            <button type="button" class="pl-toggle" id="plLoopButton" aria-pressed="false" title="ループ再生" aria-label="ループ再生">
-              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M17 2l4 4-4 4M3 11V9a3 3 0 0 1 3-3h15M7 22l-4-4 4-4m14-1v2a3 3 0 0 1-3 3H3"/></svg>
-            </button>
+            <div class="pl-player-main">
+              <div class="pl-now">
+                <strong id="plNowTitle">プレイリストは停止中</strong>
+                <span id="plNowArtist">曲を追加して再生を始める</span>
+              </div>
+              <div class="pl-progress-row">
+                <span class="pl-time" id="plTimeElapsed">0:00</span>
+                <div class="pl-progress" id="plProgressTrack" role="progressbar" aria-label="再生位置">
+                  <div class="pl-progress-fill" id="plProgressFill"></div>
+                </div>
+                <span class="pl-time" id="plTimeRemaining">-0:00</span>
+              </div>
+              <div class="pl-controls" role="group" aria-label="再生操作">
+                <button type="button" class="pl-toggle" id="plShuffleButton" aria-pressed="false" title="シャッフル" aria-label="シャッフル">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M16 3h5v5M4 7h3c2.6 0 4.2 2 5.8 5s3.2 5 5.8 5H21M21 16v5h-5M4 17h3c1.2 0 2.2-.4 3.1-1.2M14 8.2c1.1-.8 2.3-1.2 4-1.2h3"/></svg>
+                </button>
+                <button type="button" class="pl-control" id="plStopButton" aria-label="停止">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M7 7h10v10H7V7Z"/></svg>
+                </button>
+                <button type="button" class="pl-control pl-control-play" id="plPlayButton" aria-label="再生">
+                  <svg class="pl-icon-play" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 5v14l11-7L8 5Z"/></svg>
+                  <svg class="pl-icon-pause" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M7 5h4v14H7V5Zm6 0h4v14h-4V5Z"/></svg>
+                </button>
+                <button type="button" class="pl-control" id="plNextButton" aria-label="次の曲">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M6 5v14l9-7-9-7Zm10 0h2v14h-2V5Z"/></svg>
+                </button>
+                <button type="button" class="pl-toggle" id="plLoopButton" aria-pressed="false" title="ループ再生" aria-label="ループ再生">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M17 2l4 4-4 4M3 11V9a3 3 0 0 1 3-3h15M7 22l-4-4 4-4m14-1v2a3 3 0 0 1-3 3H3"/></svg>
+                </button>
+              </div>
+            </div>
           </div>
           <div class="urlbox pl-share">
             <div>

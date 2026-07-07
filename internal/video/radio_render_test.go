@@ -46,8 +46,15 @@ func TestHLSArgsUnchangedByRefactor(t *testing.T) {
 }
 
 func TestRadioPushArgs(t *testing.T) {
-	args := RadioPushArgs("out/radio-track-x.mp4", "rtsp://127.0.0.1:8554/radio")
+	args := RadioPushArgs("out/radio-track-x.mp4", 0, "rtsp://127.0.0.1:8554/radio")
 	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "-ss") {
+		t.Fatalf("offset 0 must not add -ss: %s", joined)
+	}
+	resumed := strings.Join(RadioPushArgs("out/radio-track-x.mp4", 97, "rtsp://127.0.0.1:8554/radio"), " ")
+	if !strings.Contains(resumed, "-ss 97 -i out/radio-track-x.mp4") {
+		t.Fatalf("resume args must seek before the input: %s", resumed)
+	}
 	for _, want := range []string{"-re", "-i out/radio-track-x.mp4", "-c copy", "-f rtsp", "-rtsp_transport tcp"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("push args missing %q: %s", want, joined)

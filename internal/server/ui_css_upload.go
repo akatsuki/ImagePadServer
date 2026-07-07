@@ -127,19 +127,35 @@ const dashboardCSSUpload = `
     }
     .pl-body {
       display: grid;
-      grid-template-rows: auto auto auto auto auto minmax(120px, 1fr) auto;
+      grid-template-rows: auto auto minmax(120px, 1fr) auto;
       gap: 10px;
       min-height: 0;
+    }
+    .pl-player-row {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 10px;
+      align-items: stretch;
+    }
+    .pl-player-main {
+      display: grid;
+      grid-template-rows: auto auto auto;
+      gap: 7px;
+      min-width: 0;
+      align-content: center;
     }
     .pl-video {
       position: relative;
       overflow: hidden;
-      aspect-ratio: 16 / 9;
+      width: 176px;
+      align-self: stretch;
       border: 1px solid var(--line);
       border-radius: var(--radius-small);
       background: var(--panel-strong);
     }
     .pl-video video {
+      position: absolute;
+      inset: 0;
       width: 100%;
       height: 100%;
       display: block;
@@ -154,17 +170,26 @@ const dashboardCSSUpload = `
       inset: 0;
       display: grid;
       place-items: center;
-      padding: 12px;
+      padding: 8px;
       color: var(--muted);
-      font-size: 12px;
+      font-size: 11px;
       font-weight: 700;
       text-align: center;
     }
     .pl-now {
       display: grid;
       gap: 1px;
-      min-height: 36px;
+      min-height: 34px;
       text-align: center;
+    }
+    .pl-control-play .pl-icon-pause {
+      display: none;
+    }
+    .pl-control-play.is-playing .pl-icon-pause {
+      display: block;
+    }
+    .pl-control-play.is-playing .pl-icon-play {
+      display: none;
     }
     .pl-now strong {
       overflow: hidden;

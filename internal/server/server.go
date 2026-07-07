@@ -92,12 +92,16 @@ type Server struct {
 	lastStateEvent time.Time
 	stateEventDue  bool
 
-	musicQueue        *playlist.Queue
-	playlistStore     *playlist.Store
-	radio             *obsrtmp.RadioManager
-	musicJobs         chan func()
-	musicPendingMu    sync.Mutex
-	musicPendingTrack string
+	musicQueue         *playlist.Queue
+	playlistStore      *playlist.Store
+	radio              *obsrtmp.RadioManager
+	musicJobs          chan func()
+	musicPendingMu     sync.Mutex
+	musicPendingTrack  string
+	musicPendingOffset int
+	musicPaused        bool
+	musicPausedTrack   string
+	musicPausedOffset  int
 }
 
 type rtspMappingHandle interface {
@@ -229,6 +233,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/music/playlist/remove", s.admin(s.handleMusicPlaylistRemove))
 	mux.HandleFunc("/api/music/playlist/reorder", s.admin(s.handleMusicPlaylistReorder))
 	mux.HandleFunc("/api/music/playlist/play", s.admin(s.handleMusicPlaylistPlay))
+	mux.HandleFunc("/api/music/playlist/pause", s.admin(s.handleMusicPlaylistPause))
 	mux.HandleFunc("/api/music/playlist/next", s.admin(s.handleMusicPlaylistNext))
 	mux.HandleFunc("/api/music/playlist/stop", s.admin(s.handleMusicPlaylistStop))
 	mux.HandleFunc("/api/music/playlist/options", s.admin(s.handleMusicPlaylistOptions))

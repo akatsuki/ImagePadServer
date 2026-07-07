@@ -25,8 +25,11 @@ type RadioStatus struct {
 	Running        bool      `json:"running"`
 	CurrentTrackID string    `json:"currentTrackId"`
 	TrackStartedAt time.Time `json:"trackStartedAt"`
-	RTSPURL        string    `json:"rtspUrl"`
-	Path           string    `json:"path"`
+	// BaseOffsetSeconds is the in-track position the current push started
+	// from (>0 after resuming a paused track).
+	BaseOffsetSeconds int    `json:"baseOffsetSeconds"`
+	RTSPURL           string `json:"rtspUrl"`
+	Path              string `json:"path"`
 }
 
 // radioRuntime is the subset of mediaMTXRuntime the radio needs; split out so
@@ -54,7 +57,7 @@ type RadioManager struct {
 	mu     sync.Mutex
 	outDir string
 	host   string
-	next   func() (mediaPath, trackID string, ok bool)
+	next   func() (mediaPath, trackID string, startSeconds int, ok bool)
 	cb     RadioCallbacks
 
 	cancel     context.CancelFunc
@@ -69,10 +72,10 @@ type RadioManager struct {
 
 	// test seams
 	buildRuntime func(ctx context.Context) (radioRuntime, radioGate, RTSPEndpoint, error)
-	runPush      func(ctx context.Context, mediaPath, publishURL string) error
+	runPush      func(ctx context.Context, mediaPath string, startSeconds int, publishURL string) error
 }
 
-func NewRadioManager(outDir, host string, next func() (mediaPath, trackID string, ok bool), cb RadioCallbacks) *RadioManager {
+func NewRadioManager(outDir, host string, next func() (mediaPath, trackID string, startSeconds int, ok bool), cb RadioCallbacks) *RadioManager {
 	m := &RadioManager{
 		outDir: outDir,
 		host:   host,
@@ -145,7 +148,7 @@ func (m *RadioManager) run(ctx context.Context, done chan struct{}, runtime radi
 		if ctx.Err() != nil {
 			return
 		}
-		mediaPath, trackID, ok := m.next()
+		mediaPath, trackID, startSeconds, ok := m.next()
 		if !ok {
 			m.setCurrent("")
 			if m.cb.OnIdle != nil {
@@ -165,12 +168,13 @@ func (m *RadioManager) run(ctx context.Context, done chan struct{}, runtime radi
 		m.skipped = false
 		m.status.CurrentTrackID = trackID
 		m.status.TrackStartedAt = time.Now()
+		m.status.BaseOffsetSeconds = startSeconds
 		m.mu.Unlock()
 		if m.cb.OnTrackStart != nil {
 			m.cb.OnTrackStart(trackID)
 		}
 
-		err := m.runPush(pushCtx, mediaPath, runtime.publishURL())
+		err := m.runPush(pushCtx, mediaPath, startSeconds, runtime.publishURL())
 		cancelPush()
 		m.mu.Lock()
 		skipped := m.skipped
@@ -195,6 +199,7 @@ func (m *RadioManager) setCurrent(trackID string) {
 	m.status.CurrentTrackID = trackID
 	if trackID == "" {
 		m.status.TrackStartedAt = time.Time{}
+		m.status.BaseOffsetSeconds = 0
 	}
 	m.mu.Unlock()
 }
@@ -338,10 +343,10 @@ func (m *RadioManager) buildMediaMTX(ctx context.Context) (radioRuntime, radioGa
 	return runtime, gate, endpoint, nil
 }
 
-func (m *RadioManager) runFFmpegPush(ctx context.Context, mediaPath, publishURL string) error {
+func (m *RadioManager) runFFmpegPush(ctx context.Context, mediaPath string, startSeconds int, publishURL string) error {
 	ffmpeg, err := video.EnsureFFmpeg()
 	if err != nil {
 		return err
 	}
-	return video.RunRadioPush(ctx, m.outDir, ffmpeg, mediaPath, publishURL)
+	return video.RunRadioPush(ctx, m.outDir, ffmpeg, mediaPath, startSeconds, publishURL)
 }

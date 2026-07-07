@@ -51,24 +51,32 @@ func (s *Server) enqueueMusicJob(job func()) bool {
 	}
 }
 
-// nextRadioTrack is the radio's track source: a pending interrupt (今すぐ再生)
-// wins, otherwise the queue advances by its own shuffle/loop policy.
-func (s *Server) nextRadioTrack() (string, string, bool) {
+// nextRadioTrack is the radio's track source: while paused it starves the
+// radio into idle (MediaMTX stays up so the share URLs survive); a pending
+// interrupt (今すぐ再生 / 再開) wins, otherwise the queue advances by its own
+// shuffle/loop policy.
+func (s *Server) nextRadioTrack() (string, string, int, bool) {
 	s.musicPendingMu.Lock()
+	paused := s.musicPaused
 	pending := s.musicPendingTrack
+	offset := s.musicPendingOffset
 	s.musicPendingTrack = ""
+	s.musicPendingOffset = 0
 	s.musicPendingMu.Unlock()
+	if paused {
+		return "", "", 0, false
+	}
 	if pending != "" {
 		if tr, ok := s.musicQueue.Get(pending); ok && tr.Status == playlist.TrackReady {
 			s.musicQueue.SetCurrent(pending)
-			return tr.MediaPath, tr.ID, true
+			return tr.MediaPath, tr.ID, offset, true
 		}
 	}
 	tr, ok := s.musicQueue.Next()
 	if !ok {
-		return "", "", false
+		return "", "", 0, false
 	}
-	return tr.MediaPath, tr.ID, true
+	return tr.MediaPath, tr.ID, 0, true
 }
 
 func (s *Server) onRadioTrackEnd(trackID string, err error) {
@@ -78,9 +86,19 @@ func (s *Server) onRadioTrackEnd(trackID string, err error) {
 	s.broadcastStateChangedThrottled()
 }
 
-func (s *Server) setPendingRadioTrack(id string) {
+func (s *Server) setPendingRadioTrack(id string, offset int) {
 	s.musicPendingMu.Lock()
 	s.musicPendingTrack = id
+	s.musicPendingOffset = offset
+	s.musicPaused = false
+	s.musicPendingMu.Unlock()
+}
+
+func (s *Server) clearMusicPause() {
+	s.musicPendingMu.Lock()
+	s.musicPaused = false
+	s.musicPausedTrack = ""
+	s.musicPausedOffset = 0
 	s.musicPendingMu.Unlock()
 }
 
@@ -112,6 +130,11 @@ func (s *Server) musicPlaylistState() map[string]interface{} {
 		})
 	}
 	st := s.radio.Status()
+	s.musicPendingMu.Lock()
+	paused := s.musicPaused
+	pausedTrack := s.musicPausedTrack
+	pausedOffset := s.musicPausedOffset
+	s.musicPendingMu.Unlock()
 	s.mu.RLock()
 	tunnelBase := s.tunnelURLBase
 	s.mu.RUnlock()
@@ -128,13 +151,19 @@ func (s *Server) musicPlaylistState() map[string]interface{} {
 	}
 	elapsed := 0
 	if !st.TrackStartedAt.IsZero() {
-		elapsed = int(time.Since(st.TrackStartedAt).Seconds())
+		elapsed = st.BaseOffsetSeconds + int(time.Since(st.TrackStartedAt).Seconds())
+	}
+	currentID := st.CurrentTrackID
+	if paused {
+		currentID = pausedTrack
+		elapsed = pausedOffset
 	}
 	return map[string]interface{}{
 		"tracks":         items,
-		"currentTrackId": st.CurrentTrackID,
+		"currentTrackId": currentID,
 		"running":        st.Running,
 		"playing":        st.Running && st.CurrentTrackID != "",
+		"paused":         paused,
 		"shuffle":        s.musicQueue.Shuffle(),
 		"loop":           s.musicQueue.Loop(),
 		"rtspUrl":        st.RTSPURL,
@@ -401,7 +430,19 @@ func (s *Server) handleMusicPlaylistPlay(w http.ResponseWriter, r *http.Request)
 			http.Error(w, "この曲はまだ準備中です", http.StatusConflict)
 			return
 		}
-		s.setPendingRadioTrack(req.ID)
+		s.setPendingRadioTrack(req.ID, 0)
+		s.clearMusicPause()
+	} else {
+		// ID なしの再生は、一時停止中なら中断位置からの再開になる。
+		s.musicPendingMu.Lock()
+		if s.musicPaused && s.musicPausedTrack != "" {
+			s.musicPendingTrack = s.musicPausedTrack
+			s.musicPendingOffset = s.musicPausedOffset
+		}
+		s.musicPaused = false
+		s.musicPausedTrack = ""
+		s.musicPausedOffset = 0
+		s.musicPendingMu.Unlock()
 	}
 	if !s.radio.Running() {
 		if err := s.radio.Start(); err != nil {
@@ -417,6 +458,32 @@ func (s *Server) handleMusicPlaylistPlay(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, s.musicPlaylistState())
 }
 
+// handleMusicPlaylistPause suspends playback while keeping MediaMTX (and the
+// share URLs) alive; the paused position is replayed on resume via -ss.
+func (s *Server) handleMusicPlaylistPause(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	st := s.radio.Status()
+	if !st.Running || st.CurrentTrackID == "" {
+		http.Error(w, "再生していません", http.StatusConflict)
+		return
+	}
+	offset := st.BaseOffsetSeconds
+	if !st.TrackStartedAt.IsZero() {
+		offset += int(time.Since(st.TrackStartedAt).Seconds())
+	}
+	s.musicPendingMu.Lock()
+	s.musicPaused = true
+	s.musicPausedTrack = st.CurrentTrackID
+	s.musicPausedOffset = offset
+	s.musicPendingMu.Unlock()
+	s.radio.SkipCurrent()
+	s.broadcastStateChangedThrottled()
+	writeJSON(w, s.musicPlaylistState())
+}
+
 func (s *Server) handleMusicPlaylistNext(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -426,6 +493,7 @@ func (s *Server) handleMusicPlaylistNext(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "再生していません", http.StatusConflict)
 		return
 	}
+	s.clearMusicPause()
 	s.radio.SkipCurrent()
 	s.broadcastStateChangedThrottled()
 	writeJSON(w, s.musicPlaylistState())
@@ -436,6 +504,7 @@ func (s *Server) handleMusicPlaylistStop(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	s.clearMusicPause()
 	s.radio.Stop(8 * time.Second)
 	s.musicQueue.ClearCurrent()
 	s.broadcastStateChangedThrottled()
