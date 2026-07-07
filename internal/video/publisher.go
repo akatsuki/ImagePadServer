@@ -163,6 +163,28 @@ func ResolveQualityForUpload(mode string, downloadMbps, uploadMbps int) QualityP
 // footage. CRF is raised and the bitrate ceiling is lowered to keep songs
 // small, but we avoid pushing it so hard that the waveform area becomes
 // blocky.
+// MusicRadioQualityPreset is the dedicated lower-bitrate setup for the
+// playlist radio. The visualizer is near-static footage, so the continuous
+// stream is capped at 720p with video bitrates scaled well below the
+// single-track music preset; audio quality is left untouched.
+func MusicRadioQualityPreset(mode string, downloadMbps, uploadMbps int) QualityPreset {
+	preset := ResolveQualityForMusic(mode, downloadMbps, uploadMbps)
+	if preset.Height > 720 {
+		preset = ResolveQualityForMusic("720", downloadMbps, uploadMbps)
+	}
+	preset.CRF = clampInt(preset.CRF+2, 18, 40)
+	if preset.VideoBitrate != "" {
+		preset.VideoBitrate = scaleBitrate(preset.VideoBitrate, 0.60)
+	}
+	if preset.MaxRate != "" {
+		preset.MaxRate = scaleBitrate(preset.MaxRate, 0.60)
+	}
+	if preset.BufferSize != "" {
+		preset.BufferSize = scaleBitrate(preset.BufferSize, 0.60)
+	}
+	return preset
+}
+
 func ResolveQualityForMusic(mode string, downloadMbps, uploadMbps int) QualityPreset {
 	preset := ResolveQualityForUpload(mode, downloadMbps, uploadMbps)
 	preset.CRF = clampInt(preset.CRF+2, 18, 40)

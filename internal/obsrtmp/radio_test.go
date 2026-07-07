@@ -2,6 +2,7 @@ package obsrtmp
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"sync"
 	"testing"
@@ -25,8 +26,8 @@ func (f *fakeRadioRuntime) wasStopped() bool {
 	defer f.mu.Unlock()
 	return f.stopped
 }
-func (f *fakeRadioRuntime) publishURL() string { return "rtsp://user:pass@127.0.0.1:9999/radio" }
-func (f *fakeRadioRuntime) rtspURL() string    { return "rtsp://192.168.0.10:8554/radio" }
+func (f *fakeRadioRuntime) rtmpPublishURL() string { return "rtmp://127.0.0.1:9999/radio?user=u&pass=p" }
+func (f *fakeRadioRuntime) rtspURL() string        { return "rtsp://192.168.0.10:8554/radio" }
 func (f *fakeRadioRuntime) proxyHLS(w http.ResponseWriter, _ *http.Request, name string) {
 	w.Header().Set("X-Proxied", name)
 	w.WriteHeader(http.StatusOK)
@@ -45,6 +46,14 @@ func (g *fakeGate) stop() error {
 	g.stopped = true
 	return nil
 }
+
+type fakePublisher struct {
+	exit chan error
+}
+
+func (p *fakePublisher) sink() io.Writer    { return io.Discard }
+func (p *fakePublisher) done() <-chan error { return p.exit }
+func (p *fakePublisher) close()             {}
 
 type radioEvent struct {
 	kind    string
@@ -104,11 +113,18 @@ func newRadioHarness(t *testing.T, next func() (string, string, bool), pushErr m
 	m.buildRuntime = func(context.Context) (radioRuntime, radioGate, RTSPEndpoint, error) {
 		return h.runtime, h.gate, RTSPEndpoint{SessionID: "s1", Host: "192.168.0.10", Port: 8554, Path: "radio", LocalURL: h.runtime.rtspURL()}, nil
 	}
-	m.runPush = func(ctx context.Context, mediaPath string, _ int, publishURL string) error {
+	m.startPublisher = func(context.Context, string) (radioPublisher, error) {
+		return &fakePublisher{exit: make(chan error)}, nil
+	}
+	m.runFeeder = func(ctx context.Context, mediaPath string, _ int, loop bool, _ io.Writer) error {
+		if loop { // filler: run until interrupted
+			<-ctx.Done()
+			return nil
+		}
 		id := mediaPath // tests pass trackID as mediaPath for simplicity
 		if blockers[id] {
 			<-ctx.Done()
-			return ctx.Err()
+			return nil
 		}
 		return pushErr[id]
 	}
@@ -246,6 +262,54 @@ func TestRadioStopShutsDownRuntimeAndGate(t *testing.T) {
 	}
 	if st := m.Status(); st.Running || st.CurrentTrackID != "" {
 		t.Fatalf("status after stop = %+v", st)
+	}
+}
+
+func TestRadioFillerLoopsWhileIdleAndWakeInterrupts(t *testing.T) {
+	var mu sync.Mutex
+	queue := []string{}
+	next := func() (string, string, bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(queue) == 0 {
+			return "", "", false
+		}
+		id := queue[0]
+		queue = queue[1:]
+		return id, id, true
+	}
+	m, h := newRadioHarness(t, next, nil, nil)
+	fillerStarted := make(chan struct{}, 8)
+	m.fillerPath = func() (string, error) { return "filler.mp4", nil }
+	m.runFeeder = func(ctx context.Context, mediaPath string, _ int, loop bool, _ io.Writer) error {
+		if loop {
+			if mediaPath != "filler.mp4" {
+				t.Errorf("filler feeder got %q", mediaPath)
+			}
+			select {
+			case fillerStarted <- struct{}{}:
+			default:
+			}
+			<-ctx.Done()
+			return nil
+		}
+		return nil
+	}
+	if err := m.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	h.waitEvent(t, "idle")
+	select {
+	case <-fillerStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("filler feeder did not start while idle")
+	}
+	mu.Lock()
+	queue = append(queue, "t1")
+	mu.Unlock()
+	m.Wake()
+	if e := h.waitEvent(t, "start"); e.trackID != "t1" {
+		t.Fatalf("after wake, expected t1, got %+v", e)
 	}
 }
 

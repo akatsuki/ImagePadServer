@@ -6,15 +6,15 @@ import (
 )
 
 func TestRadioTrackFileName(t *testing.T) {
-	// MP4 が必須: RTSP muxer は ADTS(TS) の AAC を global header なしとして拒否する。
+	// MP4 が必須: FLV/RTSP への copy remux は AAC グローバルヘッダーを要求する。
 	if got := RadioTrackFileName("abc123"); got != "radio-track-abc123.mp4" {
 		t.Fatalf("RadioTrackFileName = %q", got)
 	}
 }
 
-func TestAudioVisualizerMP4Args(t *testing.T) {
+func TestAudioVisualizerMP4ArgsWithEdgeFades(t *testing.T) {
 	preset := QualityPreset{Height: 720, AudioBitrate: "192k", VideoBitrate: "4000k", MaxRate: "4500k", BufferSize: "8000k"}
-	args := audioVisualizerMP4ArgsWithEncoder("song.m4a", "sub.ass", "fonts", "out/radio-track-x.mp4", preset, nil, CPUVideoEncoder(EncoderStandard), "")
+	args := audioVisualizerMP4ArgsWithEncoder("song.m4a", "sub.ass", "fonts", "out/radio-track-x.mp4", preset, nil, CPUVideoEncoder(EncoderStandard), "", 200)
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "-f mp4") || !strings.Contains(joined, "-movflags +faststart") {
 		t.Fatalf("args must select the mp4 muxer with faststart: %s", joined)
@@ -22,8 +22,11 @@ func TestAudioVisualizerMP4Args(t *testing.T) {
 	if args[len(args)-1] != "out/radio-track-x.mp4" {
 		t.Fatalf("last arg must be output path, got %q", args[len(args)-1])
 	}
-	if strings.Contains(joined, "-f hls") || strings.Contains(joined, "hls_segment_filename") || strings.Contains(joined, "mpegts") {
-		t.Fatalf("mp4 args must not contain HLS/TS options: %s", joined)
+	// 黒フェード: 曲頭フェードイン + 曲末フェードアウト（映像・音声とも）。
+	for _, want := range []string{"fade=t=in:st=0:d=0.70", "fade=t=out:st=199.30:d=0.70", "afade=t=in:st=0:d=0.70", "afade=t=out:st=199.30:d=0.70", "-map [vfade]", "-map [afade]"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("args missing %q: %s", want, joined)
+		}
 	}
 	// Core render options shared with the HLS path must be present.
 	for _, want := range []string{"-i song.m4a", "-c:a aac", "-pix_fmt yuv420p", "showwaves"} {
@@ -43,27 +46,47 @@ func TestHLSArgsUnchangedByRefactor(t *testing.T) {
 			t.Fatalf("HLS args missing %q: %s", want, joined)
 		}
 	}
+	// 単曲モードにはフェードを入れない。
+	if strings.Contains(joined, "fade=") {
+		t.Fatalf("HLS args must not contain fades: %s", joined)
+	}
 }
 
-func TestRadioPushArgs(t *testing.T) {
-	args := RadioPushArgs("out/radio-track-x.mp4", 0, "rtsp://127.0.0.1:8554/radio")
+func TestRadioPublisherArgs(t *testing.T) {
+	args := RadioPublisherArgs("rtmp://127.0.0.1:1935/radio?user=u&pass=p")
 	joined := strings.Join(args, " ")
-	if strings.Contains(joined, "-ss") {
-		t.Fatalf("offset 0 must not add -ss: %s", joined)
-	}
-	resumed := strings.Join(RadioPushArgs("out/radio-track-x.mp4", 97, "rtsp://127.0.0.1:8554/radio"), " ")
-	if !strings.Contains(resumed, "-ss 97 -i out/radio-track-x.mp4") {
-		t.Fatalf("resume args must seek before the input: %s", resumed)
-	}
-	for _, want := range []string{"-re", "-i out/radio-track-x.mp4", "-c copy", "-f rtsp", "-rtsp_transport tcp"} {
+	for _, want := range []string{
+		"-use_wallclock_as_timestamps 1", // 曲をまたいで単調なタイムスタンプにする要
+		"-f mpegts -i pipe:0",
+		"-c copy",
+		"-bsf:a aac_adtstoasc", // TS の ADTS AAC を FLV 用 ASC に変換する要
+		"-f flv",
+	} {
 		if !strings.Contains(joined, want) {
-			t.Fatalf("push args missing %q: %s", want, joined)
+			t.Fatalf("publisher args missing %q: %s", want, joined)
 		}
 	}
-	if args[len(args)-1] != "rtsp://127.0.0.1:8554/radio" {
-		t.Fatalf("last arg must be RTSP URL, got %q", args[len(args)-1])
+	if args[len(args)-1] != "rtmp://127.0.0.1:1935/radio?user=u&pass=p" {
+		t.Fatalf("last arg must be the RTMP URL, got %q", args[len(args)-1])
 	}
-	if strings.Contains(joined, "libx264") || strings.Contains(joined, "aac") {
-		t.Fatalf("push must be codec copy only: %s", joined)
+}
+
+func TestRadioFeederArgs(t *testing.T) {
+	base := strings.Join(RadioFeederArgs("track.mp4", 0, false), " ")
+	for _, want := range []string{"-re", "-i track.mp4", "-c copy", "-f mpegts pipe:1"} {
+		if !strings.Contains(base, want) {
+			t.Fatalf("feeder args missing %q: %s", want, base)
+		}
+	}
+	if strings.Contains(base, "-stream_loop") || strings.Contains(base, "-ss") {
+		t.Fatalf("plain feeder must not loop or seek: %s", base)
+	}
+	resumed := strings.Join(RadioFeederArgs("track.mp4", 97, false), " ")
+	if !strings.Contains(resumed, "-ss 97 -i track.mp4") {
+		t.Fatalf("resume feeder must seek before the input: %s", resumed)
+	}
+	filler := strings.Join(RadioFeederArgs("filler.mp4", 0, true), " ")
+	if !strings.Contains(filler, "-stream_loop -1") {
+		t.Fatalf("filler feeder must loop forever: %s", filler)
 	}
 }

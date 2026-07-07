@@ -260,6 +260,32 @@ func TestMusicPlaylistRemoveKeepsMediaReferencedBySavedPlaylist(t *testing.T) {
 	}
 }
 
+func TestMusicPlaylistPrepareDeletesRenderedMediaWhenTrackWasRemoved(t *testing.T) {
+	srv, _ := testServer(t, true)
+	defer cleanupTestServer(srv)
+	fakeRadioPipeline(t)
+
+	source := filepath.Join(srv.store.Dir(), "removed-source.m4a")
+	if err := os.WriteFile(source, []byte("audio"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	track := srv.musicQueue.Add(playlist.Track{Title: "Removed"})
+	if !srv.musicQueue.Remove(track.ID) {
+		t.Fatal("track must be removable before prepare completes")
+	}
+
+	srv.prepareRadioTrack(track.ID, video.AcquiredAudio{
+		SourcePath: source,
+		SourceName: "removed-source.m4a",
+		Kind:       video.SourceMusic,
+	})
+
+	media := filepath.Join(srv.store.Dir(), video.RadioTrackFileName(track.ID))
+	if _, err := os.Stat(media); !os.IsNotExist(err) {
+		t.Fatalf("rendered media for removed track must be deleted, stat err=%v", err)
+	}
+}
+
 func TestMusicPlaylistOptionsToggle(t *testing.T) {
 	srv, mux := testServer(t, true)
 	defer cleanupTestServer(srv)
@@ -332,6 +358,40 @@ func TestMusicPlaylistsSaveLoadDelete(t *testing.T) {
 	req = httptest.NewRequest(http.MethodPost, "/api/music/playlists/load", strings.NewReader(`{"name":"mylist"}`))
 	if rec := adminJSON(t, mux, req); rec.Code != http.StatusNotFound {
 		t.Fatalf("load deleted = %d, want 404", rec.Code)
+	}
+}
+
+func TestMusicPlaylistsLoadClearsPausedTrackState(t *testing.T) {
+	srv, mux := testServer(t, true)
+	defer cleanupTestServer(srv)
+
+	old := srv.musicQueue.Add(playlist.Track{Title: "Old", Status: playlist.TrackReady})
+	srv.musicPendingMu.Lock()
+	srv.musicPaused = true
+	srv.musicPausedTrack = old.ID
+	srv.musicPausedOffset = 42
+	srv.musicPendingMu.Unlock()
+
+	media := filepath.Join(srv.store.Dir(), "radio-track-loaded.ts")
+	if err := os.WriteFile(media, []byte("ts"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.playlistStore.Save("loaded", []playlist.Track{
+		{ID: "loaded-track", Title: "Loaded", Status: playlist.TrackReady, MediaPath: media},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/music/playlists/load", strings.NewReader(`{"name":"loaded"}`))
+	if rec := adminJSON(t, mux, req); rec.Code != http.StatusOK {
+		t.Fatalf("load = %d: %s", rec.Code, rec.Body.String())
+	}
+	st := playlistState(t, mux)
+	if st["paused"] != false {
+		t.Fatalf("load must clear paused state: %v", st)
+	}
+	if st["currentTrackId"] != "" {
+		t.Fatalf("load must not expose old paused track as current: %v", st)
 	}
 }
 

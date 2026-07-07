@@ -24,6 +24,7 @@ import (
 type mediaMTXPorts struct {
 	API         int
 	HLS         int
+	RTMP        int
 	RTSP        int
 	RTP         int
 	RTCP        int
@@ -45,6 +46,9 @@ type mediaMTXSessionConfig struct {
 	HLSVariant     string
 	HLSAlwaysRemux bool
 	HLSDirectory   string
+	// EnableRTMP opens a loopback RTMP ingest (the playlist radio's
+	// persistent publisher pushes FLV there).
+	EnableRTMP bool
 }
 
 // renderMediaMTXConfig renders a minimal MediaMTX YAML configuration. Only the
@@ -67,8 +71,14 @@ func renderMediaMTXConfig(cfg mediaMTXSessionConfig) string {
 	b.WriteString("api: yes\n")
 	fmt.Fprintf(&b, "apiAddress: 127.0.0.1:%d\n", cfg.Ports.API)
 
-	// Disable everything that is not RTSP or HLS.
-	b.WriteString("rtmp: no\n")
+	// Disable everything that is not RTSP or HLS (plus the loopback RTMP
+	// ingest when the session asks for it).
+	if cfg.EnableRTMP && cfg.Ports.RTMP > 0 {
+		b.WriteString("rtmp: yes\n")
+		fmt.Fprintf(&b, "rtmpAddress: 127.0.0.1:%d\n", cfg.Ports.RTMP)
+	} else {
+		b.WriteString("rtmp: no\n")
+	}
 	b.WriteString("webrtc: no\n")
 	b.WriteString("srt: no\n")
 	b.WriteString("moq: no\n")
@@ -353,6 +363,13 @@ func (r *mediaMTXRuntime) hlsBaseURL() string {
 func (r *mediaMTXRuntime) publishURL() string {
 	return fmt.Sprintf("rtsp://%s:%s@127.0.0.1:%d/%s",
 		r.cfg.PublishUser, r.cfg.PublishPass, r.cfg.Ports.mediaMTXRTSPPort(), r.cfg.Path)
+}
+
+// rtmpPublishURL is the loopback RTMP target for the playlist radio's
+// persistent publisher, carrying the per-session credential as query params.
+func (r *mediaMTXRuntime) rtmpPublishURL() string {
+	return fmt.Sprintf("rtmp://127.0.0.1:%d/%s?user=%s&pass=%s",
+		r.cfg.Ports.RTMP, r.cfg.Path, r.cfg.PublishUser, r.cfg.PublishPass)
 }
 
 // rtspURL is the advertised RTSP URL handed to players.
@@ -844,7 +861,7 @@ func freeUDPPortPair(seen map[int]bool) (int, int, error) {
 func allocMediaMTXPorts() (mediaMTXPorts, error) {
 	var ports mediaMTXPorts
 	seen := map[int]bool{}
-	for _, target := range []*int{&ports.API, &ports.HLS, &ports.RTSP, &ports.BackendRTSP} {
+	for _, target := range []*int{&ports.API, &ports.HLS, &ports.RTMP, &ports.RTSP, &ports.BackendRTSP} {
 		for {
 			port, err := freeLoopbackPort()
 			if err != nil {

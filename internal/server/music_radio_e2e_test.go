@@ -102,6 +102,57 @@ func TestRadioEndToEnd(t *testing.T) {
 		t.Fatalf("RTSP URL must use the radio_ path prefix: %q", url)
 	}
 
+	fetchHLS := func() (int, string) {
+		req := httptest.NewRequest(http.MethodGet, "/radio/index.m3u8", nil)
+		req.RemoteAddr = "127.0.0.1:50000"
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec.Code, rec.Body.String()
+	}
+
+	// 一時停止しても常駐 publisher がフィラーを流し続け、ストリームは切れない。
+	req = httptest.NewRequest(http.MethodPost, "/api/music/playlist/pause", strings.NewReader(`{}`))
+	if rec := adminJSON(t, mux, req); rec.Code != http.StatusOK {
+		t.Fatalf("pause = %d: %s", rec.Code, rec.Body.String())
+	}
+	time.Sleep(6 * time.Second) // フィラーへの切り替えとセグメント生成を跨ぐ
+	if code, body := fetchHLS(); code != http.StatusOK || !strings.Contains(body, "#EXTM3U") {
+		t.Fatalf("stream must stay alive while paused: %d %s; state=%v", code, body, playlistState(t, mux))
+	}
+	if st := playlistState(t, mux); st["paused"] != true || st["playing"] != false {
+		t.Fatalf("state must report paused: %v", st)
+	}
+
+	// 再開: 中断位置から同じ曲が流れ、playing に戻る。
+	req = httptest.NewRequest(http.MethodPost, "/api/music/playlist/play", strings.NewReader(`{}`))
+	if rec := adminJSON(t, mux, req); rec.Code != http.StatusOK {
+		t.Fatalf("resume = %d: %s", rec.Code, rec.Body.String())
+	}
+	resumeDeadline := time.Now().Add(20 * time.Second)
+	for {
+		st := playlistState(t, mux)
+		if st["playing"] == true {
+			break
+		}
+		if time.Now().After(resumeDeadline) {
+			t.Fatalf("radio did not resume: %v", st)
+		}
+		time.Sleep(1 * time.Second)
+	}
+	// フィラー→曲の切り替えでコーデックパラメータが変わると mediamtx が HLS
+	// muxer を作り直すため、直後は一時的に 502/404 になり得る。
+	hlsDeadline := time.Now().Add(20 * time.Second)
+	for {
+		code, body := fetchHLS()
+		if code == http.StatusOK && strings.Contains(body, "#EXTM3U") {
+			break
+		}
+		if time.Now().After(hlsDeadline) {
+			t.Fatalf("stream must come back after resume: %d %s", code, body)
+		}
+		time.Sleep(1 * time.Second)
+	}
+
 	req = httptest.NewRequest(http.MethodPost, "/api/music/playlist/stop", strings.NewReader(`{}`))
 	if rec := adminJSON(t, mux, req); rec.Code != http.StatusOK {
 		t.Fatalf("stop = %d: %s", rec.Code, rec.Body.String())

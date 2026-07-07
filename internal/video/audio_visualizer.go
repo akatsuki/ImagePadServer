@@ -31,7 +31,7 @@ func audioVisualizerFFmpegArgs(audioPath, assPath, fontDir, id string, preset Qu
 // signal; the audio is split after filtering to feed showwaves and the muxed
 // output from the same filtered stream.
 func audioVisualizerFFmpegArgsWithEncoder(audioPath, assPath, fontDir, id string, preset QualityPreset, mode *ForegroundMode, encoder VideoEncoderProfile, audioFilter string) []string {
-	args := audioVisualizerCoreArgsWithEncoder(audioPath, assPath, fontDir, preset, mode, encoder, audioFilter)
+	args := audioVisualizerCoreArgsWithEncoder(audioPath, assPath, fontDir, preset, mode, encoder, audioFilter, 0, 0)
 	return append(args,
 		"-f", "hls",
 		"-hls_time", "4",
@@ -45,8 +45,10 @@ func audioVisualizerFFmpegArgsWithEncoder(audioPath, assPath, fontDir, id string
 
 // audioVisualizerCoreArgsWithEncoder builds the shared render command up to
 // (but excluding) the output muxer: inputs, filter graph, stream maps, video
-// encoder, and audio encode options. Callers append an HLS or MPEG-TS tail.
-func audioVisualizerCoreArgsWithEncoder(audioPath, assPath, fontDir string, preset QualityPreset, mode *ForegroundMode, encoder VideoEncoderProfile, audioFilter string) []string {
+// encoder, and audio encode options. Callers append an HLS or MP4 tail.
+// edgeFadeSeconds > 0 burns a black fade-in/out (and matching audio fade)
+// into the first/last edgeFadeSeconds of the track (曲の切り替わり用).
+func audioVisualizerCoreArgsWithEncoder(audioPath, assPath, fontDir string, preset QualityPreset, mode *ForegroundMode, encoder VideoEncoderProfile, audioFilter string, edgeFadeSeconds, totalDurationSeconds float64) []string {
 	height := preset.Height
 	if height <= 0 {
 		height = 720
@@ -79,6 +81,20 @@ func audioVisualizerCoreArgsWithEncoder(audioPath, assPath, fontDir string, pres
 		escapeFilterPath(assPath),
 		escapeFilterPath(fontDir),
 	)
+	videoMap := "[out]"
+	if edgeFadeSeconds > 0 && totalDurationSeconds > edgeFadeSeconds*2 {
+		fadeOutStart := totalDurationSeconds - edgeFadeSeconds
+		filterComplex += fmt.Sprintf(";[out]fade=t=in:st=0:d=%.2f,fade=t=out:st=%.2f:d=%.2f[vfade]",
+			edgeFadeSeconds, fadeOutStart, edgeFadeSeconds)
+		videoMap = "[vfade]"
+		audioSrc := audioMap
+		if audioSrc == "1:a" {
+			audioSrc = "[1:a]"
+		}
+		filterComplex += fmt.Sprintf(";%safade=t=in:st=0:d=%.2f,afade=t=out:st=%.2f:d=%.2f[afade]",
+			audioSrc, edgeFadeSeconds, fadeOutStart, edgeFadeSeconds)
+		audioMap = "[afade]"
+	}
 	args := []string{
 		"-v", "error",
 		"-f", "rawvideo",
@@ -88,7 +104,7 @@ func audioVisualizerCoreArgsWithEncoder(audioPath, assPath, fontDir string, pres
 		"-i", "pipe:0",
 		"-i", audioPath,
 		"-filter_complex", filterComplex,
-		"-map", "[out]",
+		"-map", videoMap,
 		"-map", audioMap,
 	}
 	args = append(args, encoder.FFmpegArgs(preset, "medium")...)

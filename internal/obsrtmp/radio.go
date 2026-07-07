@@ -1,14 +1,23 @@
 package obsrtmp
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
 
 	"imagepadserver/internal/video"
 )
+
+// errPublisherDown marks feeder failures caused by the persistent publisher
+// process dying (write into its stdin failed); the session cannot continue.
+var errPublisherDown = errors.New("radio publisher exited")
 
 // RadioCallbacks notify the server about playlist-radio lifecycle events.
 // Callbacks run on the radio goroutine; they must not block for long.
@@ -25,7 +34,7 @@ type RadioStatus struct {
 	Running        bool      `json:"running"`
 	CurrentTrackID string    `json:"currentTrackId"`
 	TrackStartedAt time.Time `json:"trackStartedAt"`
-	// BaseOffsetSeconds is the in-track position the current push started
+	// BaseOffsetSeconds is the in-track position the current feed started
 	// from (>0 after resuming a paused track).
 	BaseOffsetSeconds int    `json:"baseOffsetSeconds"`
 	RTSPURL           string `json:"rtspUrl"`
@@ -37,7 +46,7 @@ type RadioStatus struct {
 type radioRuntime interface {
 	start(ctx context.Context) error
 	stop(timeout time.Duration) error
-	publishURL() string
+	rtmpPublishURL() string
 	rtspURL() string
 	proxyHLS(w http.ResponseWriter, req *http.Request, name string)
 	llhlsReady(ctx context.Context) bool
@@ -48,11 +57,21 @@ type radioGate interface {
 	stop() error
 }
 
+// radioPublisher is the persistent ffmpeg process that owns the mediamtx
+// publish connection for the whole session. Feeders write MPEG-TS into sink.
+type radioPublisher interface {
+	sink() io.Writer
+	done() <-chan error
+	close()
+}
+
 // RadioManager streams a music playlist as a continuous "radio" broadcast.
-// It owns one MediaMTX instance (RTSP + LL-HLS on fixed URLs) and pushes
-// pre-rendered track files into it one after another with codec copy. Track
-// selection is delegated to next(), so the queue policy (shuffle, loop,
-// interrupts) lives entirely in the playlist domain.
+// One MediaMTX instance serves RTSP + LL-HLS on fixed URLs; one persistent
+// publisher process stays connected for the whole session, and per-track
+// feeder processes pipe real-time MPEG-TS into it. Between tracks, while
+// paused, and while idle a black/silent filler loops, so viewers never see
+// the stream drop. Track selection is delegated to next(), so the queue
+// policy (shuffle, loop, interrupts) lives entirely in the playlist domain.
 type RadioManager struct {
 	mu     sync.Mutex
 	outDir string
@@ -60,19 +79,22 @@ type RadioManager struct {
 	next   func() (mediaPath, trackID string, startSeconds int, ok bool)
 	cb     RadioCallbacks
 
-	cancel     context.CancelFunc
-	done       chan struct{}
-	runtime    radioRuntime
-	status     RadioStatus
-	skipPush   context.CancelFunc
-	wake       chan struct{}
-	skipped    bool
-	pathName   string
-	rtspPublic RTSPEndpoint
+	cancel       context.CancelFunc
+	done         chan struct{}
+	runtime      radioRuntime
+	status       RadioStatus
+	skipPush     context.CancelFunc
+	fillerCancel context.CancelFunc
+	wake         chan struct{}
+	skipped      bool
+	pathName     string
+	rtspPublic   RTSPEndpoint
+	fillerPath   func() (string, error)
 
 	// test seams
-	buildRuntime func(ctx context.Context) (radioRuntime, radioGate, RTSPEndpoint, error)
-	runPush      func(ctx context.Context, mediaPath string, startSeconds int, publishURL string) error
+	buildRuntime   func(ctx context.Context) (radioRuntime, radioGate, RTSPEndpoint, error)
+	startPublisher func(ctx context.Context, publishURL string) (radioPublisher, error)
+	runFeeder      func(ctx context.Context, mediaPath string, startSeconds int, loop bool, sink io.Writer) error
 }
 
 func NewRadioManager(outDir, host string, next func() (mediaPath, trackID string, startSeconds int, ok bool), cb RadioCallbacks) *RadioManager {
@@ -84,8 +106,15 @@ func NewRadioManager(outDir, host string, next func() (mediaPath, trackID string
 		wake:   make(chan struct{}, 1),
 	}
 	m.buildRuntime = m.buildMediaMTX
-	m.runPush = m.runFFmpegPush
+	m.startPublisher = m.startFFmpegPublisher
+	m.runFeeder = m.runFFmpegFeeder
 	return m
+}
+
+// SetFillerSource installs the provider of the black/silent clip broadcast
+// whenever no track is feeding (idle, paused, between tracks).
+func (m *RadioManager) SetFillerSource(fn func() (string, error)) {
+	m.fillerPath = fn
 }
 
 // Start launches the radio session. It is idempotent while running.
@@ -144,9 +173,20 @@ func (m *RadioManager) run(ctx context.Context, done chan struct{}, runtime radi
 		}
 	}()
 
+	publisher, err := m.startPublisher(ctx, runtime.rtmpPublishURL())
+	if err != nil {
+		return
+	}
+	defer publisher.close()
+
 	for {
 		if ctx.Err() != nil {
 			return
+		}
+		select {
+		case <-publisher.done():
+			return
+		default:
 		}
 		mediaPath, trackID, startSeconds, ok := m.next()
 		if !ok {
@@ -154,12 +194,8 @@ func (m *RadioManager) run(ctx context.Context, done chan struct{}, runtime radi
 			if m.cb.OnIdle != nil {
 				m.cb.OnIdle()
 			}
-			select {
-			case <-m.wake:
-				continue
-			case <-ctx.Done():
-				return
-			}
+			m.feedFillerUntilWake(ctx, publisher)
+			continue
 		}
 
 		pushCtx, cancelPush := context.WithCancel(ctx)
@@ -174,7 +210,7 @@ func (m *RadioManager) run(ctx context.Context, done chan struct{}, runtime radi
 			m.cb.OnTrackStart(trackID)
 		}
 
-		err := m.runPush(pushCtx, mediaPath, startSeconds, runtime.publishURL())
+		err := m.runFeeder(pushCtx, mediaPath, startSeconds, false, publisher.sink())
 		cancelPush()
 		m.mu.Lock()
 		skipped := m.skipped
@@ -185,13 +221,58 @@ func (m *RadioManager) run(ctx context.Context, done chan struct{}, runtime radi
 		if ctx.Err() != nil {
 			return
 		}
-		if skipped {
+		if skipped && !errors.Is(err, errPublisherDown) {
 			err = nil
 		}
 		if m.cb.OnTrackEnd != nil {
 			m.cb.OnTrackEnd(trackID, err)
 		}
+		if errors.Is(err, errPublisherDown) {
+			return
+		}
 	}
+}
+
+// feedFillerUntilWake broadcasts the filler loop until Wake/Skip arrives (or
+// the session ends). Without a filler source it degrades to a plain wait.
+func (m *RadioManager) feedFillerUntilWake(ctx context.Context, publisher radioPublisher) {
+	// A wake queued during the previous track means new work is already
+	// waiting — skip the filler entirely.
+	select {
+	case <-m.wake:
+		return
+	default:
+	}
+	filler := ""
+	if m.fillerPath != nil {
+		if path, err := m.fillerPath(); err == nil {
+			filler = path
+		}
+	}
+	if filler == "" {
+		select {
+		case <-m.wake:
+		case <-ctx.Done():
+		case <-publisher.done():
+		}
+		return
+	}
+	fctx, cancel := context.WithCancel(ctx)
+	m.mu.Lock()
+	m.fillerCancel = cancel
+	m.mu.Unlock()
+	go func() {
+		select {
+		case <-m.wake:
+			cancel()
+		case <-fctx.Done():
+		}
+	}()
+	_ = m.runFeeder(fctx, filler, 0, true, publisher.sink())
+	cancel()
+	m.mu.Lock()
+	m.fillerCancel = nil
+	m.mu.Unlock()
 }
 
 func (m *RadioManager) setCurrent(trackID string) {
@@ -205,7 +286,7 @@ func (m *RadioManager) setCurrent(trackID string) {
 }
 
 // Wake nudges an idle radio to re-query next() (e.g. after a track was added
-// or playback was requested).
+// or playback was requested); it interrupts a running filler loop.
 func (m *RadioManager) Wake() {
 	select {
 	case m.wake <- struct{}{}:
@@ -213,9 +294,9 @@ func (m *RadioManager) Wake() {
 	}
 }
 
-// SkipCurrent aborts the current track push; the loop immediately asks next()
-// for the following track. Used for both skip and 割り込み再生 (the server
-// sets the queue's current track before calling this).
+// SkipCurrent aborts the current track feed; the loop immediately asks next()
+// for the following track. Used for skip, 割り込み再生, and pause (the server
+// flips its own state before calling this).
 func (m *RadioManager) SkipCurrent() {
 	m.mu.Lock()
 	cancel := m.skipPush
@@ -293,7 +374,8 @@ func (m *RadioManager) HLSReady(ctx context.Context) bool {
 
 // buildMediaMTX provisions the real MediaMTX instance plus the public RTSP
 // gate, mirroring the OBS RTSPT sidecar but with the low-latency HLS variant
-// enabled so RTSP and LL-HLS are served simultaneously.
+// and the loopback RTMP ingest enabled so RTSP and LL-HLS are served
+// simultaneously from the persistent publisher.
 func (m *RadioManager) buildMediaMTX(ctx context.Context) (radioRuntime, radioGate, RTSPEndpoint, error) {
 	mtxExe, err := EnsureMediaMTX(ctx)
 	if err != nil {
@@ -316,6 +398,7 @@ func (m *RadioManager) buildMediaMTX(ctx context.Context) (radioRuntime, radioGa
 		Ports:         ports,
 		AdvertiseHost: m.host,
 		DebugLogPath:  mediaMTXDebugLogPath(),
+		EnableRTMP:    true,
 	})
 	if err := runtime.start(ctx); err != nil {
 		return nil, nil, RTSPEndpoint{}, err
@@ -343,10 +426,86 @@ func (m *RadioManager) buildMediaMTX(ctx context.Context) (radioRuntime, radioGa
 	return runtime, gate, endpoint, nil
 }
 
-func (m *RadioManager) runFFmpegPush(ctx context.Context, mediaPath string, startSeconds int, publishURL string) error {
+// --- real ffmpeg publisher / feeder -----------------------------------------
+
+type ffmpegPublisher struct {
+	cmd  *exec.Cmd
+	in   io.WriteCloser
+	exit chan error
+}
+
+func (p *ffmpegPublisher) sink() io.Writer      { return p.in }
+func (p *ffmpegPublisher) done() <-chan error   { return p.exit }
+func (p *ffmpegPublisher) close() {
+	_ = p.in.Close()
+	select {
+	case <-p.exit:
+	case <-time.After(3 * time.Second):
+		if p.cmd.Process != nil {
+			_ = p.cmd.Process.Kill()
+		}
+		<-p.exit
+	}
+}
+
+func (m *RadioManager) startFFmpegPublisher(ctx context.Context, publishURL string) (radioPublisher, error) {
+	ffmpeg, err := video.EnsureFFmpeg()
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, ffmpeg, video.RadioPublisherArgs(publishURL)...)
+	hideWindow(cmd)
+	cmd.Dir = m.outDir
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	untrack := video.TrackStartedFFmpeg(cmd)
+	exit := make(chan error, 1)
+	go func() {
+		defer untrack()
+		exit <- cmd.Wait()
+		close(exit)
+	}()
+	return &ffmpegPublisher{cmd: cmd, in: stdin, exit: exit}, nil
+}
+
+func (m *RadioManager) runFFmpegFeeder(ctx context.Context, mediaPath string, startSeconds int, loop bool, sink io.Writer) error {
 	ffmpeg, err := video.EnsureFFmpeg()
 	if err != nil {
 		return err
 	}
-	return video.RunRadioPush(ctx, m.outDir, ffmpeg, mediaPath, startSeconds, publishURL)
+	cmd := exec.CommandContext(ctx, ffmpeg, video.RadioFeederArgs(mediaPath, startSeconds, loop)...)
+	hideWindow(cmd)
+	cmd.Dir = m.outDir
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	untrack := video.TrackStartedFFmpeg(cmd)
+	defer untrack()
+	_, copyErr := io.Copy(sink, stdout)
+	waitErr := cmd.Wait()
+	if ctx.Err() != nil {
+		return nil // skipped / paused / session shutdown
+	}
+	if copyErr != nil {
+		return fmt.Errorf("%w: %v", errPublisherDown, copyErr)
+	}
+	if waitErr != nil {
+		detail := stderr.String()
+		if len(detail) > 400 {
+			detail = detail[len(detail)-400:]
+		}
+		return fmt.Errorf("feeder %s: %w: %s", mediaPath, waitErr, detail)
+	}
+	return nil
 }

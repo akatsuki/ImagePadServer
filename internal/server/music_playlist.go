@@ -12,6 +12,7 @@ import (
 
 	"imagepadserver/internal/obsrtmp"
 	"imagepadserver/internal/playlist"
+	"imagepadserver/internal/settings"
 	"imagepadserver/internal/video"
 )
 
@@ -34,12 +35,29 @@ func (s *Server) initMusicPlaylist(host string) {
 		OnIdle:       func() { s.broadcastStateChangedThrottled() },
 		OnStopped:    func() { s.broadcastStateChangedThrottled() },
 	})
+	s.radio.SetFillerSource(func() (string, error) {
+		ffmpeg, err := ensureFFmpeg()
+		if err != nil {
+			return "", err
+		}
+		return video.RenderRadioFiller(context.Background(), s.store.Dir(), ffmpeg, s.musicRadioPreset())
+	})
 	s.musicJobs = make(chan func(), 64)
 	go func() {
 		for job := range s.musicJobs {
 			job()
 		}
 	}()
+}
+
+// musicRadioPreset is the dedicated lower-bitrate setup for playlist radio
+// renders and the filler clip.
+func (s *Server) musicRadioPreset() video.QualityPreset {
+	appSettings, err := settings.Load()
+	if err != nil {
+		return video.MusicRadioQualityPreset("auto", 0, 0)
+	}
+	return video.MusicRadioQualityPreset(appSettings.VideoQualityMode, appSettings.NetworkMbps, appSettings.NetworkUploadMbps)
 }
 
 func (s *Server) enqueueMusicJob(job func()) bool {
@@ -99,6 +117,16 @@ func (s *Server) clearMusicPause() {
 	s.musicPaused = false
 	s.musicPausedTrack = ""
 	s.musicPausedOffset = 0
+	s.musicPendingMu.Unlock()
+}
+
+func (s *Server) clearMusicPlaybackRequest() {
+	s.musicPendingMu.Lock()
+	s.musicPaused = false
+	s.musicPausedTrack = ""
+	s.musicPausedOffset = 0
+	s.musicPendingTrack = ""
+	s.musicPendingOffset = 0
 	s.musicPendingMu.Unlock()
 }
 
@@ -286,8 +314,12 @@ func (s *Server) handleMusicPlaylistAdd(w http.ResponseWriter, r *http.Request) 
 // The audio source file is deleted afterwards; only the TS is kept.
 func (s *Server) prepareRadioTrack(trackID string, acquired video.AcquiredAudio) {
 	ctx := context.Background()
+	thumbnailPath := ""
 	fail := func(err error) {
 		os.Remove(acquired.SourcePath)
+		if thumbnailPath != "" {
+			os.Remove(thumbnailPath)
+		}
 		s.musicQueue.MarkFailed(trackID, err.Error())
 		s.broadcastStateChangedThrottled()
 	}
@@ -305,6 +337,9 @@ func (s *Server) prepareRadioTrack(trackID string, acquired video.AcquiredAudio)
 	if artworkPath != "" {
 		thumbnail = s.createVideoThumbnail(artworkPath)
 	}
+	if thumbnail != "" {
+		thumbnailPath = filepath.Join(s.store.Dir(), thumbnail)
+	}
 	s.musicQueue.Mutate(trackID, func(t *playlist.Track) {
 		if meta.Title != "" {
 			t.Title = meta.Title
@@ -315,8 +350,8 @@ func (s *Server) prepareRadioTrack(trackID string, acquired video.AcquiredAudio)
 		if t.OriginalName == "" {
 			t.OriginalName = acquired.SourceName
 		}
-		if thumbnail != "" {
-			t.ThumbnailPath = filepath.Join(s.store.Dir(), thumbnail)
+		if thumbnailPath != "" {
+			t.ThumbnailPath = thumbnailPath
 		}
 	})
 	s.broadcastStateChangedThrottled()
@@ -327,8 +362,8 @@ func (s *Server) prepareRadioTrack(trackID string, acquired video.AcquiredAudio)
 		return
 	}
 	usedArtwork := artworkPath
-	if thumbnail != "" {
-		usedArtwork = filepath.Join(s.store.Dir(), thumbnail)
+	if thumbnailPath != "" {
+		usedArtwork = thumbnailPath
 	}
 	input := video.AudioRenderInput{
 		SourcePath:  acquired.SourcePath,
@@ -337,13 +372,20 @@ func (s *Server) prepareRadioTrack(trackID string, acquired video.AcquiredAudio)
 		ArtworkPath: usedArtwork,
 		Analysis:    analysis,
 	}
-	mediaPath, err := renderRadioTrack(ctx, s.store.Dir(), ffmpeg, input, trackID, s.musicQualityPreset())
+	mediaPath, err := renderRadioTrack(ctx, s.store.Dir(), ffmpeg, input, trackID, s.musicRadioPreset())
 	if err != nil {
 		fail(err)
 		return
 	}
 	os.Remove(acquired.SourcePath)
-	s.musicQueue.MarkReady(trackID, mediaPath, int(analysis.Duration+0.5))
+	if !s.musicQueue.MarkReady(trackID, mediaPath, int(analysis.Duration+0.5)) {
+		os.Remove(mediaPath)
+		if thumbnailPath != "" {
+			os.Remove(thumbnailPath)
+		}
+		s.broadcastStateChangedThrottled()
+		return
+	}
 	// A running-but-idle radio starts playing the new track right away.
 	s.radio.Wake()
 	s.broadcastStateChanged()
@@ -589,6 +631,7 @@ func (s *Server) handleMusicPlaylistsLoad(w http.ResponseWriter, r *http.Request
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
+	s.clearMusicPlaybackRequest()
 	s.musicQueue.ReplaceAll(tracks)
 	if s.radio.Running() {
 		s.radio.SkipCurrent()
