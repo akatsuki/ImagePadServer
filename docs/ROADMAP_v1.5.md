@@ -191,6 +191,13 @@ v1.5 のスコープ外とした構造問題を先に解消し、ミュージッ
 
 ### v1.6.1 — プレイリスト
 
+> **進捗 (2026-07-07):** `v1.6.1-dev1` で下記を実装済み（`feature/music-playlist-v1.6.1` ブランチ）。
+> - クラシック iTunes 風プレイリスト UI（LCD ナウプレイング・曲テーブル・D&D 並べ替え・行削除/割り込み再生・再生中ハイライト）
+> - 統合入力（URL / ローカルパス / ファイルドロップを 1 入力欄で自動判定）
+> - ラジオ型連続再生: 曲を事前に TS へレンダリングし、OBS 基盤の mediamtx へ codec copy で連続 push。RTSP / LL-HLS を固定 URL で同時提供（`/radio/index.m3u8`）
+> - シャッフル / ループ、プレイリストの JSON 保存・読み込み（`playlists.json`、お気に入りと同じストレージ層）
+> - 実装: `internal/playlist`（キュー・永続化）、`internal/obsrtmp/radio.go`（RadioManager）、`internal/video/radio_render.go`、`internal/server/music_playlist.go`（API）
+
 **概要:** 現在は「1曲ずつキューに積む」のみ。複数曲を事前に並べて連続再生できるようにする。
 
 #### UI 構成

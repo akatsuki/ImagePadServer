@@ -171,9 +171,9 @@ JS コントローラ:
 
 ### Task 10: ゲート＆ドキュメント＆dev ビルド
 
-- [ ] `go build ./...` / `go test ./...` green
-- [ ] ROADMAP_v1.5.md の v1.6.1 に進捗注記、ROADMAP.md 更新
-- [ ] CLAUDE.md ルールどおり `chore: cut v1.3.0-devN`←※現行の実バージョン系列に合わせて `v1.5.x-devN` を確認して採番、about.go + winres.json + syso 再生成、**ビルドとコミットを同一ステップで**
+- [x] `go build ./...` / `go test ./...` green
+- [x] ROADMAP_v1.5.md の v1.6.1 に進捗注記
+- [x] `chore: cut v1.6.1-dev1` — about.go + winres.json + syso 再生成、`output/imagepadserver-v1.6.1-dev1-windows-amd64.exe` をビルドし同一コミットで確定
 
 ---
 
