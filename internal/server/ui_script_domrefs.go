@@ -46,6 +46,7 @@ const dashboardScriptDomRefs = `
     const plProgressTrack = document.getElementById('plProgressTrack');
     const plProgressFill = document.getElementById('plProgressFill');
     const plPlayButton = document.getElementById('plPlayButton');
+    const plStartStreamButton = document.getElementById('plStartStreamButton');
     const plStopButton = document.getElementById('plStopButton');
     const plNextButton = document.getElementById('plNextButton');
     const plShuffleButton = document.getElementById('plShuffleButton');

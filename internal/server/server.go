@@ -95,6 +95,7 @@ type Server struct {
 	musicQueue         *playlist.Queue
 	playlistStore      *playlist.Store
 	radio              *obsrtmp.RadioManager
+	startMusicRadio    func() error
 	musicJobs          chan func()
 	musicPendingMu     sync.Mutex
 	musicPendingTrack  string
@@ -232,6 +233,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/music/playlist/add", s.admin(s.handleMusicPlaylistAdd))
 	mux.HandleFunc("/api/music/playlist/remove", s.admin(s.handleMusicPlaylistRemove))
 	mux.HandleFunc("/api/music/playlist/reorder", s.admin(s.handleMusicPlaylistReorder))
+	mux.HandleFunc("/api/music/playlist/start", s.admin(s.handleMusicPlaylistStart))
 	mux.HandleFunc("/api/music/playlist/play", s.admin(s.handleMusicPlaylistPlay))
 	mux.HandleFunc("/api/music/playlist/pause", s.admin(s.handleMusicPlaylistPause))
 	mux.HandleFunc("/api/music/playlist/seek", s.admin(s.handleMusicPlaylistSeek))

@@ -119,16 +119,16 @@ func newRadioHarness(t *testing.T, next func() (string, string, bool), pushErr m
 		return &fakePublisher{exit: make(chan error)}, nil
 	}
 	m.runFeeder = func(ctx context.Context, mediaPath string, _ int, loop bool, _ float64, _ io.Writer) error {
-		if loop { // filler: run until interrupted
-			<-ctx.Done()
-			return nil
-		}
 		id := mediaPath // tests pass trackID as mediaPath for simplicity
 		if blockers[id] {
 			<-ctx.Done()
 			return nil
 		}
 		return pushErr[id]
+	}
+	m.runFallbackFeeder = func(ctx context.Context, _ float64, _ io.Writer) error {
+		<-ctx.Done()
+		return nil
 	}
 	t.Cleanup(func() { m.Stop(3 * time.Second) })
 	return m, h
@@ -282,19 +282,12 @@ func TestRadioFillerLoopsWhileIdleAndWakeInterrupts(t *testing.T) {
 	}
 	m, h := newRadioHarness(t, next, nil, nil)
 	fillerStarted := make(chan struct{}, 8)
-	m.fillerPath = func() (string, error) { return "filler.mp4", nil }
-	m.runFeeder = func(ctx context.Context, mediaPath string, _ int, loop bool, _ float64, _ io.Writer) error {
-		if loop {
-			if mediaPath != "filler.mp4" {
-				t.Errorf("filler feeder got %q", mediaPath)
-			}
-			select {
-			case fillerStarted <- struct{}{}:
-			default:
-			}
-			<-ctx.Done()
-			return nil
+	m.runFallbackFeeder = func(ctx context.Context, _ float64, _ io.Writer) error {
+		select {
+		case fillerStarted <- struct{}{}:
+		default:
 		}
+		<-ctx.Done()
 		return nil
 	}
 	if err := m.Start(); err != nil {
@@ -312,6 +305,47 @@ func TestRadioFillerLoopsWhileIdleAndWakeInterrupts(t *testing.T) {
 	m.Wake()
 	if e := h.waitEvent(t, "start"); e.trackID != "t1" {
 		t.Fatalf("after wake, expected t1, got %+v", e)
+	}
+}
+
+func TestRadioDoesNotStartFillerWhileTrackFeederIsRunning(t *testing.T) {
+	queue := []string{"blocked"}
+	next := func() (string, string, bool) {
+		if len(queue) == 0 {
+			return "", "", false
+		}
+		id := queue[0]
+		queue = queue[1:]
+		return id, id, true
+	}
+	m, h := newRadioHarness(t, next, nil, nil)
+	fillerStarted := make(chan struct{}, 1)
+	trackStarted := make(chan struct{}, 1)
+	m.runFeeder = func(ctx context.Context, mediaPath string, _ int, loop bool, _ float64, _ io.Writer) error {
+		if mediaPath == "blocked" {
+			trackStarted <- struct{}{}
+			<-ctx.Done()
+		}
+		return nil
+	}
+	m.runFallbackFeeder = func(ctx context.Context, _ float64, _ io.Writer) error {
+		fillerStarted <- struct{}{}
+		<-ctx.Done()
+		return nil
+	}
+	if err := m.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	h.waitEvent(t, "start")
+	select {
+	case <-trackStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("track feeder did not start")
+	}
+	select {
+	case <-fillerStarted:
+		t.Fatal("filler must not start while a track feeder is still running")
+	case <-time.After(150 * time.Millisecond):
 	}
 }
 

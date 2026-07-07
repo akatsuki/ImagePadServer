@@ -197,6 +197,15 @@ const dashboardScriptPlaylistController = `
           plPlayButton.setAttribute('aria-label', plState.playing ? '一時停止' : '再生');
           plPlayButton.title = plState.playing ? '一時停止' : '再生';
         }
+        if (plStartStreamButton) {
+          plStartStreamButton.disabled = !!plState.running;
+          plStartStreamButton.classList.toggle('is-running', !!plState.running);
+          const label = plState.running ? '配信中' : '配信開始';
+          plStartStreamButton.setAttribute('aria-label', label);
+          plStartStreamButton.title = label;
+          const text = plStartStreamButton.querySelector('span');
+          if (text) text.textContent = label;
+        }
         if (plShuffleButton) {
           plShuffleButton.classList.toggle('active', !!plState.shuffle);
           plShuffleButton.setAttribute('aria-pressed', String(!!plState.shuffle));
@@ -489,6 +498,7 @@ const dashboardScriptPlaylistController = `
       }
 
       function initPlaylistController() {
+        if (plStartStreamButton) plStartStreamButton.addEventListener('click', () => playlistPost('/api/music/playlist/start', {}));
         if (plPlayButton) plPlayButton.addEventListener('click', () => {
           playlistPost(plState.playing ? '/api/music/playlist/pause' : '/api/music/playlist/play', {});
         });

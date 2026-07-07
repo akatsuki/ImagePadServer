@@ -310,6 +310,32 @@ const dashboardCSSUpload = `
       background: color-mix(in srgb, var(--accent) 16%, transparent);
       color: var(--accent);
     }
+    .pl-stream-start {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      min-width: 104px;
+      height: 34px;
+      margin-left: auto;
+      padding: 0 12px;
+      border-radius: var(--radius-small);
+      background: color-mix(in srgb, var(--color-positive) 14%, var(--panel-strong));
+      color: var(--color-positive);
+      box-shadow: none;
+      white-space: nowrap;
+    }
+    .pl-stream-start svg {
+      width: 16px;
+      height: 16px;
+    }
+    .pl-stream-start:hover:not(:disabled) {
+      background: color-mix(in srgb, var(--color-positive) 22%, var(--panel-strong));
+    }
+    .pl-stream-start:disabled {
+      opacity: 0.72;
+      cursor: default;
+    }
     .pl-share > div {
       display: grid;
       gap: 4px;

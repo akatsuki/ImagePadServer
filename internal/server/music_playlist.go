@@ -42,13 +42,8 @@ func (s *Server) initMusicPlaylist(host string) {
 		OnIdle:       func() { s.broadcastStateChangedThrottled() },
 		OnStopped:    func() { s.broadcastStateChangedThrottled() },
 	})
-	s.radio.SetFillerSource(func() (string, error) {
-		ffmpeg, err := ensureFFmpeg()
-		if err != nil {
-			return "", err
-		}
-		return video.RenderRadioFiller(context.Background(), s.store.Dir(), ffmpeg, s.musicRadioPreset())
-	})
+	s.startMusicRadio = s.radio.Start
+	s.radio.SetFallbackPreset(s.musicRadioPreset)
 	s.musicJobs = make(chan func(), 64)
 	go func() {
 		for job := range s.musicJobs {
@@ -467,6 +462,31 @@ func (s *Server) handleMusicPlaylistReorder(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, s.musicPlaylistState())
 }
 
+func (s *Server) handleMusicPlaylistStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.musicModeEnabled() {
+		http.Error(w, "ミュージックモードが無効です", http.StatusConflict)
+		return
+	}
+	if !s.radio.Running() {
+		start := s.startMusicRadio
+		if start == nil {
+			start = s.radio.Start
+		}
+		if err := start(); err != nil {
+			http.Error(w, "ラジオ配信を開始できませんでした: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		s.radio.Wake()
+	}
+	s.broadcastStateChangedThrottled()
+	writeJSON(w, s.musicPlaylistState())
+}
+
 func (s *Server) handleMusicPlaylistPlay(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ID string `json:"id"`
@@ -503,7 +523,11 @@ func (s *Server) handleMusicPlaylistPlay(w http.ResponseWriter, r *http.Request)
 		s.musicPendingMu.Unlock()
 	}
 	if !s.radio.Running() {
-		if err := s.radio.Start(); err != nil {
+		start := s.startMusicRadio
+		if start == nil {
+			start = s.radio.Start
+		}
+		if err := start(); err != nil {
 			http.Error(w, "ラジオ配信を開始できませんでした: "+err.Error(), http.StatusInternalServerError)
 			return
 		}

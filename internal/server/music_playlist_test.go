@@ -355,6 +355,26 @@ func TestMusicPlaylistPlayValidation(t *testing.T) {
 	}
 }
 
+func TestMusicPlaylistStartCanBeginStreamWithoutTracks(t *testing.T) {
+	srv, mux := testServer(t, true)
+	defer cleanupTestServer(srv)
+	enableMusicMode(t)
+
+	started := false
+	srv.startMusicRadio = func() error {
+		started = true
+		return nil
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/music/playlist/start", strings.NewReader(`{}`))
+	if rec := adminJSON(t, mux, req); rec.Code != http.StatusOK {
+		t.Fatalf("start empty playlist stream = %d: %s", rec.Code, rec.Body.String())
+	}
+	if !started {
+		t.Fatal("start endpoint must start the radio stream even when no track is selected")
+	}
+}
+
 func TestMusicPlaylistsSaveLoadDelete(t *testing.T) {
 	srv, mux := testServer(t, true)
 	defer cleanupTestServer(srv)

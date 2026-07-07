@@ -69,9 +69,10 @@ type radioPublisher interface {
 // One MediaMTX instance serves RTSP + LL-HLS on fixed URLs; one persistent
 // publisher process stays connected for the whole session, and per-track
 // feeder processes pipe real-time MPEG-TS into it. Between tracks, while
-// paused, and while idle a black/silent filler loops, so viewers never see
-// the stream drop. Track selection is delegated to next(), so the queue
-// policy (shuffle, loop, interrupts) lives entirely in the playlist domain.
+// paused, and while idle an active standby feeder generates the fallback
+// screen, so viewers never see the stream drop. Track selection is delegated
+// to next(), so the queue policy (shuffle, loop, interrupts) lives entirely in
+// the playlist domain.
 type RadioManager struct {
 	mu     sync.Mutex
 	outDir string
@@ -79,22 +80,23 @@ type RadioManager struct {
 	next   func() (mediaPath, trackID string, startSeconds int, ok bool)
 	cb     RadioCallbacks
 
-	cancel       context.CancelFunc
-	done         chan struct{}
-	runtime      radioRuntime
-	status       RadioStatus
-	skipPush     context.CancelFunc
-	fillerCancel context.CancelFunc
-	wake         chan struct{}
-	skipped      bool
-	pathName     string
-	rtspPublic   RTSPEndpoint
-	fillerPath   func() (string, error)
+	cancel         context.CancelFunc
+	done           chan struct{}
+	runtime        radioRuntime
+	status         RadioStatus
+	skipPush       context.CancelFunc
+	fillerCancel   context.CancelFunc
+	wake           chan struct{}
+	skipped        bool
+	pathName       string
+	rtspPublic     RTSPEndpoint
+	fallbackPreset func() video.QualityPreset
 
 	// test seams
-	buildRuntime   func(ctx context.Context) (radioRuntime, radioGate, RTSPEndpoint, error)
-	startPublisher func(ctx context.Context, publishURL string) (radioPublisher, error)
-	runFeeder      func(ctx context.Context, mediaPath string, startSeconds int, loop bool, timestampOffset float64, sink io.Writer) error
+	buildRuntime      func(ctx context.Context) (radioRuntime, radioGate, RTSPEndpoint, error)
+	startPublisher    func(ctx context.Context, publishURL string) (radioPublisher, error)
+	runFeeder         func(ctx context.Context, mediaPath string, startSeconds int, loop bool, timestampOffset float64, sink io.Writer) error
+	runFallbackFeeder func(ctx context.Context, timestampOffset float64, sink io.Writer) error
 }
 
 func NewRadioManager(outDir, host string, next func() (mediaPath, trackID string, startSeconds int, ok bool), cb RadioCallbacks) *RadioManager {
@@ -108,13 +110,21 @@ func NewRadioManager(outDir, host string, next func() (mediaPath, trackID string
 	m.buildRuntime = m.buildMediaMTX
 	m.startPublisher = m.startFFmpegPublisher
 	m.runFeeder = m.runFFmpegFeeder
+	m.runFallbackFeeder = m.runFFmpegFallbackFeeder
+	m.fallbackPreset = func() video.QualityPreset { return video.MusicRadioQualityPreset("auto", 0, 0) }
 	return m
 }
 
-// SetFillerSource installs the provider of the black/silent clip broadcast
-// whenever no track is feeding (idle, paused, between tracks).
+// SetFillerSource is retained for compatibility with older tests and callers.
+// The playlist radio now uses an active generated fallback instead of a file.
 func (m *RadioManager) SetFillerSource(fn func() (string, error)) {
-	m.fillerPath = fn
+	_ = fn
+}
+
+func (m *RadioManager) SetFallbackPreset(fn func() video.QualityPreset) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.fallbackPreset = fn
 }
 
 // Start launches the radio session. It is idempotent while running.
@@ -236,8 +246,8 @@ func (m *RadioManager) run(ctx context.Context, done chan struct{}, runtime radi
 	}
 }
 
-// feedFillerUntilWake broadcasts the filler loop until Wake/Skip arrives (or
-// the session ends). Without a filler source it degrades to a plain wait.
+// feedFillerUntilWake broadcasts the active fallback until Wake/Skip arrives
+// (or the session ends). It is called only while no track feeder is active.
 func (m *RadioManager) feedFillerUntilWake(ctx context.Context, publisher radioPublisher, timestampOffset float64) float64 {
 	// A wake queued during the previous track means new work is already
 	// waiting — skip the filler entirely.
@@ -245,20 +255,6 @@ func (m *RadioManager) feedFillerUntilWake(ctx context.Context, publisher radioP
 	case <-m.wake:
 		return 0
 	default:
-	}
-	filler := ""
-	if m.fillerPath != nil {
-		if path, err := m.fillerPath(); err == nil {
-			filler = path
-		}
-	}
-	if filler == "" {
-		select {
-		case <-m.wake:
-		case <-ctx.Done():
-		case <-publisher.done():
-		}
-		return 0
 	}
 	fctx, cancel := context.WithCancel(ctx)
 	m.mu.Lock()
@@ -272,7 +268,7 @@ func (m *RadioManager) feedFillerUntilWake(ctx context.Context, publisher radioP
 		}
 	}()
 	feedStarted := time.Now()
-	_ = m.runFeeder(fctx, filler, 0, true, timestampOffset, publisher.sink())
+	_ = m.runFallbackFeeder(fctx, timestampOffset, publisher.sink())
 	cancel()
 	m.mu.Lock()
 	m.fillerCancel = nil
@@ -519,6 +515,76 @@ func (m *RadioManager) runFFmpegFeeder(ctx context.Context, mediaPath string, st
 			detail = detail[len(detail)-400:]
 		}
 		return fmt.Errorf("feeder %s: %w: %s", mediaPath, waitErr, detail)
+	}
+	return nil
+}
+
+func (m *RadioManager) runFFmpegFallbackFeeder(ctx context.Context, timestampOffset float64, sink io.Writer) error {
+	ffmpeg, err := video.EnsureFFmpeg()
+	if err != nil {
+		return err
+	}
+	fonts, err := video.VisualizerFonts()
+	if err != nil {
+		return err
+	}
+	logoPath, err := video.WriteRadioFallbackLogo(m.outDir)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	presetFn := m.fallbackPreset
+	m.mu.Unlock()
+	preset := video.MusicRadioQualityPreset("auto", 0, 0)
+	if presetFn != nil {
+		preset = presetFn()
+	}
+	renderWidth, renderHeight := video.RadioFallbackRenderSize(preset)
+	renderer, err := video.NewRadioFallbackRenderer(renderWidth, renderHeight, logoPath, fonts.SemiBold600, fonts.Medium500)
+	if err != nil {
+		return err
+	}
+	defer renderer.Close()
+	cmd := exec.CommandContext(ctx, ffmpeg, video.RadioFallbackFeederArgs(preset, renderWidth, renderHeight, timestampOffset)...)
+	hideWindow(cmd)
+	cmd.Dir = m.outDir
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	untrack := video.TrackStartedFFmpeg(cmd)
+	defer untrack()
+	renderErr := make(chan error, 1)
+	go func() {
+		renderErr <- video.WriteRadioFallbackFrames(ctx, stdin, renderer)
+		_ = stdin.Close()
+	}()
+	_, copyErr := io.Copy(sink, stdout)
+	waitErr := cmd.Wait()
+	if err := <-renderErr; err != nil && ctx.Err() == nil {
+		return fmt.Errorf("fallback render: %w", err)
+	}
+	if ctx.Err() != nil {
+		return nil
+	}
+	if copyErr != nil {
+		return fmt.Errorf("%w: %v", errPublisherDown, copyErr)
+	}
+	if waitErr != nil {
+		detail := stderr.String()
+		if len(detail) > 400 {
+			detail = detail[len(detail)-400:]
+		}
+		return fmt.Errorf("fallback feeder: %w: %s", waitErr, detail)
 	}
 	return nil
 }
