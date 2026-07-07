@@ -3,7 +3,7 @@ package obsrtmp
 import (
 	"context"
 	"net/http"
-	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -303,7 +303,7 @@ func (m *RadioManager) buildMediaMTX(ctx context.Context) (radioRuntime, radioGa
 		return nil, nil, RTSPEndpoint{}, err
 	}
 	id := sessionID()
-	path := mediaMTXPathName(id)
+	path := "radio" + strings.TrimPrefix(mediaMTXPathName(id), "obs")
 	runtime := newMediaMTXRuntime(mtxExe, mediaMTXSessionConfig{
 		Path:          path,
 		PublishUser:   user,
@@ -343,10 +343,5 @@ func (m *RadioManager) runFFmpegPush(ctx context.Context, mediaPath, publishURL 
 	if err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(ctx, ffmpeg, video.RadioPushArgs(mediaPath, publishURL)...)
-	cmd.Dir = m.outDir
-	hideWindow(cmd)
-	untrack := video.TrackStartedFFmpeg(cmd)
-	defer untrack()
-	return cmd.Run()
+	return video.RunRadioPush(ctx, m.outDir, ffmpeg, mediaPath, publishURL)
 }

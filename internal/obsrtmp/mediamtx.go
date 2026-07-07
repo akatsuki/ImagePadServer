@@ -808,10 +808,43 @@ func freeLoopbackPort() (int, error) {
 	return listener.Addr().(*net.TCPAddr).Port, nil
 }
 
+// freeUDPPortPair finds an even/odd consecutive UDP port pair (RTP, RTCP).
+// MediaMTX rejects an odd rtpAddress port outright ("RTP port must be even")
+// and requires rtcpAddress = rtpAddress+1, and the pair must actually bind as
+// UDP — probing with TCP can select ports inside Windows' excluded UDP ranges
+// ("bind: An attempt was made to access a socket in a way forbidden...").
+func freeUDPPortPair(seen map[int]bool) (int, int, error) {
+	for attempt := 0; attempt < 64; attempt++ {
+		probe, err := net.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			return 0, 0, err
+		}
+		candidate := probe.LocalAddr().(*net.UDPAddr).Port
+		_ = probe.Close()
+		even := candidate &^ 1
+		if even <= 1024 || seen[even] || seen[even+1] {
+			continue
+		}
+		rtp, err := net.ListenPacket("udp", fmt.Sprintf("127.0.0.1:%d", even))
+		if err != nil {
+			continue
+		}
+		rtcp, err := net.ListenPacket("udp", fmt.Sprintf("127.0.0.1:%d", even+1))
+		if err != nil {
+			_ = rtp.Close()
+			continue
+		}
+		_ = rtp.Close()
+		_ = rtcp.Close()
+		return even, even + 1, nil
+	}
+	return 0, 0, fmt.Errorf("no free UDP RTP/RTCP port pair found")
+}
+
 func allocMediaMTXPorts() (mediaMTXPorts, error) {
 	var ports mediaMTXPorts
 	seen := map[int]bool{}
-	for _, target := range []*int{&ports.API, &ports.HLS, &ports.RTSP, &ports.RTP, &ports.RTCP, &ports.BackendRTSP, &ports.BackendRTP, &ports.BackendRTCP} {
+	for _, target := range []*int{&ports.API, &ports.HLS, &ports.RTSP, &ports.BackendRTSP} {
 		for {
 			port, err := freeLoopbackPort()
 			if err != nil {
@@ -824,6 +857,16 @@ func allocMediaMTXPorts() (mediaMTXPorts, error) {
 			*target = port
 			break
 		}
+	}
+	for _, pair := range [][2]*int{{&ports.RTP, &ports.RTCP}, {&ports.BackendRTP, &ports.BackendRTCP}} {
+		rtp, rtcp, err := freeUDPPortPair(seen)
+		if err != nil {
+			return mediaMTXPorts{}, err
+		}
+		seen[rtp] = true
+		seen[rtcp] = true
+		*pair[0] = rtp
+		*pair[1] = rtcp
 	}
 	return ports, nil
 }
