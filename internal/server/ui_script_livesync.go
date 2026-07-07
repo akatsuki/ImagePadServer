@@ -77,6 +77,7 @@ const dashboardScriptLiveSync = `
     MusicController.init({
       choiceButtons: musicModeChoiceButtons
     });
+    PlaylistController.init();
     HistoryController.init({
       historyList
     });

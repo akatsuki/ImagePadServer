@@ -50,7 +50,14 @@ const indexHTML = `<!doctype html>
             <div class="media-kind-switch" id="mediaKindSwitch" role="group" aria-label="メディア種別" hidden>
               <button type="button" class="active" id="imageIntentButton" data-media-intent="image" aria-pressed="true">静止画</button>
               <button type="button" id="videoIntentButton" data-media-intent="video" aria-pressed="false">動画</button>
-              <button type="button" id="musicIntentButton" data-media-intent="music" hidden aria-pressed="false">ミュージック</button>
+              <button type="button" id="musicIntentButton" data-media-intent="music" hidden aria-pressed="false" aria-haspopup="menu" aria-expanded="false">
+                <span>ミュージック</span>
+                <svg class="music-caret" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path fill="currentColor" d="M2.2 4.2 6 8l3.8-3.8H2.2Z"/></svg>
+              </button>
+              <div class="music-mode-menu" id="musicModeMenu" role="menu" aria-label="ミュージックモード" hidden>
+                <button type="button" role="menuitemradio" aria-checked="true" data-music-mode-choice="single">シングル</button>
+                <button type="button" role="menuitemradio" aria-checked="false" data-music-mode-choice="playlist">プレイリスト</button>
+              </div>
             </div>
           </div>
         </div>
@@ -200,6 +207,79 @@ const indexHTML = `<!doctype html>
           </div>
         </section>
       </div>
+      <section class="hero-panel music-playlist-panel" id="musicPlaylistPanel" hidden aria-label="プレイリスト">
+        <div class="pl-deck">
+          <div class="pl-transport" role="group" aria-label="再生操作">
+            <button type="button" class="pl-transport-button" id="plPlayButton" aria-label="再生">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 5v14l11-7L8 5Z"/></svg>
+            </button>
+            <button type="button" class="pl-transport-button" id="plStopButton" aria-label="停止">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M7 7h10v10H7V7Z"/></svg>
+            </button>
+            <button type="button" class="pl-transport-button" id="plNextButton" aria-label="次の曲">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M6 5v14l9-7-9-7Zm10 0h2v14h-2V5Z"/></svg>
+            </button>
+          </div>
+          <div class="pl-lcd" id="plLCD" role="status" aria-live="polite">
+            <div class="pl-lcd-title" id="plNowTitle">プレイリストは停止中</div>
+            <div class="pl-lcd-artist" id="plNowArtist">曲を追加して再生を始める</div>
+            <div class="pl-lcd-progress-row">
+              <span class="pl-lcd-time" id="plTimeElapsed">0:00</span>
+              <div class="pl-lcd-progress" id="plProgressTrack" role="progressbar" aria-label="再生位置">
+                <div class="pl-lcd-progress-fill" id="plProgressFill"></div>
+              </div>
+              <span class="pl-lcd-time" id="plTimeRemaining">-0:00</span>
+            </div>
+          </div>
+          <div class="pl-mode-toggles" role="group" aria-label="再生オプション">
+            <button type="button" class="pl-toggle" id="plShuffleButton" aria-pressed="false" title="シャッフル" aria-label="シャッフル">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M16 3h5v5M4 7h3c2.6 0 4.2 2 5.8 5s3.2 5 5.8 5H21M21 16v5h-5M4 17h3c1.2 0 2.2-.4 3.1-1.2M14 8.2c1.1-.8 2.3-1.2 4-1.2h3"/></svg>
+            </button>
+            <button type="button" class="pl-toggle" id="plLoopButton" aria-pressed="false" title="ループ再生" aria-label="ループ再生">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M17 2l4 4-4 4M3 11V9a3 3 0 0 1 3-3h15M7 22l-4-4 4-4m14-1v2a3 3 0 0 1-3 3H3"/></svg>
+            </button>
+            <div class="pl-saved-menu-wrap">
+              <button type="button" class="pl-toggle" id="plMenuButton" aria-haspopup="menu" aria-expanded="false" title="プレイリストの保存と読み込み" aria-label="プレイリストの保存と読み込み">
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h10"/></svg>
+              </button>
+              <div class="pl-saved-menu" id="plMenu" role="menu" aria-label="保存済みプレイリスト" hidden>
+                <button type="button" role="menuitem" id="plSaveButton">現在のリストを保存…</button>
+                <div class="pl-saved-list" id="plSavedList"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="pl-input-row">
+          <input type="text" id="plInput" inputmode="url" placeholder="URL・ファイルパスを入力、またはファイルをドロップ" aria-label="曲のURLまたはファイルパス">
+          <input type="file" id="plFileInput" accept="audio/*,.mp3,.wav,.flac,.ogg,.opus,.m4a,.aac,.wma" hidden aria-hidden="true">
+          <button type="button" class="secondary icon-button" id="plFileButton" title="ファイルを選択" aria-label="ファイルを選択">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M21 12.5 12.4 21a5.6 5.6 0 0 1-8-8l8.8-8.7a3.7 3.7 0 0 1 5.3 5.3l-8.8 8.6a1.9 1.9 0 0 1-2.7-2.6l8.1-8"/></svg>
+          </button>
+          <button type="button" id="plAddButton">追加</button>
+          <button type="button" class="secondary" id="plPlayNowButton">今すぐ再生</button>
+        </div>
+        <div class="pl-table-wrap">
+          <table class="pl-table" aria-label="プレイリストの曲一覧">
+            <thead>
+              <tr><th class="pl-col-num" aria-label="再生状態"></th><th>曲名</th><th>アーティスト</th><th class="pl-col-time">時間</th><th class="pl-col-source">追加元</th><th class="pl-col-actions" aria-label="操作"></th></tr>
+            </thead>
+            <tbody id="plTrackTableBody">
+              <tr class="pl-empty-row"><td colspan="6">曲がありません。上の入力欄から追加してください</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="pl-footer">
+          <span class="pl-track-count" id="plTrackCount">0 曲</span>
+          <div class="pl-share">
+            <div class="pl-url-modes" role="group" aria-label="共有URLの種類">
+              <button type="button" class="pl-url-mode" id="plUrlModeHLS" aria-pressed="true">HLS</button>
+              <button type="button" class="pl-url-mode" id="plUrlModeRTSP" aria-pressed="false">RTSP</button>
+            </div>
+            <code id="plShareUrl">再生を開始するとURLが表示されます</code>
+            <button type="button" data-copy="plShareUrl" aria-label="配信URLをコピー">コピー</button>
+          </div>
+        </div>
+      </section>
     </div>
 
     <div class="preview-column">

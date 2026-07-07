@@ -55,20 +55,31 @@ const dashboardCSSResponsive = `
       .flow-grid {
         grid-template-columns: 1fr;
       }
-      .music-pane-main,
-      .music-pane-main.playlist,
-      .music-control-grid,
-      .music-saved-list {
+      .pl-deck {
         grid-template-columns: 1fr;
+        justify-items: center;
       }
-      .music-mode-tabs {
-        grid-template-columns: 1fr;
+      .pl-lcd {
+        width: 100%;
       }
-      .music-track-row {
-        grid-template-columns: 42px minmax(0, 1fr);
+      .pl-input-row {
+        grid-template-columns: minmax(0, 1fr) auto;
       }
-      .music-track-row button {
+      .pl-input-row input[type="text"] {
         grid-column: 1 / -1;
+      }
+      .pl-col-source,
+      .pl-col-artist {
+        display: none;
+      }
+      .pl-share {
+        grid-template-columns: auto minmax(0, 1fr);
+      }
+      .pl-share button[data-copy] {
+        grid-column: 1 / -1;
+      }
+      .pl-row-action {
+        opacity: 1;
       }
       .flow-primary {
         border-right: 0;

@@ -527,7 +527,7 @@ func TestVideoAndMusicModeTogglesAreNotInSettings(t *testing.T) {
 	}
 }
 
-func TestMusicWorkspaceUIRestoresSingleModeOnly(t *testing.T) {
+func TestMusicWorkspaceModeMenu(t *testing.T) {
 	html := getIndexHTML(t)
 	for _, want := range []string{
 		`const musicWorkspaceEnabled = true`,
@@ -542,11 +542,19 @@ func TestMusicWorkspaceUIRestoresSingleModeOnly(t *testing.T) {
 		`MusicController.init({`,
 		`MusicController.render({`,
 		`mediaIntent = intent === 'music' && musicWorkspaceEnabled`,
-		`flowGrid.hidden = false`,
 		`PreviewController.setVisible(!active || mode === 'single')`,
 		`.preview-panel[hidden]`,
 		`obsModeButton.hidden = !state.videoPlayerEnabled || mediaIntent !== 'video'`,
 		`modeTabs.classList.toggle('has-obs', !!state.videoPlayerEnabled && mediaIntent === 'video')`,
+		// シングル/プレイリストの2モードメニュー。
+		`id="musicModeMenu"`,
+		`data-music-mode-choice="single"`,
+		`data-music-mode-choice="playlist"`,
+		`music-caret`,
+		`musicModeMenu.addEventListener('click'`,
+		`event.target.closest('[data-music-mode-choice]')`,
+		// プレイリストモード中はアップロードフォームを隠す。
+		`flowGrid.hidden = playlistActive`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("music menu/controller missing %q", want)
@@ -559,21 +567,18 @@ func TestMusicWorkspaceUIRestoresSingleModeOnly(t *testing.T) {
 		t.Fatal("applyVideoPlayer must not overwrite music headings back to image")
 	}
 	for _, forbidden := range []string{
-		`id="musicModeMenu"`,
-		`aria-haspopup="menu"`,
-		`music-caret`,
-		`data-music-mode-choice=`,
-		`musicModeMenu.addEventListener('click'`,
-		`event.target.closest('[data-music-mode-choice]')`,
+		// パーティーモードは v1.6.2 まで出さない。
+		`data-music-mode-choice="party"`,
+		`パーティーモード`,
 		`ミュージック機能はGUI準備中です`,
 	} {
 		if strings.Contains(html, forbidden) {
-			t.Fatalf("music upload must be single-mode only, but UI still contains %q", forbidden)
+			t.Fatalf("music menu must not expose %q", forbidden)
 		}
 	}
 }
 
-func TestMusicWorkspaceHasSingleModeOnly(t *testing.T) {
+func TestMusicWorkspacePlaylistUI(t *testing.T) {
 	html := getIndexHTML(t)
 	for _, want := range []string{
 		`シングル`,
@@ -584,28 +589,54 @@ func TestMusicWorkspaceHasSingleModeOnly(t *testing.T) {
 		`qualityRow.classList.toggle('standalone', mediaIntent === 'video' || mediaIntent === 'music')`,
 		`.quality-row.standalone`,
 		`/api/video-quality`,
+		// クラシック iTunes 風プレイリストパネル。
+		`id="musicPlaylistPanel"`,
+		`id="plLCD"`,
+		`id="plNowTitle"`,
+		`id="plProgressFill"`,
+		`id="plPlayButton"`,
+		`id="plStopButton"`,
+		`id="plNextButton"`,
+		`id="plShuffleButton"`,
+		`id="plLoopButton"`,
+		`id="plInput"`,
+		`id="plAddButton"`,
+		`id="plPlayNowButton"`,
+		`id="plTrackTableBody"`,
+		`id="plUrlModeHLS"`,
+		`id="plUrlModeRTSP"`,
+		`id="plShareUrl"`,
+		`id="plMenuButton"`,
+		`id="plSaveButton"`,
+		`<th>曲名</th>`,
+		`<th>アーティスト</th>`,
+		`PlaylistController.init()`,
+		`apiFetch('/api/music/playlist'`,
+		`/api/music/playlist/add`,
+		`/api/music/playlist/reorder`,
+		`/api/music/playlist/play`,
+		`/api/music/playlists/load`,
 	} {
 		if !strings.Contains(html, want) {
-			t.Fatalf("single music UI missing %q", want)
+			t.Fatalf("playlist UI missing %q", want)
 		}
 	}
 	for _, forbidden := range []string{
-		`プレイリスト`,
+		// v1.6.2 のパーティーモードと、撤去済みの旧モックUI。
 		`パーティーモード`,
 		`YouTubeプレイリストURL`,
 		`musicPlayerPlayButton`,
 		`musicPlayerStopButton`,
 		`musicPlayerRepeatButton`,
 		`musicPlayerShuffleButton`,
-		`draggable="true"`,
 		`aria-label="曲順をドラッグして変更"`,
 	} {
 		if strings.Contains(html, forbidden) {
-			t.Fatalf("single music UI must not expose %q", forbidden)
+			t.Fatalf("playlist UI must not expose %q", forbidden)
 		}
 	}
 	if strings.Contains(html, `ミュージックHLSアドレス`) {
-		t.Fatal("single music mode must not show the old music HLS address block")
+		t.Fatal("music mode must not show the old music HLS address block")
 	}
 }
 

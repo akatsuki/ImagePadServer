@@ -1,3 +1,3 @@
 package server
 
-const dashboardScriptState = dashboardScriptDomRefs + dashboardScriptStateSync + dashboardScriptPreview + dashboardScriptPreviewController + dashboardScriptHistoryQueue + dashboardScriptHistoryController + dashboardScriptProgressStatus + dashboardScriptUploadState + dashboardScriptUploadController + dashboardScriptMusicController + dashboardScriptSettingsController
+const dashboardScriptState = dashboardScriptDomRefs + dashboardScriptStateSync + dashboardScriptPreview + dashboardScriptPreviewController + dashboardScriptHistoryQueue + dashboardScriptHistoryController + dashboardScriptProgressStatus + dashboardScriptUploadState + dashboardScriptUploadController + dashboardScriptMusicController + dashboardScriptPlaylistController + dashboardScriptSettingsController
