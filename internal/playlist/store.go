@@ -98,27 +98,33 @@ func (s *Store) Save(name string, tracks []Track) error {
 	}
 	saved := append([]Track(nil), tracks...)
 	dir := filepath.Join(s.mediaDir, playlistMediaDirName(name))
-	// Rebuild the media folder from scratch so overwriting a playlist does
-	// not leak files from the previous version.
-	if err := os.RemoveAll(dir); err != nil {
+	if err := os.MkdirAll(s.mediaDir, 0700); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	tmpDir, err := os.MkdirTemp(s.mediaDir, filepath.Base(dir)+".tmp-*")
+	if err != nil {
 		return err
 	}
+	committedMedia := false
+	defer func() {
+		if !committedMedia {
+			_ = os.RemoveAll(tmpDir)
+		}
+	}()
 	for i := range saved {
 		if saved[i].Status != TrackReady || saved[i].MediaPath == "" {
 			continue
 		}
-		dst := filepath.Join(dir, filepath.Base(saved[i].MediaPath))
-		if err := copyMediaFile(dst, saved[i].MediaPath); err != nil {
+		fileName := filepath.Base(saved[i].MediaPath)
+		tmpDst := filepath.Join(tmpDir, fileName)
+		if err := copyMediaFile(tmpDst, saved[i].MediaPath); err != nil {
 			// 元ファイルが消えていても保存全体は止めない。
 			saved[i].Status = TrackFailed
 			saved[i].Error = "メディアファイルを保存できませんでした（再追加が必要）"
 			saved[i].MediaPath = ""
 			continue
 		}
-		saved[i].MediaPath = dst
+		saved[i].MediaPath = filepath.Join(dir, fileName)
 	}
 	stored := storedPlaylist{Name: name, Tracks: saved}
 	replaced := false
@@ -132,6 +138,10 @@ func (s *Store) Save(name string, tracks []Track) error {
 	if !replaced {
 		f.Playlists = append(f.Playlists, stored)
 	}
+	if err := replaceDir(dir, tmpDir); err != nil {
+		return err
+	}
+	committedMedia = true
 	return s.write(f)
 }
 
@@ -217,4 +227,28 @@ func copyMediaFile(dst, src string) error {
 		return err
 	}
 	return out.Close()
+}
+
+func replaceDir(dst, src string) error {
+	backup := dst + ".old"
+	_ = os.RemoveAll(backup)
+	hadExisting := false
+	if _, err := os.Stat(dst); err == nil {
+		hadExisting = true
+		if err := os.Rename(dst, backup); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.Rename(src, dst); err != nil {
+		if hadExisting {
+			_ = os.Rename(backup, dst)
+		}
+		return err
+	}
+	if hadExisting {
+		_ = os.RemoveAll(backup)
+	}
+	return nil
 }

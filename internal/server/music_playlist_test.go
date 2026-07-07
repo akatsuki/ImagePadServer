@@ -274,6 +274,32 @@ func TestMusicPlaylistSavedCopySurvivesQueueRemove(t *testing.T) {
 	}
 }
 
+func TestMusicPlaylistRemoveClearsPausedTrackState(t *testing.T) {
+	srv, mux := testServer(t, true)
+	defer cleanupTestServer(srv)
+
+	track := srv.musicQueue.Add(playlist.Track{Title: "Paused", Status: playlist.TrackReady})
+	srv.musicPendingMu.Lock()
+	srv.musicPaused = true
+	srv.musicPausedTrack = track.ID
+	srv.musicPausedOffset = 33
+	srv.musicPendingTrack = track.ID
+	srv.musicPendingOffset = 33
+	srv.musicPendingMu.Unlock()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/music/playlist/remove", strings.NewReader(`{"id":"`+track.ID+`"}`))
+	if rec := adminJSON(t, mux, req); rec.Code != http.StatusOK {
+		t.Fatalf("remove = %d: %s", rec.Code, rec.Body.String())
+	}
+	st := playlistState(t, mux)
+	if st["paused"] != false {
+		t.Fatalf("remove must clear paused state for removed track: %v", st)
+	}
+	if st["currentTrackId"] != "" {
+		t.Fatalf("remove must not expose removed paused track as current: %v", st)
+	}
+}
+
 func TestMusicPlaylistPrepareDeletesRenderedMediaWhenTrackWasRemoved(t *testing.T) {
 	srv, _ := testServer(t, true)
 	defer cleanupTestServer(srv)

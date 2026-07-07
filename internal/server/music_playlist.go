@@ -137,6 +137,20 @@ func (s *Server) clearMusicPlaybackRequest() {
 	s.musicPendingMu.Unlock()
 }
 
+func (s *Server) clearMusicPlaybackRequestFor(id string) {
+	s.musicPendingMu.Lock()
+	if s.musicPausedTrack == id {
+		s.musicPaused = false
+		s.musicPausedTrack = ""
+		s.musicPausedOffset = 0
+	}
+	if s.musicPendingTrack == id {
+		s.musicPendingTrack = ""
+		s.musicPendingOffset = 0
+	}
+	s.musicPendingMu.Unlock()
+}
+
 // --- handlers -------------------------------------------------------------
 
 func (s *Server) handleMusicPlaylist(w http.ResponseWriter, r *http.Request) {
@@ -425,6 +439,7 @@ func (s *Server) handleMusicPlaylistRemove(w http.ResponseWriter, r *http.Reques
 	}
 	wasCurrent := s.radio.Status().CurrentTrackID == req.ID
 	s.musicQueue.Remove(req.ID)
+	s.clearMusicPlaybackRequestFor(req.ID)
 	if wasCurrent {
 		s.radio.SkipCurrent()
 	}

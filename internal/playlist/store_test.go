@@ -87,6 +87,36 @@ func TestSaveCopiesMediaIntoPlaylistFolder(t *testing.T) {
 	}
 }
 
+func TestSaveOverwritesLoadedPlaylistWithoutLosingCopiedMedia(t *testing.T) {
+	s := newTestStore(t)
+	dir := t.TempDir()
+	tracks := sampleTracks(t, dir)
+	if err := s.Save("loaded-copy", tracks[:1]); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := s.Load("loaded-copy")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded[0].MediaPath == tracks[0].MediaPath {
+		t.Fatal("loaded playlist must point at the saved copy")
+	}
+
+	if err := s.Save("loaded-copy", loaded); err != nil {
+		t.Fatalf("Save loaded copy: %v", err)
+	}
+	reloaded, err := s.Load("loaded-copy")
+	if err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if len(reloaded) != 1 || reloaded[0].Status != TrackReady {
+		t.Fatalf("overwriting loaded copy must keep track ready: %+v", reloaded)
+	}
+	if _, err := os.Stat(reloaded[0].MediaPath); err != nil {
+		t.Fatalf("overwritten media copy missing: %v", err)
+	}
+}
+
 func TestSaveOverwritesSameName(t *testing.T) {
 	s := newTestStore(t)
 	dir := t.TempDir()
