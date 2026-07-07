@@ -104,9 +104,25 @@ const dashboardCSSUpload = `
       display: none;
     }
     /* --- クラシック iTunes 風プレイリスト --- */
+    /* プレイリストモード中はプレビュー列と履歴を畳み、パネルに全幅を渡す。 */
+    body.playlist-mode main {
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-areas: "content";
+    }
+    body.playlist-mode .preview-column {
+      display: none;
+    }
+    body.playlist-mode .content > .history {
+      display: none;
+    }
+    body.playlist-mode .content {
+      grid-template-rows: auto minmax(0, 1fr);
+    }
     .music-playlist-panel {
       display: grid;
+      grid-template-rows: auto auto minmax(0, 1fr) auto;
       gap: 0;
+      min-height: 0;
       overflow: hidden;
       padding: 0;
     }
@@ -332,7 +348,6 @@ const dashboardCSSUpload = `
       outline-offset: -4px;
     }
     .pl-table-wrap {
-      max-height: 380px;
       min-height: 200px;
       overflow-y: auto;
       background: var(--panel);
