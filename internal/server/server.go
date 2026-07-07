@@ -234,6 +234,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/music/playlist/reorder", s.admin(s.handleMusicPlaylistReorder))
 	mux.HandleFunc("/api/music/playlist/play", s.admin(s.handleMusicPlaylistPlay))
 	mux.HandleFunc("/api/music/playlist/pause", s.admin(s.handleMusicPlaylistPause))
+	mux.HandleFunc("/api/music/playlist/seek", s.admin(s.handleMusicPlaylistSeek))
 	mux.HandleFunc("/api/music/playlist/next", s.admin(s.handleMusicPlaylistNext))
 	mux.HandleFunc("/api/music/playlist/stop", s.admin(s.handleMusicPlaylistStop))
 	mux.HandleFunc("/api/music/playlist/options", s.admin(s.handleMusicPlaylistOptions))

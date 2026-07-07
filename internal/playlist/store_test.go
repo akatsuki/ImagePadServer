@@ -54,6 +54,39 @@ func TestSaveLoadList(t *testing.T) {
 	}
 }
 
+func TestSaveCopiesMediaIntoPlaylistFolder(t *testing.T) {
+	s := newTestStore(t)
+	dir := t.TempDir()
+	tracks := sampleTracks(t, dir)
+	if err := s.Save("コピー確認", tracks[:1]); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	// 元ファイルを消しても保存済みプレイリストは ready のまま再生できる。
+	if err := os.Remove(tracks[0].MediaPath); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := s.Load("コピー確認")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded[0].Status != TrackReady {
+		t.Fatalf("copied media must keep the track ready: %+v", loaded[0])
+	}
+	if loaded[0].MediaPath == tracks[0].MediaPath {
+		t.Fatal("saved playlist must reference the copy, not the queue file")
+	}
+	if _, err := os.Stat(loaded[0].MediaPath); err != nil {
+		t.Fatalf("copied media missing: %v", err)
+	}
+	// 削除でコピーも消える。
+	if err := s.Delete("コピー確認"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(loaded[0].MediaPath); !os.IsNotExist(err) {
+		t.Fatal("Delete must remove the playlist media folder")
+	}
+}
+
 func TestSaveOverwritesSameName(t *testing.T) {
 	s := newTestStore(t)
 	dir := t.TempDir()

@@ -30,8 +30,11 @@ type Track struct {
 	MediaPath       string      `json:"mediaPath"`
 	ThumbnailPath   string      `json:"thumbnailPath"`
 	Status          TrackStatus `json:"status"`
-	Error           string      `json:"error,omitempty"`
-	AddedAt         time.Time   `json:"addedAt"`
+	// Progress is the preparation progress (0-100) while Status is
+	// TrackPreparing: download, analysis, and render phases combined.
+	Progress int       `json:"progress"`
+	Error    string    `json:"error,omitempty"`
+	AddedAt  time.Time `json:"addedAt"`
 }
 
 type Queue struct {
@@ -200,7 +203,29 @@ func (q *Queue) MarkReady(id, mediaPath string, durationSeconds int) bool {
 	t.Status = TrackReady
 	t.MediaPath = mediaPath
 	t.DurationSeconds = durationSeconds
+	t.Progress = 100
 	t.Error = ""
+	return true
+}
+
+// SetProgress updates the preparation progress (clamped 0-99 so only
+// MarkReady reports completion); it never moves backwards.
+func (q *Queue) SetProgress(id string, percent int) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	t := q.find(id)
+	if t == nil || t.Status != TrackPreparing {
+		return false
+	}
+	if percent < 0 {
+		percent = 0
+	}
+	if percent > 99 {
+		percent = 99
+	}
+	if percent > t.Progress {
+		t.Progress = percent
+	}
 	return true
 }
 

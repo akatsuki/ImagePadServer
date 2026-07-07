@@ -128,21 +128,27 @@ const dashboardCSSUpload = `
     .pl-body {
       display: grid;
       grid-template-rows: auto auto minmax(120px, 1fr) auto;
-      gap: 10px;
+      gap: 14px;
       min-height: 0;
+      padding-top: 6px;
     }
     .pl-player-row {
       display: grid;
       grid-template-columns: auto minmax(0, 1fr);
-      gap: 10px;
+      gap: 14px;
       align-items: stretch;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-small);
+      background: var(--panel-strong);
     }
     .pl-player-main {
       display: grid;
       grid-template-rows: auto auto auto;
-      gap: 7px;
+      gap: 10px;
       min-width: 0;
       align-content: center;
+      padding: 2px 4px;
     }
     .pl-video {
       position: relative;
@@ -221,17 +227,23 @@ const dashboardCSSUpload = `
       font-weight: 800;
     }
     .pl-progress {
-      height: 4px;
+      height: 6px;
       overflow: hidden;
-      border-radius: 2px;
+      border-radius: 3px;
       background: color-mix(in srgb, var(--muted) 28%, transparent);
+      cursor: pointer;
+    }
+    .pl-progress:hover {
+      height: 8px;
+      margin: -1px 0;
     }
     .pl-progress-fill {
       width: 0%;
       height: 100%;
-      border-radius: 2px;
+      border-radius: 3px;
       background: var(--accent);
       transition: width .4s linear;
+      pointer-events: none;
     }
     .pl-controls {
       display: flex;
@@ -351,6 +363,7 @@ const dashboardCSSUpload = `
       text-align: center;
     }
     .pl-row {
+      position: relative;
       display: grid;
       grid-template-columns: 26px auto minmax(0, 1fr) auto auto;
       gap: 8px;
@@ -359,6 +372,21 @@ const dashboardCSSUpload = `
       padding: 5px 8px;
       border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
       cursor: grab;
+    }
+    .pl-row-progress {
+      position: absolute;
+      right: 0;
+      bottom: 0;
+      left: 0;
+      height: 3px;
+      overflow: hidden;
+      background: color-mix(in srgb, var(--accent) 12%, transparent);
+      pointer-events: none;
+    }
+    .pl-row-progress-fill {
+      height: 100%;
+      background: var(--accent);
+      transition: width .5s ease;
     }
     .pl-row:last-child {
       border-bottom: 0;

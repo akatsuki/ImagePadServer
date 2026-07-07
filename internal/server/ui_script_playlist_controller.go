@@ -265,6 +265,15 @@ const dashboardScriptPlaylistController = `
           row.appendChild(art);
         }
 
+        if (track.status === 'preparing') {
+          const bar = document.createElement('div');
+          bar.className = 'pl-row-progress';
+          const fill = document.createElement('div');
+          fill.className = 'pl-row-progress-fill';
+          fill.style.width = Math.max(2, Math.min(99, Number(track.progress) || 0)) + '%';
+          bar.appendChild(fill);
+          row.appendChild(bar);
+        }
         const copy = document.createElement('div');
         copy.className = 'pl-row-copy';
         const title = document.createElement('strong');
@@ -272,7 +281,7 @@ const dashboardScriptPlaylistController = `
         copy.appendChild(title);
         const sub = document.createElement('span');
         if (track.status === 'preparing') {
-          sub.textContent = '準備中…';
+          sub.textContent = '準備中… ' + (Number(track.progress) || 0) + '%';
           sub.className = 'pl-row-sub pl-row-status';
         } else if (track.status === 'failed') {
           sub.textContent = '失敗: ' + (track.error || '');
@@ -487,6 +496,15 @@ const dashboardScriptPlaylistController = `
         if (plNextButton) plNextButton.addEventListener('click', () => playlistPost('/api/music/playlist/next', {}));
         if (plShuffleButton) plShuffleButton.addEventListener('click', () => playlistPost('/api/music/playlist/options', { shuffle: !plState.shuffle }));
         if (plLoopButton) plLoopButton.addEventListener('click', () => playlistPost('/api/music/playlist/options', { loop: !plState.loop }));
+        if (plProgressTrack) plProgressTrack.addEventListener('click', (event) => {
+          const track = currentTrack();
+          const duration = track ? Number(track.durationSeconds) || 0 : 0;
+          if (!duration || (!plState.playing && !plState.paused)) return;
+          const rect = plProgressTrack.getBoundingClientRect();
+          if (rect.width <= 0) return;
+          const pct = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+          playlistPost('/api/music/playlist/seek', { seconds: Math.floor(pct * duration) });
+        });
         if (plUrlModeHLS) plUrlModeHLS.addEventListener('click', () => { urlMode = 'hls'; renderShareURL(); });
         if (plUrlModeRTSP) plUrlModeRTSP.addEventListener('click', () => { urlMode = 'rtsp'; renderShareURL(); });
         if (plMenuButton) plMenuButton.addEventListener('click', (event) => {

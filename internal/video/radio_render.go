@@ -42,13 +42,14 @@ func RadioTrackFileName(trackID string) string {
 // RenderRadioTrack renders the audio visualizer for one playlist track into a
 // single MP4 file (with black edge fades) and returns its absolute path. The
 // heavy lifting is the same pipeline as RunAudioVisualizerHLS; only the
-// output muxer and the edge fades differ.
-func RenderRadioTrack(ctx context.Context, outDir, ffmpeg string, input AudioRenderInput, trackID string, preset QualityPreset) (string, error) {
+// output muxer and the edge fades differ. progress (nil ok) receives the
+// render fraction (0..1).
+func RenderRadioTrack(ctx context.Context, outDir, ffmpeg string, input AudioRenderInput, trackID string, preset QualityPreset, progress func(float64)) (string, error) {
 	outPath := filepath.Join(outDir, RadioTrackFileName(trackID))
 	buildArgs := func(assPath, fontDir string, mode *ForegroundMode, encoder VideoEncoderProfile) []string {
 		return audioVisualizerMP4ArgsWithEncoder(input.SourcePath, assPath, fontDir, outPath, preset, mode, encoder, audioLoudnormFilter(input.Kind), input.Analysis.Duration)
 	}
-	err := runAudioVisualizerEncode(ctx, outDir, ffmpeg, input, "radio-"+trackID, preset, buildArgs, func() { _ = os.Remove(outPath) })
+	err := runAudioVisualizerEncode(ctx, outDir, ffmpeg, input, "radio-"+trackID, preset, buildArgs, func() { _ = os.Remove(outPath) }, progress)
 	if err != nil {
 		return "", fmt.Errorf("render radio track: %w", err)
 	}

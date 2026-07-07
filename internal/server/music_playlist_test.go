@@ -41,7 +41,10 @@ func fakeRadioPipeline(t *testing.T) {
 	analyzeAudioForKind = func(context.Context, string, string, video.SourceKind) (video.AudioAnalysis, error) {
 		return video.AudioAnalysis{Duration: 200}, nil
 	}
-	renderRadioTrack = func(_ context.Context, outDir, _ string, _ video.AudioRenderInput, trackID string, _ video.QualityPreset) (string, error) {
+	renderRadioTrack = func(_ context.Context, outDir, _ string, _ video.AudioRenderInput, trackID string, _ video.QualityPreset, progress func(float64)) (string, error) {
+		if progress != nil {
+			progress(0.5)
+		}
 		path := filepath.Join(outDir, video.RadioTrackFileName(trackID))
 		if err := os.WriteFile(path, []byte("ts"), 0600); err != nil {
 			return "", err
@@ -238,12 +241,12 @@ func TestMusicPlaylistRemoveDeletesUnreferencedMedia(t *testing.T) {
 	}
 }
 
-func TestMusicPlaylistRemoveKeepsMediaReferencedBySavedPlaylist(t *testing.T) {
+func TestMusicPlaylistSavedCopySurvivesQueueRemove(t *testing.T) {
 	srv, mux := testServer(t, true)
 	defer cleanupTestServer(srv)
 
-	media := filepath.Join(srv.store.Dir(), "radio-track-keep.ts")
-	if err := os.WriteFile(media, []byte("ts"), 0600); err != nil {
+	media := filepath.Join(srv.store.Dir(), "radio-track-keep.mp4")
+	if err := os.WriteFile(media, []byte("mp4"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	tr := srv.musicQueue.Add(playlist.Track{Title: "K", Status: playlist.TrackReady, MediaPath: media})
@@ -255,8 +258,19 @@ func TestMusicPlaylistRemoveKeepsMediaReferencedBySavedPlaylist(t *testing.T) {
 	if rec := adminJSON(t, mux, req); rec.Code != http.StatusOK {
 		t.Fatalf("remove = %d: %s", rec.Code, rec.Body.String())
 	}
-	if _, err := os.Stat(media); err != nil {
-		t.Fatal("media referenced by a saved playlist must be kept")
+	// キュー側のファイルは消えるが、保存済みプレイリストは自前コピーで生き残る。
+	if _, err := os.Stat(media); !os.IsNotExist(err) {
+		t.Fatal("queue media must be deleted on remove")
+	}
+	loaded, err := srv.playlistStore.Load("saved")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded) != 1 || loaded[0].Status != playlist.TrackReady {
+		t.Fatalf("saved playlist must stay playable via its copy: %+v", loaded)
+	}
+	if _, err := os.Stat(loaded[0].MediaPath); err != nil {
+		t.Fatalf("saved copy missing: %v", err)
 	}
 }
 

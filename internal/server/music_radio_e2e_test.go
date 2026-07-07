@@ -153,6 +153,25 @@ func TestRadioEndToEnd(t *testing.T) {
 		time.Sleep(1 * time.Second)
 	}
 
+	// シーク: 再生中に位置指定 → 指定オフセットから feed が張り直される。
+	req = httptest.NewRequest(http.MethodPost, "/api/music/playlist/seek", strings.NewReader(`{"seconds":4}`))
+	if rec := adminJSON(t, mux, req); rec.Code != http.StatusOK {
+		t.Fatalf("seek = %d: %s", rec.Code, rec.Body.String())
+	}
+	seekDeadline := time.Now().Add(15 * time.Second)
+	for {
+		st := playlistState(t, mux)
+		if st["playing"] == true {
+			if elapsed, _ := st["elapsedSeconds"].(float64); elapsed >= 4 {
+				break
+			}
+		}
+		if time.Now().After(seekDeadline) {
+			t.Fatalf("seek did not take effect: %v", playlistState(t, mux))
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
 	req = httptest.NewRequest(http.MethodPost, "/api/music/playlist/stop", strings.NewReader(`{}`))
 	if rec := adminJSON(t, mux, req); rec.Code != http.StatusOK {
 		t.Fatalf("stop = %d: %s", rec.Code, rec.Body.String())

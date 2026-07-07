@@ -614,6 +614,8 @@ func TestMusicWorkspacePlaylistUI(t *testing.T) {
 		`/api/music/playlist/reorder`,
 		`/api/music/playlist/play`,
 		`/api/music/playlist/pause`,
+		`/api/music/playlist/seek`,
+		`pl-row-progress`,
 		`/api/music/playlists/load`,
 		`'/radio/index.m3u8'`,
 	} {

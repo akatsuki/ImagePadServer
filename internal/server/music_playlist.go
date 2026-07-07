@@ -23,6 +23,13 @@ var (
 	renderRadioTrack    = video.RenderRadioTrack
 )
 
+// prepare-phase progress checkpoints (0-100 per track).
+const (
+	trackProgressQueued   = 5
+	trackProgressAcquired = 25
+	trackProgressAnalyzed = 40
+)
+
 // initMusicPlaylist wires the playlist queue, the persistence store, the
 // radio manager, and the single background worker that serializes downloads
 // and renders so CPU/network heavy jobs never run concurrently.
@@ -151,6 +158,7 @@ func (s *Server) musicPlaylistState() map[string]interface{} {
 			"album":           t.Album,
 			"durationSeconds": t.DurationSeconds,
 			"status":          string(t.Status),
+			"progress":        t.Progress,
 			"error":           t.Error,
 			"sourceKind":      t.SourceKind,
 			"originalName":    t.OriginalName,
@@ -263,6 +271,8 @@ func (s *Server) handleMusicPlaylistAdd(w http.ResponseWriter, r *http.Request) 
 			SourceKind:   string(video.SourceMusic),
 		})
 		if !s.enqueueMusicJob(func() {
+			s.musicQueue.SetProgress(track.ID, trackProgressQueued)
+			s.broadcastStateChangedThrottled()
 			acquired, err := musicURLAcquirer(context.Background(), s, input)
 			if err != nil {
 				s.musicQueue.MarkFailed(track.ID, videoURLDownloadError(err))
@@ -289,6 +299,8 @@ func (s *Server) handleMusicPlaylistAdd(w http.ResponseWriter, r *http.Request) 
 		SourceKind:   string(video.SourceLocalAudio),
 	})
 	if !s.enqueueMusicJob(func() {
+		s.musicQueue.SetProgress(track.ID, trackProgressQueued)
+		s.broadcastStateChangedThrottled()
 		f, err := os.Open(localPath)
 		if err != nil {
 			s.musicQueue.MarkFailed(track.ID, "ファイルを開けませんでした: "+err.Error())
@@ -323,6 +335,7 @@ func (s *Server) prepareRadioTrack(trackID string, acquired video.AcquiredAudio)
 		s.musicQueue.MarkFailed(trackID, err.Error())
 		s.broadcastStateChangedThrottled()
 	}
+	s.musicQueue.SetProgress(trackID, trackProgressAcquired)
 	ffmpeg, err := ensureFFmpeg()
 	if err != nil {
 		fail(err)
@@ -361,6 +374,8 @@ func (s *Server) prepareRadioTrack(trackID string, acquired video.AcquiredAudio)
 		fail(fmt.Errorf("音声解析に失敗しました: %w", err))
 		return
 	}
+	s.musicQueue.SetProgress(trackID, trackProgressAnalyzed)
+	s.broadcastStateChangedThrottled()
 	usedArtwork := artworkPath
 	if thumbnailPath != "" {
 		usedArtwork = thumbnailPath
@@ -372,7 +387,12 @@ func (s *Server) prepareRadioTrack(trackID string, acquired video.AcquiredAudio)
 		ArtworkPath: usedArtwork,
 		Analysis:    analysis,
 	}
-	mediaPath, err := renderRadioTrack(ctx, s.store.Dir(), ffmpeg, input, trackID, s.musicRadioPreset())
+	mediaPath, err := renderRadioTrack(ctx, s.store.Dir(), ffmpeg, input, trackID, s.musicRadioPreset(), func(fraction float64) {
+		pct := trackProgressAnalyzed + int(fraction*float64(99-trackProgressAnalyzed))
+		if s.musicQueue.SetProgress(trackID, pct) {
+			s.broadcastStateChangedThrottled()
+		}
+	})
 	if err != nil {
 		fail(err)
 		return
@@ -408,32 +428,13 @@ func (s *Server) handleMusicPlaylistRemove(w http.ResponseWriter, r *http.Reques
 	if wasCurrent {
 		s.radio.SkipCurrent()
 	}
-	if track.MediaPath != "" && !s.mediaReferencedBySavedPlaylists(track.MediaPath) {
+	// Saved playlists keep their own copies (playlist-media/), so the
+	// queue's rendered file can always be deleted.
+	if track.MediaPath != "" {
 		os.Remove(track.MediaPath)
 	}
 	s.broadcastStateChangedThrottled()
 	writeJSON(w, s.musicPlaylistState())
-}
-
-// mediaReferencedBySavedPlaylists prevents deleting a rendered TS that a
-// saved playlist still points at.
-func (s *Server) mediaReferencedBySavedPlaylists(mediaPath string) bool {
-	names, err := s.playlistStore.List()
-	if err != nil {
-		return true // be conservative
-	}
-	for _, name := range names {
-		tracks, err := s.playlistStore.Load(name)
-		if err != nil {
-			continue
-		}
-		for _, t := range tracks {
-			if filepath.Clean(t.MediaPath) == filepath.Clean(mediaPath) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func (s *Server) handleMusicPlaylistReorder(w http.ResponseWriter, r *http.Request) {
@@ -498,6 +499,61 @@ func (s *Server) handleMusicPlaylistPlay(w http.ResponseWriter, r *http.Request)
 	}
 	s.broadcastStateChangedThrottled()
 	writeJSON(w, s.musicPlaylistState())
+}
+
+// handleMusicPlaylistSeek jumps the current track to the requested position.
+// The feed restarts from the offset (through the black filler for a moment),
+// so the broadcast — and with it the video preview — follows the seek.
+func (s *Server) handleMusicPlaylistSeek(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Seconds int `json:"seconds"`
+	}
+	if !decodePlaylistPost(w, r, &req) {
+		return
+	}
+	s.musicPendingMu.Lock()
+	paused := s.musicPaused
+	pausedTrack := s.musicPausedTrack
+	s.musicPendingMu.Unlock()
+	if paused && pausedTrack != "" {
+		// 一時停止中は再開位置だけ差し替える。
+		if track, ok := s.musicQueue.Get(pausedTrack); ok {
+			offset := clampSeekSeconds(req.Seconds, track.DurationSeconds)
+			s.musicPendingMu.Lock()
+			s.musicPausedOffset = offset
+			s.musicPendingMu.Unlock()
+		}
+		s.broadcastStateChangedThrottled()
+		writeJSON(w, s.musicPlaylistState())
+		return
+	}
+	st := s.radio.Status()
+	if !st.Running || st.CurrentTrackID == "" {
+		http.Error(w, "再生していません", http.StatusConflict)
+		return
+	}
+	track, ok := s.musicQueue.Get(st.CurrentTrackID)
+	if !ok {
+		http.Error(w, "曲が見つかりません", http.StatusNotFound)
+		return
+	}
+	s.setPendingRadioTrack(track.ID, clampSeekSeconds(req.Seconds, track.DurationSeconds))
+	s.radio.SkipCurrent()
+	s.broadcastStateChangedThrottled()
+	writeJSON(w, s.musicPlaylistState())
+}
+
+func clampSeekSeconds(seconds, duration int) int {
+	if seconds < 0 {
+		return 0
+	}
+	if duration > 0 && seconds > duration-2 {
+		seconds = duration - 2
+		if seconds < 0 {
+			seconds = 0
+		}
+	}
+	return seconds
 }
 
 // handleMusicPlaylistPause suspends playback while keeping MediaMTX (and the

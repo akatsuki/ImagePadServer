@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,10 +12,13 @@ import (
 )
 
 // Store persists named playlists as a single JSON file (same storage layer as
-// favorites: one file inside the library directory).
+// favorites: one file inside the library directory). Rendered track media is
+// copied into a per-playlist folder on save so saved playlists survive queue
+// edits and library cleanups.
 type Store struct {
-	mu   sync.Mutex
-	path string
+	mu       sync.Mutex
+	path     string
+	mediaDir string
 }
 
 type storedPlaylist struct {
@@ -27,7 +31,24 @@ type storeFile struct {
 }
 
 func NewStore(path string) *Store {
-	return &Store{path: path}
+	return &Store{path: path, mediaDir: filepath.Join(filepath.Dir(path), "playlist-media")}
+}
+
+// playlistMediaDirName derives a filesystem-safe folder name for a playlist.
+func playlistMediaDirName(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-', r > 127:
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
+	}
+	if b.Len() == 0 {
+		return "playlist"
+	}
+	return b.String()
 }
 
 func (s *Store) load() (storeFile, error) {
@@ -61,7 +82,9 @@ func (s *Store) write(f storeFile) error {
 }
 
 // Save stores tracks under name, replacing an existing playlist of the same
-// name. Track order is preserved.
+// name. Track order is preserved, and each ready track's rendered media file
+// is copied into the playlist's own media folder so the saved playlist keeps
+// playing even after the track is removed from the queue.
 func (s *Store) Save(name string, tracks []Track) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -73,7 +96,31 @@ func (s *Store) Save(name string, tracks []Track) error {
 	if err != nil {
 		return err
 	}
-	stored := storedPlaylist{Name: name, Tracks: append([]Track(nil), tracks...)}
+	saved := append([]Track(nil), tracks...)
+	dir := filepath.Join(s.mediaDir, playlistMediaDirName(name))
+	// Rebuild the media folder from scratch so overwriting a playlist does
+	// not leak files from the previous version.
+	if err := os.RemoveAll(dir); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	for i := range saved {
+		if saved[i].Status != TrackReady || saved[i].MediaPath == "" {
+			continue
+		}
+		dst := filepath.Join(dir, filepath.Base(saved[i].MediaPath))
+		if err := copyMediaFile(dst, saved[i].MediaPath); err != nil {
+			// 元ファイルが消えていても保存全体は止めない。
+			saved[i].Status = TrackFailed
+			saved[i].Error = "メディアファイルを保存できませんでした（再追加が必要）"
+			saved[i].MediaPath = ""
+			continue
+		}
+		saved[i].MediaPath = dst
+	}
+	stored := storedPlaylist{Name: name, Tracks: saved}
 	replaced := false
 	for i := range f.Playlists {
 		if f.Playlists[i].Name == name {
@@ -142,8 +189,32 @@ func (s *Store) Delete(name string) error {
 	for i := range f.Playlists {
 		if f.Playlists[i].Name == name {
 			f.Playlists = append(f.Playlists[:i], f.Playlists[i+1:]...)
-			return s.write(f)
+			if err := s.write(f); err != nil {
+				return err
+			}
+			_ = os.RemoveAll(filepath.Join(s.mediaDir, playlistMediaDirName(name)))
+			return nil
 		}
 	}
 	return fmt.Errorf("プレイリスト %q が見つかりません", name)
+}
+
+func copyMediaFile(dst, src string) error {
+	if filepath.Clean(dst) == filepath.Clean(src) {
+		return nil
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }

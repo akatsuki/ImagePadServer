@@ -510,13 +510,37 @@ func RunAudioVisualizerHLS(ctx context.Context, outDir, ffmpeg string, input Aud
 	buildArgs := func(assPath, fontDir string, mode *ForegroundMode, encoder VideoEncoderProfile) []string {
 		return formatVisualizerOutputArgs(audioVisualizerFFmpegArgsWithEncoder(input.SourcePath, assPath, fontDir, id, preset, mode, encoder, audioLoudnormFilter(input.Kind)), outDir)
 	}
-	return runAudioVisualizerEncode(ctx, outDir, ffmpeg, input, id, preset, buildArgs, func() { removeHLSForID(outDir, id) })
+	return runAudioVisualizerEncode(ctx, outDir, ffmpeg, input, id, preset, buildArgs, func() { removeHLSForID(outDir, id) }, nil)
+}
+
+// visualizerProgressWriter reports the fraction of raw frame bytes streamed
+// into ffmpeg, which tracks encode progress closely because the encoder
+// consumes the pipe at its own pace.
+type visualizerProgressWriter struct {
+	w        io.Writer
+	total    int64
+	written  int64
+	lastPct  int
+	report   func(float64)
+}
+
+func (p *visualizerProgressWriter) Write(b []byte) (int, error) {
+	n, err := p.w.Write(b)
+	p.written += int64(n)
+	if p.total > 0 && p.report != nil {
+		if pct := int(p.written * 100 / p.total); pct > p.lastPct {
+			p.lastPct = pct
+			p.report(float64(p.written) / float64(p.total))
+		}
+	}
+	return n, err
 }
 
 // runAudioVisualizerEncode drives the shared visualizer pipeline (base image,
 // ASS subtitles, frame streaming into ffmpeg) with the output format supplied
 // by buildArgs; cleanup removes partial output when an encode attempt fails.
-func runAudioVisualizerEncode(ctx context.Context, outDir, ffmpeg string, input AudioRenderInput, id string, preset QualityPreset, buildArgs func(assPath, fontDir string, mode *ForegroundMode, encoder VideoEncoderProfile) []string, cleanup func()) error {
+// progress, when non-nil, receives the render fraction (0..1).
+func runAudioVisualizerEncode(ctx context.Context, outDir, ffmpeg string, input AudioRenderInput, id string, preset QualityPreset, buildArgs func(assPath, fontDir string, mode *ForegroundMode, encoder VideoEncoderProfile) []string, cleanup func(), progress func(float64)) error {
 	height := preset.Height
 	if height <= 0 {
 		height = 720
@@ -630,7 +654,14 @@ func runAudioVisualizerEncode(ctx context.Context, outDir, ffmpeg string, input 
 		frameErrCh := make(chan error, 1)
 		go func() {
 			defer frameWriter.Close()
-			frameErrCh <- writeVisualizerFrames(ctx, frameWriter, input, baseRGBA, mode, layout, width, height, true)
+			var dst io.Writer = frameWriter
+			if progress != nil {
+				total := int64(len(input.Analysis.Frames)) * int64(width*height*3/2)
+				if total > 0 {
+					dst = &visualizerProgressWriter{w: frameWriter, total: total, report: progress}
+				}
+			}
+			frameErrCh <- writeVisualizerFrames(ctx, dst, input, baseRGBA, mode, layout, width, height, true)
 		}()
 
 		runErr := cmd.Run()
