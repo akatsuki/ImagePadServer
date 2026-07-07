@@ -2044,6 +2044,7 @@ func (s *Server) handleCopyURL(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Target string `json:"target"`
 		Mode   string `json:"mode"`
+		Value  string `json:"value"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid copy request", http.StatusBadRequest)
@@ -2054,7 +2055,16 @@ func (s *Server) handleCopyURL(w http.ResponseWriter, r *http.Request) {
 	if mode := normalizeShareMode(req.Mode); mode != "" {
 		state["shareMode"] = mode
 	}
-	copiedURL := urlForCopyTarget(state, req.Target)
+	copiedURL := ""
+	if req.Target == "plShareUrl" {
+		copiedURL = copyableDisplayedURL(req.Value)
+		if copiedURL == "" {
+			copiedURL = urlForCopyTarget(s.musicPlaylistState(), req.Target)
+		}
+	}
+	if copiedURL == "" {
+		copiedURL = urlForCopyTarget(state, req.Target)
+	}
 	if copiedURL == "" {
 		http.Error(w, "no URL available to copy", http.StatusBadRequest)
 		return

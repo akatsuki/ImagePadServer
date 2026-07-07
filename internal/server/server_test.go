@@ -372,6 +372,25 @@ func TestCopyURLPrefersCurrentImageOverStaleVideoShare(t *testing.T) {
 	}
 }
 
+func TestCopyURLAcceptsDisplayedPlaylistShareURL(t *testing.T) {
+	srv, mux := testServer(t, true)
+	defer cleanupTestServer(srv)
+
+	want := "https://public.example/radio/index.m3u8"
+	req := httptest.NewRequest(http.MethodPost, "/api/copy-url", strings.NewReader(`{"target":"plShareUrl","value":"`+want+`"}`))
+	rec := adminJSON(t, mux, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("copy playlist URL status = %d, want 200; body = %q", rec.Code, rec.Body.String())
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["copiedURL"] != want {
+		t.Fatalf("copiedURL = %q, want %q", got["copiedURL"], want)
+	}
+}
+
 func TestResolvedShareTargetsCentralizeModeURLs(t *testing.T) {
 	state := withResolvedShareURLs(map[string]interface{}{
 		"shareMode": "file",

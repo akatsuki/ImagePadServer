@@ -351,6 +351,22 @@ func urlForCopyTarget(state map[string]interface{}, target string) string {
 		if publicURL, ok := state["publicHLSURL"].(string); ok {
 			return publicURL
 		}
+	case "plShareUrl":
+		if publicURL, ok := state["publicHlsUrl"].(string); ok && strings.HasPrefix(publicURL, "http") {
+			return publicURL
+		}
+		if publicURL, ok := state["publicHLSURL"].(string); ok && strings.HasPrefix(publicURL, "http") {
+			return publicURL
+		}
+		if hlsURL, ok := state["hlsUrl"].(string); ok && strings.HasPrefix(hlsURL, "http") {
+			return hlsURL
+		}
+		if hlsURL, ok := state["hlsURL"].(string); ok && strings.HasPrefix(hlsURL, "http") {
+			return hlsURL
+		}
+		if rtspURL, ok := state["rtspUrl"].(string); ok && strings.HasPrefix(rtspURL, "rtsp") {
+			return rtspURL
+		}
 	case "obsServerAddress":
 		if obs, ok := state["obs"].(obsrtmp.Status); ok {
 			return obs.ServerAddress
@@ -369,6 +385,17 @@ func urlForCopyTarget(state map[string]interface{}, target string) string {
 		if localURL, ok := state["localImageURL"].(string); ok {
 			return localURL
 		}
+	}
+	return ""
+}
+
+func copyableDisplayedURL(value string) string {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "http://") ||
+		strings.HasPrefix(value, "https://") ||
+		strings.HasPrefix(value, "rtsp://") ||
+		strings.HasPrefix(value, "rtspt://") {
+		return value
 	}
 	return ""
 }

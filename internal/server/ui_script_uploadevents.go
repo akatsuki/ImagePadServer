@@ -606,7 +606,7 @@ const dashboardScriptUploadEvents = `
         selectElementText(source);
       }
       try {
-        const pcResult = await copyURLOnPC(id === 'phoneDialogURL' ? 'phoneURL' : id);
+        const pcResult = await copyURLOnPC(id === 'phoneDialogURL' ? 'phoneURL' : id, text);
         pcCopied = pcResult.pcClipboardCopied;
       } catch (error) {
         pcCopied = false;
@@ -625,11 +625,11 @@ const dashboardScriptUploadEvents = `
       }
     });
 
-    async function copyURLOnPC(target) {
+    async function copyURLOnPC(target, value) {
       const res = await apiFetch('/api/copy-url', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ target, mode: shareModeForUpload(state) })
+        body: JSON.stringify({ target, mode: shareModeForUpload(state), value: value || '' })
       });
       if (!res.ok) {
         throw new Error(await res.text());

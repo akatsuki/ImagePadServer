@@ -123,7 +123,7 @@ func TestUIModeSwitchRefreshesShareURLDisplay(t *testing.T) {
 		`function displayedShareURL()`,
 		`const view = shareURLForCurrentMode(data)`,
 		`text = displayedShareURL().shareURL || ''`,
-		`body: JSON.stringify({ target, mode: shareModeForUpload(state) })`,
+		`body: JSON.stringify({ target, mode: shareModeForUpload(state), value: value || '' })`,
 		`formData.set('shareMode', shareModeForUpload(state))`,
 		`shareMode: shareModeForUpload(state)`,
 		`renderShareURL(state)`,
@@ -618,6 +618,7 @@ func TestMusicWorkspacePlaylistUI(t *testing.T) {
 		`pl-row-progress`,
 		`/api/music/playlists/load`,
 		`'/radio/index.m3u8'`,
+		`copyURLOnPC(id === 'phoneDialogURL' ? 'phoneURL' : id, text)`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("playlist UI missing %q", want)
