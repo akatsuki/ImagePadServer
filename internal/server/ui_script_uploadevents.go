@@ -54,6 +54,16 @@ const dashboardScriptUploadEvents = `
       if (mediaIntent === 'music') {
         MusicController.render({ active: true });
       }
+      // プレイリストモード中は従来のアップロードUIをキュー追加に接続する。
+      if (mediaIntent === 'music' && MusicController.mode() === 'playlist' && uploadMode !== 'obs') {
+        uploadButton.disabled = true;
+        try {
+          await PlaylistController.addFromUploadForm(uploadMode);
+        } finally {
+          uploadButton.disabled = false;
+        }
+        return;
+      }
       if (uploadMode === 'obs') {
         if (!(state.obs && state.obs.connected) || (state.obs && state.obs.publishing)) {
           updateOBSActionState(state.obs);

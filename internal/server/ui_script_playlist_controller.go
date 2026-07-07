@@ -9,9 +9,10 @@ const dashboardScriptPlaylistController = `
       let plFetchedAt = 0;
       let urlMode = 'hls';
       let dragTrackId = null;
-      let playWhenReadyId = '';
       let savedNames = [];
       let refreshing = false;
+      let plHLS = null;
+      let previewAttached = false;
 
       function fmtTime(totalSeconds) {
         const s = Math.max(0, Math.floor(Number(totalSeconds) || 0));
@@ -26,7 +27,6 @@ const dashboardScriptPlaylistController = `
           if (!res.ok) throw new Error(await res.text());
           plState = await res.json();
           plFetchedAt = Date.now();
-          maybeAutoPlayPrepared();
           renderPlaylist();
         } catch (error) {
         } finally {
@@ -54,19 +54,40 @@ const dashboardScriptPlaylistController = `
         }
       }
 
-      function maybeAutoPlayPrepared() {
-        if (!playWhenReadyId) return;
-        const track = (plState.tracks || []).find((t) => t.id === playWhenReadyId);
-        if (!track) {
-          playWhenReadyId = '';
+      // addFromUploadForm routes the ordinary upload form (file / link tabs)
+      // into the playlist queue while playlist mode is active.
+      async function addFromUploadForm(mode) {
+        if (mode === 'link') {
+          const url = imageURLInput.value.trim();
+          if (!url) {
+            imageURLInput.reportValidity();
+            return;
+          }
+          if (await playlistPost('/api/music/playlist/add', { input: url })) {
+            imageURLInput.value = '';
+            showToast('プレイリストに追加しました');
+          }
           return;
         }
-        if (track.status === 'ready') {
-          const id = playWhenReadyId;
-          playWhenReadyId = '';
-          playlistPost('/api/music/playlist/play', { id });
-        } else if (track.status === 'failed') {
-          playWhenReadyId = '';
+        const file = selectedUploadFile();
+        if (!file) {
+          imageInput.reportValidity();
+          return;
+        }
+        const formData = new FormData();
+        formData.append('file', file, file.name);
+        try {
+          const res = await apiFetch('/api/music/playlist/add', { method: 'POST', body: formData });
+          const text = await res.text();
+          if (!res.ok) throw new Error(text || 'アップロードに失敗しました');
+          plState = JSON.parse(text || '{}');
+          plFetchedAt = Date.now();
+          renderPlaylist();
+          imageInput.value = '';
+          updateSelectedFileName();
+          showToast('プレイリストに追加しました');
+        } catch (error) {
+          showToast((error && error.message) || 'プレイリストへの追加に失敗しました', { error: true });
         }
       }
 
@@ -96,13 +117,61 @@ const dashboardScriptPlaylistController = `
         }
       }
 
+      function destroyPlaylistHLS() {
+        previewAttached = false;
+        if (plHLS) {
+          try {
+            plHLS.destroy();
+          } catch (error) {
+          }
+          plHLS = null;
+        }
+        if (plVideoPreview) {
+          plVideoPreview.removeAttribute('src');
+          try {
+            plVideoPreview.load();
+          } catch (error) {
+          }
+        }
+      }
+
+      function syncVideoPreview() {
+        const shouldShow = active && plState.playing && !!plState.hlsUrl;
+        if (plVideoWrap) plVideoWrap.classList.toggle('pl-video-live', shouldShow);
+        if (plVideoEmpty) plVideoEmpty.hidden = shouldShow;
+        if (!plVideoPreview) return;
+        if (!shouldShow) {
+          if (previewAttached) destroyPlaylistHLS();
+          return;
+        }
+        if (previewAttached) return;
+        const src = '/radio/index.m3u8';
+        if (window.Hls && window.Hls.isSupported()) {
+          plHLS = new window.Hls({ lowLatencyMode: true, backBufferLength: 30 });
+          // 配信立ち上がり直後の404などは破棄して次のポーリングで再接続する。
+          plHLS.on(window.Hls.Events.ERROR, (event, data) => {
+            if (data && data.fatal) destroyPlaylistHLS();
+          });
+          plHLS.loadSource(src);
+          plHLS.attachMedia(plVideoPreview);
+          previewAttached = true;
+        } else if (plVideoPreview.canPlayType('application/vnd.apple.mpegurl')) {
+          plVideoPreview.src = src;
+          previewAttached = true;
+        }
+        if (previewAttached) {
+          const playAttempt = plVideoPreview.play();
+          if (playAttempt && playAttempt.catch) playAttempt.catch(() => {});
+        }
+      }
+
       function sourceLabel(track) {
         switch (track.sourceKind) {
           case 'soundcloud': return 'SoundCloud';
           case 'music': return 'リンク';
           case 'local_audio': return 'ファイル';
           case 'remote_audio': return 'リンク';
-          default: return track.sourceKind || '-';
+          default: return track.sourceKind || '';
         }
       }
 
@@ -119,6 +188,7 @@ const dashboardScriptPlaylistController = `
             : (plState.tracks || []).length ? '▶で再生を開始する' : '曲を追加して再生を始める';
         }
         renderClock();
+        syncVideoPreview();
         if (plPlayButton) plPlayButton.classList.toggle('active', !!plState.playing);
         if (plShuffleButton) {
           plShuffleButton.classList.toggle('active', !!plState.shuffle);
@@ -128,81 +198,94 @@ const dashboardScriptPlaylistController = `
           plLoopButton.classList.toggle('active', !!plState.loop);
           plLoopButton.setAttribute('aria-pressed', String(!!plState.loop));
         }
-        renderPlaylistTable();
+        renderTrackList();
         if (plTrackCount) plTrackCount.textContent = (plState.tracks || []).length + ' 曲';
         renderShareURL();
       }
 
       function renderShareURL() {
-        if (plUrlModeHLS) plUrlModeHLS.setAttribute('aria-pressed', String(urlMode === 'hls'));
-        if (plUrlModeRTSP) plUrlModeRTSP.setAttribute('aria-pressed', String(urlMode === 'rtsp'));
-        if (plUrlModeHLS) plUrlModeHLS.classList.toggle('active', urlMode === 'hls');
-        if (plUrlModeRTSP) plUrlModeRTSP.classList.toggle('active', urlMode === 'rtsp');
+        if (plUrlModeHLS) {
+          plUrlModeHLS.setAttribute('aria-pressed', String(urlMode === 'hls'));
+          plUrlModeHLS.classList.toggle('active', urlMode === 'hls');
+        }
+        if (plUrlModeRTSP) {
+          plUrlModeRTSP.setAttribute('aria-pressed', String(urlMode === 'rtsp'));
+          plUrlModeRTSP.classList.toggle('active', urlMode === 'rtsp');
+        }
         if (!plShareUrl) return;
         const url = urlMode === 'rtsp' ? (plState.rtspUrl || '') : (plState.publicHlsUrl || plState.hlsUrl || '');
         plShareUrl.textContent = url || '再生を開始するとURLが表示されます';
       }
 
+      function clearDropMarkers() {
+        if (!plTrackList) return;
+        plTrackList.querySelectorAll('.pl-drop-before, .pl-drop-after').forEach((el) => {
+          el.classList.remove('pl-drop-before', 'pl-drop-after');
+        });
+      }
+
+      function reorderTo(movedId, anchorId, before) {
+        const ids = (plState.tracks || []).map((t) => t.id).filter((id) => id !== movedId);
+        const anchorIndex = ids.indexOf(anchorId);
+        if (anchorIndex < 0) return;
+        ids.splice(before ? anchorIndex : anchorIndex + 1, 0, movedId);
+        playlistPost('/api/music/playlist/reorder', { ids });
+      }
+
       function trackRow(track, index) {
-        const row = document.createElement('tr');
+        const row = document.createElement('div');
+        row.className = 'pl-row';
         row.dataset.trackId = track.id;
         row.draggable = true;
         row.classList.toggle('pl-now-playing', track.id === plState.currentTrackId && !!plState.playing);
         row.classList.toggle('pl-preparing', track.status === 'preparing');
         row.classList.toggle('pl-failed', track.status === 'failed');
 
-        const num = document.createElement('td');
-        num.className = 'pl-col-num';
+        const num = document.createElement('span');
+        num.className = 'pl-row-num';
         if (track.id === plState.currentTrackId && plState.playing) {
-          num.innerHTML = '<svg class="pl-speaker" viewBox="0 0 24 24" aria-label="再生中" role="img"><path fill="currentColor" d="M4 9v6h4l5 4V5L8 9H4Z"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/></svg>';
+          num.innerHTML = '<svg class="pl-speaker" viewBox="0 0 24 24" aria-label="再生中" role="img"><path fill="currentColor" d="M4 9v6h4l5 4V5L8 9H4Z"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M16.5 8.5a5 5 0 0 1 0 7"/></svg>';
         } else {
           num.textContent = String(index + 1);
         }
         row.appendChild(num);
 
-        const title = document.createElement('td');
-        title.className = 'pl-col-title';
         if (track.hasArtwork) {
           const art = document.createElement('img');
           art.className = 'pl-art';
           art.alt = '';
           art.src = '/api/music/playlist/artwork?id=' + encodeURIComponent(track.id) + (pageAdminToken ? '&token=' + encodeURIComponent(pageAdminToken) : '');
-          title.appendChild(art);
+          row.appendChild(art);
         }
-        const titleText = document.createElement('span');
-        titleText.textContent = track.title || track.originalName || '(不明な曲)';
-        title.appendChild(titleText);
+
+        const copy = document.createElement('div');
+        copy.className = 'pl-row-copy';
+        const title = document.createElement('strong');
+        title.textContent = track.title || track.originalName || '(不明な曲)';
+        copy.appendChild(title);
+        const sub = document.createElement('span');
         if (track.status === 'preparing') {
-          const badge = document.createElement('em');
-          badge.className = 'pl-badge';
-          badge.textContent = '準備中…';
-          title.appendChild(badge);
+          sub.textContent = '準備中…';
+          sub.className = 'pl-row-sub pl-row-status';
         } else if (track.status === 'failed') {
-          const badge = document.createElement('em');
-          badge.className = 'pl-badge pl-badge-error';
-          badge.textContent = '失敗';
-          badge.title = track.error || '';
-          title.appendChild(badge);
+          sub.textContent = '失敗: ' + (track.error || '');
+          sub.className = 'pl-row-sub pl-row-error';
+          sub.title = track.error || '';
+        } else {
+          const detail = [track.artist, sourceLabel(track)].filter(Boolean).join(' — ');
+          sub.textContent = detail || ' ';
+          sub.className = 'pl-row-sub';
         }
-        row.appendChild(title);
+        copy.appendChild(sub);
+        row.appendChild(copy);
 
-        const artist = document.createElement('td');
-        artist.className = 'pl-col-artist';
-        artist.textContent = track.artist || '-';
-        row.appendChild(artist);
-
-        const time = document.createElement('td');
-        time.className = 'pl-col-time';
-        time.textContent = track.durationSeconds ? fmtTime(track.durationSeconds) : '-';
+        const time = document.createElement('span');
+        time.className = 'pl-row-time';
+        time.textContent = track.durationSeconds ? fmtTime(track.durationSeconds) : '';
         row.appendChild(time);
 
-        const source = document.createElement('td');
-        source.className = 'pl-col-source';
-        source.textContent = sourceLabel(track);
-        row.appendChild(source);
-
-        const actions = document.createElement('td');
-        actions.className = 'pl-col-actions';
+        const actions = document.createElement('div');
+        actions.className = 'pl-row-actions';
         const playNow = document.createElement('button');
         playNow.type = 'button';
         playNow.className = 'pl-row-action';
@@ -238,6 +321,7 @@ const dashboardScriptPlaylistController = `
         row.addEventListener('dragover', (event) => {
           if (!dragTrackId || dragTrackId === track.id) return;
           event.preventDefault();
+          event.stopPropagation();
           clearDropMarkers();
           const rect = row.getBoundingClientRect();
           row.classList.add(event.clientY < rect.top + rect.height / 2 ? 'pl-drop-before' : 'pl-drop-after');
@@ -245,6 +329,7 @@ const dashboardScriptPlaylistController = `
         row.addEventListener('drop', (event) => {
           if (!dragTrackId || dragTrackId === track.id) return;
           event.preventDefault();
+          event.stopPropagation();
           const rect = row.getBoundingClientRect();
           const before = event.clientY < rect.top + rect.height / 2;
           clearDropMarkers();
@@ -253,76 +338,18 @@ const dashboardScriptPlaylistController = `
         return row;
       }
 
-      function clearDropMarkers() {
-        if (!plTrackTableBody) return;
-        plTrackTableBody.querySelectorAll('.pl-drop-before, .pl-drop-after').forEach((el) => {
-          el.classList.remove('pl-drop-before', 'pl-drop-after');
-        });
-      }
-
-      function reorderTo(movedId, anchorId, before) {
-        const ids = (plState.tracks || []).map((t) => t.id).filter((id) => id !== movedId);
-        const anchorIndex = ids.indexOf(anchorId);
-        if (anchorIndex < 0) return;
-        ids.splice(before ? anchorIndex : anchorIndex + 1, 0, movedId);
-        playlistPost('/api/music/playlist/reorder', { ids });
-      }
-
-      function renderPlaylistTable() {
-        if (!plTrackTableBody) return;
-        plTrackTableBody.replaceChildren();
+      function renderTrackList() {
+        if (!plTrackList) return;
+        plTrackList.replaceChildren();
         const tracks = plState.tracks || [];
         if (tracks.length === 0) {
-          const row = document.createElement('tr');
-          row.className = 'pl-empty-row';
-          const cell = document.createElement('td');
-          cell.colSpan = 6;
-          cell.textContent = '曲がありません。上の入力欄から追加してください';
-          row.appendChild(cell);
-          plTrackTableBody.appendChild(row);
+          const empty = document.createElement('div');
+          empty.className = 'pl-list-empty';
+          empty.textContent = '曲がありません。左のアップロードから追加してください';
+          plTrackList.appendChild(empty);
           return;
         }
-        tracks.forEach((track, index) => plTrackTableBody.appendChild(trackRow(track, index)));
-      }
-
-      async function addFromInput(playImmediately) {
-        if (!plInput) return;
-        const value = plInput.value.trim();
-        if (!value) {
-          showToast('URL またはファイルパスを入力してください', { error: true });
-          return;
-        }
-        const beforeIds = new Set((plState.tracks || []).map((t) => t.id));
-        if (await playlistPost('/api/music/playlist/add', { input: value })) {
-          plInput.value = '';
-          if (playImmediately) {
-            const added = (plState.tracks || []).find((t) => !beforeIds.has(t.id));
-            if (added) playWhenReadyId = added.id;
-          }
-        }
-      }
-
-      async function addFiles(files, playImmediately) {
-        for (const file of Array.from(files || [])) {
-          const beforeIds = new Set((plState.tracks || []).map((t) => t.id));
-          const formData = new FormData();
-          formData.append('file', file, file.name);
-          try {
-            const res = await apiFetch('/api/music/playlist/add', { method: 'POST', body: formData });
-            const text = await res.text();
-            if (!res.ok) throw new Error(text || 'アップロードに失敗しました');
-            plState = JSON.parse(text || '{}');
-            plFetchedAt = Date.now();
-            if (playImmediately) {
-              const added = (plState.tracks || []).find((t) => !beforeIds.has(t.id));
-              if (added) playWhenReadyId = added.id;
-              playImmediately = false;
-            }
-            renderPlaylist();
-          } catch (error) {
-            showToast((error && error.message) || (file.name + ' の追加に失敗しました'), { error: true });
-          }
-        }
+        tracks.forEach((track, index) => plTrackList.appendChild(trackRow(track, index)));
       }
 
       function setSavedMenuOpen(open) {
@@ -359,7 +386,6 @@ const dashboardScriptPlaylistController = `
           row.className = 'pl-saved-row';
           const load = document.createElement('button');
           load.type = 'button';
-          load.role = 'menuitem';
           load.className = 'pl-saved-load';
           load.textContent = name;
           load.title = '「' + name + '」を読み込む';
@@ -437,33 +463,16 @@ const dashboardScriptPlaylistController = `
         } else {
           stopPolling();
           setSavedMenuOpen(false);
+          destroyPlaylistHLS();
+          if (plVideoWrap) plVideoWrap.classList.remove('pl-video-live');
         }
       }
 
+      function isPlaylistActive() {
+        return active;
+      }
+
       function initPlaylistController() {
-        if (plAddButton) plAddButton.addEventListener('click', () => addFromInput(false));
-        if (plPlayNowButton) plPlayNowButton.addEventListener('click', () => {
-          if (plInput && plInput.value.trim()) {
-            addFromInput(true);
-            return;
-          }
-          playlistPost('/api/music/playlist/play', {});
-        });
-        if (plInput) plInput.addEventListener('keydown', (event) => {
-          if (event.key === 'Enter') {
-            event.preventDefault();
-            addFromInput(false);
-          }
-        });
-        if (plFileButton && plFileInput) {
-          plFileButton.addEventListener('click', () => plFileInput.click());
-          plFileInput.addEventListener('change', () => {
-            if (plFileInput.files && plFileInput.files.length) {
-              addFiles(plFileInput.files, false);
-              plFileInput.value = '';
-            }
-          });
-        }
         if (plPlayButton) plPlayButton.addEventListener('click', () => playlistPost('/api/music/playlist/play', {}));
         if (plStopButton) plStopButton.addEventListener('click', () => playlistPost('/api/music/playlist/stop', {}));
         if (plNextButton) plNextButton.addEventListener('click', () => playlistPost('/api/music/playlist/next', {}));
@@ -484,33 +493,14 @@ const dashboardScriptPlaylistController = `
           if (plMenu.contains(event.target) || (plMenuButton && plMenuButton.contains(event.target))) return;
           setSavedMenuOpen(false);
         });
-        if (musicPlaylistPanel) {
-          musicPlaylistPanel.addEventListener('dragover', (event) => {
-            if (dragTrackId) return;
-            if (event.dataTransfer && Array.from(event.dataTransfer.types || []).includes('Files')) {
-              event.preventDefault();
-              musicPlaylistPanel.classList.add('pl-file-hover');
-            }
-          });
-          musicPlaylistPanel.addEventListener('dragleave', () => {
-            musicPlaylistPanel.classList.remove('pl-file-hover');
-          });
-          musicPlaylistPanel.addEventListener('drop', (event) => {
-            musicPlaylistPanel.classList.remove('pl-file-hover');
-            if (dragTrackId) return;
-            if (event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files.length) {
-              event.preventDefault();
-              event.stopPropagation();
-              addFiles(event.dataTransfer.files, false);
-            }
-          });
-        }
       }
 
       return {
         init: initPlaylistController,
         setActive: setPlaylistActive,
-        refresh: refreshPlaylist
+        isActive: isPlaylistActive,
+        refresh: refreshPlaylist,
+        addFromUploadForm
       };
     })();
 `

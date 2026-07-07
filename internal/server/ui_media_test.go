@@ -553,8 +553,10 @@ func TestMusicWorkspaceModeMenu(t *testing.T) {
 		`music-caret`,
 		`musicModeMenu.addEventListener('click'`,
 		`event.target.closest('[data-music-mode-choice]')`,
-		// プレイリストモード中はアップロードフォームを隠す。
-		`flowGrid.hidden = playlistActive`,
+		// プレイリストモードでも従来のアップロードUIを残し、追加先だけ切り替える。
+		`MusicController.mode() === 'playlist' && uploadMode !== 'obs'`,
+		`PlaylistController.addFromUploadForm(uploadMode)`,
+		`return 'プレイリストに追加';`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("music menu/controller missing %q", want)
@@ -589,9 +591,10 @@ func TestMusicWorkspacePlaylistUI(t *testing.T) {
 		`qualityRow.classList.toggle('standalone', mediaIntent === 'video' || mediaIntent === 'music')`,
 		`.quality-row.standalone`,
 		`/api/video-quality`,
-		// クラシック iTunes 風プレイリストパネル。
+		// フラット（Apple Music 風）プレイリストパネル。右カラムのプレビュー位置に置く。
 		`id="musicPlaylistPanel"`,
-		`id="plLCD"`,
+		`id="plVideoPreview"`,
+		`id="plVideoEmpty"`,
 		`id="plNowTitle"`,
 		`id="plProgressFill"`,
 		`id="plPlayButton"`,
@@ -599,23 +602,19 @@ func TestMusicWorkspacePlaylistUI(t *testing.T) {
 		`id="plNextButton"`,
 		`id="plShuffleButton"`,
 		`id="plLoopButton"`,
-		`id="plInput"`,
-		`id="plAddButton"`,
-		`id="plPlayNowButton"`,
-		`id="plTrackTableBody"`,
+		`id="plTrackList"`,
 		`id="plUrlModeHLS"`,
 		`id="plUrlModeRTSP"`,
 		`id="plShareUrl"`,
 		`id="plMenuButton"`,
 		`id="plSaveButton"`,
-		`<th>曲名</th>`,
-		`<th>アーティスト</th>`,
 		`PlaylistController.init()`,
 		`apiFetch('/api/music/playlist'`,
 		`/api/music/playlist/add`,
 		`/api/music/playlist/reorder`,
 		`/api/music/playlist/play`,
 		`/api/music/playlists/load`,
+		`'/radio/index.m3u8'`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("playlist UI missing %q", want)

@@ -55,28 +55,8 @@ const dashboardCSSResponsive = `
       .flow-grid {
         grid-template-columns: 1fr;
       }
-      .pl-deck {
-        grid-template-columns: 1fr;
-        justify-items: center;
-      }
-      .pl-lcd {
-        width: 100%;
-      }
-      .pl-input-row {
-        grid-template-columns: minmax(0, 1fr) auto;
-      }
-      .pl-input-row input[type="text"] {
-        grid-column: 1 / -1;
-      }
-      .pl-col-source,
-      .pl-col-artist {
-        display: none;
-      }
-      .pl-share {
-        grid-template-columns: auto minmax(0, 1fr);
-      }
-      .pl-share button[data-copy] {
-        grid-column: 1 / -1;
+      .pl-list {
+        max-height: 320px;
       }
       .pl-row-action {
         opacity: 1;

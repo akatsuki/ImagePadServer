@@ -36,6 +36,9 @@ const dashboardScriptUploadState = `
     function uploadActionLabel() {
       if (uploadMode === 'obs') return '配信開始';
       if (mediaIntent === 'music') {
+        if (MusicController && MusicController.mode && MusicController.mode() === 'playlist') {
+          return 'プレイリストに追加';
+        }
         return 'ミュージックHLSを生成';
       }
       if (uploadMode === 'link') {
@@ -118,7 +121,7 @@ const dashboardScriptUploadState = `
       }
       if (uploadHeading) {
         uploadHeading.textContent = mediaIntent === 'music'
-          ? (MusicController && MusicController.label ? MusicController.label() : 'シングル')
+          ? 'ミュージック（' + (MusicController && MusicController.label ? MusicController.label() : 'シングル') + '）'
           : mediaIntent === 'video' ? '動画アップロード' : '画像アップロード';
       }
       if (previewHeading) {

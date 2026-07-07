@@ -38,8 +38,7 @@ const dashboardScriptMusicController = `
       function renderMusicController(context) {
         const active = !!(context && context.active && musicWorkspaceEnabled);
         const playlistActive = active && mode === 'playlist';
-        document.body.classList.toggle('playlist-mode', playlistActive);
-        if (flowGrid) flowGrid.hidden = playlistActive;
+        if (flowGrid) flowGrid.hidden = false;
         if (musicPlaylistPanel) musicPlaylistPanel.hidden = !active || mode === 'single';
         PreviewController.setVisible(!active || mode === 'single');
         (deps.choiceButtons || []).forEach((button) => {
