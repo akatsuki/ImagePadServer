@@ -22,17 +22,21 @@ type Callbacks struct {
 	OnStart     func(Session)
 	OnDone      func(Session)
 	OnRTSPReady func(RTSPEndpoint)
-	OnRTSPDone  func(sessionID string)
+	OnRTSPDone  func(RTSPEndpoint)
 }
 
 type RTSPEndpoint struct {
-	SessionID string
-	Host      string
-	Port      int
-	RTPPort   int
-	RTCPPort  int
-	Path      string
-	LocalURL  string
+	SessionID  string
+	Generation uint64
+	Host       string
+	Port       int
+	RTPPort    int
+	RTCPPort   int
+	Path       string
+	LocalURL   string
+	// BackendURL is the MediaMTX loopback listener used by app-internal probes.
+	// It is never a published or user-facing RTSP URL.
+	BackendURL string
 }
 
 const (
@@ -187,27 +191,58 @@ type Manager struct {
 	latency func() LatencyProfile
 	cb      Callbacks
 
-	mu           sync.Mutex
-	running      bool
-	stop         context.CancelFunc
-	done         chan struct{}
-	status       Status
-	current      *Session
-	sink         *lhlsSink
-	mtx          *mediaMTXRuntime
-	rtspGate     *rtspGate
-	rtspEndpoint *RTSPEndpoint
+	mu                    sync.Mutex
+	running               bool
+	stop                  context.CancelFunc
+	done                  chan struct{}
+	status                Status
+	current               *Session
+	sink                  *lhlsSink
+	mtx                   *mediaMTXRuntime
+	rtspGate              *rtspGate
+	rtspEndpoint          *RTSPEndpoint
+	listenerGeneration    uint64
+	mediaGeneration       uint64
+	latestMediaGeneration uint64
+
+	// Test seams keep restart ownership deterministic without spawning tools.
+	loopRunner            func(context.Context, uint64)
+	beforeSessionFinalize func(Session)
 }
 
 type Session struct {
-	ID           string
-	Title        string
-	PlaylistName string
-	Recording    string
-	HLSDirectory string
-	Published    bool
-	StartedAt    time.Time
-	FinishedAt   time.Time
+	ID             string
+	Generation     uint64 `json:"-"`
+	Title          string
+	PlaylistName   string
+	Recording      string
+	HLSDirectory   string
+	Published      bool
+	StartedAt      time.Time
+	FinishedAt     time.Time
+	ActiveContract *OBSActiveSessionContract
+}
+
+// OBSActiveSessionContract freezes every desired setting consumed by one OBS
+// media session. It is captured after a stream is accepted, never at listener
+// start, so later settings changes only affect the next accepted stream.
+type OBSActiveSessionContract struct {
+	SessionID           string                    `json:"sessionId"`
+	IngestURL           string                    `json:"ingestUrl"`
+	StreamKey           string                    `json:"streamKey"`
+	Port                int                       `json:"port"`
+	LatencyProfile      LatencyProfile            `json:"latencyProfile"`
+	QualityPreset       video.QualityPreset       `json:"qualityPreset"`
+	VideoEncoderProfile video.VideoEncoderProfile `json:"videoEncoderProfile"`
+}
+
+func cloneSession(session Session) Session {
+	copy := session
+	if session.ActiveContract != nil {
+		contract := *session.ActiveContract
+		copy.ActiveContract = &contract
+	}
+	return copy
 }
 
 type ConnectionStatus struct {
@@ -222,24 +257,25 @@ type ConnectionStatus struct {
 }
 
 type Status struct {
-	Enabled        bool                `json:"enabled"`
-	Listening      bool                `json:"listening"`
-	Connected      bool                `json:"connected"`
-	ServerAddress  string              `json:"serverAddress"`
-	StreamKey      string              `json:"streamKey"`
-	Port           int                 `json:"port"`
-	MediaID        string              `json:"mediaID,omitempty"`
-	PreviewURL     string              `json:"previewURL,omitempty"`
-	RTSPTURL       string              `json:"rtsptURL,omitempty"`
-	Publishing     bool                `json:"publishing"`
-	Latency        LatencyProfile      `json:"latency"`
-	Capabilities   []LatencyCapability `json:"capabilities,omitempty"`
-	Connections    []ConnectionStatus  `json:"connections,omitempty"`
-	Message        string              `json:"message"`
-	StartedAt      time.Time           `json:"startedAt,omitempty"`
-	FinishedAt     time.Time           `json:"finishedAt,omitempty"`
-	EncoderName    string              `json:"encoderName,omitempty"`
-	HardwareEncode bool                `json:"hardwareEncode"`
+	Enabled        bool                      `json:"enabled"`
+	Listening      bool                      `json:"listening"`
+	Connected      bool                      `json:"connected"`
+	ServerAddress  string                    `json:"serverAddress"`
+	StreamKey      string                    `json:"streamKey"`
+	Port           int                       `json:"port"`
+	MediaID        string                    `json:"mediaID,omitempty"`
+	PreviewURL     string                    `json:"previewURL,omitempty"`
+	RTSPTURL       string                    `json:"rtsptURL,omitempty"`
+	Publishing     bool                      `json:"publishing"`
+	Latency        LatencyProfile            `json:"latency"`
+	Capabilities   []LatencyCapability       `json:"capabilities,omitempty"`
+	Connections    []ConnectionStatus        `json:"connections,omitempty"`
+	Message        string                    `json:"message"`
+	StartedAt      time.Time                 `json:"startedAt,omitempty"`
+	FinishedAt     time.Time                 `json:"finishedAt,omitempty"`
+	EncoderName    string                    `json:"encoderName,omitempty"`
+	HardwareEncode bool                      `json:"hardwareEncode"`
+	ActiveSession  *OBSActiveSessionContract `json:"activeSession,omitempty"`
 }
 
 func New(outDir, host string, port int, key string, preset func() video.QualityPreset, latency func() LatencyProfile, cb Callbacks) *Manager {
@@ -277,6 +313,8 @@ func (m *Manager) Start() {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
+	m.listenerGeneration++
+	generation := m.listenerGeneration
 	m.running = true
 	m.stop = cancel
 	m.done = done
@@ -285,12 +323,20 @@ func (m *Manager) Start() {
 	m.status.Message = "OBS RTMP受信は配信入力を待っています。"
 	m.mu.Unlock()
 
-	go m.loop(ctx, done)
+	runner := m.loopRunner
+	if runner == nil {
+		runner = m.loop
+	}
+	go func() {
+		defer close(done)
+		runner(ctx, generation)
+	}()
 }
 
 func (m *Manager) Stop() {
 	m.mu.Lock()
 	cancel := m.stop
+	m.listenerGeneration++ // revoke any old finalizer before cancellation returns.
 	m.running = false
 	m.stop = nil
 	m.done = nil
@@ -302,6 +348,10 @@ func (m *Manager) Stop() {
 	m.status.Publishing = false
 	m.status.Message = "OBS RTMP受信は停止中です。"
 	m.current = nil
+	m.sink = nil
+	m.mtx = nil
+	m.rtspGate = nil
+	m.rtspEndpoint = nil
 	m.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -324,7 +374,7 @@ func (m *Manager) StartPublishing() bool {
 		started = true
 		if !m.current.Published {
 			m.current.Published = true
-			copy := *m.current
+			copy := cloneSession(*m.current)
 			session = &copy
 		}
 		if m.rtspEndpoint != nil && m.rtspEndpoint.SessionID == m.current.ID {
@@ -347,7 +397,20 @@ func (m *Manager) SetRTSPURL(sessionID, publicURL, message string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.current == nil || m.current.ID != sessionID ||
-		m.currentLatency().Transport != LatencyModeRTSPT {
+		!m.currentSessionUsesRTSPTLocked() {
+		return false
+	}
+	m.status.RTSPTURL = publicURL
+	m.status.Message = message
+	return true
+}
+
+// SetRTSPEndpointURL applies a server publication update only to the exact
+// accepted media session that produced the endpoint.
+func (m *Manager) SetRTSPEndpointURL(endpoint RTSPEndpoint, publicURL, message string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.current == nil || m.current.ID != endpoint.SessionID || m.current.Generation != endpoint.Generation || !m.currentSessionUsesRTSPTLocked() {
 		return false
 	}
 	m.status.RTSPTURL = publicURL
@@ -358,33 +421,66 @@ func (m *Manager) SetRTSPURL(sessionID, publicURL, message string) bool {
 func (m *Manager) setRTSPEndpoint(endpoint RTSPEndpoint) bool {
 	m.mu.Lock()
 	if m.current == nil || m.current.ID != endpoint.SessionID ||
-		m.currentLatency().Transport != LatencyModeRTSPT {
+		!m.currentSessionUsesRTSPTLocked() {
 		m.mu.Unlock()
 		return false
 	}
 	copy := endpoint
+	copy.Generation = m.current.Generation
 	m.rtspEndpoint = &copy
 	m.status.RTSPTURL = ""
 	m.status.Message = "RTSP TCPストリームを準備しました。外部公開を待っています。"
 	publishing := m.status.Publishing
 	m.mu.Unlock()
 	if publishing && m.cb.OnRTSPReady != nil {
-		m.cb.OnRTSPReady(endpoint)
+		m.cb.OnRTSPReady(copy)
+	}
+	return true
+}
+
+func (m *Manager) setRTSPEndpointForGeneration(endpoint RTSPEndpoint, generation uint64) bool {
+	m.mu.Lock()
+	if !m.ownsListenerGenerationLocked(generation) {
+		m.mu.Unlock()
+		return false
+	}
+	if m.current == nil || m.current.ID != endpoint.SessionID ||
+		!m.currentSessionUsesRTSPTLocked() {
+		m.mu.Unlock()
+		return false
+	}
+	copy := endpoint
+	copy.Generation = m.current.Generation
+	m.rtspEndpoint = &copy
+	m.status.RTSPTURL = ""
+	m.status.Message = "RTSP TCPストリームを準備しました。外部公開を待っています。"
+	publishing := m.status.Publishing
+	m.mu.Unlock()
+	if publishing && m.cb.OnRTSPReady != nil {
+		m.cb.OnRTSPReady(copy)
 	}
 	return true
 }
 
 func (m *Manager) clearRTSPEndpoint(sessionID string) {
 	m.mu.Lock()
-	if m.rtspEndpoint == nil || m.rtspEndpoint.SessionID != sessionID {
+	generation := m.listenerGeneration
+	m.mu.Unlock()
+	m.clearRTSPEndpointForGeneration(sessionID, generation)
+}
+
+func (m *Manager) clearRTSPEndpointForGeneration(sessionID string, generation uint64) {
+	m.mu.Lock()
+	if generation != m.listenerGeneration || m.rtspEndpoint == nil || m.rtspEndpoint.SessionID != sessionID {
 		m.mu.Unlock()
 		return
 	}
+	endpoint := *m.rtspEndpoint
 	m.rtspEndpoint = nil
 	m.status.RTSPTURL = ""
 	m.mu.Unlock()
 	if m.cb.OnRTSPDone != nil {
-		m.cb.OnRTSPDone(sessionID)
+		m.cb.OnRTSPDone(endpoint)
 	}
 }
 
@@ -409,6 +505,7 @@ func (m *Manager) StopAndWait(timeout time.Duration) {
 	m.mu.Lock()
 	cancel := m.stop
 	done := m.done
+	m.listenerGeneration++ // timeout may return, but the old generation stays revoked.
 	m.running = false
 	m.stop = nil
 	m.done = nil
@@ -420,6 +517,10 @@ func (m *Manager) StopAndWait(timeout time.Duration) {
 	m.status.Publishing = false
 	m.status.Message = "OBS RTMP受信を再起動しています。"
 	m.current = nil
+	m.sink = nil
+	m.mtx = nil
+	m.rtspGate = nil
+	m.rtspEndpoint = nil
 	m.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -441,6 +542,15 @@ func (m *Manager) Status() Status {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	status := m.status
+	if contract, ok := m.currentSessionContractLocked(); ok {
+		copy := contract
+		status.ActiveSession = &copy
+		status.ServerAddress = serverAddress(m.host, contract.Port)
+		status.StreamKey = contract.StreamKey
+		status.Port = contract.Port
+		status.Latency = contract.LatencyProfile
+		return status
+	}
 	status.ServerAddress = serverAddress(m.host, m.port)
 	status.StreamKey = m.key
 	status.Port = m.port
@@ -455,7 +565,12 @@ func (m *Manager) ConnectionRows(timeout time.Duration) []ConnectionStatus {
 	m.mu.Lock()
 	runtime := m.mtx
 	connected := m.status.Connected
-	profile := m.currentLatency()
+	profile := NormalizeLatencyProfile("auto")
+	if contract, ok := m.currentSessionContractLocked(); ok {
+		profile = contract.LatencyProfile
+	} else {
+		profile = m.currentLatency()
+	}
 	path := ""
 	if runtime != nil {
 		path = runtime.cfg.Path
@@ -469,16 +584,15 @@ func (m *Manager) ConnectionRows(timeout time.Duration) []ConnectionStatus {
 	return runtime.connectionRows(ctx, path, profile)
 }
 
-func (m *Manager) loop(ctx context.Context, done chan struct{}) {
-	defer close(done)
+func (m *Manager) loop(ctx context.Context, generation uint64) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		default:
 		}
-		if err := m.runOne(ctx); err != nil && ctx.Err() == nil {
-			m.setStatus(func(status *Status) {
+		if err := m.runOne(ctx, generation); err != nil && ctx.Err() == nil {
+			m.setStatusForGeneration(generation, func(status *Status) {
 				status.Listening = false
 				status.Connected = false
 				status.MediaID = ""
@@ -494,39 +608,47 @@ func (m *Manager) loop(ctx context.Context, done chan struct{}) {
 	}
 }
 
-func (m *Manager) runOne(parent context.Context) error {
+func (m *Manager) runOne(parent context.Context, generation uint64) error {
 	ffmpeg, err := video.EnsureFFmpeg()
 	if err != nil {
 		return err
 	}
-	latency := m.currentLatency()
-	purpose := latency.encoderPurpose()
-	selected := video.VideoEncoderProfile{Name: "copy", Purpose: purpose}
-	if latency.Reencode {
-		selected = video.SelectVideoEncoder(parent, ffmpeg, purpose)
-	}
-	err = m.runOneWithEncoder(parent, ffmpeg, selected)
-	if err == nil || !selected.Hardware || parent.Err() != nil {
-		return err
-	}
-	return m.runOneWithEncoder(parent, ffmpeg, video.CPUVideoEncoder(purpose))
+	return m.runOneWithEncoder(parent, ffmpeg, video.VideoEncoderProfile{}, generation)
 }
 
-func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encoder video.VideoEncoderProfile) error {
+func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encoder video.VideoEncoderProfile, generation uint64) error {
+	contract := m.captureOBSActiveSessionContract(sessionID(), encoder)
+	if contract.VideoEncoderProfile.Name == "" {
+		purpose := contract.LatencyProfile.encoderPurpose()
+		contract.VideoEncoderProfile = video.VideoEncoderProfile{Name: "copy", Purpose: purpose}
+		if contract.LatencyProfile.Reencode {
+			contract.VideoEncoderProfile = video.SelectVideoEncoder(parent, ffmpeg, purpose)
+		}
+	}
+	err := m.runOneWithContract(parent, ffmpeg, contract, generation)
+	if err == nil || !contract.VideoEncoderProfile.Hardware || parent.Err() != nil {
+		return err
+	}
+	contract.VideoEncoderProfile = video.CPUVideoEncoder(contract.LatencyProfile.encoderPurpose())
+	return m.runOneWithContract(parent, ffmpeg, contract, generation)
+}
+
+func (m *Manager) runOneWithContract(parent context.Context, ffmpeg string, contract OBSActiveSessionContract, generation uint64) error {
 	if err := os.MkdirAll(m.outDir, 0700); err != nil {
 		return err
 	}
 
-	id := sessionID()
+	id := contract.SessionID
 	title := "OBS " + time.Now().Format("2006-01-02 15:04:05")
 	recording := filepath.Join(m.outDir, "obs-recording-"+id+".mp4")
 	publishArmed := m.isPublishingArmed()
 	session := Session{
-		ID:           id,
-		Title:        title,
-		PlaylistName: video.PlaylistName(id),
-		Recording:    recording,
-		Published:    publishArmed,
+		ID:             id,
+		Title:          title,
+		PlaylistName:   video.PlaylistName(id),
+		Recording:      recording,
+		Published:      publishArmed,
+		ActiveContract: &contract,
 	}
 	_ = os.Remove(filepath.Join(m.outDir, session.PlaylistName))
 	matches, _ := filepath.Glob(filepath.Join(m.outDir, "current-"+id+"-*.ts"))
@@ -538,11 +660,11 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 	ctx, cancel := context.WithCancel(parent)
 	done := make(chan struct{})
 	defer close(done)
-	preset := m.currentPreset()
+	preset := contract.QualityPreset
 	video.BeginExternalHLS(m.outDir, id, preset, cancel, done)
 	defer video.EndExternalHLS(m.outDir, done)
 
-	latency := m.currentLatency()
+	latency := contract.LatencyProfile
 	lhls := latency.Transport == LatencyModeLHLS || latency.Mode == LatencyModeLHLS
 	sidecar := latency.Transport == LatencyModeRTSPT || latency.Transport == LatencyModeLLHLS || latency.Mode == LatencyModeLLHLS || latency.Mode == LatencyModeRTSPT
 	var rtsptURL string
@@ -563,12 +685,14 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 			_ = sink.close()
 			return err
 		}
-		m.mu.Lock()
-		m.sink = sink
-		m.mu.Unlock()
+		if !m.installLHLSSinkForGeneration(generation, sink) {
+			cancel()
+			_ = sink.close()
+			return nil
+		}
 		defer func() {
 			m.mu.Lock()
-			if m.sink == sink {
+			if m.ownsListenerGenerationLocked(generation) && m.sink == sink {
 				m.sink = nil
 			}
 			m.mu.Unlock()
@@ -577,7 +701,7 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 		// Only expose the public URL once #EXT-X-PREFETCH, the init segment,
 		// and one media segment exist; a half-formed LHLS output stays hidden.
 		ready = sink.ready
-		args = m.ffmpegLHLSArgs(id, recording, sink.baseURL()+"/stream.mpd", preset, encoder)
+		args = m.ffmpegLHLSArgsForContract(contract, recording, sink.baseURL()+"/stream.mpd")
 	case sidecar:
 		mtxExe, err := EnsureMediaMTX(parent)
 		if err != nil {
@@ -633,20 +757,24 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 				return err
 			}
 		}
-		m.mu.Lock()
-		m.mtx = runtime
-		m.rtspGate = gate
-		m.mu.Unlock()
+		if !m.installRTSPRuntimeForGeneration(generation, runtime, gate) {
+			if gate != nil {
+				_ = gate.stop()
+			}
+			_ = runtime.stop(5 * time.Second)
+			cancel()
+			return nil
+		}
 		// Ordered shutdown: FFmpeg is cancelled via ctx and its exit is awaited
 		// before this deferred stop runs, so the owned MediaMTX process is only
 		// stopped after its publisher has disconnected and the path is removed.
 		defer func() {
-			m.clearRTSPEndpoint(id)
+			m.clearRTSPEndpointForGeneration(id, generation)
 			m.mu.Lock()
-			if m.mtx == runtime {
+			if m.ownsListenerGenerationLocked(generation) && m.mtx == runtime {
 				m.mtx = nil
 			}
-			if m.rtspGate == gate {
+			if m.ownsListenerGenerationLocked(generation) && m.rtspGate == gate {
 				m.rtspGate = nil
 			}
 			m.mu.Unlock()
@@ -674,7 +802,7 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 			ready = func() bool {
 				rc, rcancel := context.WithTimeout(ctx, 2*time.Second)
 				defer rcancel()
-				return runtime.llhlsReady(rc)
+				return runtime.hlsReady(rc, contract.LatencyProfile)
 			}
 		} else {
 			ready = func() bool {
@@ -683,9 +811,9 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 				return runtime.pathReady(rc)
 			}
 		}
-		args = m.ffmpegRTSPArgs(id, recording, runtime.publishURL(), preset, encoder)
+		args = m.ffmpegRTSPArgsForContract(contract, recording, runtime.publishURL())
 	default:
-		args = m.ffmpegArgsWithEncoder(id, recording, preset, encoder)
+		args = m.ffmpegArgsForContract(contract, recording)
 	}
 	cmd := exec.Command(ffmpeg, args...)
 	cmd.Dir = m.outDir
@@ -718,16 +846,20 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 			}
 		}
 	}()
-	m.setStatus(func(status *Status) {
+	if !m.setStatusForGeneration(generation, func(status *Status) {
 		status.Listening = true
 		status.Connected = false
 		status.MediaID = ""
 		status.Message = "OBS RTMP受信は配信入力を待っています。"
-		status.EncoderName = encoder.Name
-		status.HardwareEncode = encoder.Hardware
-	})
+		status.EncoderName = contract.VideoEncoderProfile.Name
+		status.HardwareEncode = contract.VideoEncoderProfile.Hardware
+	}) {
+		cancel()
+		<-errCh
+		return nil
+	}
 
-	started, waitErr := m.waitForStart(ctx, session, errCh, ready)
+	started, waitErr := m.waitForStart(ctx, generation, session, errCh, ready)
 	if waitErr != nil {
 		cancel()
 		return waitErr
@@ -735,10 +867,10 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 	if started && sidecar {
 		if latency.Transport == LatencyModeRTSPT {
 			if rtspEndpoint != nil {
-				m.setRTSPEndpoint(*rtspEndpoint)
+				m.setRTSPEndpointForGeneration(*rtspEndpoint, generation)
 			}
 		} else {
-			m.setStatus(func(status *Status) {
+			m.setStatusForGeneration(generation, func(status *Status) {
 				status.Message = "LL-HLSストリームを準備しました。"
 			})
 		}
@@ -748,7 +880,6 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 
 	if started {
 		session.FinishedAt = time.Now()
-		session.Published = session.Published || m.sessionPublished(session.ID)
 		if !lhls && !sidecar {
 			// LHLS and the MediaMTX sidecar modes have no on-disk HLS playlist
 			// to convert; their VOD is the separately recorded MP4.
@@ -756,23 +887,7 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 		} else if sidecar && mediaMTXHLSDir != "" {
 			_, _ = importMediaMTXHLS(m.outDir, id, mediaMTXHLSDir, mediaMTXPathName(id))
 		}
-		if session.Published && m.cb.OnDone != nil {
-			m.cb.OnDone(session)
-		}
-		m.setStatus(func(status *Status) {
-			status.Listening = true
-			status.Connected = false
-			status.MediaID = ""
-			status.RTSPTURL = ""
-			status.Publishing = false
-			status.FinishedAt = session.FinishedAt
-			status.Message = "OBS stream ended. Recording finalized as VOD."
-		})
-		m.mu.Lock()
-		if m.current != nil && m.current.ID == session.ID {
-			m.current = nil
-		}
-		m.mu.Unlock()
+		m.finalizeAcceptedSession(&session, generation)
 	}
 	if parent.Err() != nil {
 		return nil
@@ -783,7 +898,7 @@ func (m *Manager) runOneWithEncoder(parent context.Context, ffmpeg string, encod
 	return nil
 }
 
-func (m *Manager) waitForStart(ctx context.Context, session Session, errCh <-chan error, ready func() bool) (bool, error) {
+func (m *Manager) waitForStart(ctx context.Context, generation uint64, session Session, errCh <-chan error, ready func() bool) (bool, error) {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -800,19 +915,9 @@ func (m *Manager) waitForStart(ctx context.Context, session Session, errCh <-cha
 				continue
 			}
 			session.StartedAt = time.Now()
-			published := m.publishSessionIfArmed(&session)
-			m.setStatus(func(status *Status) {
-				status.Listening = true
-				status.Connected = true
-				status.MediaID = session.ID
-				status.Publishing = published
-				status.StartedAt = session.StartedAt
-				if published {
-					status.Message = "OBS stream is being published to HLS."
-				} else {
-					status.Message = "OBS stream is connected. Press publish to share it."
-				}
-			})
+			if _, accepted := m.acceptSession(&session, generation); !accepted {
+				return false, nil
+			}
 			return true, nil
 		}
 	}
@@ -823,9 +928,15 @@ func (m *Manager) ffmpegArgs(id, recording string, preset video.QualityPreset) [
 }
 
 func (m *Manager) ffmpegArgsWithEncoder(id, recording string, preset video.QualityPreset, encoder video.VideoEncoderProfile) []string {
-	inputURL := fmt.Sprintf("rtmp://0.0.0.0:%d/live/%s", m.port, m.key)
-	latency := m.currentLatency()
-	preset = scaledLatencyPreset(preset, latency.BitrateMultiplier)
+	return m.ffmpegArgsForContract(m.argumentContract(id, preset, encoder), recording)
+}
+
+func (m *Manager) ffmpegArgsForContract(contract OBSActiveSessionContract, recording string) []string {
+	id := contract.SessionID
+	inputURL := contract.IngestURL
+	latency := contract.LatencyProfile
+	preset := scaledLatencyPreset(contract.QualityPreset, latency.BitrateMultiplier)
+	encoder := contract.VideoEncoderProfile
 	args := []string{
 		"-hide_banner",
 		"-loglevel", "warning",
@@ -910,10 +1021,14 @@ func (m *Manager) ffmpegArgsWithEncoder(id, recording string, preset video.Quali
 // private loopback sink at output. A separate copy output records the MP4 VOD.
 // Plain file output suppresses the prefetch tag, so HTTP output is required.
 func (m *Manager) ffmpegLHLSArgs(id, recording, output string, preset video.QualityPreset, encoder video.VideoEncoderProfile) []string {
-	_ = id
-	inputURL := fmt.Sprintf("rtmp://0.0.0.0:%d/live/%s", m.port, m.key)
-	latency := m.currentLatency()
-	preset = scaledLatencyPreset(preset, latency.BitrateMultiplier)
+	return m.ffmpegLHLSArgsForContract(m.argumentContract(id, preset, encoder), recording, output)
+}
+
+func (m *Manager) ffmpegLHLSArgsForContract(contract OBSActiveSessionContract, recording, output string) []string {
+	inputURL := contract.IngestURL
+	latency := contract.LatencyProfile
+	preset := scaledLatencyPreset(contract.QualityPreset, latency.BitrateMultiplier)
+	encoder := contract.VideoEncoderProfile
 	args := []string{
 		"-hide_banner",
 		"-loglevel", "warning",
@@ -981,10 +1096,14 @@ func (m *Manager) ffmpegLHLSArgs(id, recording, output string, preset video.Qual
 // stream into LL-HLS and serves the RTSP/TCP read path. A separate copy output
 // records the MP4 VOD.
 func (m *Manager) ffmpegRTSPArgs(id, recording, rtspURL string, preset video.QualityPreset, encoder video.VideoEncoderProfile) []string {
-	_ = id
-	inputURL := fmt.Sprintf("rtmp://0.0.0.0:%d/live/%s", m.port, m.key)
-	latency := m.currentLatency()
-	preset = scaledLatencyPreset(preset, latency.BitrateMultiplier)
+	return m.ffmpegRTSPArgsForContract(m.argumentContract(id, preset, encoder), recording, rtspURL)
+}
+
+func (m *Manager) ffmpegRTSPArgsForContract(contract OBSActiveSessionContract, recording, rtspURL string) []string {
+	inputURL := contract.IngestURL
+	latency := contract.LatencyProfile
+	preset := scaledLatencyPreset(contract.QualityPreset, latency.BitrateMultiplier)
+	encoder := contract.VideoEncoderProfile
 	args := []string{
 		"-hide_banner",
 		"-loglevel", "warning",
@@ -1028,6 +1147,7 @@ func (m *Manager) ffmpegRTSPArgs(id, recording, rtspURL string, preset video.Qua
 		"-muxdelay", "0",
 		"-f", "rtsp",
 		"-rtsp_transport", "tcp",
+		"-pkt_size", "1200",
 		rtspURL,
 	)
 	args = append(args,
@@ -1063,14 +1183,18 @@ func (m *Manager) LHLSPublicFile(id, name string) (string, bool) {
 // the connected session, so the HLS-family handlers do not fall through to the
 // generated-file path.
 func (m *Manager) ProxyLLHLS(w http.ResponseWriter, r *http.Request, id, name string) bool {
-	transport := m.currentLatency().Transport
-	if transport != LatencyModeLLHLS && transport != LatencyModeRTSPT {
-		return false
-	}
 	m.mu.Lock()
 	runtime := m.mtx
 	active := m.current != nil && m.current.ID == id
+	contract, hasContract := m.currentSessionContractLocked()
 	m.mu.Unlock()
+	transport := contract.LatencyProfile.Transport
+	if !hasContract {
+		transport = m.currentLatency().Transport
+	}
+	if transport != LatencyModeLLHLS && transport != LatencyModeRTSPT {
+		return false
+	}
 	if !active || runtime == nil {
 		return false
 	}
@@ -1079,12 +1203,16 @@ func (m *Manager) ProxyLLHLS(w http.ResponseWriter, r *http.Request, id, name st
 }
 
 func (m *Manager) HLSPreviewReady(id, name string) bool {
-	transport := m.currentLatency().Transport
+	m.mu.Lock()
+	runtime := m.mtx
+	active := m.current != nil && m.current.ID == id
+	contract, hasContract := m.currentSessionContractLocked()
+	m.mu.Unlock()
+	transport := contract.LatencyProfile.Transport
+	if !hasContract {
+		transport = m.currentLatency().Transport
+	}
 	if transport == LatencyModeLLHLS || transport == LatencyModeRTSPT {
-		m.mu.Lock()
-		runtime := m.mtx
-		active := m.current != nil && m.current.ID == id
-		m.mu.Unlock()
 		if !active || runtime == nil {
 			return false
 		}
@@ -1125,6 +1253,60 @@ func (m *Manager) currentPreset() video.QualityPreset {
 		return video.ResolveQuality("auto", 0)
 	}
 	return m.preset()
+}
+
+func (m *Manager) captureOBSActiveSessionContract(id string, encoder video.VideoEncoderProfile) OBSActiveSessionContract {
+	m.mu.Lock()
+	port := m.port
+	key := m.key
+	preset := m.preset
+	latency := m.latency
+	m.mu.Unlock()
+
+	profile := NormalizeLatencyProfile("auto")
+	if latency != nil {
+		profile = normalizeLatencyProfile(latency())
+	}
+	quality := video.ResolveQuality("auto", 0)
+	if preset != nil {
+		quality = preset()
+	}
+	return OBSActiveSessionContract{
+		SessionID:           id,
+		IngestURL:           fmt.Sprintf("rtmp://0.0.0.0:%d/live/%s", port, key),
+		StreamKey:           key,
+		Port:                port,
+		LatencyProfile:      profile,
+		QualityPreset:       quality,
+		VideoEncoderProfile: encoder,
+	}
+}
+
+func (m *Manager) argumentContract(id string, preset video.QualityPreset, encoder video.VideoEncoderProfile) OBSActiveSessionContract {
+	profile := m.currentLatency()
+	return OBSActiveSessionContract{
+		SessionID:           id,
+		IngestURL:           fmt.Sprintf("rtmp://0.0.0.0:%d/live/%s", m.port, m.key),
+		StreamKey:           m.key,
+		Port:                m.port,
+		LatencyProfile:      profile,
+		QualityPreset:       preset,
+		VideoEncoderProfile: encoder,
+	}
+}
+
+func (m *Manager) currentSessionContractLocked() (OBSActiveSessionContract, bool) {
+	if m.current == nil || m.current.ActiveContract == nil || m.current.ActiveContract.SessionID != m.current.ID {
+		return OBSActiveSessionContract{}, false
+	}
+	return *m.current.ActiveContract, true
+}
+
+func (m *Manager) currentSessionUsesRTSPTLocked() bool {
+	if contract, ok := m.currentSessionContractLocked(); ok {
+		return contract.LatencyProfile.Transport == LatencyModeRTSPT
+	}
+	return m.currentLatency().Transport == LatencyModeRTSPT
 }
 
 func (m *Manager) currentLatency() LatencyProfile {
@@ -1245,31 +1427,126 @@ func (m *Manager) isPublishingArmed() bool {
 	return m.status.Publishing
 }
 
-func (m *Manager) publishSessionIfArmed(session *Session) bool {
+func (m *Manager) acceptSession(session *Session, generation uint64) (bool, bool) {
 	m.mu.Lock()
+	if generation != m.listenerGeneration || !m.running || session == nil {
+		m.mu.Unlock()
+		return false, false
+	}
 	armed := m.status.Publishing
-	if session != nil {
-		session.Published = armed
-		copy := *session
-		m.current = &copy
+	m.mediaGeneration++
+	session.Generation = m.mediaGeneration
+	m.latestMediaGeneration = session.Generation
+	session.Published = armed
+	copy := cloneSession(*session)
+	m.current = &copy
+	m.status.Listening = true
+	m.status.Connected = true
+	m.status.MediaID = session.ID
+	m.status.Publishing = armed
+	m.status.StartedAt = session.StartedAt
+	if armed {
+		m.status.Message = "OBS stream is being published to HLS."
+	} else {
+		m.status.Message = "OBS stream is connected. Press publish to share it."
 	}
+	callback := m.cb.OnStart
+	callbackSession := cloneSession(*session)
 	m.mu.Unlock()
-	if armed && session != nil && m.cb.OnStart != nil {
-		m.cb.OnStart(*session)
+	if armed && callback != nil {
+		callback(callbackSession)
 	}
-	return armed
+	return armed, true
 }
 
-func (m *Manager) sessionPublished(id string) bool {
+func (m *Manager) finalizeAcceptedSession(session *Session, generation uint64) bool {
+	m.mu.Lock()
+	hook := m.beforeSessionFinalize
+	m.mu.Unlock()
+	if hook != nil && session != nil {
+		hook(cloneSession(*session))
+	}
+
+	m.mu.Lock()
+	if session == nil || generation != m.listenerGeneration || m.current == nil || m.current.ID != session.ID {
+		m.mu.Unlock()
+		return false
+	}
+	session.Published = session.Published || m.current.Published
+	session.Generation = m.current.Generation
+	m.status.Listening = true
+	m.status.Connected = false
+	m.status.MediaID = ""
+	m.status.RTSPTURL = ""
+	m.status.Publishing = false
+	m.status.FinishedAt = session.FinishedAt
+	m.status.Message = "OBS stream ended. Recording finalized as VOD."
+	m.current = nil
+	callback := m.cb.OnDone
+	callbackSession := cloneSession(*session)
+	m.mu.Unlock()
+	if session.Published && callback != nil {
+		callback(callbackSession)
+	}
+	return true
+}
+
+// IsSessionActive reports whether a notification still belongs to the active
+// accepted media session. It is safe for callbacks to call without blocking
+// listener restart or another accepted session.
+func (m *Manager) IsSessionActive(sessionID string, generation uint64) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.current != nil && m.current.ID == id && m.current.Published
+	return generation != 0 && m.current != nil && m.current.ID == sessionID && m.current.Generation == generation
+}
+
+// IsLatestSession reports whether no newer accepted media session has replaced
+// this notification. Terminal callbacks use this after expensive work.
+func (m *Manager) IsLatestSession(sessionID string, generation uint64) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return generation != 0 && m.latestMediaGeneration == generation && (m.current == nil || m.current.ID == sessionID || m.current.Generation == generation)
 }
 
 func (m *Manager) setStatus(fn func(*Status)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	fn(&m.status)
+}
+
+func (m *Manager) ownsListenerGenerationLocked(generation uint64) bool {
+	return generation != 0 && generation == m.listenerGeneration && m.running
+}
+
+func (m *Manager) setStatusForGeneration(generation uint64, fn func(*Status)) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.ownsListenerGenerationLocked(generation) {
+		return false
+	}
+	fn(&m.status)
+	return true
+}
+
+func (m *Manager) installLHLSSinkForGeneration(generation uint64, sink *lhlsSink) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.ownsListenerGenerationLocked(generation) {
+		return false
+	}
+	m.sink = sink
+	return true
+}
+
+func (m *Manager) installRTSPRuntimeForGeneration(generation uint64, runtime *mediaMTXRuntime, gate *rtspGate) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.ownsListenerGenerationLocked(generation) {
+		return false
+	}
+	m.mtx = runtime
+	m.rtspGate = gate
+	return true
 }
 
 func serverAddress(host string, port int) string {

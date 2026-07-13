@@ -1,0 +1,126 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">ImagePadServer pad projection app icon master</title>
+  <desc id="desc">A luminous pad on a floor projects a beam of light upward, holding a floating photo card.</desc>
+  <defs>
+    <linearGradient id="backgroundGradient" x1="180" y1="0" x2="844" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#061A35"/>
+      <stop offset="0.52" stop-color="#082B55"/>
+      <stop offset="1" stop-color="#020B1E"/>
+    </linearGradient>
+    <radialGradient id="floorGlow" cx="512" cy="778" r="360" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#40EAFF" stop-opacity="0.74"/>
+      <stop offset="0.32" stop-color="#149AD8" stop-opacity="0.36"/>
+      <stop offset="0.72" stop-color="#082B55" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#020B1E" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="beamCore" cx="512" cy="692" r="285" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#D9FFFF" stop-opacity="0.95"/>
+      <stop offset="0.22" stop-color="#5FF3FF" stop-opacity="0.62"/>
+      <stop offset="0.58" stop-color="#1BB6EF" stop-opacity="0.24"/>
+      <stop offset="1" stop-color="#00A8E8" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="beamSide" x1="512" y1="750" x2="512" y2="275" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#6CFFFF" stop-opacity="0.62"/>
+      <stop offset="0.62" stop-color="#28DFFF" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#5FEFFF" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="padTop" x1="266" y1="694" x2="770" y2="896" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0E3159"/>
+      <stop offset="0.52" stop-color="#123D6F"/>
+      <stop offset="1" stop-color="#071528"/>
+    </linearGradient>
+    <linearGradient id="padSide" x1="266" y1="778" x2="764" y2="934" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#061221"/>
+      <stop offset="0.34" stop-color="#455B73"/>
+      <stop offset="0.58" stop-color="#132B46"/>
+      <stop offset="1" stop-color="#030814"/>
+    </linearGradient>
+    <linearGradient id="photoFace" x1="340" y1="230" x2="734" y2="532" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="0.58" stop-color="#EDF8FF"/>
+      <stop offset="1" stop-color="#C8E9F7"/>
+    </linearGradient>
+    <linearGradient id="photoEdge" x1="318" y1="280" x2="748" y2="596" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="0.45" stop-color="#C9F9FF"/>
+      <stop offset="1" stop-color="#18C5F5"/>
+    </linearGradient>
+    <linearGradient id="mountainFront" x1="350" y1="464" x2="660" y2="632" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0875D8"/>
+      <stop offset="0.5" stop-color="#1AA8F0"/>
+      <stop offset="1" stop-color="#6DEEFF"/>
+    </linearGradient>
+    <linearGradient id="mountainBack" x1="558" y1="462" x2="760" y2="626" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2197E8"/>
+      <stop offset="1" stop-color="#77EAFF"/>
+    </linearGradient>
+    <radialGradient id="sunGradient" cx="612" cy="325" r="64" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFE66B"/>
+      <stop offset="0.58" stop-color="#FFB93E"/>
+      <stop offset="1" stop-color="#FF7E3E"/>
+    </radialGradient>
+    <filter id="softShadow" x="-30%" y="-30%" width="160%" height="180%">
+      <feDropShadow dx="0" dy="32" stdDeviation="22" flood-color="#001126" flood-opacity="0.45"/>
+    </filter>
+    <filter id="cyanGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="12" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.05 0 0 0 0 0.86 0 0 0 0 1 0 0 0 0.8 0" result="glow"/>
+      <feMerge>
+        <feMergeNode in="glow"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="photoLift" x="-30%" y="-35%" width="170%" height="190%">
+      <feDropShadow dx="0" dy="20" stdDeviation="24" flood-color="#15DFFF" flood-opacity="0.42"/>
+      <feDropShadow dx="0" dy="34" stdDeviation="20" flood-color="#001126" flood-opacity="0.42"/>
+    </filter>
+    <clipPath id="iconClip">
+      <rect x="28" y="28" width="968" height="968" rx="206" ry="206"/>
+    </clipPath>
+    <clipPath id="photoClip">
+      <path d="M338 315C342 273 370 249 414 244L686 213C729 208 760 232 765 273L794 496C800 543 772 578 724 584L357 627C309 633 279 605 285 557Z"/>
+    </clipPath>
+  </defs>
+
+  <g id="icon-shape" clip-path="url(#iconClip)">
+    <rect x="28" y="28" width="968" height="968" fill="url(#backgroundGradient)"/>
+    <ellipse cx="512" cy="823" rx="415" ry="174" fill="url(#floorGlow)"/>
+
+    <g id="projection-light" filter="url(#cyanGlow)">
+      <path d="M348 760L676 760L742 472L582 346L433 370Z" fill="url(#beamSide)" opacity="0.46"/>
+      <path d="M435 754L589 754L620 390L497 374Z" fill="#8DFFFF" opacity="0.18"/>
+      <path d="M271 792C352 734 677 735 756 792C676 850 352 850 271 792Z" fill="url(#beamCore)"/>
+      <path d="M325 771C415 738 610 738 700 771" fill="none" stroke="#B8FFFF" stroke-width="5" stroke-linecap="round" opacity="0.55"/>
+      <path d="M389 740C396 628 397 506 423 392" fill="none" stroke="#9EFFFF" stroke-width="7" stroke-linecap="round" opacity="0.22"/>
+      <path d="M512 758C514 640 514 510 514 382" fill="none" stroke="#DFFFFF" stroke-width="8" stroke-linecap="round" opacity="0.28"/>
+      <path d="M635 742C627 620 607 500 592 374" fill="none" stroke="#8AFFFF" stroke-width="7" stroke-linecap="round" opacity="0.2"/>
+    </g>
+
+    <g id="floor-pad" filter="url(#softShadow)">
+      <path d="M187 795C189 763 214 743 261 738L724 691C787 685 834 705 847 742L856 785C865 826 829 856 760 864L280 918C222 925 179 902 173 864Z" fill="url(#padSide)"/>
+      <path d="M190 771C195 739 222 720 271 715L724 670C786 664 831 685 841 722C850 756 815 784 751 791L283 844C226 850 184 824 190 771Z" fill="url(#padTop)"/>
+      <path d="M252 768C255 747 273 735 305 732L708 694C751 690 783 704 790 728C797 752 774 770 730 774L318 820C279 824 248 804 252 768Z" fill="none" stroke="#56F4FF" stroke-width="10" stroke-linejoin="round"/>
+      <path d="M287 739L704 700C744 696 772 708 778 728" fill="none" stroke="#D9FFFF" stroke-width="4" stroke-linecap="round" opacity="0.58"/>
+      <ellipse cx="512" cy="760" rx="128" ry="42" fill="#7EFFFF" opacity="0.22"/>
+    </g>
+
+    <g id="floating-photo" filter="url(#photoLift)">
+      <path d="M356 332C361 288 389 263 434 258L693 229C736 224 767 248 773 291L800 495C806 543 778 579 729 585L370 626C319 632 288 603 294 552Z" fill="url(#photoEdge)"/>
+      <path d="M338 315C342 273 370 249 414 244L686 213C729 208 760 232 765 273L794 496C800 543 772 578 724 584L357 627C309 633 279 605 285 557Z" fill="url(#photoFace)"/>
+      <g clip-path="url(#photoClip)">
+        <path d="M285 557L462 394C474 383 489 385 499 399L620 559Z" fill="url(#mountainFront)"/>
+        <path d="M548 542L650 434C661 422 676 422 687 435L808 563Z" fill="url(#mountainBack)" opacity="0.94"/>
+        <circle cx="637" cy="326" r="48" fill="url(#sunGradient)"/>
+        <path d="M355 287L721 246C740 244 755 254 759 272" fill="none" stroke="#FFFFFF" stroke-width="10" stroke-linecap="round" opacity="0.52"/>
+        <path d="M315 336L300 542C297 583 319 608 358 604" fill="#FFFFFF" opacity="0.16"/>
+      </g>
+      <path d="M338 315C342 273 370 249 414 244L686 213C729 208 760 232 765 273L794 496C800 543 772 578 724 584L357 627C309 633 279 605 285 557Z" fill="none" stroke="#FFFFFF" stroke-width="13" stroke-linejoin="round" opacity="0.9"/>
+      <path d="M352 323C356 288 380 268 418 264L683 235C718 231 743 250 748 284L773 490C778 528 755 555 717 560L364 600C326 604 304 584 309 546Z" fill="none" stroke="#91F5FF" stroke-width="5" stroke-linejoin="round" opacity="0.78"/>
+    </g>
+
+    <g id="subtle-specular-highlights" opacity="0.58">
+      <path d="M173 154C252 92 374 72 532 73" fill="none" stroke="#FFFFFF" stroke-width="7" stroke-linecap="round" opacity="0.12"/>
+      <path d="M106 770C153 856 250 923 379 947" fill="none" stroke="#56DFFF" stroke-width="5" stroke-linecap="round" opacity="0.12"/>
+    </g>
+  </g>
+</svg>

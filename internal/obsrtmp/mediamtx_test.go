@@ -164,6 +164,33 @@ func TestMediaMTXStartFailsOnEarlyExit(t *testing.T) {
 	}
 }
 
+func TestMediaMTXRuntimeStopReturnsAfterObservedRealProcessExit(t *testing.T) {
+	shell := os.Getenv("ComSpec")
+	if shell == "" {
+		t.Skip("requires Windows cmd.exe")
+	}
+	proc, err := realStartMediaMTXProcess(context.Background(), shell, "/c exit 17")
+	if err != nil {
+		t.Fatalf("start test process: %v", err)
+	}
+	runtime := testRuntime(defaultTestConfig())
+	runtime.proc = proc
+	runtime.dir = t.TempDir()
+	if err := <-runtime.wait(); err == nil {
+		t.Fatal("wait did not observe the test process crash")
+	}
+	stopped := make(chan error, 1)
+	go func() { stopped <- runtime.stop(25 * time.Millisecond) }()
+	select {
+	case err := <-stopped:
+		if err != nil {
+			t.Fatalf("stop: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stop blocked after wait observed the real process exit")
+	}
+}
+
 func TestMediaMTXStartTimesOutAndTearsDown(t *testing.T) {
 	rt := testRuntime(defaultTestConfig())
 	proc := newFakeProcess()
@@ -461,6 +488,124 @@ func TestLLHLSMediaReadyRequiresAllTags(t *testing.T) {
 	}
 }
 
+func TestRadioHLSReadyRequiresProfileArtifacts(t *testing.T) {
+	standardMaster := "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nmedia.m3u8\n"
+	standardMedia := "#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:1,\nsegment.m4s\n"
+	llMaster := "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nmedia.m3u8\n"
+	llMedia := "#EXTM3U\n#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES\n#EXT-X-PART-INF:PART-TARGET=0.2\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXT-X-PART:DURATION=0.2,URI=\"part.m4s\"\n#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"next.m4s\"\n"
+
+	tests := []struct {
+		name      string
+		profile   LatencyProfile
+		artifacts map[string]string
+		want      bool
+	}{
+		{
+			name:    "fMP4 requires init map and a media segment",
+			profile: NormalizeLatencyProfile(LatencyModeHLS),
+			artifacts: map[string]string{
+				"index.m3u8":  standardMaster,
+				"media.m3u8":  standardMedia,
+				"init.mp4":    "init",
+				"segment.m4s": "segment",
+			},
+			want: true,
+		},
+		{
+			name:    "fMP4 rejects a playlist without a readable segment",
+			profile: NormalizeLatencyProfile(LatencyModeHLS),
+			artifacts: map[string]string{
+				"index.m3u8": standardMaster,
+				"media.m3u8": standardMedia,
+				"init.mp4":   "init",
+			},
+			want: false,
+		},
+		{
+			name:    "fMP4 rejects an empty init map",
+			profile: NormalizeLatencyProfile(LatencyModeHLS),
+			artifacts: map[string]string{
+				"index.m3u8":  standardMaster,
+				"media.m3u8":  standardMedia,
+				"init.mp4":    "",
+				"segment.m4s": "segment",
+			},
+			want: false,
+		},
+		{
+			name:    "fMP4 rejects an empty media segment",
+			profile: NormalizeLatencyProfile(LatencyModeHLS),
+			artifacts: map[string]string{
+				"index.m3u8":  standardMaster,
+				"media.m3u8":  standardMedia,
+				"init.mp4":    "init",
+				"segment.m4s": "",
+			},
+			want: false,
+		},
+		{
+			name:    "LL-HLS requires tags part and preload artifact",
+			profile: NormalizeLatencyProfile(LatencyModeRTSPUltra),
+			artifacts: map[string]string{
+				"index.m3u8": llMaster,
+				"media.m3u8": llMedia,
+				"init.mp4":   "init",
+				"part.m4s":   "part",
+				"next.m4s":   "preload",
+			},
+			want: true,
+		},
+		{
+			name:    "LL-HLS rejects a missing preload artifact",
+			profile: NormalizeLatencyProfile(LatencyModeRTSPUltra),
+			artifacts: map[string]string{
+				"index.m3u8": llMaster,
+				"media.m3u8": llMedia,
+				"init.mp4":   "init",
+				"part.m4s":   "part",
+			},
+			want: false,
+		},
+		{
+			name:    "LL-HLS rejects an empty part artifact",
+			profile: NormalizeLatencyProfile(LatencyModeRTSPUltra),
+			artifacts: map[string]string{
+				"index.m3u8": llMaster,
+				"media.m3u8": llMedia,
+				"init.mp4":   "init",
+				"part.m4s":   "",
+				"next.m4s":   "preload",
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				name := strings.TrimPrefix(r.URL.Path, "/radio/")
+				body, ok := tt.artifacts[name]
+				if !ok {
+					http.NotFound(w, r)
+					return
+				}
+				_, _ = w.Write([]byte(body))
+			}))
+			defer upstream.Close()
+
+			rt := testRuntime(defaultTestConfig())
+			rt.httpClient = upstream.Client()
+			_, port := splitHostPortForTest(t, strings.TrimPrefix(upstream.URL, "http://"))
+			rt.cfg.Ports.HLS = port
+			rt.cfg.Path = "radio"
+
+			if got := rt.hlsReady(context.Background(), tt.profile); got != tt.want {
+				t.Fatalf("hlsReady() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestFFmpegRTSPArgsPublishOverTCP(t *testing.T) {
 	manager := newTestManager(t, "rtspt")
 	url := "rtsp://pub:secret@127.0.0.1:8554/obs_session"
@@ -471,6 +616,9 @@ func TestFFmpegRTSPArgsPublishOverTCP(t *testing.T) {
 	}
 	if got := valueAfter(args, "-rtsp_transport"); got != "tcp" {
 		t.Fatalf("-rtsp_transport = %q, want tcp", got)
+	}
+	if got := valueAfter(args, "-pkt_size"); got != "1200" {
+		t.Fatalf("-pkt_size = %q, want 1200\nargs: %s", got, strings.Join(args, " "))
 	}
 	if !containsSubsequence(args, []string{"-c:v", "libx264"}) {
 		t.Fatalf("expected re-encode to H.264: %s", strings.Join(args, " "))
@@ -625,7 +773,7 @@ func TestMediaMTXPublishAndLLHLSReady(t *testing.T) {
 	var llReady, pathReady bool
 	for time.Now().Before(deadline) {
 		rc, rcancel := context.WithTimeout(ctx, 2*time.Second)
-		llReady = rt.llhlsReady(rc)
+		llReady = rt.hlsReady(rc, NormalizeLatencyProfile(LatencyModeRTSPUltra))
 		pathReady = rt.pathReady(rc)
 		rcancel()
 		if llReady && pathReady {

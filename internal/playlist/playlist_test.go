@@ -144,6 +144,89 @@ func TestNextSequential(t *testing.T) {
 	}
 }
 
+func TestSequentialCursor(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(t *testing.T, q *Queue)
+	}{
+		{
+			name: "continues from exhausted tail when a track is added",
+			run: func(t *testing.T, q *Queue) {
+				a := addReady(t, q, "A")
+				b := addReady(t, q, "B")
+				if got, _ := q.Next(); got.ID != a.ID {
+					t.Fatalf("first Next = %q, want %q", got.ID, a.ID)
+				}
+				if got, _ := q.Next(); got.ID != b.ID {
+					t.Fatalf("second Next = %q, want %q", got.ID, b.ID)
+				}
+				if _, ok := q.Next(); ok {
+					t.Fatal("exhausted queue must not select a track")
+				}
+				c := addReady(t, q, "C")
+				if got, ok := q.Next(); !ok || got.ID != c.ID {
+					t.Fatalf("Next after adding C = %+v ok=%v, want C", got, ok)
+				}
+			},
+		},
+		{
+			name: "uses the reordered successor of the last played track",
+			run: func(t *testing.T, q *Queue) {
+				a := addReady(t, q, "A")
+				b := addReady(t, q, "B")
+				c := addReady(t, q, "C")
+				q.Next()
+				q.Next()
+				if !q.SetOrder([]string{c.ID, a.ID, b.ID}) {
+					t.Fatal("SetOrder failed")
+				}
+				if got, ok := q.Next(); !ok || got.ID != c.ID {
+					t.Fatalf("Next after reorder = %+v ok=%v, want C", got, ok)
+				}
+			},
+		},
+		{
+			name: "continues at the first unplayed track when the cursor track is removed",
+			run: func(t *testing.T, q *Queue) {
+				a := addReady(t, q, "A")
+				b := addReady(t, q, "B")
+				c := addReady(t, q, "C")
+				q.Next()
+				q.Next()
+				if !q.Remove(b.ID) {
+					t.Fatal("Remove(B) failed")
+				}
+				if got, ok := q.Next(); !ok || got.ID != c.ID {
+					t.Fatalf("Next after removing cursor track = %+v ok=%v, want C", got, ok)
+				}
+				if q.CurrentID() != c.ID || q.CurrentID() == a.ID {
+					t.Fatalf("current after removal = %q, want C", q.CurrentID())
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.run(t, NewQueue())
+		})
+	}
+}
+
+func TestResetPlaybackCycleRestartsSequentialSelection(t *testing.T) {
+	q := NewQueue()
+	a := addReady(t, q, "A")
+	addReady(t, q, "B")
+	q.Next()
+	q.Next()
+	if _, ok := q.Next(); ok {
+		t.Fatal("queue must be exhausted before reset")
+	}
+	q.ResetPlaybackCycle()
+	if got, ok := q.Next(); !ok || got.ID != a.ID {
+		t.Fatalf("Next after ResetPlaybackCycle = %+v ok=%v, want A", got, ok)
+	}
+}
+
 func TestNextSkipsNotReady(t *testing.T) {
 	q := NewQueue()
 	q.Add(Track{Title: "pending"}) // stays preparing
@@ -247,6 +330,30 @@ func TestReplaceAllResetsQueue(t *testing.T) {
 	got, ok := q.Next()
 	if !ok || got.ID != "n1" {
 		t.Fatalf("Next after ReplaceAll = %+v ok=%v", got, ok)
+	}
+}
+
+func TestReplaceAllResetsSequentialGeneration(t *testing.T) {
+	q := NewQueue()
+	q.ReplaceAll([]Track{{ID: "same", Title: "Old", Status: TrackReady, MediaPath: "old.ts"}})
+	if _, ok := q.Next(); !ok {
+		t.Fatal("initial queue must be playable")
+	}
+	if _, ok := q.Next(); ok {
+		t.Fatal("single-track queue must be exhausted")
+	}
+	q.ReplaceAll([]Track{{ID: "same", Title: "Reloaded", Status: TrackReady, MediaPath: "new.ts"}})
+	if got, ok := q.Next(); !ok || got.ID != "same" || got.Title != "Reloaded" {
+		t.Fatalf("Next after load = %+v ok=%v, want reloaded track", got, ok)
+	}
+}
+
+func TestReplaceAllReturnsDisplacedTracks(t *testing.T) {
+	q := NewQueue()
+	old := addReady(t, q, "old")
+	previous := q.ReplaceAll([]Track{{ID: "new", Title: "new", Status: TrackReady}})
+	if len(previous) != 1 || previous[0].ID != old.ID {
+		t.Fatalf("ReplaceAll previous = %+v, want displaced track %q", previous, old.ID)
 	}
 }
 

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -19,8 +21,15 @@ import (
 // Test seams: the prepare pipeline shells out to ffmpeg twice (analysis and
 // render); handler tests substitute fakes.
 var (
-	analyzeAudioForKind = video.AnalyzeAudioForKind
-	renderRadioTrack    = video.RenderRadioTrack
+	analyzeAudioForKind  = video.AnalyzeAudioForKind
+	renderRadioTrack     = video.RenderRadioTrack
+	observePlaylistAsset = func(ctx context.Context, path string) (video.RadioAssetSpec, error) {
+		ffprobe, err := video.EnsureFFprobe()
+		if err != nil {
+			return video.RadioAssetSpec{}, err
+		}
+		return video.ObserveRadioAsset(ctx, ffprobe, path)
+	}
 )
 
 // prepare-phase progress checkpoints (0-100 per track).
@@ -30,20 +39,54 @@ const (
 	trackProgressAnalyzed = 40
 )
 
+type musicRadioController interface {
+	Start() error
+	Stop(timeout time.Duration)
+	Running() bool
+	Status() obsrtmp.RadioStatus
+	Wake()
+	SkipCurrent()
+	CancelGeneration(generation uint64) bool
+	CurrentTrackGeneration() obsrtmp.TrackGeneration
+	SetFallbackPreset(func() video.QualityPreset)
+	SetLatencyProfile(func() obsrtmp.LatencyProfile)
+	SetOutputMode(func() obsrtmp.RadioOutputMode)
+	SetRTSPURL(sessionID, publicURL, message string) bool
+	ProxyLLHLS(http.ResponseWriter, *http.Request, string) bool
+}
+
 // initMusicPlaylist wires the playlist queue, the persistence store, the
 // radio manager, and the single background worker that serializes downloads
 // and renders so CPU/network heavy jobs never run concurrently.
 func (s *Server) initMusicPlaylist(host string) {
 	s.musicQueue = playlist.NewQueue()
-	s.playlistStore = playlist.NewStore(filepath.Join(s.store.Dir(), "playlists.json"))
-	s.radio = obsrtmp.NewRadioManager(s.store.Dir(), host, s.nextRadioTrack, obsrtmp.RadioCallbacks{
-		OnTrackStart: func(string) { s.broadcastStateChanged() },
-		OnTrackEnd:   s.onRadioTrackEnd,
-		OnIdle:       func() { s.broadcastStateChangedThrottled() },
-		OnStopped:    func() { s.broadcastStateChangedThrottled() },
+	s.playlistStore = playlist.NewStoreWithOptions(filepath.Join(s.store.Dir(), "playlists.json"), playlist.StoreOptions{
+		ActiveRecipe: s.activeMusicRadioRecipe,
+		ObserveAsset: func(ctx context.Context, path string) (video.RadioAssetSpec, error) {
+			return observePlaylistAsset(ctx, path)
+		},
 	})
+	cleanupAbandonedPlaylistRuntimeDirs(s.playlistRuntimeDir(), time.Now())
+	radio := obsrtmp.NewRadioManager(s.store.Dir(), host, s.nextRadioTrack, obsrtmp.RadioCallbacks{
+		OnTrackStart:       func(string) { s.broadcastStateChanged() },
+		OnTrackEnd:         s.onRadioTrackEnd,
+		OnIdle:             func() { s.broadcastStateChangedThrottled() },
+		OnRTSPReady:        s.handleRadioRTSPReady,
+		OnRTSPDone:         s.handleRadioRTSPDone,
+		OnReadinessChanged: s.broadcastStateChangedThrottled,
+		OnError:            func(obsrtmp.RadioError) { s.broadcastStateChangedThrottled() },
+		OnStopped:          func() { s.broadcastStateChangedThrottled() },
+	})
+	s.radio = radio
 	s.startMusicRadio = s.radio.Start
+	s.setRadioRTSPURL = radio.SetRTSPEndpointURL
 	s.radio.SetFallbackPreset(s.musicRadioPreset)
+	s.radio.SetLatencyProfile(func() obsrtmp.LatencyProfile {
+		return obsrtmp.NormalizeLatencyProfile(s.musicPlaylistDeliveryProfile())
+	})
+	s.radio.SetOutputMode(func() obsrtmp.RadioOutputMode {
+		return obsrtmp.RadioOutputModeProgram
+	})
 	s.musicJobs = make(chan func(), 64)
 	go func() {
 		for job := range s.musicJobs {
@@ -57,9 +100,48 @@ func (s *Server) initMusicPlaylist(host string) {
 func (s *Server) musicRadioPreset() video.QualityPreset {
 	appSettings, err := settings.Load()
 	if err != nil {
-		return video.MusicRadioQualityPreset("auto", 0, 0)
+		preset := video.MusicRadioQualityPreset("auto", 0, 0)
+		preset.Height = s.activeMusicPlaylistCanonicalHeight()
+		preset.RadioLatency = "rtsp-ultra"
+		return preset
 	}
-	return video.MusicRadioQualityPreset(appSettings.VideoQualityMode, appSettings.NetworkMbps, appSettings.NetworkUploadMbps)
+	preset := video.MusicRadioQualityPreset(appSettings.VideoQualityMode, appSettings.NetworkMbps, appSettings.NetworkUploadMbps)
+	preset.Height = s.activeMusicPlaylistCanonicalHeight()
+	profile := normalizeMusicPlaylistDeliveryProfile(appSettings.MusicPlaylistDeliveryProfile)
+	if appSettings.MusicPlaylistDeliveryProfile == "" {
+		profile = normalizeMusicPlaylistLatencyMode(appSettings.MusicPlaylistLatencyMode)
+	}
+	preset.RadioLatency = musicPlaylistRTSPLatency(profile)
+	return preset
+}
+
+func (s *Server) activeMusicRadioRecipe() video.RadioRenderRecipe {
+	return video.MusicRadioRenderRecipe(s.musicRadioPreset(), 180)
+}
+
+func (s *Server) musicPlaylistDeliveryProfile() string {
+	appSettings, err := settings.Load()
+	if err != nil {
+		return "rtsp-ultra"
+	}
+	if appSettings.MusicPlaylistDeliveryProfile != "" {
+		return normalizeMusicPlaylistDeliveryProfile(appSettings.MusicPlaylistDeliveryProfile)
+	}
+	return normalizeMusicPlaylistLatencyMode(appSettings.MusicPlaylistLatencyMode)
+}
+
+func (s *Server) activeMusicPlaylistCanonicalHeight() int {
+	if s.activeCanonicalHeight != 0 {
+		return s.activeCanonicalHeight
+	}
+	return settings.ActiveMusicPlaylistCanonicalHeight()
+}
+
+func (s *Server) activeMusicPlaylistDeliveryProfile(status obsrtmp.RadioStatus) string {
+	if status.ActiveSession != nil && status.ActiveSession.DeliveryProfile != "" {
+		return normalizeMusicPlaylistDeliveryProfile(status.ActiveSession.DeliveryProfile)
+	}
+	return s.musicPlaylistDeliveryProfile()
 }
 
 func (s *Server) enqueueMusicJob(job func()) bool {
@@ -101,6 +183,7 @@ func (s *Server) nextRadioTrack() (string, string, int, bool) {
 
 func (s *Server) onRadioTrackEnd(trackID string, err error) {
 	if err != nil {
+		err = obsrtmp.SanitizeRadioError(err)
 		s.musicQueue.MarkFailed(trackID, "配信エラー: "+err.Error())
 	}
 	s.broadcastStateChangedThrottled()
@@ -161,20 +244,29 @@ func (s *Server) musicPlaylistState() map[string]interface{} {
 	items := make([]map[string]interface{}, 0, len(tracks))
 	for _, t := range tracks {
 		items = append(items, map[string]interface{}{
-			"id":              t.ID,
-			"title":           t.Title,
-			"artist":          t.Artist,
-			"album":           t.Album,
-			"durationSeconds": t.DurationSeconds,
-			"status":          string(t.Status),
-			"progress":        t.Progress,
-			"error":           t.Error,
-			"sourceKind":      t.SourceKind,
-			"originalName":    t.OriginalName,
-			"hasArtwork":      t.ThumbnailPath != "",
+			"id":                t.ID,
+			"title":             t.Title,
+			"artist":            t.Artist,
+			"album":             t.Album,
+			"durationSeconds":   t.DurationSeconds,
+			"status":            string(t.Status),
+			"progress":          t.Progress,
+			"error":             t.Error,
+			"sourceKind":        t.SourceKind,
+			"originalName":      t.OriginalName,
+			"hasArtwork":        t.ThumbnailPath != "",
+			"needsRegeneration": t.NeedsRegeneration,
+			"incompatible":      t.Incompatible,
 		})
 	}
 	st := s.radio.Status()
+	desiredDeliveryProfile := s.musicPlaylistDeliveryProfile()
+	activeDeliveryProfile := s.activeMusicPlaylistDeliveryProfile(st)
+	desiredCanonicalHeight := 720
+	if appSettings, err := settings.Load(); err == nil {
+		desiredCanonicalHeight = settings.NormalizeMusicPlaylistCanonicalHeight(appSettings.MusicPlaylistCanonicalHeight)
+	}
+	activeCanonicalHeight := s.activeMusicPlaylistCanonicalHeight()
 	s.musicPendingMu.Lock()
 	paused := s.musicPaused
 	pausedTrack := s.musicPausedTrack
@@ -188,11 +280,16 @@ func (s *Server) musicPlaylistState() map[string]interface{} {
 		base = tunnelBase
 	}
 	hlsURL, publicHLSURL := "", ""
-	if st.Running {
+	if st.Running && st.HLSReady {
 		hlsURL = base + "radio/index.m3u8"
 		if tunnelBase != "" {
 			publicHLSURL = tunnelBase + "radio/index.m3u8"
 		}
+	}
+	rtspURL := ""
+	rtspPublic := st.RTSPReady && st.RTSPPublic
+	if rtspPublic {
+		rtspURL = st.RTSPURL
 	}
 	elapsed := 0
 	if !st.TrackStartedAt.IsZero() {
@@ -203,18 +300,37 @@ func (s *Server) musicPlaylistState() map[string]interface{} {
 		currentID = pausedTrack
 		elapsed = pausedOffset
 	}
+	stoppedAt := interface{}(nil)
+	if !st.StoppedAt.IsZero() {
+		stoppedAt = st.StoppedAt.Format(time.RFC3339Nano)
+	}
 	return map[string]interface{}{
-		"tracks":         items,
-		"currentTrackId": currentID,
-		"running":        st.Running,
-		"playing":        st.Running && st.CurrentTrackID != "",
-		"paused":         paused,
-		"shuffle":        s.musicQueue.Shuffle(),
-		"loop":           s.musicQueue.Loop(),
-		"rtspUrl":        st.RTSPURL,
-		"hlsUrl":         hlsURL,
-		"publicHlsUrl":   publicHLSURL,
-		"elapsedSeconds": elapsed,
+		"tracks":                   items,
+		"currentTrackId":           currentID,
+		"running":                  st.Running,
+		"phase":                    st.Phase,
+		"lastError":                st.LastError,
+		"retryCount":               st.RetryCount,
+		"stoppedAt":                stoppedAt,
+		"playing":                  st.Running && st.CurrentTrackID != "",
+		"paused":                   paused,
+		"shuffle":                  s.musicQueue.Shuffle(),
+		"loop":                     s.musicQueue.Loop(),
+		"latencyMode":              musicPlaylistRTSPLatency(activeDeliveryProfile),
+		"deliveryProfile":          activeDeliveryProfile,
+		"desiredDeliveryProfile":   desiredDeliveryProfile,
+		"activeDeliveryProfile":    activeDeliveryProfile,
+		"desiredCanonicalHeight":   desiredCanonicalHeight,
+		"activeCanonicalHeight":    activeCanonicalHeight,
+		"deliveryRestartRequired":  st.Running && activeDeliveryProfile != desiredDeliveryProfile,
+		"canonicalRestartRequired": activeCanonicalHeight != desiredCanonicalHeight,
+		"rtspUrl":                  rtspURL,
+		"rtspPublic":               rtspPublic,
+		"rtspReady":                st.RTSPReady,
+		"hlsUrl":                   hlsURL,
+		"publicHlsUrl":             publicHLSURL,
+		"hlsReady":                 st.HLSReady,
+		"elapsedSeconds":           elapsed,
 	}
 }
 
@@ -396,7 +512,9 @@ func (s *Server) prepareRadioTrack(trackID string, acquired video.AcquiredAudio)
 		ArtworkPath: usedArtwork,
 		Analysis:    analysis,
 	}
-	mediaPath, err := renderRadioTrack(ctx, s.store.Dir(), ffmpeg, input, trackID, s.musicRadioPreset(), func(fraction float64) {
+	preset := s.musicRadioPreset()
+	executedRecipe := video.MusicRadioRenderRecipe(preset, analysis.Duration)
+	mediaPath, err := renderRadioTrack(ctx, s.store.Dir(), ffmpeg, input, trackID, preset, func(fraction float64) {
 		pct := trackProgressAnalyzed + int(fraction*float64(99-trackProgressAnalyzed))
 		if s.musicQueue.SetProgress(trackID, pct) {
 			s.broadcastStateChangedThrottled()
@@ -406,18 +524,68 @@ func (s *Server) prepareRadioTrack(trackID string, acquired video.AcquiredAudio)
 		fail(err)
 		return
 	}
+	queueSourcePath := filepath.Join(s.store.Dir(), "radio-source-"+trackID+filepath.Ext(acquired.SourcePath))
+	if err := copyQueueSource(queueSourcePath, acquired.SourcePath); err != nil {
+		_ = os.Remove(mediaPath)
+		fail(fmt.Errorf("音声ソースを保存できませんでした: %w", err))
+		return
+	}
 	os.Remove(acquired.SourcePath)
 	if !s.musicQueue.MarkReady(trackID, mediaPath, int(analysis.Duration+0.5)) {
 		os.Remove(mediaPath)
+		os.Remove(queueSourcePath)
 		if thumbnailPath != "" {
 			os.Remove(thumbnailPath)
 		}
 		s.broadcastStateChangedThrottled()
 		return
 	}
+	s.musicQueue.Mutate(trackID, func(t *playlist.Track) {
+		t.SourcePath = queueSourcePath
+		contract := executedRecipe.NormalizedEncodingContract()
+		t.EncodingContract = &contract
+		renderContract := executedRecipe.AssetRenderRecipeContract()
+		t.RenderRecipeContract = &renderContract
+		t.RenderContentValues = executedRecipe.AssetRenderContentValues()
+	})
 	// A running-but-idle radio starts playing the new track right away.
 	s.radio.Wake()
 	s.broadcastStateChanged()
+}
+
+func copyQueueSource(dst, src string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	tmp, err := os.CreateTemp(filepath.Dir(dst), "."+filepath.Base(dst)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	committed := false
+	defer func() {
+		if !committed {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := io.Copy(tmp, in); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, dst); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 
 func (s *Server) handleMusicPlaylistRemove(w http.ResponseWriter, r *http.Request) {
@@ -432,16 +600,14 @@ func (s *Server) handleMusicPlaylistRemove(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "曲が見つかりません", http.StatusNotFound)
 		return
 	}
-	wasCurrent := s.radio.Status().CurrentTrackID == req.ID
 	s.musicQueue.Remove(req.ID)
 	s.clearMusicPlaybackRequestFor(req.ID)
-	if wasCurrent {
-		s.radio.SkipCurrent()
-	}
-	// Saved playlists keep their own copies (playlist-media/), so the
-	// queue's rendered file can always be deleted.
-	if track.MediaPath != "" {
-		os.Remove(track.MediaPath)
+	completion := s.radio.CurrentTrackGeneration()
+	if completion.TrackID == req.ID && completion.Generation != 0 {
+		_ = s.radio.CancelGeneration(completion.Generation)
+		go s.removeQueueOwnedTrackFilesAfterGeneration(track, completion)
+	} else {
+		s.removeQueueOwnedTrackFiles(track)
 	}
 	s.broadcastStateChangedThrottled()
 	writeJSON(w, s.musicPlaylistState())
@@ -513,6 +679,7 @@ func (s *Server) handleMusicPlaylistPlay(w http.ResponseWriter, r *http.Request)
 	} else {
 		// ID なしの再生は、一時停止中なら中断位置からの再開になる。
 		s.musicPendingMu.Lock()
+		resumingPaused := s.musicPaused && s.musicPausedTrack != ""
 		if s.musicPaused && s.musicPausedTrack != "" {
 			s.musicPendingTrack = s.musicPausedTrack
 			s.musicPendingOffset = s.musicPausedOffset
@@ -521,6 +688,9 @@ func (s *Server) handleMusicPlaylistPlay(w http.ResponseWriter, r *http.Request)
 		s.musicPausedTrack = ""
 		s.musicPausedOffset = 0
 		s.musicPendingMu.Unlock()
+		if !resumingPaused {
+			s.musicQueue.ResetPlaybackCycle()
+		}
 	}
 	if !s.radio.Running() {
 		start := s.startMusicRadio
@@ -641,7 +811,7 @@ func (s *Server) handleMusicPlaylistStop(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	s.clearMusicPause()
+	s.clearMusicPlaybackRequest()
 	s.radio.Stop(8 * time.Second)
 	s.musicQueue.ClearCurrent()
 	s.broadcastStateChangedThrottled()
@@ -676,12 +846,12 @@ func (s *Server) handleMusicPlaylistArtwork(w http.ResponseWriter, r *http.Reque
 		http.NotFound(w, r)
 		return
 	}
-	// Thumbnails always live directly inside the store directory.
-	if filepath.Dir(filepath.Clean(track.ThumbnailPath)) != filepath.Clean(s.store.Dir()) {
+	path, ok := canonicalStoreFile(s.store.Dir(), track.ThumbnailPath)
+	if !ok {
 		http.NotFound(w, r)
 		return
 	}
-	http.ServeFile(w, r, track.ThumbnailPath)
+	http.ServeFile(w, r, path)
 }
 
 // --- saved playlists -------------------------------------------------------
@@ -694,21 +864,31 @@ func (s *Server) handleMusicPlaylists(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, map[string]interface{}{"names": names})
+		audits, _ := s.playlistStore.AuditCanonical(s.activeMusicRadioRecipe().NormalizedEncodingContract())
+		entries, _ := s.playlistStore.ListEntries()
+		writeJSON(w, map[string]interface{}{"names": names, "playlists": entries, "audits": audits})
 	case http.MethodPost:
 		var req struct {
+			ID   string `json:"id"`
 			Name string `json:"name"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid request", http.StatusBadRequest)
 			return
 		}
-		if err := s.playlistStore.Save(req.Name, s.musicQueue.Snapshot()); err != nil {
+		var err error
+		if req.ID != "" {
+			err = s.playlistStore.SaveID(req.ID, req.Name, s.musicQueue.Snapshot())
+		} else {
+			err = s.playlistStore.Save(req.Name, s.musicQueue.Snapshot())
+		}
+		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		names, _ := s.playlistStore.List()
-		writeJSON(w, map[string]interface{}{"names": names})
+		entries, _ := s.playlistStore.ListEntries()
+		writeJSON(w, map[string]interface{}{"names": names, "playlists": entries})
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
@@ -716,33 +896,240 @@ func (s *Server) handleMusicPlaylists(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleMusicPlaylistsLoad(w http.ResponseWriter, r *http.Request) {
 	var req struct {
+		ID   string `json:"id"`
 		Name string `json:"name"`
 	}
 	if !decodePlaylistPost(w, r, &req) {
 		return
 	}
-	tracks, err := s.playlistStore.Load(req.Name)
+	var tracks []playlist.Track
+	var err error
+	if req.ID != "" {
+		tracks, err = s.playlistStore.MaterializeID(req.ID, s.playlistRuntimeDir())
+	} else {
+		tracks, err = s.playlistStore.Materialize(req.Name, s.playlistRuntimeDir())
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
 	s.clearMusicPlaybackRequest()
-	s.musicQueue.ReplaceAll(tracks)
-	if s.radio.Running() {
-		s.radio.SkipCurrent()
+	previous := s.musicQueue.ReplaceAll(tracks)
+	completion := s.radio.CurrentTrackGeneration()
+	if completion.Generation != 0 && tracksContainID(previous, completion.TrackID) {
+		_ = s.radio.CancelGeneration(completion.Generation)
+		go s.removeRuntimeTracksAfterGeneration(previous, completion)
+	} else {
+		s.removeRuntimeTracks(previous)
 	}
 	s.broadcastStateChangedThrottled()
 	writeJSON(w, s.musicPlaylistState())
 }
 
+func (s *Server) playlistRuntimeDir() string {
+	return filepath.Join(s.store.Dir(), "playlist-runtime")
+}
+
+func (s *Server) removeQueueOwnedTrackFiles(track playlist.Track) {
+	for _, path := range []string{track.MediaPath, track.ThumbnailPath, track.SourcePath} {
+		if path == "" || s.isSavedPlaylistPath(path) {
+			continue
+		}
+		if runtimeDir, ok := s.runtimeLoadDir(path); ok {
+			if !s.runtimeLoadDirInUse(runtimeDir) {
+				if err := os.RemoveAll(runtimeDir); err != nil {
+					log.Printf("remove playlist runtime directory %q: %v", runtimeDir, err)
+				}
+			}
+			continue
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			log.Printf("remove playlist queue file %q: %v", path, err)
+		}
+	}
+}
+
+func (s *Server) removeRuntimeTracks(tracks []playlist.Track) {
+	seen := make(map[string]struct{})
+	for _, track := range tracks {
+		for _, path := range []string{track.MediaPath, track.ThumbnailPath, track.SourcePath} {
+			if dir, ok := s.runtimeLoadDir(path); ok {
+				seen[dir] = struct{}{}
+			}
+		}
+	}
+	for dir := range seen {
+		if err := os.RemoveAll(dir); err != nil {
+			log.Printf("remove displaced playlist runtime directory %q: %v", dir, err)
+		}
+	}
+}
+
+func (s *Server) removeRuntimeTracksAfterGeneration(tracks []playlist.Track, completion obsrtmp.TrackGeneration) {
+	if generationCleanupAllowed(completion) {
+		s.removeRuntimeTracks(tracks)
+	}
+}
+
+func (s *Server) removeQueueOwnedTrackFilesAfterGeneration(track playlist.Track, completion obsrtmp.TrackGeneration) {
+	if generationCleanupAllowed(completion) {
+		s.removeQueueOwnedTrackFiles(track)
+	}
+}
+
+func generationCleanupAllowed(completion obsrtmp.TrackGeneration) bool {
+	// Cancellation precedes child-process exit. Leave the files for the
+	// confirmed session shutdown or the bounded startup cleanup instead.
+	select {
+	case <-completion.SessionCanceled:
+		return false
+	default:
+	}
+	select {
+	case <-completion.Completed:
+		return true
+	case <-completion.SessionDone:
+		return true
+	case <-completion.SessionCanceled:
+		return false
+	}
+}
+
+func tracksContainID(tracks []playlist.Track, id string) bool {
+	for _, track := range tracks {
+		if track.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) isSavedPlaylistPath(path string) bool {
+	return pathWithin(filepath.Join(s.store.Dir(), "playlist-media"), path)
+}
+
+func (s *Server) runtimeLoadDir(path string) (string, bool) {
+	runtimeRoot := s.playlistRuntimeDir()
+	if !pathWithin(runtimeRoot, path) {
+		return "", false
+	}
+	rel, err := filepath.Rel(runtimeRoot, path)
+	if err != nil {
+		return "", false
+	}
+	parts := strings.Split(filepath.Clean(rel), string(filepath.Separator))
+	if len(parts) == 0 || parts[0] == "." || parts[0] == "" {
+		return "", false
+	}
+	return filepath.Join(runtimeRoot, parts[0]), true
+}
+
+func (s *Server) runtimeLoadDirInUse(dir string) bool {
+	for _, track := range s.musicQueue.Snapshot() {
+		for _, path := range []string{track.MediaPath, track.ThumbnailPath, track.SourcePath} {
+			if current, ok := s.runtimeLoadDir(path); ok && current == dir {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func pathWithin(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == "." {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func canonicalStoreFile(root, path string) (string, bool) {
+	if containsParentPathSegment(path) {
+		return "", false
+	}
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return "", false
+	}
+	rootResolved, err := filepath.EvalSymlinks(rootAbs)
+	if err != nil {
+		return "", false
+	}
+	pathAbs, err := filepath.Abs(path)
+	if err != nil || !sameVolume(rootResolved, pathAbs) {
+		return "", false
+	}
+	pathResolved, err := filepath.EvalSymlinks(pathAbs)
+	if err != nil || !sameVolume(rootResolved, pathResolved) {
+		return "", false
+	}
+	rel, err := filepath.Rel(rootResolved, pathResolved)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	info, err := os.Stat(pathResolved)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", false
+	}
+	return pathResolved, true
+}
+
+func containsParentPathSegment(path string) bool {
+	for _, part := range strings.FieldsFunc(path, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+func sameVolume(left, right string) bool {
+	return strings.EqualFold(filepath.VolumeName(left), filepath.VolumeName(right))
+}
+
+func cleanupAbandonedPlaylistRuntimeDirs(runtimeRoot string, now time.Time) {
+	root, err := filepath.Abs(runtimeRoot)
+	if err != nil {
+		return
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	cutoff := now.Add(-24 * time.Hour)
+	for _, entry := range entries {
+		if entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() {
+			continue
+		}
+		path := filepath.Join(root, entry.Name())
+		if !pathWithin(root, path) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || !info.ModTime().Before(cutoff) {
+			continue
+		}
+		if err := os.RemoveAll(path); err != nil {
+			log.Printf("remove abandoned playlist runtime directory %q: %v", path, err)
+		}
+	}
+}
+
 func (s *Server) handleMusicPlaylistsDelete(w http.ResponseWriter, r *http.Request) {
 	var req struct {
+		ID   string `json:"id"`
 		Name string `json:"name"`
 	}
 	if !decodePlaylistPost(w, r, &req) {
 		return
 	}
-	if err := s.playlistStore.Delete(req.Name); err != nil {
+	var err error
+	if req.ID != "" {
+		err = s.playlistStore.DeleteID(req.ID)
+	} else {
+		err = s.playlistStore.Delete(req.Name)
+	}
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}

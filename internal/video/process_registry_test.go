@@ -92,3 +92,13 @@ func TestKillOwnedProcessesContinuesWhenScanFails(t *testing.T) {
 		t.Fatalf("error = %v, want scan error", err)
 	}
 }
+
+func TestOwnedProcessCommandLineMatchesFullCommandLineMarker(t *testing.T) {
+	commandLine := `"C:\Users\masah\AppData\Roaming\ImagePadServer\bin\cloudflared.exe" tunnel --no-autoupdate --url http://127.0.0.1:8080`
+	if !ownedProcessCommandLineMatches(commandLine, "cloudflared.exe", `C:\Users\masah\AppData\Roaming\ImagePadServer\bin`) {
+		t.Fatal("expected app-local cloudflared path marker to match full command line")
+	}
+	if ownedProcessCommandLineMatches(commandLine, "cloudflared.exe", `C:\OtherApp\bin`) {
+		t.Fatal("unexpected match for unrelated path marker")
+	}
+}

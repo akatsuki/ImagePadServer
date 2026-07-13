@@ -8,6 +8,45 @@ import (
 	"testing"
 )
 
+func TestNormalizeMusicPlaylistCanonicalHeight(t *testing.T) {
+	for input, want := range map[int]int{0: 720, -1: 720, 359: 720, 360: 360, 720: 720, 1080: 1080, 2160: 720} {
+		if got := NormalizeMusicPlaylistCanonicalHeight(input); got != want {
+			t.Fatalf("NormalizeMusicPlaylistCanonicalHeight(%d) = %d, want %d", input, got, want)
+		}
+	}
+}
+
+func TestMusicPlaylistCanonicalHeightFreezesForProcessLifetime(t *testing.T) {
+	resetMusicPlaylistCanonicalHeightForTest()
+	t.Cleanup(resetMusicPlaylistCanonicalHeightForTest)
+	FreezeMusicPlaylistCanonicalHeight(Settings{MusicPlaylistCanonicalHeight: 1080})
+	FreezeMusicPlaylistCanonicalHeight(Settings{MusicPlaylistCanonicalHeight: 360})
+	if got := ActiveMusicPlaylistCanonicalHeight(); got != 1080 {
+		t.Fatalf("active height hot-applied: %d", got)
+	}
+}
+
+func TestLoadNormalizesMusicPlaylistCanonicalHeight(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	loaded, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.MusicPlaylistCanonicalHeight != 720 {
+		t.Fatalf("missing height = %d, want 720", loaded.MusicPlaylistCanonicalHeight)
+	}
+	if err := Save(Settings{MusicPlaylistCanonicalHeight: 999}); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.MusicPlaylistCanonicalHeight != 720 {
+		t.Fatalf("invalid persisted height = %d, want 720", loaded.MusicPlaylistCanonicalHeight)
+	}
+}
+
 func TestSaveIsAtomicAndConcurrentSafe(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("IMAGEPAD_DATA_DIR", filepath.Join(dir, "ImagePadServer"))
@@ -65,6 +104,24 @@ func TestSaveReplacesExistingSettingsFile(t *testing.T) {
 	}
 	if settings.VideoQualityMode != "1080p" {
 		t.Fatalf("quality = %q, want 1080p", settings.VideoQualityMode)
+	}
+}
+
+func TestNormalizeEncoderMode(t *testing.T) {
+	tests := []struct {
+		in, want string
+	}{
+		{"auto", "auto"},
+		{"gpu", "gpu"},
+		{"cpu", "cpu"},
+		{"GPU", "gpu"},
+		{"", "auto"},
+		{"bad", "auto"},
+	}
+	for _, tc := range tests {
+		if got := NormalizeEncoderMode(tc.in); got != tc.want {
+			t.Fatalf("NormalizeEncoderMode(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
 

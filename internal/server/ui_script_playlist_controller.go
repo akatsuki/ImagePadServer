@@ -5,7 +5,7 @@ const dashboardScriptPlaylistController = `
       let active = false;
       let pollTimer = 0;
       let clockTimer = 0;
-      let plState = { tracks: [], currentTrackId: '', running: false, playing: false, paused: false, shuffle: false, loop: false, rtspUrl: '', hlsUrl: '', publicHlsUrl: '', elapsedSeconds: 0 };
+	let plState = { tracks: [], currentTrackId: '', running: false, playing: false, paused: false, shuffle: false, loop: false, deliveryProfile: 'rtsp-ultra', desiredDeliveryProfile: 'rtsp-ultra', activeDeliveryProfile: 'rtsp-ultra', desiredCanonicalHeight: 720, activeCanonicalHeight: 720, rtspUrl: '', rtspPublic: false, hlsUrl: '', publicHlsUrl: '', elapsedSeconds: 0 };
       let plFetchedAt = 0;
       let urlMode = 'hls';
       let dragTrackId = null;
@@ -25,7 +25,8 @@ const dashboardScriptPlaylistController = `
         try {
           const res = await apiFetch('/api/music/playlist', { cache: 'no-store' });
           if (!res.ok) throw new Error(await res.text());
-          plState = await res.json();
+		  plState = await res.json();
+		  urlMode = String(plState.activeDeliveryProfile || plState.deliveryProfile || '').startsWith('hls') ? 'hls' : 'rtsp';
           plFetchedAt = Date.now();
           renderPlaylist();
         } catch (error) {
@@ -137,7 +138,7 @@ const dashboardScriptPlaylistController = `
       }
 
       function syncVideoPreview() {
-        const shouldShow = active && plState.playing && !!plState.hlsUrl;
+        const shouldShow = active && urlMode === 'hls' && plState.playing && !!plState.hlsUrl;
         if (plVideoWrap) plVideoWrap.classList.toggle('pl-video-live', shouldShow);
         if (plVideoEmpty) plVideoEmpty.hidden = shouldShow;
         if (!plVideoPreview) return;
@@ -178,13 +179,18 @@ const dashboardScriptPlaylistController = `
 
       function renderPlaylist() {
         const track = currentTrack();
+        const radioFailed = plState.phase === 'failed';
         if (plNowTitle) {
-          plNowTitle.textContent = (plState.playing || plState.paused) && track
+          plNowTitle.textContent = radioFailed
+            ? '配信に失敗しました'
+            : (plState.playing || plState.paused) && track
             ? track.title || track.originalName || '再生中'
             : plState.running ? '次の曲を待っています' : 'プレイリストは停止中';
         }
         if (plNowArtist) {
-          plNowArtist.textContent = plState.paused
+          plNowArtist.textContent = radioFailed
+            ? '失敗: ' + (plState.lastError || '詳細不明')
+            : plState.paused
             ? '一時停止中'
             : plState.playing && track
             ? (track.artist || ' ')
@@ -229,8 +235,15 @@ const dashboardScriptPlaylistController = `
           plUrlModeRTSP.classList.toggle('active', urlMode === 'rtsp');
         }
         if (!plShareUrl) return;
-        const url = urlMode === 'rtsp' ? (plState.rtspUrl || '') : (plState.publicHlsUrl || plState.hlsUrl || '');
-        plShareUrl.textContent = url || '再生を開始するとURLが表示されます';
+        const url = urlMode === 'rtsp'
+          ? (plState.rtspPublic ? (plState.rtspUrl || '') : '')
+          : (plState.publicHlsUrl || plState.hlsUrl || '');
+        let placeholder = '再生を開始するとURLが表示されます';
+        if (plState.phase === 'failed') placeholder = '失敗: ' + (plState.lastError || '詳細不明');
+        else if (plState.running && urlMode === 'hls' && !plState.hlsReady) placeholder = '配信準備中';
+        else if (plState.running && urlMode === 'rtsp' && !plState.rtspReady) placeholder = '配信準備中';
+        else if (plState.running && urlMode === 'rtsp' && plState.rtspReady && !plState.rtspPublic) placeholder = '公開経路準備中';
+        plShareUrl.textContent = url || placeholder;
       }
 
       function clearDropMarkers() {
@@ -515,8 +528,8 @@ const dashboardScriptPlaylistController = `
           const pct = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
           playlistPost('/api/music/playlist/seek', { seconds: Math.floor(pct * duration) });
         });
-        if (plUrlModeHLS) plUrlModeHLS.addEventListener('click', () => { urlMode = 'hls'; renderShareURL(); });
-        if (plUrlModeRTSP) plUrlModeRTSP.addEventListener('click', () => { urlMode = 'rtsp'; renderShareURL(); });
+        if (plUrlModeHLS) plUrlModeHLS.addEventListener('click', () => { urlMode = 'hls'; renderShareURL(); syncVideoPreview(); });
+        if (plUrlModeRTSP) plUrlModeRTSP.addEventListener('click', () => { urlMode = 'rtsp'; renderShareURL(); syncVideoPreview(); });
         if (plMenuButton) plMenuButton.addEventListener('click', (event) => {
           event.stopPropagation();
           setSavedMenuOpen(!!plMenu && plMenu.hidden);

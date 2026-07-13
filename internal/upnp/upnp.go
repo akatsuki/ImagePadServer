@@ -3,6 +3,7 @@ package upnp
 import (
 	"bytes"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -148,6 +149,100 @@ func MapUDP(internalPort, externalPort int, description string) (*TCPMapping, Re
 		return nil, Result{Message: err.Error()}
 	}
 	return mapProtocolWithServices(services, "UDP", internalPort, externalPort, description)
+}
+
+func CleanupImagePadRTSPMappings() (int, error) {
+	services, _, err := serviceDiscovererRace()
+	if err != nil {
+		return 0, err
+	}
+	var deleted int
+	var failures []string
+	for _, svc := range services {
+		count, err := cleanupImagePadRTSPMappingsWithService(svc)
+		deleted += count
+		if err != nil {
+			failures = append(failures, shortHost(svc.DeviceURL)+": "+err.Error())
+		}
+	}
+	if len(failures) > 0 {
+		return deleted, errors.New(strings.Join(failures, " | "))
+	}
+	return deleted, nil
+}
+
+func cleanupImagePadRTSPMappingsWithService(svc gatewayService) (int, error) {
+	var deleted int
+	var failures []string
+	for index := 0; index < 512; index++ {
+		entry, done, err := getGenericPortMappingEntry(svc, index)
+		if done {
+			break
+		}
+		if err != nil {
+			failures = append(failures, err.Error())
+			break
+		}
+		if !isImagePadRTSPMapping(entry.Description) {
+			continue
+		}
+		if err := deletePortMapping(svc, entry.Protocol, entry.ExternalPort); err != nil {
+			failures = append(failures, fmt.Sprintf("%s %d: %v", entry.Protocol, entry.ExternalPort, err))
+			continue
+		}
+		deleted++
+	}
+	if len(failures) > 0 {
+		return deleted, errors.New(strings.Join(failures, " | "))
+	}
+	return deleted, nil
+}
+
+func isImagePadRTSPMapping(description string) bool {
+	return strings.HasPrefix(strings.TrimSpace(description), "ImagePadServer RTSP ")
+}
+
+type genericPortMappingEntry struct {
+	ExternalPort int
+	Protocol     string
+	Description  string
+}
+
+func getGenericPortMappingEntry(svc gatewayService, index int) (genericPortMappingEntry, bool, error) {
+	body := fmt.Sprintf(`<?xml version="1.0"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:GetGenericPortMappingEntry xmlns:u="%s">
+      <NewPortMappingIndex>%d</NewPortMappingIndex>
+    </u:GetGenericPortMappingEntry>
+  </s:Body>
+</s:Envelope>`, svc.ServiceType, index)
+
+	status, data, err := soap(svc, "GetGenericPortMappingEntry", body, 8192)
+	if err != nil {
+		return genericPortMappingEntry{}, false, err
+	}
+	if status < 200 || status >= 300 {
+		summary := faultSummary(data)
+		if strings.Contains(summary, "713") || strings.Contains(summary, "SpecifiedArrayIndexInvalid") {
+			return genericPortMappingEntry{}, true, nil
+		}
+		return genericPortMappingEntry{}, false, fmt.Errorf("generic mapping entry %d rejected: HTTP %d %s", index, status, summary)
+	}
+	type response struct {
+		ExternalPort int    `xml:"Body>GetGenericPortMappingEntryResponse>NewExternalPort"`
+		Protocol     string `xml:"Body>GetGenericPortMappingEntryResponse>NewProtocol"`
+		Description  string `xml:"Body>GetGenericPortMappingEntryResponse>NewPortMappingDescription"`
+	}
+	var parsed response
+	if err := xml.Unmarshal(data, &parsed); err != nil {
+		return genericPortMappingEntry{}, false, err
+	}
+	return genericPortMappingEntry{
+		ExternalPort: parsed.ExternalPort,
+		Protocol:     normalizeProtocol(parsed.Protocol),
+		Description:  parsed.Description,
+	}, false, nil
 }
 
 func mapProtocolWithServices(services []gatewayService, protocol string, internalPort, externalPort int, description string) (*TCPMapping, Result) {

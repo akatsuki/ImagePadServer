@@ -41,13 +41,16 @@ func TestParseAdvertisedVideoEncoders(t *testing.T) {
 
 func TestSelectVideoEncoderProbesInPriorityOrderAndCaches(t *testing.T) {
 	resetVideoEncoderCacheForTest()
+	oldMode := encoderModeProvider
 	oldList := listAvailableEncoders
 	oldProbe := probeEncoder
 	defer func() {
+		encoderModeProvider = oldMode
 		listAvailableEncoders = oldList
 		probeEncoder = oldProbe
 		resetVideoEncoderCacheForTest()
 	}()
+	encoderModeProvider = func() string { return "auto" }
 
 	listCalls := 0
 	listAvailableEncoders = func(context.Context, string) (map[string]bool, error) {
@@ -81,17 +84,71 @@ func TestSelectVideoEncoderProbesInPriorityOrderAndCaches(t *testing.T) {
 
 func TestSelectVideoEncoderFallsBackToCPUWhenDiscoveryFails(t *testing.T) {
 	resetVideoEncoderCacheForTest()
+	oldMode := encoderModeProvider
 	oldList := listAvailableEncoders
 	defer func() {
+		encoderModeProvider = oldMode
 		listAvailableEncoders = oldList
 		resetVideoEncoderCacheForTest()
 	}()
+	encoderModeProvider = func() string { return "auto" }
 	listAvailableEncoders = func(context.Context, string) (map[string]bool, error) {
 		return nil, errors.New("ffmpeg failed")
 	}
 	got := selectVideoEncoderForOS(context.Background(), "broken-ffmpeg", "windows", EncoderStandard)
 	if got.Name != "libx264" || got.Hardware {
 		t.Fatalf("fallback profile = %#v, want CPU", got)
+	}
+}
+
+func TestSelectVideoEncoderHonorsForcedCPU(t *testing.T) {
+	resetVideoEncoderCacheForTest()
+	oldMode := encoderModeProvider
+	oldList := listAvailableEncoders
+	defer func() {
+		encoderModeProvider = oldMode
+		listAvailableEncoders = oldList
+		resetVideoEncoderCacheForTest()
+	}()
+	encoderModeProvider = func() string { return "cpu" }
+	listAvailableEncoders = func(context.Context, string) (map[string]bool, error) {
+		t.Fatal("forced CPU mode must not probe hardware encoders")
+		return nil, nil
+	}
+	got := selectVideoEncoderForOS(context.Background(), "fake-ffmpeg", "windows", EncoderLowLatency)
+	if got.Name != "libx264" || got.Hardware || got.Forced {
+		t.Fatalf("forced CPU profile = %#v, want non-forced libx264", got)
+	}
+}
+
+func TestSelectVideoEncoderHonorsForcedGPUAndDisablesCPUFallback(t *testing.T) {
+	resetVideoEncoderCacheForTest()
+	oldMode := encoderModeProvider
+	oldList := listAvailableEncoders
+	oldProbe := probeEncoder
+	defer func() {
+		encoderModeProvider = oldMode
+		listAvailableEncoders = oldList
+		probeEncoder = oldProbe
+		resetVideoEncoderCacheForTest()
+	}()
+	encoderModeProvider = func() string { return "gpu" }
+	listAvailableEncoders = func(context.Context, string) (map[string]bool, error) {
+		return map[string]bool{"h264_nvenc": true, "libx264": true}, nil
+	}
+	probeEncoder = func(context.Context, string, VideoEncoderProfile) error { return nil }
+	got := selectVideoEncoderForOS(context.Background(), "fake-ffmpeg", "windows", EncoderLowLatency)
+	if got.Name != "h264_nvenc" || !got.Hardware || !got.Forced {
+		t.Fatalf("forced GPU profile = %#v, want forced h264_nvenc", got)
+	}
+
+	attempts := 0
+	err := runVideoEncodeWithFallback(context.Background(), got, nil, func(VideoEncoderProfile) error {
+		attempts++
+		return errors.New("gpu failed")
+	})
+	if err == nil || attempts != 1 {
+		t.Fatalf("forced GPU fallback err=%v attempts=%d, want one failing hardware attempt", err, attempts)
 	}
 }
 

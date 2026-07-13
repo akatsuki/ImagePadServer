@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"imagepadserver/internal/settings"
+	"imagepadserver/internal/video"
 )
 
 type Status struct {
@@ -46,13 +47,30 @@ const (
 
 var tryCloudflareURL = regexp.MustCompile(`https://[-a-zA-Z0-9]+\.trycloudflare\.com`)
 
+var killOwnedCloudflared = video.KillOwnedProcesses
+
+func CleanupStaleCloudflared() (int, error) {
+	return killOwnedCloudflared(cloudflaredExecutableBase(), localCloudflaredPath(), nil)
+}
+
+func cloudflaredExecutableBase() string {
+	if runtime.GOOS == "windows" {
+		return "cloudflared.exe"
+	}
+	return "cloudflared"
+}
+
 func Start(originURL string) (*Tunnel, Status) {
+	return StartContext(context.Background(), originURL)
+}
+
+func StartContext(parent context.Context, originURL string) (*Tunnel, Status) {
 	exe, err := ensureCloudflared()
 	if err != nil {
 		return nil, Status{Message: err.Error()}
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(parent)
 	cmd := exec.CommandContext(ctx, exe, "tunnel", "--no-autoupdate", "--url", originURL)
 	hideWindow(cmd)
 
@@ -103,6 +121,10 @@ func Start(originURL string) (*Tunnel, Status) {
 			cancel()
 			_ = cmd.Wait()
 			return nil, Status{Message: "timed out waiting for Cloudflare Tunnel URL"}
+		case <-ctx.Done():
+			cancel()
+			_ = cmd.Wait()
+			return nil, Status{Message: "Cloudflare Tunnel start cancelled"}
 		}
 	}
 }

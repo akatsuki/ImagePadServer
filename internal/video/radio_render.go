@@ -13,7 +13,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"imagepadserver/internal/appicon"
@@ -47,6 +50,11 @@ func runFFmpegOnce(ctx context.Context, ffmpeg string, args []string) error {
 // every pre-rendered playlist track so track changes cross through black.
 const radioEdgeFadeSeconds = 0.7
 
+const radioFallbackFadeInSeconds = 1.6
+const radioFallbackFrameRate = 30
+const radioFallbackFadeOutSeconds = 1.0
+const radioFallbackRetimingHoldSeconds = 0.5
+
 // RadioTrackFileName is the on-disk name of a pre-rendered playlist track.
 // MP4 keeps AAC global headers so downstream copy remuxes stay clean.
 func RadioTrackFileName(trackID string) string {
@@ -63,7 +71,7 @@ func RenderRadioTrack(ctx context.Context, outDir, ffmpeg string, input AudioRen
 	buildArgs := func(assPath, fontDir string, mode *ForegroundMode, encoder VideoEncoderProfile) []string {
 		return audioVisualizerMP4ArgsWithEncoder(input.SourcePath, assPath, fontDir, outPath, preset, mode, encoder, audioLoudnormFilter(input.Kind), input.Analysis.Duration)
 	}
-	err := runAudioVisualizerEncode(ctx, outDir, ffmpeg, input, "radio-"+trackID, preset, buildArgs, func() { _ = os.Remove(outPath) }, progress)
+	err := runAudioVisualizerEncode(ctx, outDir, ffmpeg, input, "radio-"+trackID, preset, EncoderLowLatency, buildArgs, func() { _ = os.Remove(outPath) }, progress)
 	if err != nil {
 		return "", fmt.Errorf("render radio track: %w", err)
 	}
@@ -71,13 +79,107 @@ func RenderRadioTrack(ctx context.Context, outDir, ffmpeg string, input AudioRen
 }
 
 func audioVisualizerMP4ArgsWithEncoder(audioPath, assPath, fontDir, outPath string, preset QualityPreset, mode *ForegroundMode, encoder VideoEncoderProfile, audioFilter string, durationSeconds float64) []string {
-	args := audioVisualizerCoreArgsWithEncoder(audioPath, assPath, fontDir, preset, mode, encoder, audioFilter, radioEdgeFadeSeconds, durationSeconds)
+	recipe := NewRadioRenderRecipe(preset, encoder, audioFilter, durationSeconds)
+	recipe.SourcePath = audioPath
+	recipe.ASSPath = assPath
+	recipe.FontDir = fontDir
+	recipe.OutputPath = outPath
+	return recipe.FFmpegArgs(mode)
+}
+
+func radioRTSPVideoEncoderArgs(encoder VideoEncoderProfile, preset QualityPreset) []string {
+	if encoder.Name == "" {
+		encoder = CPUVideoEncoder(EncoderLowLatency)
+	}
+	if encoder.Hardware {
+		return encoder.FFmpegArgs(preset, "veryfast")
+	}
+	args := []string{"-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p"}
+	return append(args, hardwareTargetBitrate(preset)...)
+}
+
+func radioRTSPEncodeOptions(encoder VideoEncoderProfile) []string {
+	return radioRTSPEncodeOptionsForMode(encoder, "rtsp-ultra")
+}
+
+func radioRTSPEncodeOptionsForMode(encoder VideoEncoderProfile, mode string) []string {
+	gop := radioLatencyGOPFrames(mode)
+	args := []string{
+		"-g", gop,
+		"-keyint_min", gop,
+		"-bf", "0",
+		"-force_key_frames", "expr:gte(t,n_forced*" + radioLatencyKeyframeSeconds(mode) + ")",
+	}
+	if !encoder.Hardware {
+		args = append(args, "-sc_threshold", "0", "-x264-params", "aud=1:repeat-headers=1")
+	}
+	return args
+}
+
+// RadioProgramEncoderArgs accepts the program clock's raw 30 fps RGBA frames
+// and 48 kHz stereo PCM, then emits one continuous AVPro-compatible MPEG-TS
+// stream. Input order, not source media timestamps, defines output PTS.
+func RadioProgramEncoderArgs(preset QualityPreset, encoder VideoEncoderProfile, width, height int, videoInput, audioInput string) []string {
+	if encoder.Name == "" {
+		encoder = CPUVideoEncoder(EncoderLowLatency)
+	}
+	if width <= 0 || height <= 0 {
+		width, height = RadioFallbackRenderSize(preset)
+	}
+	audioBitrate := strings.TrimSpace(preset.AudioBitrate)
+	if audioBitrate == "" {
+		audioBitrate = "128k"
+	}
+	mode := strings.TrimSpace(preset.RadioLatency)
+	if mode == "" {
+		mode = "rtsp-ultra"
+	}
+	args := []string{
+		"-hide_banner", "-loglevel", "warning",
+		"-fflags", "+genpts",
+		"-thread_queue_size", "16",
+		"-f", "rawvideo",
+		"-pixel_format", "rgba",
+		"-video_size", fmt.Sprintf("%dx%d", width, height),
+		"-framerate", "30",
+		"-i", videoInput,
+		"-thread_queue_size", "16",
+		"-f", "s16le",
+		"-ar", "48000",
+		"-ac", "2",
+		"-i", audioInput,
+		"-map", "0:v:0",
+		"-map", "1:a:0",
+		"-fps_mode:v", "passthrough",
+	}
+	args = append(args, radioRTSPVideoEncoderArgs(encoder, preset)...)
+	args = append(args, radioRTSPEncodeOptionsForMode(encoder, mode)...)
 	return append(args,
-		"-movflags", "+faststart",
-		"-f", "mp4",
-		"-y",
-		outPath,
+		"-c:a", "aac",
+		"-ar", "48000",
+		"-ac", "2",
+		"-b:a", audioBitrate,
+		"-bsf:v", "h264_metadata=aud=insert,dump_extra=freq=keyframe",
+		"-mpegts_flags", "+resend_headers",
+		"-muxdelay", "0",
+		"-f", "mpegts",
+		"pipe:1",
 	)
+}
+
+func radioLatencyGOPFrames(mode string) string {
+	return strconv.Itoa(legacyRadioGOPFrames(mode))
+}
+
+func radioLatencyKeyframeSeconds(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "rtsp-low":
+		return "2"
+	case "rtsp-realtime":
+		return "0.5"
+	default:
+		return "1"
+	}
 }
 
 // WriteRadioFallbackLogo writes the app logo used by the active standby feeder.
@@ -148,33 +250,39 @@ func insideRoundedRect(x, y, width, height, radius int) bool {
 	if x < 0 || y < 0 || x >= width || y >= height {
 		return false
 	}
-	cx := x
+	if x >= radius && x < width-radius {
+		return true
+	}
+	if y >= radius && y < height-radius {
+		return true
+	}
+	cx := radius - 1
 	if x >= width-radius {
-		cx = width - radius - 1
-	} else if x >= radius {
-		return true
+		cx = width - radius
 	}
-	cy := y
+	cy := radius - 1
 	if y >= height-radius {
-		cy = height - radius - 1
-	} else if y >= radius {
-		return true
+		cy = height - radius
 	}
-	dx := float64(x - cx)
-	dy := float64(y - cy)
-	return dx*dx+dy*dy <= float64(radius*radius)
+	dx := x - cx
+	dy := y - cy
+	return dx*dx+dy*dy <= radius*radius
 }
 
 // RadioFallbackFeederArgs generates the standby screen live as MPEG-TS. It is
 // intentionally not a looped MP4, so waiting streams stay visually active until
 // a real track feeder takes over.
 func RadioFallbackRenderSize(preset QualityPreset) (int, int) {
-	height := preset.Height
-	if height <= 0 {
-		height = 720
-	}
+	_, outputHeight := radioFallbackOutputSize(preset)
+	height := outputHeight
 	if height > 360 {
+		height = height * 3 / 4
+	}
+	if height < 360 {
 		height = 360
+	}
+	if height%2 != 0 {
+		height++
 	}
 	width := height * 16 / 9
 	if width%2 != 0 {
@@ -196,6 +304,13 @@ func radioFallbackOutputSize(preset QualityPreset) (int, int) {
 }
 
 func RadioFallbackFeederArgs(preset QualityPreset, renderWidth, renderHeight int, timestampOffset float64) []string {
+	return RadioFallbackFeederArgsWithEncoder(preset, renderWidth, renderHeight, timestampOffset, CPUVideoEncoder(EncoderLowLatency))
+}
+
+func RadioFallbackFeederArgsWithEncoder(preset QualityPreset, renderWidth, renderHeight int, timestampOffset float64, encoder VideoEncoderProfile) []string {
+	if encoder.Name == "" {
+		encoder = CPUVideoEncoder(EncoderLowLatency)
+	}
 	outputWidth, outputHeight := radioFallbackOutputSize(preset)
 	if renderWidth <= 0 || renderHeight <= 0 {
 		renderWidth, renderHeight = RadioFallbackRenderSize(preset)
@@ -206,21 +321,38 @@ func RadioFallbackFeederArgs(preset QualityPreset, renderWidth, renderHeight int
 	}
 	args := []string{
 		"-hide_banner", "-loglevel", "error",
-		"-f", "rawvideo", "-pix_fmt", "rgb24", "-s", fmt.Sprintf("%dx%d", renderWidth, renderHeight), "-r", "30", "-i", "pipe:0",
+		"-f", "rawvideo", "-pix_fmt", "rgba", "-s", fmt.Sprintf("%dx%d", renderWidth, renderHeight), "-r", "30", "-i", "pipe:0",
 		"-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
 		"-map", "0:v:0", "-map", "1:a:0",
 	}
 	if renderWidth != outputWidth || renderHeight != outputHeight {
 		args = append(args, "-vf", fmt.Sprintf("scale=%d:%d:flags=bicubic", outputWidth, outputHeight))
 	}
-	args = append(args,
-		"-c:v", "libx264", "-preset", "veryfast", "-b:v", "300k", "-pix_fmt", "yuv420p", "-g", "60",
-		"-c:a", "aac", "-b:a", audioBitrate, "-ar", "48000", "-ac", "2",
-	)
+	videoBitrate, maxRate, bufferSize := radioFallbackVideoRate(preset, outputHeight)
+	encoderPreset := preset
+	encoderPreset.VideoBitrate = videoBitrate
+	encoderPreset.MaxRate = maxRate
+	encoderPreset.BufferSize = bufferSize
+	args = append(args, radioRTSPVideoEncoderArgs(encoder, encoderPreset)...)
+	args = append(args, radioRTSPEncodeOptionsForMode(encoder, preset.RadioLatency)...)
+	args = append(args, "-c:a", "aac", "-b:a", audioBitrate, "-ar", "48000", "-ac", "2")
 	if timestampOffset > 0 {
 		args = append(args, "-output_ts_offset", strconv.FormatFloat(timestampOffset, 'f', 3, 64))
 	}
-	return append(args, "-f", "mpegts", "pipe:1")
+	return append(args, "-flush_packets", "1", "-f", "mpegts", "pipe:1")
+}
+
+func radioFallbackVideoRate(preset QualityPreset, outputHeight int) (videoBitrate, maxRate, bufferSize string) {
+	if preset.VideoBitrate != "" {
+		return preset.VideoBitrate, preset.MaxRate, preset.BufferSize
+	}
+	if outputHeight >= 1080 {
+		return "1800k", "2400k", "4200k"
+	}
+	if outputHeight >= 720 {
+		return "900k", "1200k", "2200k"
+	}
+	return "350k", "500k", "900k"
 }
 
 type RadioFallbackRenderer struct {
@@ -230,12 +362,51 @@ type RadioFallbackRenderer struct {
 	semiBold      font.Face
 	medium        font.Face
 	cubes         []radioFallbackCube
+	waves         []radioFallbackWave
+	waveLevelMaps [6][512]uint8
+	bgBaseRX      []float32
+	bgBaseGY      []float32
+	bgBaseBY      []float32
+	bgSinRX       []float32
+	bgCosRX       []float32
+	bgSinRY       []float32
+	bgCosRY       []float32
+	bgSinGX       []float32
+	bgCosGX       []float32
+	bgSinBY       []float32
+	bgCosBY       []float32
+	background    *image.RGBA
+	backgroundKey int
+	staticLayer   *image.RGBA
+	staticSpans   []radioFallbackStaticSpan
+	frame         *image.RGBA
+	rgb           []byte
+	workers       int
+}
+
+type radioFallbackStaticSpan struct {
+	y, x0, x1 int
 }
 
 type radioFallbackCube struct {
 	x, y, size, ax, ay, fx, fy, phase float64
 	alpha                             uint8
 	col                               color.RGBA
+}
+
+type radioFallbackWave struct {
+	base, amp, thick, speed, freq, phase float64
+	col                                  color.RGBA
+	lut                                  [2]radioFallbackWaveLUT
+}
+
+type radioFallbackWaveLUT struct {
+	levels [8]radioFallbackBlendLUT
+}
+
+type radioFallbackBlendLUT struct {
+	r, g, b [256]uint8
+	alpha   uint8
 }
 
 // NewRadioFallbackRenderer creates the active standby renderer used by the
@@ -260,7 +431,7 @@ func NewRadioFallbackRenderer(width, height int, logoPath, semiboldFontPath, med
 		semiBold.Close()
 		return nil, err
 	}
-	return &RadioFallbackRenderer{
+	r := &RadioFallbackRenderer{
 		width:    width,
 		height:   height,
 		scale:    scale,
@@ -268,7 +439,18 @@ func NewRadioFallbackRenderer(width, height int, logoPath, semiboldFontPath, med
 		semiBold: semiBold,
 		medium:   medium,
 		cubes:    fallbackCubes(width, height, scale),
-	}, nil
+		waves:    fallbackWaves(),
+		workers:  fallbackWorkerCount(width, height),
+	}
+	r.precomputeBackground()
+	r.background = image.NewRGBA(image.Rect(0, 0, width, height))
+	r.backgroundKey = -1
+	r.staticLayer = image.NewRGBA(image.Rect(0, 0, width, height))
+	r.drawPanelsAndText(r.staticLayer)
+	r.staticSpans = fallbackStaticSpans(r.staticLayer)
+	r.frame = image.NewRGBA(image.Rect(0, 0, width, height))
+	r.rgb = make([]byte, width*height*3)
+	return r, nil
 }
 
 func loadScaledFallbackLogo(path string, size int) (*image.RGBA, error) {
@@ -324,6 +506,64 @@ func fallbackCubes(width, height int, scale float64) []radioFallbackCube {
 	return cubes
 }
 
+func fallbackWaves() []radioFallbackWave {
+	waves := []radioFallbackWave{
+		{base: 242, amp: 50, thick: 146, speed: 0.24, freq: 148, phase: 0.2, col: color.RGBA{82, 203, 255, 72}},
+		{base: 360, amp: 68, thick: 184, speed: 0.17, freq: 190, phase: 1.85, col: color.RGBA{92, 241, 188, 66}},
+		{base: 492, amp: 60, thick: 168, speed: 0.12, freq: 226, phase: 3.55, col: color.RGBA{172, 134, 255, 62}},
+	}
+	for i := range waves {
+		waves[i].lut[0] = newRadioFallbackWaveLUT(waves[i].col)
+		band2 := waves[i].col
+		band2.A = uint8(float64(band2.A) * 0.70)
+		waves[i].lut[1] = newRadioFallbackWaveLUT(band2)
+	}
+	return waves
+}
+
+func newRadioFallbackWaveLUT(col color.RGBA) radioFallbackWaveLUT {
+	var waveLUT radioFallbackWaveLUT
+	for i := range waveLUT.levels {
+		// Smooth radial falloff: broad translucent edge, denser center.
+		x := float64(i) / float64(len(waveLUT.levels)-1)
+		falloff := 0.08 + 0.70*x*x*(3-2*x)
+		level := col
+		level.A = uint8(math.Round(float64(col.A) * falloff))
+		waveLUT.levels[i] = newRadioFallbackBlendLUT(level)
+	}
+	return waveLUT
+}
+
+func newRadioFallbackBlendLUT(col color.RGBA) radioFallbackBlendLUT {
+	var lut radioFallbackBlendLUT
+	lut.alpha = col.A
+	a := int(col.A)
+	inv := 255 - a
+	srcR := int(col.R) * a
+	srcG := int(col.G) * a
+	srcB := int(col.B) * a
+	for i := 0; i < 256; i++ {
+		lut.r[i] = uint8((srcR + i*inv) / 255)
+		lut.g[i] = uint8((srcG + i*inv) / 255)
+		lut.b[i] = uint8((srcB + i*inv) / 255)
+	}
+	return lut
+}
+
+func fallbackWorkerCount(width, height int) int {
+	if width*height < 320*180 {
+		return 1
+	}
+	n := runtime.GOMAXPROCS(0)
+	if n > 6 {
+		n = 6
+	}
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
 func (r *RadioFallbackRenderer) Close() error {
 	if closer, ok := r.semiBold.(interface{ Close() error }); ok {
 		_ = closer.Close()
@@ -336,16 +576,23 @@ func (r *RadioFallbackRenderer) Close() error {
 
 func (r *RadioFallbackRenderer) RenderRGB(seconds float64) []byte {
 	img := image.NewRGBA(image.Rect(0, 0, r.width, r.height))
-	r.drawBackground(img, seconds)
-	r.drawWaves(img, seconds)
-	r.drawCubes(img, seconds)
-	r.drawGlow(img, seconds)
-	r.drawPanelsAndText(img)
-	if seconds < 0.9 {
-		a := uint8(math.Round(255 * (1 - seconds/0.9)))
-		alphaRect(img, image.Rect(0, 0, r.width, r.height), color.RGBA{0, 0, 0, a})
-	}
 	out := make([]byte, r.width*r.height*3)
+	r.renderRGBInto(img, out, seconds)
+	return out
+}
+
+func (r *RadioFallbackRenderer) RenderReusableRGB(seconds float64) []byte {
+	r.renderRGBInto(r.frame, r.rgb, seconds)
+	return r.rgb
+}
+
+func (r *RadioFallbackRenderer) RenderReusableRGBA(seconds float64) []byte {
+	r.renderFrameInto(r.frame, seconds)
+	return r.frame.Pix
+}
+
+func (r *RadioFallbackRenderer) renderRGBInto(img *image.RGBA, out []byte, seconds float64) {
+	r.renderFrameInto(img, seconds)
 	j := 0
 	for y := 0; y < r.height; y++ {
 		row := img.Pix[y*img.Stride:]
@@ -357,60 +604,261 @@ func (r *RadioFallbackRenderer) RenderRGB(seconds float64) []byte {
 			j += 3
 		}
 	}
-	return out
 }
 
-func (r *RadioFallbackRenderer) drawBackground(img *image.RGBA, t float64) {
-	baseR := 9 + 18*math.Sin(t*0.15)
-	baseG := 21 + 20*math.Sin(t*0.11+1.6)
-	baseB := 42 + 26*math.Sin(t*0.09+3.0)
-	for y := 0; y < r.height; y++ {
-		yn := float64(y) / float64(max(1, r.height))
-		for x := 0; x < r.width; x++ {
-			xn := float64(x) / float64(max(1, r.width))
-			rv := baseR + 11*xn + 8*math.Sin((xn+yn)*5.2+t*0.21)
-			gv := baseG + 15*yn + 8*math.Sin(xn*6.8+t*0.16)
-			bv := baseB + 19*(1-yn) + 10*math.Sin(yn*6.1+t*0.18)
-			img.SetRGBA(x, y, color.RGBA{fallbackClampByte(rv), fallbackClampByte(gv), fallbackClampByte(bv), 255})
+func (r *RadioFallbackRenderer) renderFrameInto(img *image.RGBA, seconds float64) {
+	r.drawCachedBackground(img, seconds)
+	r.drawCubes(img, seconds)
+	r.drawStaticLayer(img)
+	if seconds < radioFallbackFadeInSeconds {
+		progress := seconds / radioFallbackFadeInSeconds
+		eased := progress * progress * progress * (progress*(progress*6-15) + 10)
+		a := uint8(math.Round(255 * (1 - eased)))
+		alphaRect(img, image.Rect(0, 0, r.width, r.height), color.RGBA{0, 0, 0, a})
+	}
+}
+
+func (r *RadioFallbackRenderer) drawCachedBackground(dst *image.RGBA, seconds float64) {
+	key := int(seconds * 10)
+	if key != r.backgroundKey {
+		r.drawBackground(r.background, seconds)
+		r.drawWaves(r.background, seconds)
+		r.backgroundKey = key
+	}
+	copy(dst.Pix, r.background.Pix)
+}
+
+func fallbackStaticSpans(img *image.RGBA) []radioFallbackStaticSpan {
+	spans := make([]radioFallbackStaticSpan, 0, img.Bounds().Dy())
+	for y := 0; y < img.Bounds().Dy(); y++ {
+		row := img.Pix[y*img.Stride:]
+		x0 := -1
+		x1 := -1
+		for x := 0; x < img.Bounds().Dx(); x++ {
+			if row[x*4+3] != 0 {
+				if x0 < 0 {
+					x0 = x
+				}
+				x1 = x + 1
+			}
+		}
+		if x0 >= 0 {
+			spans = append(spans, radioFallbackStaticSpan{y: y, x0: x0, x1: x1})
+		}
+	}
+	return spans
+}
+
+func (r *RadioFallbackRenderer) drawStaticLayer(dst *image.RGBA) {
+	for _, span := range r.staticSpans {
+		dstRow := dst.Pix[span.y*dst.Stride:]
+		srcRow := r.staticLayer.Pix[span.y*r.staticLayer.Stride:]
+		for x := span.x0; x < span.x1; x++ {
+			i := x * 4
+			a := int(srcRow[i+3])
+			if a == 0 {
+				continue
+			}
+			inv := 255 - a
+			dstRow[i+0] = uint8((int(srcRow[i+0])*a + int(dstRow[i+0])*inv) / 255)
+			dstRow[i+1] = uint8((int(srcRow[i+1])*a + int(dstRow[i+1])*inv) / 255)
+			dstRow[i+2] = uint8((int(srcRow[i+2])*a + int(dstRow[i+2])*inv) / 255)
+			dstRow[i+3] = 255
 		}
 	}
 }
 
-func (r *RadioFallbackRenderer) drawWaves(img *image.RGBA, t float64) {
-	waves := []struct {
-		base, amp, thick, speed, freq, phase float64
-		col                                  color.RGBA
-	}{
-		{242, 50, 146, 0.24, 148, 0.2, color.RGBA{82, 203, 255, 72}},
-		{360, 68, 184, 0.17, 190, 1.85, color.RGBA{92, 241, 188, 66}},
-		{492, 60, 168, 0.12, 226, 3.55, color.RGBA{172, 134, 255, 62}},
+func (r *RadioFallbackRenderer) drawBackground(img *image.RGBA, t float64) {
+	baseR := float32(9 + 18*math.Sin(t*0.15))
+	baseG := float32(21 + 20*math.Sin(t*0.11+1.6))
+	baseB := float32(42 + 26*math.Sin(t*0.09+3.0))
+	rSin := float32(math.Sin(t * 0.21))
+	rCos := float32(math.Cos(t * 0.21))
+	gSin := float32(math.Sin(t * 0.16))
+	gCos := float32(math.Cos(t * 0.16))
+	bSin := float32(math.Sin(t * 0.18))
+	bCos := float32(math.Cos(t * 0.18))
+	if r.workers <= 1 {
+		r.drawBackgroundRows(img, 0, r.height, baseR, baseG, baseB, rSin, rCos, gSin, gCos, bSin, bCos)
+		return
 	}
-	for wi, wave := range waves {
+	var wg sync.WaitGroup
+	for w := 0; w < r.workers; w++ {
+		y0 := r.height * w / r.workers
+		y1 := r.height * (w + 1) / r.workers
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r.drawBackgroundRows(img, y0, y1, baseR, baseG, baseB, rSin, rCos, gSin, gCos, bSin, bCos)
+		}()
+	}
+	wg.Wait()
+}
+
+func (r *RadioFallbackRenderer) drawBackgroundRows(img *image.RGBA, y0, y1 int, baseR, baseG, baseB, rSin, rCos, gSin, gCos, bSin, bCos float32) {
+	for y := y0; y < y1; y += 2 {
+		row := img.Pix[y*img.Stride:]
+		var nextRow []byte
+		if y+1 < y1 {
+			nextRow = img.Pix[(y+1)*img.Stride:]
+		}
+		baseGY := r.bgBaseGY[y]
+		baseBY := r.bgBaseBY[y]
+		sinRY := r.bgSinRY[y]
+		cosRY := r.bgCosRY[y]
+		bvY := baseB + baseBY + 10*(r.bgSinBY[y]*bCos+r.bgCosBY[y]*bSin)
+		for x := 0; x < r.width; x += 2 {
+			p := x * 4
+			sinR := r.bgSinRX[x]*cosRY + r.bgCosRX[x]*sinRY
+			cosR := r.bgCosRX[x]*cosRY - r.bgSinRX[x]*sinRY
+			rv := baseR + r.bgBaseRX[x] + 8*(sinR*rCos+cosR*rSin)
+			gv := baseG + baseGY + 8*(r.bgSinGX[x]*gCos+r.bgCosGX[x]*gSin)
+			rr := fallbackClampByte32(rv)
+			gg := fallbackClampByte32(gv)
+			bb := fallbackClampByte32(bvY)
+			fillBackgroundPixel(row, p, rr, gg, bb)
+			if x+1 < r.width {
+				fillBackgroundPixel(row, p+4, rr, gg, bb)
+			}
+			if nextRow != nil {
+				fillBackgroundPixel(nextRow, p, rr, gg, bb)
+				if x+1 < r.width {
+					fillBackgroundPixel(nextRow, p+4, rr, gg, bb)
+				}
+			}
+		}
+	}
+}
+
+func fillBackgroundPixel(row []byte, p int, rr, gg, bb uint8) {
+	row[p+0] = rr
+	row[p+1] = gg
+	row[p+2] = bb
+	row[p+3] = 255
+}
+
+func (r *RadioFallbackRenderer) precomputeBackground() {
+	r.bgBaseRX = make([]float32, r.width)
+	r.bgSinRX = make([]float32, r.width)
+	r.bgCosRX = make([]float32, r.width)
+	r.bgSinGX = make([]float32, r.width)
+	r.bgCosGX = make([]float32, r.width)
+	r.bgBaseGY = make([]float32, r.height)
+	r.bgBaseBY = make([]float32, r.height)
+	r.bgSinRY = make([]float32, r.height)
+	r.bgCosRY = make([]float32, r.height)
+	r.bgSinBY = make([]float32, r.height)
+	r.bgCosBY = make([]float32, r.height)
+	for x := 0; x < r.width; x++ {
+		xn := float64(x) / float64(max(1, r.width))
+		r.bgBaseRX[x] = float32(11 * xn)
+		r.bgSinRX[x] = float32(math.Sin(xn * 5.2))
+		r.bgCosRX[x] = float32(math.Cos(xn * 5.2))
+		r.bgSinGX[x] = float32(math.Sin(xn * 6.8))
+		r.bgCosGX[x] = float32(math.Cos(xn * 6.8))
+	}
+	for y := 0; y < r.height; y++ {
+		yn := float64(y) / float64(max(1, r.height))
+		r.bgBaseGY[y] = float32(15 * yn)
+		r.bgBaseBY[y] = float32(19 * (1 - yn))
+		r.bgSinRY[y] = float32(math.Sin(yn * 5.2))
+		r.bgCosRY[y] = float32(math.Cos(yn * 5.2))
+		r.bgSinBY[y] = float32(math.Sin(yn * 6.1))
+		r.bgCosBY[y] = float32(math.Cos(yn * 6.1))
+	}
+}
+
+func (r *RadioFallbackRenderer) drawWaves(img *image.RGBA, t float64) {
+	for wi, wave := range r.waves {
 		for band := 0; band < 2; band++ {
 			thick := wave.thick * (0.72 + 0.26*math.Sin(t*(0.11+float64(wi)*0.04)+float64(band))) * r.scale
 			breath := 1.0 + 0.14*math.Sin(t*(0.13+float64(wi)*0.03)+float64(band)*2.0)
 			phase := wave.phase + float64(band)*1.7
-			col := wave.col
-			if band == 1 {
-				col.A = uint8(float64(col.A) * 0.70)
+			r.drawWaveBand(img, &wave.lut[band], r.waveLevelMaps[wi*2+band][:], 0, r.width, wave.base, wave.amp, wave.freq, wave.speed, phase, breath, thick*1.42, t)
+		}
+	}
+}
+
+func (r *RadioFallbackRenderer) drawWaveBand(img *image.RGBA, lut *radioFallbackWaveLUT, levelBuf []uint8, x0, x1 int, base, amp, freq, speed, phase, breath, thick, t float64) {
+	levelOf := radioFallbackWaveLevelMap(thick, len(lut.levels), levelBuf)
+	if r.workers <= 1 || x1-x0 < 128 {
+		r.drawWaveBandRange(img, lut, levelOf, x0, x1, base, amp, freq, speed, phase, breath, thick, t)
+		return
+	}
+	var wg sync.WaitGroup
+	for w := 0; w < r.workers; w++ {
+		wx0 := x0 + (x1-x0)*w/r.workers
+		wx1 := x0 + (x1-x0)*(w+1)/r.workers
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r.drawWaveBandRange(img, lut, levelOf, wx0, wx1, base, amp, freq, speed, phase, breath, thick, t)
+		}()
+	}
+	wg.Wait()
+}
+
+func radioFallbackWaveLevelMap(thick float64, levels int, buf []uint8) []uint8 {
+	span := int(math.Ceil(thick)) + 4
+	if span < 1 {
+		span = 1
+	}
+	if span > len(buf) {
+		buf = make([]uint8, span)
+	} else {
+		buf = buf[:span]
+	}
+	levelMax := float64(levels - 1)
+	denom := float64(max(1, span-1))
+	for i := range buf {
+		position := float64(i) / denom
+		proximity := 1 - math.Abs(position*2-1)
+		buf[i] = uint8(proximity * levelMax)
+	}
+	return buf
+}
+
+func (r *RadioFallbackRenderer) drawWaveBandRange(img *image.RGBA, lut *radioFallbackWaveLUT, levelOf []uint8, x0, x1 int, base, amp, freq, speed, phase, breath, thick, t float64) {
+	height := img.Bounds().Dy()
+	half := thick / 2
+	if half <= 0 {
+		return
+	}
+	for x := x0; x < x1; x++ {
+		xf := float64(x)
+		y := base*r.scale + amp*r.scale*math.Sin(xf/(freq*r.scale*breath)+t*speed+phase)
+		y += 18 * r.scale * math.Sin(xf/(freq*r.scale*0.47)-t*speed*0.86+phase*0.4)
+		y0 := int(y - half)
+		y1 := int(y + half)
+		levelOffset := 0
+		if y0 < 0 {
+			levelOffset = -y0
+			y0 = 0
+		}
+		if y1 > height {
+			y1 = height
+		}
+		if y1 <= y0 {
+			continue
+		}
+		for yy := y0; yy < y1; yy++ {
+			levelIndex := levelOffset + yy - y0
+			if levelIndex >= len(levelOf) {
+				levelIndex = len(levelOf) - 1
 			}
-			for x := -12; x < r.width+12; x += max(4, int(8*r.scale)) {
-				xf := float64(x)
-				y := wave.base*r.scale + wave.amp*r.scale*math.Sin(xf/(wave.freq*r.scale*breath)+t*wave.speed+phase)
-				y += 18 * r.scale * math.Sin(xf/(wave.freq*r.scale*0.47)-t*wave.speed*0.86+phase*0.4)
-				alphaRect(img, image.Rect(x, int(y-thick/2), x+max(8, int(16*r.scale)), int(y+thick/2)), col)
-			}
+			blend := &lut.levels[levelOf[levelIndex]]
+			i := yy*img.Stride + x*4
+			img.Pix[i+0] = blend.r[img.Pix[i+0]]
+			img.Pix[i+1] = blend.g[img.Pix[i+1]]
+			img.Pix[i+2] = blend.b[img.Pix[i+2]]
+			img.Pix[i+3] = 255
 		}
 	}
 }
 
 func (r *RadioFallbackRenderer) drawCubes(img *image.RGBA, t float64) {
 	for _, c := range r.cubes {
-		cx := c.x + c.ax*math.Sin(t*c.fx+c.phase)
-		cy := c.y + c.ay*math.Cos(t*c.fy+c.phase*0.8) - math.Mod(t*4.4, 92*r.scale)
-		if cy < -24*r.scale {
-			cy += float64(r.height) + 48*r.scale
-		}
+		cx, cy := radioFallbackCubePosition(c, t, r.width, r.height, r.scale)
 		size := c.size * (0.76 + 0.34*math.Sin(t*0.68+c.phase))
 		half := size / 2
 		a := uint8(float64(c.alpha) * (0.70 + 0.30*math.Sin(t*0.74+c.phase)))
@@ -420,9 +868,17 @@ func (r *RadioFallbackRenderer) drawCubes(img *image.RGBA, t float64) {
 	}
 }
 
-func (r *RadioFallbackRenderer) drawGlow(img *image.RGBA, t float64) {
-	alphaRect(img, scaleRect(70, 130, 508, 590, r.scale), color.RGBA{94, 210, 255, uint8(12 + 5*math.Sin(t*0.68))})
-	alphaRect(img, scaleRect(520, 168, 1200, 570, r.scale), color.RGBA{105, 245, 200, 10})
+func radioFallbackCubePosition(c radioFallbackCube, t float64, width, height int, scale float64) (float64, float64) {
+	_ = width
+	cx := c.x + c.ax*math.Sin(t*c.fx+c.phase)
+	margin := 36 * scale
+	cycle := float64(height) + margin*2
+	drift := math.Mod(t*4.4+c.phase*37, cycle)
+	cy := c.y + c.ay*math.Cos(t*c.fy+c.phase*0.8) - drift
+	if cy < -margin {
+		cy += cycle
+	}
+	return cx, cy
 }
 
 func (r *RadioFallbackRenderer) drawPanelsAndText(img *image.RGBA) {
@@ -432,9 +888,12 @@ func (r *RadioFallbackRenderer) drawPanelsAndText(img *image.RGBA) {
 	logoY := cy - logoSize/2 + int(math.Round(5*r.scale))
 	iconPanel := image.Rect(logoX-int(math.Round(24*r.scale)), cy-int(math.Round(144*r.scale)), logoX-int(math.Round(24*r.scale))+int(math.Round(288*r.scale)), cy+int(math.Round(144*r.scale)))
 	messagePanel := image.Rect(int(math.Round(588*r.scale)), cy-int(math.Round(141*r.scale)), int(math.Round((588+572)*r.scale)), cy+int(math.Round(141*r.scale)))
-	alphaRoundedRect(img, iconPanel, int(math.Round(38*r.scale)), color.RGBA{255, 255, 255, 12}, color.RGBA{255, 255, 255, 25})
+	r.drawStaticPanelGlow(img, iconPanel, color.RGBA{86, 226, 255, 255}, 58, 18)
+	r.drawStaticPanelGlow(img, messagePanel, color.RGBA{102, 238, 206, 255}, 64, 16)
+	r.drawStaticPanelGlow(img, messagePanel.Add(image.Pt(0, int(math.Round(34*r.scale)))), color.RGBA{156, 126, 255, 255}, 52, 9)
+	alphaRoundedRect(img, iconPanel, int(math.Round(38*r.scale)), color.RGBA{235, 250, 255, 28}, color.RGBA{190, 245, 255, 54})
 	draw.Draw(img, image.Rect(logoX, logoY, logoX+logoSize, logoY+logoSize), r.logo, image.Point{}, draw.Over)
-	alphaRoundedRect(img, messagePanel, int(math.Round(36*r.scale)), color.RGBA{18, 29, 48, 118}, color.RGBA{158, 215, 255, 116})
+	alphaRoundedRect(img, messagePanel, int(math.Round(36*r.scale)), color.RGBA{34, 55, 82, 108}, color.RGBA{158, 225, 255, 126})
 
 	textX := messagePanel.Min.X + int(math.Round(50*r.scale))
 	textCenter := messagePanel.Min.Y + messagePanel.Dy()/2
@@ -445,28 +904,105 @@ func (r *RadioFallbackRenderer) drawPanelsAndText(img *image.RGBA) {
 	drawText(img, r.medium, textX, textCenter+int(math.Round(76*r.scale))-lift, "RTSP / HLS ready", color.RGBA{159, 180, 200, 220})
 }
 
-func WriteRadioFallbackFrames(ctx context.Context, out io.Writer, renderer *RadioFallbackRenderer) error {
-	ticker := time.NewTicker(time.Second / 30)
+func (r *RadioFallbackRenderer) drawStaticPanelGlow(img *image.RGBA, rect image.Rectangle, col color.RGBA, spread, alpha int) {
+	steps := 9
+	for i := steps; i >= 1; i-- {
+		t := float64(i) / float64(steps)
+		padX := int(math.Round(float64(spread) * r.scale * t))
+		padY := int(math.Round(float64(spread) * r.scale * t * 0.72))
+		glowRect := image.Rect(rect.Min.X-padX, rect.Min.Y-padY, rect.Max.X+padX, rect.Max.Y+padY)
+		glow := col
+		glow.A = uint8(math.Round(float64(alpha) * (1 - t) * (1 - t)))
+		if glow.A == 0 {
+			continue
+		}
+		alphaRoundedRect(img, glowRect, int(math.Round((36+float64(spread)*0.38*t)*r.scale)), glow, color.RGBA{})
+	}
+}
+
+func WriteRadioFallbackFrames(ctx context.Context, out io.Writer, renderer *RadioFallbackRenderer) (int, error) {
+	return WriteTimedRadioFallbackFrames(ctx, out, renderer.RenderReusableRGBA)
+}
+
+func WriteTimedRadioFallbackFrames(ctx context.Context, out io.Writer, renderFrame func(seconds float64) []byte) (int, error) {
+	ticker := time.NewTicker(time.Second / radioFallbackFrameRate)
 	defer ticker.Stop()
-	start := time.Now()
+	frames := 0
 	for {
 		select {
 		case <-ctx.Done():
-			return nil
+			return writeRadioFallbackFadeOutFrames(out, renderFrame, frames)
 		default:
 		}
-		frame := renderer.RenderRGB(time.Since(start).Seconds())
+		frame := renderFrame(float64(frames) / radioFallbackFrameRate)
 		if _, err := out.Write(frame); err != nil {
 			if ctx.Err() != nil {
-				return nil
+				return frames, nil
 			}
-			return err
+			return frames, err
 		}
+		frames++
 		select {
 		case <-ctx.Done():
-			return nil
+			return writeRadioFallbackFadeOutFrames(out, renderFrame, frames)
 		case <-ticker.C:
 		}
+	}
+}
+
+func writeRadioFallbackFadeOutFrames(out io.Writer, renderFrame func(seconds float64) []byte, frames int) (int, error) {
+	fadeFrames := int(math.Round(radioFallbackFadeOutSeconds * radioFallbackFrameRate))
+	holdFrames := int(math.Round(radioFallbackRetimingHoldSeconds * radioFallbackFrameRate))
+	tailFrames := fadeFrames + holdFrames
+	ticker := time.NewTicker(time.Second / radioFallbackFrameRate)
+	defer ticker.Stop()
+	for i := 0; i < fadeFrames; i++ {
+		frame := renderFrame(float64(frames) / radioFallbackFrameRate)
+		blackFadeRGBA(frame, smootherstep(float64(i+1)/float64(fadeFrames)))
+		if _, err := out.Write(frame); err != nil {
+			return frames, err
+		}
+		frames++
+		if i+1 < tailFrames {
+			<-ticker.C
+		}
+	}
+	for i := 0; i < holdFrames; i++ {
+		frame := renderFrame(float64(frames) / radioFallbackFrameRate)
+		blackFadeRGBA(frame, 1)
+		if _, err := out.Write(frame); err != nil {
+			return frames, err
+		}
+		frames++
+		if fadeFrames+i+1 < tailFrames {
+			<-ticker.C
+		}
+	}
+	return frames, nil
+}
+
+func smootherstep(x float64) float64 {
+	if x <= 0 {
+		return 0
+	}
+	if x >= 1 {
+		return 1
+	}
+	return x * x * x * (x*(x*6-15) + 10)
+}
+
+func blackFadeRGBA(frame []byte, amount float64) {
+	if amount <= 0 {
+		return
+	}
+	if amount > 1 {
+		amount = 1
+	}
+	keep := 1 - amount
+	for i := 0; i+3 < len(frame); i += 4 {
+		frame[i+0] = uint8(float64(frame[i+0]) * keep)
+		frame[i+1] = uint8(float64(frame[i+1]) * keep)
+		frame[i+2] = uint8(float64(frame[i+2]) * keep)
 	}
 }
 
@@ -500,10 +1036,47 @@ func alphaRect(img *image.RGBA, rect image.Rectangle, col color.RGBA) {
 	if rect.Empty() || col.A == 0 {
 		return
 	}
+	a := int(col.A)
+	inv := 255 - a
+	srcR := int(col.R) * a
+	srcG := int(col.G) * a
+	srcB := int(col.B) * a
 	for y := rect.Min.Y; y < rect.Max.Y; y++ {
+		row := img.Pix[y*img.Stride:]
 		for x := rect.Min.X; x < rect.Max.X; x++ {
-			alphaPixel(img, x, y, col)
+			i := x * 4
+			row[i+0] = uint8((srcR + int(row[i+0])*inv) / 255)
+			row[i+1] = uint8((srcG + int(row[i+1])*inv) / 255)
+			row[i+2] = uint8((srcB + int(row[i+2])*inv) / 255)
+			row[i+3] = 255
 		}
+	}
+}
+
+func alphaVLine(img *image.RGBA, x, y0, y1 int, col color.RGBA) {
+	if x < 0 || x >= img.Bounds().Dx() || col.A == 0 {
+		return
+	}
+	if y0 < 0 {
+		y0 = 0
+	}
+	if y1 > img.Bounds().Dy() {
+		y1 = img.Bounds().Dy()
+	}
+	if y1 <= y0 {
+		return
+	}
+	a := int(col.A)
+	inv := 255 - a
+	srcR := int(col.R) * a
+	srcG := int(col.G) * a
+	srcB := int(col.B) * a
+	for y := y0; y < y1; y++ {
+		i := y*img.Stride + x*4
+		img.Pix[i+0] = uint8((srcR + int(img.Pix[i+0])*inv) / 255)
+		img.Pix[i+1] = uint8((srcG + int(img.Pix[i+1])*inv) / 255)
+		img.Pix[i+2] = uint8((srcB + int(img.Pix[i+2])*inv) / 255)
+		img.Pix[i+3] = 255
 	}
 }
 
@@ -512,12 +1085,24 @@ func alphaPixel(img *image.RGBA, x, y int, src color.RGBA) {
 		return
 	}
 	i := img.PixOffset(x, y)
-	a := int(src.A)
-	inv := 255 - a
-	img.Pix[i+0] = uint8((int(src.R)*a + int(img.Pix[i+0])*inv) / 255)
-	img.Pix[i+1] = uint8((int(src.G)*a + int(img.Pix[i+1])*inv) / 255)
-	img.Pix[i+2] = uint8((int(src.B)*a + int(img.Pix[i+2])*inv) / 255)
-	img.Pix[i+3] = 255
+	sa := int(src.A)
+	da := int(img.Pix[i+3])
+	outA := sa + da*(255-sa)/255
+	if outA <= 0 {
+		img.Pix[i+0] = 0
+		img.Pix[i+1] = 0
+		img.Pix[i+2] = 0
+		img.Pix[i+3] = 0
+		return
+	}
+	srcR := int(src.R) * sa
+	srcG := int(src.G) * sa
+	srcB := int(src.B) * sa
+	dstFactor := da * (255 - sa) / 255
+	img.Pix[i+0] = uint8((srcR + int(img.Pix[i+0])*dstFactor) / outA)
+	img.Pix[i+1] = uint8((srcG + int(img.Pix[i+1])*dstFactor) / outA)
+	img.Pix[i+2] = uint8((srcB + int(img.Pix[i+2])*dstFactor) / outA)
+	img.Pix[i+3] = uint8(outA)
 }
 
 func scaleRect(x0, y0, x1, y1 int, scale float64) image.Rectangle {
@@ -539,29 +1124,60 @@ func fallbackClampByte(v float64) uint8 {
 	return uint8(math.Round(v))
 }
 
-// RadioPublisherArgs is the persistent RTMP publisher: it consumes an
-// endless MPEG-TS byte stream on stdin and republishes it to mediamtx. The
+func fallbackClampByte32(v float32) uint8 {
+	if v <= 0 {
+		return 0
+	}
+	if v >= 255 {
+		return 255
+	}
+	return uint8(v + 0.5)
+}
+
+// RadioPublisherArgs is the persistent RTSP publisher: it consumes an
+// endless MPEG-TS byte stream on stdin and republishes it to MediaMTX. The
 // feeder side is responsible for making per-segment timestamps monotonic; the
 // publisher must preserve those PTS values so frame pacing is not derived from
 // pipe arrival timing.
-func RadioPublisherArgs(rtmpURL string) []string {
-	return []string{
+//
+// Compatibility guardrail: keep the radio track/fallback feeders responsible
+// for producing AAC at the shared radio parameters, and keep the publisher as a
+// copy remuxer. Re-encoding audio here adds encoder delay across the persistent
+// radio stream and can desynchronize playlist audio from the visualizer video.
+func RadioPublisherArgs(rtspPublishURL string) []string {
+	args := []string{
 		"-hide_banner",
 		"-loglevel", "warning",
 		"-fflags", "+genpts",
 		"-f", "mpegts",
 		"-i", "pipe:0",
-		"-c", "copy",
-		"-bsf:a", "aac_adtstoasc",
-		"-f", "flv",
-		rtmpURL,
+		"-c:v", "copy",
+		"-c:a", "copy",
 	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(rtspPublishURL)), "rtmp://") {
+		return append(args,
+			"-f", "flv",
+			rtspPublishURL,
+		)
+	}
+	return append(args,
+		"-rtsp_transport", "tcp",
+		"-pkt_size", "1200",
+		"-muxdelay", "0",
+		"-f", "rtsp",
+		rtspPublishURL,
+	)
 }
 
 // RadioFeederArgs converts one pre-rendered MP4 into a real-time MPEG-TS
 // stream on stdout, for piping into the persistent publisher. loop repeats
 // the input forever (filler); startSeconds resumes mid-track. timestampOffset
 // shifts output PTS so separately started feeders form one monotonic stream.
+//
+// Compatibility guardrail: do not transcode here. This process is only the
+// paced MP4-to-TS feeder; changing it to encode audio/video changes the byte
+// stream seen by the persistent RTSP publisher and can make VRChat reject the
+// stream before playback.
 func RadioFeederArgs(mediaPath string, startSeconds int, loop bool, timestampOffset float64) []string {
 	args := []string{
 		"-hide_banner",

@@ -440,7 +440,15 @@ func ownedProcessCommandLineMatches(commandLine, executableBase, requiredMarker 
 	if !strings.EqualFold(filepath.Base(executable), executableBase) {
 		return false
 	}
-	return strings.Contains(strings.ToLower(arguments), strings.ToLower(requiredMarker))
+	lowerMarker := strings.ToLower(requiredMarker)
+	if strings.Contains(strings.ToLower(arguments), lowerMarker) {
+		return true
+	}
+	return isPathMarker(requiredMarker) && strings.Contains(strings.ToLower(commandLine), lowerMarker)
+}
+
+func isPathMarker(marker string) bool {
+	return strings.Contains(marker, `/`) || strings.Contains(marker, `\`)
 }
 
 func splitOwnedCommandLine(commandLine string) (string, string) {

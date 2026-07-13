@@ -7,21 +7,26 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 )
 
 type Settings struct {
-	SteamVRExplicitlyDisabled bool          `json:"steamvrExplicitlyDisabled"`
-	VideoPlayerEnabled        bool          `json:"videoPlayerEnabled"`
-	MusicModeEnabled          bool          `json:"musicModeEnabled"`
-	VideoQualityMode          string        `json:"videoQualityMode,omitempty"`
-	NetworkMbps               int           `json:"networkMbps,omitempty"`
-	NetworkUploadMbps         int           `json:"networkUploadMbps,omitempty"`
-	AdminToken                string        `json:"adminToken,omitempty"`
-	OBSStreamKey              string        `json:"obsStreamKey,omitempty"`
-	OBSLatencyMode            string        `json:"obsLatencyMode,omitempty"`
-	OBSDVREnabled             bool          `json:"obsDVREnabled,omitempty"`
-	RelayDevices              []RelayDevice `json:"relayDevices,omitempty"`
+	SteamVRExplicitlyDisabled    bool          `json:"steamvrExplicitlyDisabled"`
+	VideoPlayerEnabled           bool          `json:"videoPlayerEnabled"`
+	MusicModeEnabled             bool          `json:"musicModeEnabled"`
+	VideoQualityMode             string        `json:"videoQualityMode,omitempty"`
+	MusicPlaylistLatencyMode     string        `json:"musicPlaylistLatencyMode,omitempty"`
+	MusicPlaylistDeliveryProfile string        `json:"musicPlaylistDeliveryProfile,omitempty"`
+	MusicPlaylistCanonicalHeight int           `json:"musicPlaylistCanonicalHeight,omitempty"`
+	EncoderMode                  string        `json:"encoderMode,omitempty"`
+	NetworkMbps                  int           `json:"networkMbps,omitempty"`
+	NetworkUploadMbps            int           `json:"networkUploadMbps,omitempty"`
+	AdminToken                   string        `json:"adminToken,omitempty"`
+	OBSStreamKey                 string        `json:"obsStreamKey,omitempty"`
+	OBSLatencyMode               string        `json:"obsLatencyMode,omitempty"`
+	OBSDVREnabled                bool          `json:"obsDVREnabled,omitempty"`
+	RelayDevices                 []RelayDevice `json:"relayDevices,omitempty"`
 }
 
 type RelayDevice struct {
@@ -34,12 +39,53 @@ type RelayDevice struct {
 	RevokedAt    string `json:"revokedAt,omitempty"`
 }
 
-var fileMu sync.Mutex
+var (
+	fileMu                           sync.Mutex
+	musicPlaylistCanonicalHeightOnce sync.Once
+	musicPlaylistCanonicalHeight     = 720
+)
 
 func Load() (Settings, error) {
 	fileMu.Lock()
 	defer fileMu.Unlock()
 	return loadUnlocked()
+}
+
+func NormalizeEncoderMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "cpu", "gpu":
+		return strings.ToLower(strings.TrimSpace(mode))
+	default:
+		return "auto"
+	}
+}
+
+func NormalizeMusicPlaylistCanonicalHeight(height int) int {
+	switch height {
+	case 360, 720, 1080:
+		return height
+	default:
+		return 720
+	}
+}
+
+// FreezeMusicPlaylistCanonicalHeight captures the canonical intermediate
+// height once. Settings writes remain persistent but do not alter a running
+// process's active radio recipe.
+func FreezeMusicPlaylistCanonicalHeight(settings Settings) int {
+	musicPlaylistCanonicalHeightOnce.Do(func() {
+		musicPlaylistCanonicalHeight = NormalizeMusicPlaylistCanonicalHeight(settings.MusicPlaylistCanonicalHeight)
+	})
+	return musicPlaylistCanonicalHeight
+}
+
+func ActiveMusicPlaylistCanonicalHeight() int {
+	return FreezeMusicPlaylistCanonicalHeight(Settings{})
+}
+
+func resetMusicPlaylistCanonicalHeightForTest() {
+	musicPlaylistCanonicalHeightOnce = sync.Once{}
+	musicPlaylistCanonicalHeight = 720
 }
 
 func Save(settings Settings) error {
@@ -127,7 +173,7 @@ func RotateOBSStreamKey() (string, error) {
 }
 
 func loadUnlocked() (Settings, error) {
-	var settings Settings
+	settings := Settings{MusicPlaylistCanonicalHeight: 720}
 	data, err := os.ReadFile(path())
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -138,10 +184,12 @@ func loadUnlocked() (Settings, error) {
 	if err := json.Unmarshal(data, &settings); err != nil {
 		return Settings{}, err
 	}
+	settings.MusicPlaylistCanonicalHeight = NormalizeMusicPlaylistCanonicalHeight(settings.MusicPlaylistCanonicalHeight)
 	return settings, nil
 }
 
 func saveUnlocked(settings Settings) error {
+	settings.MusicPlaylistCanonicalHeight = NormalizeMusicPlaylistCanonicalHeight(settings.MusicPlaylistCanonicalHeight)
 	settingsPath := path()
 	if err := os.MkdirAll(filepath.Dir(settingsPath), 0755); err != nil {
 		return err

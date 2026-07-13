@@ -49,6 +49,14 @@ func audioVisualizerFFmpegArgsWithEncoder(audioPath, assPath, fontDir, id string
 // edgeFadeSeconds > 0 burns a black fade-in/out (and matching audio fade)
 // into the first/last edgeFadeSeconds of the track (曲の切り替わり用).
 func audioVisualizerCoreArgsWithEncoder(audioPath, assPath, fontDir string, preset QualityPreset, mode *ForegroundMode, encoder VideoEncoderProfile, audioFilter string, edgeFadeSeconds, totalDurationSeconds float64) []string {
+	return audioVisualizerCoreArgsWithEncodeOptions(audioPath, assPath, fontDir, preset, mode, encoder, audioFilter, edgeFadeSeconds, totalDurationSeconds, staticContentEncodeOptions)
+}
+
+func audioVisualizerCoreArgsWithEncodeOptions(audioPath, assPath, fontDir string, preset QualityPreset, mode *ForegroundMode, encoder VideoEncoderProfile, audioFilter string, edgeFadeSeconds, totalDurationSeconds float64, encodeOptions func(VideoEncoderProfile) []string) []string {
+	return audioVisualizerCoreArgsWithEncoderArgs(audioPath, assPath, fontDir, preset, mode, encoder, audioFilter, edgeFadeSeconds, totalDurationSeconds, nil, encodeOptions)
+}
+
+func audioVisualizerCoreArgsWithEncoderArgs(audioPath, assPath, fontDir string, preset QualityPreset, mode *ForegroundMode, encoder VideoEncoderProfile, audioFilter string, edgeFadeSeconds, totalDurationSeconds float64, encoderArgs func(VideoEncoderProfile, QualityPreset) []string, encodeOptions func(VideoEncoderProfile) []string) []string {
 	height := preset.Height
 	if height <= 0 {
 		height = 720
@@ -107,8 +115,15 @@ func audioVisualizerCoreArgsWithEncoder(audioPath, assPath, fontDir string, pres
 		"-map", videoMap,
 		"-map", audioMap,
 	}
-	args = append(args, encoder.FFmpegArgs(preset, "medium")...)
-	args = append(args, staticContentEncodeOptions(encoder)...)
+	if encoderArgs == nil {
+		encoderArgs = func(profile VideoEncoderProfile, preset QualityPreset) []string {
+			return profile.FFmpegArgs(preset, "medium")
+		}
+	}
+	args = append(args, encoderArgs(encoder, preset)...)
+	if encodeOptions != nil {
+		args = append(args, encodeOptions(encoder)...)
+	}
 	return append(args,
 		"-c:a", "aac",
 		"-b:a", preset.AudioBitrate,
@@ -510,18 +525,18 @@ func RunAudioVisualizerHLS(ctx context.Context, outDir, ffmpeg string, input Aud
 	buildArgs := func(assPath, fontDir string, mode *ForegroundMode, encoder VideoEncoderProfile) []string {
 		return formatVisualizerOutputArgs(audioVisualizerFFmpegArgsWithEncoder(input.SourcePath, assPath, fontDir, id, preset, mode, encoder, audioLoudnormFilter(input.Kind)), outDir)
 	}
-	return runAudioVisualizerEncode(ctx, outDir, ffmpeg, input, id, preset, buildArgs, func() { removeHLSForID(outDir, id) }, nil)
+	return runAudioVisualizerEncode(ctx, outDir, ffmpeg, input, id, preset, EncoderStandard, buildArgs, func() { removeHLSForID(outDir, id) }, nil)
 }
 
 // visualizerProgressWriter reports the fraction of raw frame bytes streamed
 // into ffmpeg, which tracks encode progress closely because the encoder
 // consumes the pipe at its own pace.
 type visualizerProgressWriter struct {
-	w        io.Writer
-	total    int64
-	written  int64
-	lastPct  int
-	report   func(float64)
+	w       io.Writer
+	total   int64
+	written int64
+	lastPct int
+	report  func(float64)
 }
 
 func (p *visualizerProgressWriter) Write(b []byte) (int, error) {
@@ -540,7 +555,7 @@ func (p *visualizerProgressWriter) Write(b []byte) (int, error) {
 // ASS subtitles, frame streaming into ffmpeg) with the output format supplied
 // by buildArgs; cleanup removes partial output when an encode attempt fails.
 // progress, when non-nil, receives the render fraction (0..1).
-func runAudioVisualizerEncode(ctx context.Context, outDir, ffmpeg string, input AudioRenderInput, id string, preset QualityPreset, buildArgs func(assPath, fontDir string, mode *ForegroundMode, encoder VideoEncoderProfile) []string, cleanup func(), progress func(float64)) error {
+func runAudioVisualizerEncode(ctx context.Context, outDir, ffmpeg string, input AudioRenderInput, id string, preset QualityPreset, purpose EncoderPurpose, buildArgs func(assPath, fontDir string, mode *ForegroundMode, encoder VideoEncoderProfile) []string, cleanup func(), progress func(float64)) error {
 	height := preset.Height
 	if height <= 0 {
 		height = 720
@@ -637,7 +652,7 @@ func runAudioVisualizerEncode(ctx context.Context, outDir, ffmpeg string, input 
 		return fmt.Errorf("write ass: %w", err)
 	}
 
-	selected := SelectVideoEncoder(ctx, ffmpeg, EncoderStandard)
+	selected := SelectVideoEncoder(ctx, ffmpeg, purpose)
 	attempt := func(encoder VideoEncoderProfile) error {
 		args := buildArgs(assPath, fontDir, &mode, encoder)
 		cmd := exec.CommandContext(ctx, ffmpeg, args...)

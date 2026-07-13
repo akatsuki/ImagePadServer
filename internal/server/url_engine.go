@@ -364,8 +364,10 @@ func urlForCopyTarget(state map[string]interface{}, target string) string {
 		if hlsURL, ok := state["hlsURL"].(string); ok && strings.HasPrefix(hlsURL, "http") {
 			return hlsURL
 		}
-		if rtspURL, ok := state["rtspUrl"].(string); ok && strings.HasPrefix(rtspURL, "rtsp") {
-			return rtspURL
+		if rtspPublic, _ := state["rtspPublic"].(bool); rtspPublic {
+			if rtspURL, ok := state["rtspUrl"].(string); ok && strings.HasPrefix(rtspURL, "rtsp") {
+				return rtspURL
+			}
 		}
 	case "obsServerAddress":
 		if obs, ok := state["obs"].(obsrtmp.Status); ok {

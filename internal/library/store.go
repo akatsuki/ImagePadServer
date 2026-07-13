@@ -169,13 +169,34 @@ func (s *Store) SetCurrentInfo(info CurrentImage) error {
 }
 
 func (s *Store) SetCurrentInfoWithID(info CurrentImage) error {
+	if err := s.SetCurrentInfoWithIDInMemory(info); err != nil {
+		return err
+	}
+	return s.save()
+}
+
+// SetCurrentInfoWithIDInMemory updates current/history without performing disk
+// I/O. Callers that need a short external ownership commit can save later.
+func (s *Store) SetCurrentInfoWithIDInMemory(info CurrentImage) error {
 	if info.ID == "" {
 		info.ID = randomID()
 	}
-	return s.setCurrentInfo(info)
+	return s.setCurrentInfoInMemory(info)
+}
+
+// Save persists the current store snapshot.
+func (s *Store) Save() error {
+	return s.save()
 }
 
 func (s *Store) setCurrentInfo(info CurrentImage) error {
+	if err := s.setCurrentInfoInMemory(info); err != nil {
+		return err
+	}
+	return s.save()
+}
+
+func (s *Store) setCurrentInfoInMemory(info CurrentImage) error {
 	info.UpdatedAt = time.Now()
 	if info.Kind == "" {
 		info.Kind = "image"
@@ -188,7 +209,7 @@ func (s *Store) setCurrentInfo(info CurrentImage) error {
 	s.current = &info
 	_ = s.addHistoryLocked(info, filepath.Join(s.dir, info.FileName))
 	s.mu.Unlock()
-	return s.save()
+	return nil
 }
 
 func (s *Store) AddHistory(srcPath string, info CurrentImage) (*CurrentImage, error) {

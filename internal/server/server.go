@@ -64,45 +64,55 @@ type Server struct {
 	cfg   config.Config
 	store *library.Store
 
-	mu              sync.RWMutex
-	upnp            upnp.Result
-	tmpl            *template.Template
-	lanURL          string
-	imageURLBase    string
-	previewURLBase  string
-	tunnelStatus    map[string]interface{}
-	tunnelURLBase   string
-	tunnelReconnect chan<- struct{}
-	exitRequested   func()
-	adminToken      string
-	obs             *obsrtmp.Manager
-	pairings        map[string]pairingRequest
-	relayNonces     map[string]time.Time
-	ingest          ingestStatus
+	mu                    sync.RWMutex
+	upnp                  upnp.Result
+	tmpl                  *template.Template
+	lanURL                string
+	imageURLBase          string
+	previewURLBase        string
+	tunnelStatus          map[string]interface{}
+	tunnelURLBase         string
+	tunnelReconnect       chan<- struct{}
+	exitRequested         func()
+	adminToken            string
+	obs                   *obsrtmp.Manager
+	obsCommitMu           sync.Mutex
+	obsCallbackGeneration uint64
+	obsSessionActive      func(string, uint64) bool
+	obsSessionLatest      func(string, uint64) bool
+	beforeOBSCommit       func(obsrtmp.Session)
+	pairings              map[string]pairingRequest
+	relayNonces           map[string]time.Time
+	ingest                ingestStatus
 
-	toolInstallMu  sync.Mutex
-	toolInstalling bool
-	rtspMap        rtspMappingHandle
-	rtspSessionID  string
-	rtspReadySeq   uint64
-	mapRTSPPort    rtspPortMapper
-	setRTSPURL     func(sessionID, publicURL, message string) bool
-	eventMu        sync.Mutex
-	stateEvents    map[chan struct{}]struct{}
-	lastStateEvent time.Time
-	stateEventDue  bool
+	toolInstallMu    sync.Mutex
+	toolInstalling   bool
+	rtspMap          rtspMappingHandle
+	rtspSource       string
+	rtspSessionID    string
+	rtspGeneration   uint64
+	rtspReadySeq     uint64
+	mapRTSPPort      rtspPortMapper
+	setRTSPURL       func(obsrtmp.RTSPEndpoint, string, string) bool
+	setRadioRTSPURL  func(obsrtmp.RTSPEndpoint, string, string) bool
+	onRadioRTSPReady func(obsrtmp.RTSPEndpoint) // test seam; invoked before public mapping
+	eventMu          sync.Mutex
+	stateEvents      map[chan struct{}]struct{}
+	lastStateEvent   time.Time
+	stateEventDue    bool
 
-	musicQueue         *playlist.Queue
-	playlistStore      *playlist.Store
-	radio              *obsrtmp.RadioManager
-	startMusicRadio    func() error
-	musicJobs          chan func()
-	musicPendingMu     sync.Mutex
-	musicPendingTrack  string
-	musicPendingOffset int
-	musicPaused        bool
-	musicPausedTrack   string
-	musicPausedOffset  int
+	musicQueue            *playlist.Queue
+	playlistStore         *playlist.Store
+	radio                 musicRadioController
+	startMusicRadio       func() error
+	musicJobs             chan func()
+	musicPendingMu        sync.Mutex
+	musicPendingTrack     string
+	musicPendingOffset    int
+	musicPaused           bool
+	musicPausedTrack      string
+	musicPausedOffset     int
+	activeCanonicalHeight int
 }
 
 type rtspMappingHandle interface {
@@ -162,19 +172,21 @@ func New(cfg config.Config, store *library.Store, imageURLBase string) *Server {
 	if err != nil {
 		obsStreamKey = adminToken
 	}
+	activeCanonicalHeight := settings.ActiveMusicPlaylistCanonicalHeight()
 	srv := &Server{
-		cfg:            cfg,
-		store:          store,
-		upnp:           upnp.Result{Message: "Checking router UPnP support..."},
-		tmpl:           template.Must(template.New("index").Parse(indexHTML)),
-		lanURL:         lanURL,
-		imageURLBase:   imageURLBase,
-		previewURLBase: lanURL,
-		tunnelStatus:   map[string]interface{}{"ok": false, "message": "Cloudflare Tunnel starting..."},
-		adminToken:     adminToken,
-		pairings:       make(map[string]pairingRequest),
-		relayNonces:    make(map[string]time.Time),
-		stateEvents:    make(map[chan struct{}]struct{}),
+		cfg:                   cfg,
+		store:                 store,
+		upnp:                  upnp.Result{Message: "Checking router UPnP support..."},
+		tmpl:                  template.Must(template.New("index").Parse(indexHTML)),
+		lanURL:                lanURL,
+		imageURLBase:          imageURLBase,
+		previewURLBase:        lanURL,
+		tunnelStatus:          map[string]interface{}{"ok": false, "message": "Cloudflare Tunnel starting..."},
+		adminToken:            adminToken,
+		pairings:              make(map[string]pairingRequest),
+		relayNonces:           make(map[string]time.Time),
+		stateEvents:           make(map[chan struct{}]struct{}),
+		activeCanonicalHeight: activeCanonicalHeight,
 	}
 	srv.obs = obsrtmp.New(store.Dir(), advertisedHost, 1935, obsStreamKey, srv.videoQualityPreset, srv.obsLatencyProfile, obsrtmp.Callbacks{
 		OnStart:     srv.handleOBSStreamStart,
@@ -182,6 +194,8 @@ func New(cfg config.Config, store *library.Store, imageURLBase string) *Server {
 		OnRTSPReady: srv.handleRTSPReady,
 		OnRTSPDone:  srv.handleRTSPDone,
 	})
+	srv.obsSessionActive = srv.obs.IsSessionActive
+	srv.obsSessionLatest = srv.obs.IsLatestSession
 	srv.mapRTSPPort = func(protocol string, internalPort, externalPort int, description string) (rtspMappingHandle, upnp.Result) {
 		var mapping *upnp.TCPMapping
 		var result upnp.Result
@@ -192,7 +206,7 @@ func New(cfg config.Config, store *library.Store, imageURLBase string) *Server {
 		}
 		return mapping, result
 	}
-	srv.setRTSPURL = srv.obs.SetRTSPURL
+	srv.setRTSPURL = srv.obs.SetRTSPEndpointURL
 	srv.initMusicPlaylist(advertisedHost)
 	return srv
 }
@@ -247,6 +261,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/radio/", s.handleRadioHLS)
 	mux.HandleFunc("/api/ffmpeg", s.admin(s.handleFFmpeg))
 	mux.HandleFunc("/api/video-quality", s.admin(s.handleVideoQuality))
+	mux.HandleFunc("/api/encoder-mode", s.admin(s.handleEncoderMode))
 	mux.HandleFunc("/api/network-check", s.admin(s.handleNetworkCheck))
 	mux.HandleFunc("/qr/phone.png", s.admin(s.handlePhoneQR))
 	mux.HandleFunc("/history/", s.admin(s.handleHistoryMedia))
@@ -388,12 +403,12 @@ func (s *Server) SyncOBSReceiver() {
 		s.obs.Start()
 		return
 	}
-	s.closeRTSPMapping("")
+	s.closeRTSPMapping("", obsrtmp.RTSPEndpoint{})
 	s.obs.Stop()
 }
 
 func (s *Server) StopOBSReceiver() {
-	s.closeRTSPMapping("")
+	s.closeRTSPMapping("", obsrtmp.RTSPEndpoint{})
 	if s.obs != nil {
 		s.obs.StopAndWait(8 * time.Second)
 	}
@@ -403,6 +418,9 @@ func (s *Server) StopOBSReceiver() {
 }
 
 func (s *Server) handleRTSPReady(endpoint obsrtmp.RTSPEndpoint) {
+	if endpoint.Generation != 0 && !s.isOBSActiveSession(endpoint.SessionID, endpoint.Generation) {
+		return
+	}
 	s.mu.Lock()
 	s.rtspReadySeq++
 	seq := s.rtspReadySeq
@@ -414,45 +432,93 @@ func (s *Server) handleRTSPReady(endpoint obsrtmp.RTSPEndpoint) {
 	if mapPort == nil || setURL == nil {
 		return
 	}
-	go s.publishRTSPReady(endpoint, seq, mapPort, setURL)
+	go s.publishRTSPReady("obs", endpoint, seq, mapPort, setURL, func() bool {
+		return endpoint.Generation == 0 || s.isOBSActiveSession(endpoint.SessionID, endpoint.Generation)
+	})
 }
 
-func (s *Server) publishRTSPReady(endpoint obsrtmp.RTSPEndpoint, seq uint64, mapPort rtspPortMapper, setURL func(sessionID, publicURL, message string) bool) {
+func (s *Server) handleRadioRTSPReady(endpoint obsrtmp.RTSPEndpoint) {
+	if endpoint.Generation != 0 {
+		owner, ok := s.radio.(interface{ IsActiveSession(string, uint64) bool })
+		if !ok || !owner.IsActiveSession(endpoint.SessionID, endpoint.Generation) {
+			return
+		}
+	}
+	s.mu.Lock()
+	s.rtspReadySeq++
+	seq := s.rtspReadySeq
+	mapPort := s.mapRTSPPort
+	setURL := s.setRadioRTSPURL
+	onReady := s.onRadioRTSPReady
+	s.mu.Unlock()
+	if onReady != nil {
+		onReady(endpoint)
+	}
+	s.broadcastStateChanged()
+
+	if mapPort == nil || setURL == nil {
+		return
+	}
+	go s.publishRTSPReady("radio", endpoint, seq, mapPort, setURL, func() bool {
+		if endpoint.Generation == 0 {
+			return true
+		}
+		owner, ok := s.radio.(interface{ IsActiveSession(string, uint64) bool })
+		return ok && owner.IsActiveSession(endpoint.SessionID, endpoint.Generation)
+	})
+}
+
+func (s *Server) publishRTSPReady(source string, endpoint obsrtmp.RTSPEndpoint, seq uint64, mapPort rtspPortMapper, setURL func(obsrtmp.RTSPEndpoint, string, string) bool, isCurrent func() bool) {
 	defer s.broadcastStateChanged()
+	if !isCurrent() {
+		return
+	}
 	mapping, result := mapRTSPCompatibilityPorts(mapPort, endpoint)
+	if !isCurrent() {
+		if mapping != nil {
+			_ = mapping.Close()
+		}
+		return
+	}
 	if mapping == nil || !result.OK {
 		message := "RTSP is available on LAN/Tailscale; UPnP publication failed"
 		if result.Message != "" {
 			message += ": " + result.Message
 		}
-		setURL(endpoint.SessionID, "", message)
+		if isCurrent() {
+			setURL(endpoint, "", message)
+		}
 		return
 	}
 	if !upnp.IsGloballyRoutableIPv4(mapping.ExternalIP()) {
 		_ = mapping.Close()
-		setURL(endpoint.SessionID, "",
-			"RTSP is available on LAN/Tailscale; CGNAT or upstream NAT prevents direct publication.")
+		if isCurrent() {
+			setURL(endpoint, "",
+				"RTSP is available on LAN/Tailscale; CGNAT or upstream NAT prevents direct publication.")
+		}
 		return
 	}
 
 	s.mu.Lock()
-	if seq != s.rtspReadySeq {
+	if seq != s.rtspReadySeq || !isCurrent() {
 		s.mu.Unlock()
 		_ = mapping.Close()
 		return
 	}
 	previous := s.rtspMap
 	s.rtspMap = mapping
+	s.rtspSource = source
 	s.rtspSessionID = endpoint.SessionID
+	s.rtspGeneration = endpoint.Generation
 	s.mu.Unlock()
 	if previous != nil {
 		_ = previous.Close()
 	}
 
 	publicURL := fmt.Sprintf("rtsp://%s:%d/%s", mapping.ExternalIP(), mapping.ExternalPort(), endpoint.Path)
-	if !setURL(endpoint.SessionID, publicURL,
+	if !isCurrent() || !setURL(endpoint, publicURL,
 		"RTSP TCP/UDP is published through UPnP at "+mapping.ExternalIP()+".") {
-		s.closeRTSPMapping(endpoint.SessionID)
+		s.closeRTSPMapping(source, endpoint)
 	}
 }
 
@@ -494,20 +560,27 @@ func mapRTSPCompatibilityPorts(mapPort rtspPortMapper, endpoint obsrtmp.RTSPEndp
 	}
 }
 
-func (s *Server) handleRTSPDone(sessionID string) {
-	s.closeRTSPMapping(sessionID)
+func (s *Server) handleRTSPDone(endpoint obsrtmp.RTSPEndpoint) {
+	s.closeRTSPMapping("obs", endpoint)
 	s.broadcastStateChanged()
 }
 
-func (s *Server) closeRTSPMapping(sessionID string) {
+func (s *Server) handleRadioRTSPDone(endpoint obsrtmp.RTSPEndpoint) {
+	s.closeRTSPMapping("radio", endpoint)
+	s.broadcastStateChanged()
+}
+
+func (s *Server) closeRTSPMapping(source string, endpoint obsrtmp.RTSPEndpoint) {
 	s.mu.Lock()
-	if sessionID != "" && s.rtspSessionID != sessionID {
+	if endpoint.SessionID != "" && (s.rtspSource != source || s.rtspSessionID != endpoint.SessionID || s.rtspGeneration != endpoint.Generation) {
 		s.mu.Unlock()
 		return
 	}
 	mapping := s.rtspMap
 	s.rtspMap = nil
+	s.rtspSource = ""
 	s.rtspSessionID = ""
+	s.rtspGeneration = 0
 	s.rtspReadySeq++
 	s.mu.Unlock()
 	if mapping != nil {
@@ -1388,6 +1461,20 @@ func (s *Server) createOBSVideoThumbnail(session obsrtmp.Session) string {
 }
 
 func (s *Server) handleOBSStreamStart(session obsrtmp.Session) {
+	if session.Generation != 0 && !s.isOBSActiveSession(session.ID, session.Generation) {
+		return
+	}
+	if s.beforeOBSCommit != nil {
+		s.beforeOBSCommit(session)
+	}
+	s.obsCommitMu.Lock()
+	if session.Generation != 0 {
+		if session.Generation < s.obsCallbackGeneration || !s.isOBSActiveSession(session.ID, session.Generation) {
+			s.obsCommitMu.Unlock()
+			return
+		}
+		s.obsCallbackGeneration = session.Generation
+	}
 	info := library.CurrentImage{
 		ID:           session.ID,
 		Kind:         "video",
@@ -1397,13 +1484,26 @@ func (s *Server) handleOBSStreamStart(session obsrtmp.Session) {
 		ContentType:  "video/mp4",
 		OriginalName: session.Title,
 	}
-	_ = s.store.SetCurrentInfoWithID(info)
+	_ = s.store.SetCurrentInfoWithIDInMemory(info)
+	s.obsCommitMu.Unlock()
+	go func() { _ = s.store.Save() }()
 	s.broadcastStateChanged()
 }
 
 func (s *Server) handleOBSStreamDone(session obsrtmp.Session) {
+	if session.Generation != 0 && !s.isOBSLatestSession(session.ID, session.Generation) {
+		return
+	}
 	current := s.store.Current()
 	thumbnail := s.createOBSVideoThumbnail(session)
+	s.obsCommitMu.Lock()
+	if session.Generation != 0 {
+		if session.Generation < s.obsCallbackGeneration || !s.isOBSLatestSession(session.ID, session.Generation) {
+			s.obsCommitMu.Unlock()
+			return
+		}
+		s.obsCallbackGeneration = session.Generation
+	}
 	info := library.CurrentImage{
 		ID:           session.ID,
 		Kind:         "video",
@@ -1428,13 +1528,28 @@ func (s *Server) handleOBSStreamDone(session obsrtmp.Session) {
 	if stat, err := os.Stat(session.Recording); err == nil {
 		info.SizeBytes = stat.Size()
 	}
-	if err := s.store.SetCurrentInfoWithID(info); err == nil {
-		files := video.GeneratedFiles(s.store.Dir(), session.ID)
-		if len(files) > 0 {
-			_ = s.store.MarkConverted(session.ID, files)
-		}
+	_ = s.store.SetCurrentInfoWithIDInMemory(info)
+	s.obsCommitMu.Unlock()
+	files := video.GeneratedFiles(s.store.Dir(), session.ID)
+	if len(files) > 0 && s.isOBSLatestSession(session.ID, session.Generation) {
+		_ = s.store.MarkConverted(session.ID, files)
 	}
+	go func() { _ = s.store.Save() }()
 	s.broadcastStateChanged()
+}
+
+func (s *Server) isOBSActiveSession(sessionID string, generation uint64) bool {
+	if s.obsSessionActive != nil {
+		return s.obsSessionActive(sessionID, generation)
+	}
+	return s.obs != nil && s.obs.IsSessionActive(sessionID, generation)
+}
+
+func (s *Server) isOBSLatestSession(sessionID string, generation uint64) bool {
+	if s.obsSessionLatest != nil {
+		return s.obsSessionLatest(sessionID, generation)
+	}
+	return s.obs != nil && s.obs.IsLatestSession(sessionID, generation)
 }
 
 func (s *Server) withClipboardResult(r *http.Request, state map[string]interface{}) map[string]interface{} {
@@ -2188,20 +2303,65 @@ func (s *Server) handleVideoQuality(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		defer s.broadcastStateChanged()
 		var req struct {
-			Mode string `json:"mode"`
+			Mode                         *string `json:"mode"`
+			MusicPlaylistLatencyMode     *string `json:"musicPlaylistLatencyMode"`
+			MusicPlaylistDeliveryProfile *string `json:"musicPlaylistDeliveryProfile"`
+			MusicPlaylistCanonicalHeight *int    `json:"musicPlaylistCanonicalHeight"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid video quality request", http.StatusBadRequest)
 			return
 		}
-		mode := normalizeQualityMode(req.Mode)
 		if err := settings.Update(func(appSettings *settings.Settings) error {
-			appSettings.VideoQualityMode = mode
+			if req.Mode != nil {
+				appSettings.VideoQualityMode = normalizeQualityMode(*req.Mode)
+			}
+			if req.MusicPlaylistDeliveryProfile != nil {
+				appSettings.MusicPlaylistDeliveryProfile = normalizeMusicPlaylistDeliveryProfile(*req.MusicPlaylistDeliveryProfile)
+			}
+			if req.MusicPlaylistLatencyMode != nil {
+				appSettings.MusicPlaylistLatencyMode = normalizeMusicPlaylistLatencyMode(*req.MusicPlaylistLatencyMode)
+			}
+			if req.MusicPlaylistCanonicalHeight != nil {
+				appSettings.MusicPlaylistCanonicalHeight = settings.NormalizeMusicPlaylistCanonicalHeight(*req.MusicPlaylistCanonicalHeight)
+			}
 			return nil
 		}); err != nil {
 			http.Error(w, "failed to save settings", http.StatusInternalServerError)
 			return
 		}
+		writeJSON(w, s.videoQualityState())
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleEncoderMode(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, s.videoQualityState())
+	case http.MethodPost:
+		defer s.broadcastStateChanged()
+		var req struct {
+			Mode string `json:"mode"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid encoder mode request", http.StatusBadRequest)
+			return
+		}
+		mode := settings.NormalizeEncoderMode(req.Mode)
+		if strings.TrimSpace(req.Mode) != "" && mode == "auto" && strings.ToLower(strings.TrimSpace(req.Mode)) != "auto" {
+			http.Error(w, "invalid encoder mode", http.StatusBadRequest)
+			return
+		}
+		if err := settings.Update(func(appSettings *settings.Settings) error {
+			appSettings.EncoderMode = mode
+			return nil
+		}); err != nil {
+			http.Error(w, "failed to save settings", http.StatusInternalServerError)
+			return
+		}
+		video.ResetVideoEncoderCache()
 		writeJSON(w, s.videoQualityState())
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -2938,12 +3098,45 @@ func (s *Server) videoQualityPreset() video.QualityPreset {
 
 func (s *Server) videoQualityState() map[string]interface{} {
 	preset := s.videoQualityPreset()
+	encoderMode := "auto"
+	musicPlaylistLatencyMode := "rtsp-ultra"
+	musicPlaylistDeliveryProfile := "rtsp-ultra"
+	desiredCanonicalHeight := 720
+	if appSettings, err := settings.Load(); err == nil {
+		encoderMode = settings.NormalizeEncoderMode(appSettings.EncoderMode)
+		musicPlaylistLatencyMode = normalizeMusicPlaylistLatencyMode(appSettings.MusicPlaylistLatencyMode)
+		if appSettings.MusicPlaylistDeliveryProfile != "" {
+			musicPlaylistDeliveryProfile = normalizeMusicPlaylistDeliveryProfile(appSettings.MusicPlaylistDeliveryProfile)
+		} else {
+			musicPlaylistDeliveryProfile = musicPlaylistLatencyMode
+		}
+		desiredCanonicalHeight = settings.NormalizeMusicPlaylistCanonicalHeight(appSettings.MusicPlaylistCanonicalHeight)
+	}
+	activeDeliveryProfile := musicPlaylistDeliveryProfile
+	running := false
+	if s.radio != nil {
+		status := s.radio.Status()
+		running = status.Running
+		if status.ActiveSession != nil && status.ActiveSession.DeliveryProfile != "" {
+			activeDeliveryProfile = normalizeMusicPlaylistDeliveryProfile(status.ActiveSession.DeliveryProfile)
+		}
+	}
+	activeCanonicalHeight := s.activeMusicPlaylistCanonicalHeight()
 	return map[string]interface{}{
-		"mode":       preset.Mode,
-		"effective":  preset.Effective,
-		"height":     preset.Height,
-		"uploadMbps": preset.UploadMbps,
-		"preset":     preset,
+		"mode":                         preset.Mode,
+		"encoderMode":                  encoderMode,
+		"musicPlaylistLatencyMode":     musicPlaylistLatencyMode,
+		"musicPlaylistDeliveryProfile": musicPlaylistDeliveryProfile,
+		"desiredDeliveryProfile":       musicPlaylistDeliveryProfile,
+		"activeDeliveryProfile":        activeDeliveryProfile,
+		"desiredCanonicalHeight":       desiredCanonicalHeight,
+		"activeCanonicalHeight":        activeCanonicalHeight,
+		"deliveryRestartRequired":      running && activeDeliveryProfile != musicPlaylistDeliveryProfile,
+		"canonicalRestartRequired":     activeCanonicalHeight != desiredCanonicalHeight,
+		"effective":                    preset.Effective,
+		"height":                       preset.Height,
+		"uploadMbps":                   preset.UploadMbps,
+		"preset":                       preset,
 	}
 }
 
@@ -3082,6 +3275,33 @@ func normalizeQualityMode(mode string) string {
 		return strings.ToLower(strings.TrimSpace(mode))
 	default:
 		return "auto"
+	}
+}
+
+func normalizeMusicPlaylistLatencyMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "rtsp-low", "rtsp-realtime":
+		return strings.ToLower(strings.TrimSpace(mode))
+	default:
+		return "rtsp-ultra"
+	}
+}
+
+func normalizeMusicPlaylistDeliveryProfile(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "hls-high", "hls", "rtsp-low", "rtsp-ultra", "rtsp-realtime":
+		return strings.ToLower(strings.TrimSpace(mode))
+	default:
+		return "rtsp-ultra"
+	}
+}
+
+func musicPlaylistRTSPLatency(profile string) string {
+	switch normalizeMusicPlaylistDeliveryProfile(profile) {
+	case "rtsp-low", "rtsp-ultra", "rtsp-realtime":
+		return normalizeMusicPlaylistDeliveryProfile(profile)
+	default:
+		return "rtsp-ultra"
 	}
 }
 

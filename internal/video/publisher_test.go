@@ -36,6 +36,27 @@ func TestResolveQualityForMusicTargetsSmallLongFiles(t *testing.T) {
 	}
 }
 
+func TestMusicRadioQualityPresetDoesNotSetTargetAboveMaxrate(t *testing.T) {
+	preset := MusicRadioQualityPreset("auto", 100, 20)
+	videoK := parseBitrateK(t, preset.VideoBitrate)
+	maxK := parseBitrateK(t, preset.MaxRate)
+	if videoK > maxK {
+		t.Fatalf("radio video target %dk must not exceed maxrate %dk: %+v", videoK, maxK, preset)
+	}
+	if preset.Height > 720 {
+		t.Fatalf("radio preset height = %d, want <= 720", preset.Height)
+	}
+}
+
+func TestMusicRadioQualityPresetKeepsEnoughBitrateForRTSP(t *testing.T) {
+	preset := MusicRadioQualityPreset("720", 0, 0)
+	videoK := parseBitrateK(t, preset.VideoBitrate)
+	maxK := parseBitrateK(t, preset.MaxRate)
+	if videoK < 900 || maxK < 1200 {
+		t.Fatalf("radio 720p bitrate = %dk max %dk, want at least 900k/1200k", videoK, maxK)
+	}
+}
+
 func TestAdaptQualityPresetToSourceDoesNotUpscale(t *testing.T) {
 	preset := ResolveQualityForUpload("1080", 0, 0)
 	probe := MediaProbe{Streams: []MediaStream{

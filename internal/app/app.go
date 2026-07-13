@@ -27,6 +27,7 @@ import (
 	"imagepadserver/internal/settings"
 	"imagepadserver/internal/tray"
 	"imagepadserver/internal/tunnel"
+	"imagepadserver/internal/upnp"
 	"imagepadserver/internal/video"
 )
 
@@ -58,9 +59,12 @@ func Run() error {
 }
 
 var (
-	cleanupTrackedFFmpeg = video.CleanupTrackedFFmpeg
-	cleanupFFmpegOnPort  = video.KillFFmpegOnPort
-	cleanupStaleMediaMTX = obsrtmp.CleanupStaleMediaMTX
+	cleanupTrackedFFmpeg   = video.CleanupTrackedFFmpeg
+	cleanupFFmpegOnPort    = video.KillFFmpegOnPort
+	cleanupStaleMediaMTX   = obsrtmp.CleanupStaleMediaMTX
+	cleanupStaleUPnP       = upnp.CleanupImagePadRTSPMappings
+	cleanupStaleCloudflare = tunnel.CleanupStaleCloudflared
+	startCloudflareTunnel  = tunnel.StartContext
 )
 
 func cleanupStaleHelpers(logf func(string, ...any)) {
@@ -79,6 +83,34 @@ func cleanupStaleHelpers(logf func(string, ...any)) {
 	} else if killed > 0 {
 		logf("stopped %d stale MediaMTX process(es) from a previous ImagePadServer run", killed)
 	}
+	if killed, err := cleanupStaleCloudflare(); err != nil {
+		logf("failed to clean up stale Cloudflare Tunnel processes: %v", err)
+	} else if killed > 0 {
+		logf("stopped %d stale Cloudflare Tunnel process(es) from a previous ImagePadServer run", killed)
+	}
+	if deleted, err := cleanupStaleUPnP(); err != nil {
+		logf("failed to clean up stale UPnP mappings: %v", err)
+	} else if deleted > 0 {
+		logf("deleted %d stale UPnP RTSP mapping(s) from a previous ImagePadServer run", deleted)
+	}
+}
+
+func cleanupShutdownHelpers(logf func(string, ...any)) {
+	if killed, err := cleanupTrackedFFmpeg(); err != nil {
+		logf("failed to stop FFmpeg processes during shutdown: %v", err)
+	} else if killed > 0 {
+		logf("stopped %d FFmpeg process(es) during shutdown", killed)
+	}
+	if deleted, err := cleanupStaleUPnP(); err != nil {
+		logf("failed to clean up UPnP mappings during shutdown: %v", err)
+	} else if deleted > 0 {
+		logf("deleted %d UPnP RTSP mapping(s) during shutdown", deleted)
+	}
+	if killed, err := cleanupStaleCloudflare(); err != nil {
+		logf("failed to stop Cloudflare Tunnel processes during shutdown: %v", err)
+	} else if killed > 0 {
+		logf("stopped %d Cloudflare Tunnel process(es) during shutdown", killed)
+	}
 }
 
 func run(useNativeWindow bool) error {
@@ -93,6 +125,11 @@ func run(useNativeWindow bool) error {
 	}
 
 	cleanupStaleHelpers(log.Printf)
+	startupSettings, settingsErr := settings.Load()
+	if settingsErr != nil {
+		log.Printf("startup settings load failed: %v", settingsErr)
+	}
+	settings.FreezeMusicPlaylistCanonicalHeight(startupSettings)
 	go updateYTDLPOnStartup()
 	go func() {
 		video.ValidateInstalledTools()
@@ -153,10 +190,26 @@ func run(useNativeWindow bool) error {
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(stop)
 
 	trayExit := make(chan struct{})
 	var trayExitOnce sync.Once
 	reconnect := make(chan struct{}, 1)
+	shutdownRequested := make(chan struct{})
+	var shutdownOnce sync.Once
+	requestShutdown := func() {
+		shutdownOnce.Do(func() {
+			close(shutdownRequested)
+		})
+	}
+	go func() {
+		select {
+		case <-stop:
+			requestShutdown()
+		case <-trayExit:
+			requestShutdown()
+		}
+	}()
 	startTray := func() (*tray.Tray, error) {
 		return tray.Start(localURL, func() {
 			trayExitOnce.Do(func() {
@@ -194,26 +247,23 @@ func run(useNativeWindow bool) error {
 		}
 	}()
 
+	tunnelCtx, stopTunnelManager := context.WithCancel(context.Background())
+	var tunnelWG sync.WaitGroup
+	tunnelWG.Add(1)
 	go func() {
+		defer tunnelWG.Done()
 		originURL := cfg.URLForHost("127.0.0.1")
-		manageCloudflareTunnel(originURL, srv, &tunnelMu, &tunnelHandle, reconnect, stop)
+		manageCloudflareTunnel(tunnelCtx, originURL, srv, &tunnelMu, &tunnelHandle, reconnect)
 	}()
 
 	if tray.MustRunOnMainThread() {
 		go func() {
-			select {
-			case <-stop:
-				tray.StopCurrent()
-			case <-trayExit:
-				tray.StopCurrent()
-			}
+			<-shutdownRequested
+			tray.StopCurrent()
 		}()
 		if _, err := startTray(); err != nil {
 			log.Printf("tray icon unavailable: %v", err)
-			select {
-			case <-stop:
-			case <-trayExit:
-			}
+			<-shutdownRequested
 		}
 	} else {
 		trayIcon, err := startTray()
@@ -222,26 +272,21 @@ func run(useNativeWindow bool) error {
 		} else {
 			defer trayIcon.Stop()
 		}
-		select {
-		case <-stop:
-		case <-trayExit:
-		}
+		<-shutdownRequested
 	}
 	trayExitRequested()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	srv.StopOBSReceiver()
-	if killed, err := video.CleanupTrackedFFmpeg(); err != nil {
-		log.Printf("failed to stop FFmpeg processes during shutdown: %v", err)
-	} else if killed > 0 {
-		log.Printf("stopped %d FFmpeg process(es) during shutdown", killed)
-	}
+	cleanupShutdownHelpers(log.Printf)
+	stopTunnelManager()
 	tunnelMu.Lock()
 	if tunnelHandle != nil {
 		tunnelHandle.Stop()
 	}
 	tunnelMu.Unlock()
+	tunnelWG.Wait()
 	return httpServer.Shutdown(ctx)
 }
 
@@ -286,11 +331,11 @@ func measureNetworkOnce() {
 	})
 }
 
-func manageCloudflareTunnel(originURL string, srv *server.Server, tunnelMu *sync.Mutex, tunnelHandle **tunnel.Tunnel, reconnect <-chan struct{}, stop <-chan os.Signal) {
+func manageCloudflareTunnel(ctx context.Context, originURL string, srv *server.Server, tunnelMu *sync.Mutex, tunnelHandle **tunnel.Tunnel, reconnect <-chan struct{}) {
 	const retryDelay = 5 * time.Second
 
 	for {
-		handle, status := tunnel.Start(originURL)
+		handle, status := startCloudflareTunnel(ctx, originURL)
 		srv.SetTunnelStatus(status.OK, status.URL, status.Message)
 		if status.OK {
 			log.Printf("Cloudflare Tunnel available at %s", status.URL)
@@ -301,7 +346,7 @@ func manageCloudflareTunnel(originURL string, srv *server.Server, tunnelMu *sync
 		waitLoop:
 			for {
 				select {
-				case <-stop:
+				case <-ctx.Done():
 					handle.Stop()
 					return
 				case <-reconnect:
@@ -328,7 +373,7 @@ func manageCloudflareTunnel(originURL string, srv *server.Server, tunnelMu *sync
 		}
 
 		select {
-		case <-stop:
+		case <-ctx.Done():
 			return
 		case <-reconnect:
 			log.Printf("Cloudflare Tunnel reconnect requested; retrying immediately")

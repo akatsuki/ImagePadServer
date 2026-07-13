@@ -9,6 +9,8 @@ import (
 	"math/big"
 	"sync"
 	"time"
+
+	"imagepadserver/internal/video"
 )
 
 type TrackStatus string
@@ -29,25 +31,38 @@ type Track struct {
 	OriginalName    string      `json:"originalName"`
 	MediaPath       string      `json:"mediaPath"`
 	ThumbnailPath   string      `json:"thumbnailPath"`
+	SourcePath      string      `json:"sourcePath"`
 	Status          TrackStatus `json:"status"`
 	// Progress is the preparation progress (0-100) while Status is
 	// TrackPreparing: download, analysis, and render phases combined.
-	Progress int       `json:"progress"`
-	Error    string    `json:"error,omitempty"`
-	AddedAt  time.Time `json:"addedAt"`
+	Progress             int                              `json:"progress"`
+	Error                string                           `json:"error,omitempty"`
+	AddedAt              time.Time                        `json:"addedAt"`
+	EncodingContract     *video.RadioEncodingContract     `json:"encodingContract,omitempty"`
+	RenderRecipeContract *video.AssetRenderRecipeContract `json:"renderRecipeContract,omitempty"`
+	RenderContentValues  video.AssetRenderContentValues   `json:"renderContentValues,omitempty"`
+	NeedsRegeneration    bool                             `json:"needsRegeneration,omitempty"`
+	Incompatible         bool                             `json:"incompatible,omitempty"`
 }
 
 type Queue struct {
-	mu        sync.Mutex
-	tracks    []*Track
-	currentID string
-	shuffle   bool
-	loop      bool
-	played    map[string]bool
+	mu                   sync.Mutex
+	tracks               []*Track
+	currentID            string
+	shuffle              bool
+	loop                 bool
+	played               map[string]bool
+	sequentialLastID     string
+	sequentialGeneration uint64
+	sequentialPlayed     map[string]uint64
 }
 
 func NewQueue() *Queue {
-	return &Queue{played: map[string]bool{}}
+	return &Queue{
+		played:               map[string]bool{},
+		sequentialGeneration: 1,
+		sequentialPlayed:     map[string]uint64{},
+	}
 }
 
 func newTrackID() string {
@@ -80,8 +95,12 @@ func (q *Queue) Remove(id string) bool {
 		if t.ID == id {
 			q.tracks = append(q.tracks[:i], q.tracks[i+1:]...)
 			delete(q.played, id)
+			delete(q.sequentialPlayed, id)
 			if q.currentID == id {
 				q.currentID = ""
+			}
+			if q.sequentialLastID == id {
+				q.sequentialLastID = ""
 			}
 			return true
 		}
@@ -154,18 +173,25 @@ func (q *Queue) Mutate(id string, fn func(*Track)) bool {
 	return true
 }
 
-// ReplaceAll swaps the entire queue contents (e.g. loading a saved playlist)
-// and resets playback state. Track IDs are kept as provided.
-func (q *Queue) ReplaceAll(tracks []Track) {
+// ReplaceAll swaps the entire queue contents (e.g. loading a saved playlist),
+// resets playback state, and returns the displaced tracks to their owner for
+// runtime cleanup. Track IDs are kept as provided.
+func (q *Queue) ReplaceAll(tracks []Track) (previous []Track) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	previous = make([]Track, 0, len(q.tracks))
+	for _, track := range q.tracks {
+		previous = append(previous, *track)
+	}
 	q.tracks = q.tracks[:0]
 	for i := range tracks {
 		stored := tracks[i]
 		q.tracks = append(q.tracks, &stored)
 	}
 	q.currentID = ""
-	q.played = map[string]bool{}
+	q.resetPlaybackCycle()
+	q.sequentialPlayed = map[string]uint64{}
+	return previous
 }
 
 func (q *Queue) CurrentID() string {
@@ -174,16 +200,15 @@ func (q *Queue) CurrentID() string {
 	return q.currentID
 }
 
-// SetCurrent marks the track as now playing (割り込み再生). It also counts the
-// track as played so a following shuffle Next does not repeat it.
+// SetCurrent marks the track as now playing (割り込み再生). It also advances the
+// sequential cursor and counts the track as played for shuffle selection.
 func (q *Queue) SetCurrent(id string) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.find(id) == nil {
 		return false
 	}
-	q.currentID = id
-	q.played[id] = true
+	q.markPlayed(id)
 	return true
 }
 
@@ -191,6 +216,14 @@ func (q *Queue) ClearCurrent() {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.currentID = ""
+}
+
+// ResetPlaybackCycle starts a fresh playback generation. Automatic wakes do
+// not call this method: they retain the sequential cursor after idle.
+func (q *Queue) ResetPlaybackCycle() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.resetPlaybackCycle()
 }
 
 func (q *Queue) MarkReady(id, mediaPath string, durationSeconds int) bool {
@@ -271,9 +304,6 @@ func (q *Queue) Loop() bool {
 func (q *Queue) Next() (Track, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if q.currentID != "" {
-		q.played[q.currentID] = true
-	}
 	var next *Track
 	if q.shuffle {
 		next = q.nextShuffled()
@@ -284,31 +314,37 @@ func (q *Queue) Next() (Track, bool) {
 		q.currentID = ""
 		return Track{}, false
 	}
-	q.currentID = next.ID
-	q.played[next.ID] = true
+	q.markPlayed(next.ID)
 	return *next, true
 }
 
 func (q *Queue) nextSequential() *Track {
-	start := 0
-	if q.currentID != "" {
-		for i, t := range q.tracks {
-			if t.ID == q.currentID {
-				start = i + 1
-				break
-			}
+	start := q.sequentialStart()
+	if next := q.nextUnplayedSequential(start); next != nil {
+		return next
+	}
+	if !q.loop {
+		return nil
+	}
+	q.resetPlaybackCycle()
+	return q.nextUnplayedSequential(start)
+}
+
+func (q *Queue) sequentialStart() int {
+	for i, t := range q.tracks {
+		if t.ID == q.sequentialLastID {
+			return (i + 1) % len(q.tracks)
 		}
 	}
-	for i := start; i < len(q.tracks); i++ {
-		if q.tracks[i].Status == TrackReady {
-			return q.tracks[i]
-		}
-	}
-	if q.loop {
-		for i := 0; i < start && i < len(q.tracks); i++ {
-			if q.tracks[i].Status == TrackReady {
-				return q.tracks[i]
-			}
+	return 0
+}
+
+func (q *Queue) nextUnplayedSequential(start int) *Track {
+	for offset := range q.tracks {
+		i := (start + offset) % len(q.tracks)
+		t := q.tracks[i]
+		if t.Status == TrackReady && q.sequentialPlayed[t.ID] != q.sequentialGeneration {
+			return t
 		}
 	}
 	return nil
@@ -317,13 +353,30 @@ func (q *Queue) nextSequential() *Track {
 func (q *Queue) nextShuffled() *Track {
 	candidates := q.shuffleCandidates()
 	if len(candidates) == 0 && q.loop {
-		q.played = map[string]bool{}
+		q.resetPlaybackCycle()
 		candidates = q.shuffleCandidates()
 	}
 	if len(candidates) == 0 {
 		return nil
 	}
 	return candidates[randIntn(len(candidates))]
+}
+
+func (q *Queue) markPlayed(id string) {
+	q.currentID = id
+	q.played[id] = true
+	q.sequentialLastID = id
+	q.sequentialPlayed[id] = q.sequentialGeneration
+}
+
+func (q *Queue) resetPlaybackCycle() {
+	q.played = map[string]bool{}
+	q.sequentialLastID = ""
+	q.sequentialGeneration++
+	if q.sequentialGeneration == 0 {
+		q.sequentialGeneration = 1
+		q.sequentialPlayed = map[string]uint64{}
+	}
 }
 
 func (q *Queue) shuffleCandidates() []*Track {

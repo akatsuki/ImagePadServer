@@ -2,15 +2,47 @@ package server
 
 const dashboardScriptUploadState = `
     function applyQuality(data) {
-      if (!data) {
-        qualityStatus.textContent = '未測定';
-        return;
-      }
-      qualityMode.value = data.mode || 'auto';
+	  if (!data) {
+		qualityStatus.textContent = '未測定';
+		return;
+	  }
+	  state.videoQuality = data;
+	  qualityMode.value = data.mode || 'auto';
+	  applyEncoderMode(data.encoderMode || 'auto');
+	  applyMusicPlaylistDeliveryState(data);
+	  applyMusicPlaylistCanonicalHeight(data.desiredCanonicalHeight || 720);
       const network = data.uploadMbps ? ' / ' + data.uploadMbps + ' Mbps' : '';
       const bitrateOnly = data.preset && data.preset.bitrateOnly ? ' / bitrate only' : '';
       qualityStatus.textContent = (data.effective || 'auto') + 'p' + network + bitrateOnly;
     }
+    function applyEncoderMode(mode) {
+      if (!encoderMode) return;
+      const normalized = mode === 'gpu' || mode === 'cpu' ? mode : 'auto';
+      encoderMode.value = normalized;
+    }
+	function applyMusicPlaylistDeliveryProfile(mode) {
+	  if (!musicPlaylistDeliveryProfile) return;
+	  const allowed = ['hls-high', 'hls', 'rtsp-low', 'rtsp-ultra', 'rtsp-realtime'];
+	  musicPlaylistDeliveryProfile.value = allowed.includes(mode) ? mode : 'rtsp-ultra';
+	}
+	function applyMusicPlaylistDeliveryState(data) {
+	  const desired = data.desiredDeliveryProfile || data.musicPlaylistDeliveryProfile || 'rtsp-ultra';
+	  const active = data.activeDeliveryProfile || desired;
+	  applyMusicPlaylistDeliveryProfile(desired);
+	  if (musicPlaylistDeliveryStatus) {
+		musicPlaylistDeliveryStatus.textContent = '適用中: ' + active + (data.deliveryRestartRequired ? ' / 再起動が必要' : '');
+	  }
+	}
+	function applyMusicPlaylistCanonicalHeight(height) {
+	  if (!musicPlaylistCanonicalHeight) return;
+	  const allowed = [360, 720, 1080];
+	  musicPlaylistCanonicalHeight.value = String(allowed.includes(Number(height)) ? Number(height) : 720);
+	  if (musicPlaylistCanonicalStatus) {
+		const active = Number(state.videoQuality && state.videoQuality.activeCanonicalHeight) || Number(height) || 720;
+		const restartRequired = !!(state.videoQuality && state.videoQuality.canonicalRestartRequired);
+		musicPlaylistCanonicalStatus.textContent = '適用中: ' + active + 'p' + (restartRequired ? ' / 再起動が必要' : '');
+	  }
+	}
 
     function updateQualityOptions() {
       if (!formatSelect || !qualitySelect) return;
@@ -153,6 +185,12 @@ const dashboardScriptUploadState = `
 	if (qualityRow) {
 		qualityRow.hidden = uploadMode === 'obs' || (mediaIntent !== 'video' && mediaIntent !== 'music');
 		qualityRow.classList.toggle('standalone', mediaIntent === 'video' || mediaIntent === 'music');
+	}
+	if (musicPlaylistDeliveryOption) {
+	  musicPlaylistDeliveryOption.hidden = !(mediaIntent === 'music' && MusicController && MusicController.mode && MusicController.mode() === 'playlist');
+	}
+	if (musicPlaylistCanonicalOption) {
+	  musicPlaylistCanonicalOption.hidden = !(mediaIntent === 'music' && MusicController && MusicController.mode && MusicController.mode() === 'playlist');
 	}
       if (obsLatencyOption) {
         obsLatencyOption.hidden = uploadMode !== 'obs';

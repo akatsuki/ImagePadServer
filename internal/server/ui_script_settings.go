@@ -214,7 +214,9 @@ const dashboardScriptSettings = `
         const res = await apiFetch('/api/video-quality', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mode: qualityMode.value })
+		  body: JSON.stringify({
+			mode: qualityMode.value
+		  })
         });
         if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
@@ -223,6 +225,58 @@ const dashboardScriptSettings = `
         toast.textContent = '動画画質を更新しました';
       } catch (error) {
         toast.textContent = error.message || '動画画質の更新に失敗しました';
+      }
+    });
+	if (musicPlaylistDeliveryProfile) musicPlaylistDeliveryProfile.addEventListener('change', async () => {
+      try {
+        const res = await apiFetch('/api/video-quality', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+		  body: JSON.stringify({
+			musicPlaylistDeliveryProfile: musicPlaylistDeliveryProfile.value
+		  })
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        applyQuality(data);
+        announceLocalChange();
+		toast.textContent = 'プレイリスト配信方式を更新しました';
+      } catch (error) {
+		toast.textContent = error.message || 'プレイリスト配信方式の更新に失敗しました';
+      }
+    });
+	if (musicPlaylistCanonicalHeight) musicPlaylistCanonicalHeight.addEventListener('change', async () => {
+	  try {
+		const res = await apiFetch('/api/video-quality', {
+		  method: 'POST',
+		  headers: { 'Content-Type': 'application/json' },
+		  body: JSON.stringify({
+			musicPlaylistCanonicalHeight: Number(musicPlaylistCanonicalHeight.value)
+		  })
+		});
+		if (!res.ok) throw new Error(await res.text());
+		const data = await res.json();
+		applyQuality(data);
+		announceLocalChange();
+		toast.textContent = '素材解像度を更新しました';
+	  } catch (error) {
+		toast.textContent = error.message || '素材解像度の更新に失敗しました';
+	  }
+	});
+    if (encoderMode) encoderMode.addEventListener('change', async () => {
+      try {
+        const res = await apiFetch('/api/encoder-mode', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: encoderMode.value })
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        applyQuality(data);
+        announceLocalChange();
+        toast.textContent = 'エンコーダ設定を更新しました';
+      } catch (error) {
+        toast.textContent = error.message || 'エンコーダ設定の更新に失敗しました';
       }
     });
     networkCheckButton.addEventListener('click', async () => {

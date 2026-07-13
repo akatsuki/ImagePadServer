@@ -1,0 +1,85 @@
+[
+  {
+    "name": "nonmonotonic timestamp",
+    "trace": {
+      "contract": {"videoCodec":"h264","width":640,"height":360,"pixelFormat":"yuv420p","frameRate":"30/1","audioCodec":"aac","sampleRate":48000,"audioChannels":2},
+      "observedSignatures": [{"videoCodec":"h264","width":640,"height":360,"pixelFormat":"yuv420p","frameRate":"30/1","audioCodec":"aac","sampleRate":48000,"audioChannels":2}],
+      "packets": [{"arrivalMillis":0,"streamIndex":0,"pts":1,"dts":1},{"arrivalMillis":33,"streamIndex":0,"pts":0.5,"dts":0.5}],
+      "maxPacketGapMillis":5000,"maxTransitionGapMillis":5000
+    }
+  },
+  {
+    "name": "signature change",
+    "trace": {
+      "contract": {"videoCodec":"h264","width":640,"height":360,"pixelFormat":"yuv420p","frameRate":"30/1","audioCodec":"aac","sampleRate":48000,"audioChannels":2},
+      "observedSignatures": [{"videoCodec":"h264","width":1280,"height":720,"pixelFormat":"yuv420p","frameRate":"30/1","audioCodec":"aac","sampleRate":48000,"audioChannels":2}],
+      "packets": [{"arrivalMillis":0,"streamIndex":0,"pts":0,"dts":0},{"arrivalMillis":6001,"streamIndex":0,"pts":0.033,"dts":0.033}],
+      "maxPacketGapMillis":5000,"maxTransitionGapMillis":5000
+    }
+  },
+  {
+    "name": "missing audio",
+    "trace": {
+      "contract": {"videoCodec":"h264","width":640,"height":360,"pixelFormat":"yuv420p","frameRate":"30/1","audioCodec":"aac","sampleRate":48000,"audioChannels":2},
+      "observedSignatures": [{"videoCodec":"h264","width":640,"height":360,"pixelFormat":"yuv420p","frameRate":"30/1"}],
+      "packets": [{"arrivalMillis":0,"streamIndex":0,"pts":0,"dts":0},{"arrivalMillis":33,"streamIndex":0,"pts":0.033,"dts":0.033}],
+      "maxPacketGapMillis":5000,"maxTransitionGapMillis":5000
+    }
+  },
+  {
+    "name": "missing video",
+    "trace": {
+      "contract": {"videoCodec":"h264","width":640,"height":360,"pixelFormat":"yuv420p","frameRate":"30/1","audioCodec":"aac","sampleRate":48000,"audioChannels":2},
+      "observedSignatures": [{"audioCodec":"aac","sampleRate":48000,"audioChannels":2}],
+      "packets": [{"arrivalMillis":0,"streamIndex":1,"pts":0,"dts":0},{"arrivalMillis":21,"streamIndex":1,"pts":0.021,"dts":0.021}],
+      "maxPacketGapMillis":5000,"maxTransitionGapMillis":5000
+    }
+  },
+  {
+    "name": "disappearance",
+    "trace": {
+      "contract": {"videoCodec":"h264","width":640,"height":360,"pixelFormat":"yuv420p","frameRate":"30/1","audioCodec":"aac","sampleRate":48000,"audioChannels":2},
+      "observedSignatures": [{"videoCodec":"h264","width":640,"height":360,"pixelFormat":"yuv420p","frameRate":"30/1","audioCodec":"aac","sampleRate":48000,"audioChannels":2}],
+      "packets": [{"arrivalMillis":0,"streamIndex":0,"pts":0,"dts":0},{"arrivalMillis":33,"streamIndex":0,"pts":0.033,"dts":0.033}],
+      "pathDisappearances":1,"maxPacketGapMillis":5000,"maxTransitionGapMillis":5000
+    }
+  },
+  {
+    "name": "reconnect",
+    "trace": {
+      "contract": {"videoCodec":"h264","width":640,"height":360,"pixelFormat":"yuv420p","frameRate":"30/1","audioCodec":"aac","sampleRate":48000,"audioChannels":2},
+      "observedSignatures": [{"videoCodec":"h264","width":640,"height":360,"pixelFormat":"yuv420p","frameRate":"30/1","audioCodec":"aac","sampleRate":48000,"audioChannels":2}],
+      "packets": [{"arrivalMillis":0,"streamIndex":0,"pts":0,"dts":0},{"arrivalMillis":33,"streamIndex":0,"pts":0.033,"dts":0.033}],
+      "reconnects":1,"maxPacketGapMillis":5000,"maxTransitionGapMillis":5000
+    }
+  },
+  {
+    "name": "packet timeout",
+    "trace": {
+      "contract": {"videoCodec":"h264","width":640,"height":360,"pixelFormat":"yuv420p","frameRate":"30/1","audioCodec":"aac","sampleRate":48000,"audioChannels":2},
+      "observedSignatures": [{"videoCodec":"h264","width":640,"height":360,"pixelFormat":"yuv420p","frameRate":"30/1","audioCodec":"aac","sampleRate":48000,"audioChannels":2}],
+      "packets": [{"arrivalMillis":0,"streamIndex":0,"pts":0,"dts":0},{"arrivalMillis":6001,"streamIndex":0,"pts":0.033,"dts":0.033}],
+      "maxPacketGapMillis":5000,"maxTransitionGapMillis":5000
+    }
+  },
+  {
+    "name": "transition timeout",
+    "trace": {
+      "contract": {"videoCodec":"h264","width":640,"height":360,"pixelFormat":"yuv420p","frameRate":"30/1","audioCodec":"aac","sampleRate":48000,"audioChannels":2},
+      "observedSignatures": [{"videoCodec":"h264","width":640,"height":360,"pixelFormat":"yuv420p","frameRate":"30/1","audioCodec":"aac","sampleRate":48000,"audioChannels":2}],
+      "packets": [{"arrivalMillis":0,"streamIndex":0,"pts":0,"dts":0},{"arrivalMillis":6001,"streamIndex":0,"pts":0.033,"dts":0.033}],
+      "transitions":[{"name":"pause","requestedMillis":1,"firstPacketMillis":6001,"gapMillis":6001,"path":"radio_test"}],
+      "maxPacketGapMillis":5000,"maxTransitionGapMillis":5000
+    }
+  },
+  {
+    "name": "altered timeout limit",
+    "trace": {
+      "contract": {"videoCodec":"h264","width":640,"height":360,"pixelFormat":"yuv420p","frameRate":"30/1","audioCodec":"aac","sampleRate":48000,"audioChannels":2},
+      "observedSignatures": [{"videoCodec":"h264","width":640,"height":360,"pixelFormat":"yuv420p","frameRate":"30/1","audioCodec":"aac","sampleRate":48000,"audioChannels":2}],
+      "packets": [{"arrivalMillis":0,"streamIndex":0,"pts":0,"dts":0},{"arrivalMillis":5500,"streamIndex":0,"pts":0.033,"dts":0.033}],
+      "transitions":[{"name":"pause","requestedMillis":1,"firstPacketMillis":5500,"gapMillis":5500,"path":"radio_test"}],
+      "maxPacketGapMillis":60000,"maxTransitionGapMillis":60000
+    }
+  }
+]

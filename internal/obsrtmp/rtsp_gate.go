@@ -259,6 +259,9 @@ func isUDPSetup(req rtspRequest) bool {
 		return false
 	}
 	transport := strings.ToUpper(req.Headers["transport"])
+	if strings.Contains(transport, "INTERLEAVED=") {
+		return false
+	}
 	return strings.Contains(transport, "RTP/AVP/UDP") || (strings.Contains(transport, "RTP/AVP") && !strings.Contains(transport, "TCP"))
 }
 

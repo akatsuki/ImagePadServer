@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"imagepadserver/internal/settings"
 )
 
 type EncoderPurpose string
@@ -23,6 +25,7 @@ const (
 type VideoEncoderProfile struct {
 	Name     string         `json:"name"`
 	Hardware bool           `json:"hardware"`
+	Forced   bool           `json:"-"`
 	Purpose  EncoderPurpose `json:"-"`
 }
 
@@ -32,6 +35,7 @@ var (
 	lastVideoEncoder      VideoEncoderProfile
 	listAvailableEncoders = defaultListAvailableEncoders
 	probeEncoder          = defaultProbeEncoder
+	encoderModeProvider   = currentEncoderMode
 )
 
 func EncoderPriority(goos string) []string {
@@ -61,17 +65,24 @@ func SelectVideoEncoder(ctx context.Context, ffmpeg string, purpose EncoderPurpo
 }
 
 func selectVideoEncoderForOS(ctx context.Context, ffmpeg, goos string, purpose EncoderPurpose) VideoEncoderProfile {
+	mode := normalizeEncoderMode(encoderModeProvider())
 	priority := EncoderPriority(goos)
+	if mode == "cpu" {
+		profile := CPUVideoEncoder(purpose)
+		setCurrentVideoEncoder(profile)
+		return profile
+	}
 	if len(priority) == 1 {
 		profile := CPUVideoEncoder(purpose)
 		setCurrentVideoEncoder(profile)
 		return profile
 	}
-	key := ffmpeg + "|" + goos
+	key := ffmpeg + "|" + goos + "|" + mode
 	videoEncoderCacheMu.Lock()
 	defer videoEncoderCacheMu.Unlock()
 	if name := videoEncoderCache[key]; name != "" {
 		profile := NewVideoEncoderProfile(name, purpose)
+		profile.Forced = mode == "gpu" && profile.Hardware
 		lastVideoEncoder = profile
 		return profile
 	}
@@ -88,15 +99,43 @@ func selectVideoEncoderForOS(ctx context.Context, ffmpeg, goos string, purpose E
 			profile := NewVideoEncoderProfile(name, purpose)
 			if err := probeEncoder(ctx, ffmpeg, profile); err == nil {
 				videoEncoderCache[key] = name
+				profile.Forced = mode == "gpu"
 				lastVideoEncoder = profile
 				return profile
 			}
 		}
 	}
+	if mode == "gpu" {
+		profile := NewVideoEncoderProfile(firstHardwareEncoder(priority), purpose)
+		profile.Forced = true
+		lastVideoEncoder = profile
+		return profile
+	}
 	videoEncoderCache[key] = "libx264"
 	profile := CPUVideoEncoder(purpose)
 	lastVideoEncoder = profile
 	return profile
+}
+
+func normalizeEncoderMode(mode string) string {
+	return settings.NormalizeEncoderMode(mode)
+}
+
+func currentEncoderMode() string {
+	appSettings, err := settings.Load()
+	if err != nil {
+		return "auto"
+	}
+	return settings.NormalizeEncoderMode(appSettings.EncoderMode)
+}
+
+func firstHardwareEncoder(priority []string) string {
+	for _, name := range priority {
+		if name != "libx264" {
+			return name
+		}
+	}
+	return "libx264"
 }
 
 func setCurrentVideoEncoder(profile VideoEncoderProfile) {
@@ -116,6 +155,10 @@ func resetVideoEncoderCacheForTest() {
 	videoEncoderCache = map[string]string{}
 	lastVideoEncoder = VideoEncoderProfile{}
 	videoEncoderCacheMu.Unlock()
+}
+
+func ResetVideoEncoderCache() {
+	resetVideoEncoderCacheForTest()
 }
 
 func parseAdvertisedVideoEncoders(output string) map[string]bool {
@@ -167,6 +210,13 @@ func defaultProbeEncoder(ctx context.Context, ffmpeg string, profile VideoEncode
 	return nil
 }
 
+// PreflightVideoEncoder verifies the selected encoder before a persistent
+// program session creates its publisher. It intentionally does not fall back
+// after session ownership has been established.
+func PreflightVideoEncoder(ctx context.Context, ffmpeg string, profile VideoEncoderProfile) error {
+	return defaultProbeEncoder(ctx, ffmpeg, profile)
+}
+
 func runVideoEncodeWithFallback(ctx context.Context, selected VideoEncoderProfile, cleanup func(), attempt func(VideoEncoderProfile) error) error {
 	if selected.Name == "" {
 		selected = CPUVideoEncoder(selected.Purpose)
@@ -180,6 +230,9 @@ func runVideoEncodeWithFallback(ctx context.Context, selected VideoEncoderProfil
 	}
 	if cleanup != nil {
 		cleanup()
+	}
+	if selected.Forced {
+		return fmt.Errorf("%s forced encoder failed: %w", selected.Name, hardwareErr)
 	}
 	cpu := CPUVideoEncoder(selected.Purpose)
 	if cpuErr := attempt(cpu); cpuErr != nil {

@@ -1,0 +1,13 @@
+{
+  "contract": {"videoCodec":"h264","width":640,"height":360,"pixelFormat":"yuv420p","frameRate":"30/1","audioCodec":"aac","sampleRate":48000,"audioChannels":2},
+  "observedSignatures": [{"videoCodec":"h264","width":640,"height":360,"pixelFormat":"yuv420p","frameRate":"30/1","audioCodec":"aac","sampleRate":48000,"audioChannels":2}],
+  "packets": [
+    {"arrivalMillis":0,"streamIndex":0,"pts":0,"dts":0},
+    {"arrivalMillis":10,"streamIndex":1,"pts":0,"dts":0},
+    {"arrivalMillis":33,"streamIndex":0,"pts":0.033,"dts":0.033},
+    {"arrivalMillis":42,"streamIndex":1,"pts":0.021,"dts":0.021}
+  ],
+  "transitions": [{"name":"pause","requestedMillis":20,"firstPacketMillis":33,"gapMillis":23,"path":"radio_fixture"}],
+  "maxPacketGapMillis":5000,
+  "maxTransitionGapMillis":5000
+}

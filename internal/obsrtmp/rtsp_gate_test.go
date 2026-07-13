@@ -32,6 +32,26 @@ func TestRTSPGateSwitchesToRawTunnelAfterTCPPlay(t *testing.T) {
 	}
 }
 
+func TestRTSPGateTreatsInterleavedTransportAsTCPWithoutTCPToken(t *testing.T) {
+	req := rtspRequest{
+		Method: "SETUP",
+		Headers: map[string]string{
+			"user-agent": "MF-MediaEngine-Hardware",
+			"transport":  "RTP/AVP;unicast;interleaved=0-1;mode=PLAY",
+		},
+	}
+
+	if isUDPSetup(req) {
+		t.Fatal("interleaved RTSP transport must not be classified as UDP")
+	}
+	if shouldRejectUDPSetup(req) {
+		t.Fatal("interleaved RTSP transport must not be rejected as Media Foundation UDP")
+	}
+	if !isTCPSetup(req) {
+		t.Fatal("interleaved RTSP transport must be classified as TCP")
+	}
+}
+
 func TestRTSPGateAllowsAndroidUDPSetup(t *testing.T) {
 	req := rtspRequest{
 		Method: "SETUP",

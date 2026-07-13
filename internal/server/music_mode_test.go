@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"imagepadserver/internal/obsrtmp"
 	"imagepadserver/internal/settings"
 	"imagepadserver/internal/video"
 )
@@ -314,5 +315,164 @@ func TestMusicQualityUsesVideoQualitySetting(t *testing.T) {
 	preset := s.musicQualityPreset()
 	if preset.Mode != "360" || preset.Height != 360 {
 		t.Fatalf("music preset = mode %q height %d, want 360/360", preset.Mode, preset.Height)
+	}
+}
+
+func TestMusicPlaylistLatencyModeDefaultsToUltraAndPersists(t *testing.T) {
+	_, mux := testServer(t, true)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/video-quality", nil)
+	rec := adminJSON(t, mux, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var state map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if got := state["musicPlaylistLatencyMode"]; got != "rtsp-ultra" {
+		t.Fatalf("default musicPlaylistLatencyMode = %#v, want rtsp-ultra", got)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/video-quality", strings.NewReader(`{"musicPlaylistLatencyMode":"rtsp-low"}`))
+	rec = adminJSON(t, mux, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if got := state["musicPlaylistLatencyMode"]; got != "rtsp-low" {
+		t.Fatalf("saved musicPlaylistLatencyMode = %#v, want rtsp-low", got)
+	}
+	if got := state["musicPlaylistDeliveryProfile"]; got != "rtsp-low" {
+		t.Fatalf("legacy RTSP mode must surface as delivery profile, got %#v", got)
+	}
+	got, err := settings.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.MusicPlaylistLatencyMode != "rtsp-low" {
+		t.Fatalf("settings MusicPlaylistLatencyMode = %q, want rtsp-low", got.MusicPlaylistLatencyMode)
+	}
+}
+
+func TestMusicPlaylistDeliveryProfileDefaultsToUltraAndPersists(t *testing.T) {
+	_, mux := testServer(t, true)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/video-quality", nil)
+	rec := adminJSON(t, mux, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var state map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if got := state["musicPlaylistDeliveryProfile"]; got != "rtsp-ultra" {
+		t.Fatalf("default musicPlaylistDeliveryProfile = %#v, want rtsp-ultra", got)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/video-quality", strings.NewReader(`{"musicPlaylistDeliveryProfile":"hls-high"}`))
+	rec = adminJSON(t, mux, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if got := state["musicPlaylistDeliveryProfile"]; got != "hls-high" {
+		t.Fatalf("saved musicPlaylistDeliveryProfile = %#v, want hls-high", got)
+	}
+	if got := state["musicPlaylistLatencyMode"]; got != "rtsp-ultra" {
+		t.Fatalf("HLS profile must retain safe RTSP encoder mode, got %#v", got)
+	}
+	got, err := settings.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.MusicPlaylistDeliveryProfile != "hls-high" {
+		t.Fatalf("settings MusicPlaylistDeliveryProfile = %q, want hls-high", got.MusicPlaylistDeliveryProfile)
+	}
+}
+
+func TestMusicPlaylistDesiredSettingsRemainPendingUntilRestart(t *testing.T) {
+	srv, mux := testServer(t, true)
+	defer cleanupTestServer(srv)
+
+	if err := settings.Update(func(appSettings *settings.Settings) error {
+		appSettings.VideoQualityMode = "1080"
+		appSettings.MusicPlaylistDeliveryProfile = "rtsp-ultra"
+		appSettings.MusicPlaylistCanonicalHeight = 720
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv.radio = &barrierMusicRadio{status: obsrtmp.RadioStatus{
+		Running: true,
+		ActiveSession: &obsrtmp.RadioActiveSessionContract{
+			DeliveryProfile: "rtsp-ultra",
+		},
+	}}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/video-quality", strings.NewReader(`{"musicPlaylistDeliveryProfile":"hls-high","musicPlaylistCanonicalHeight":1080}`))
+	rec := adminJSON(t, mux, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var state map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if got := state["desiredDeliveryProfile"]; got != "hls-high" {
+		t.Fatalf("desired delivery profile = %#v, want hls-high", got)
+	}
+	if got := state["activeDeliveryProfile"]; got != "rtsp-ultra" {
+		t.Fatalf("active delivery profile = %#v, want rtsp-ultra", got)
+	}
+	if got := state["deliveryRestartRequired"]; got != true {
+		t.Fatalf("delivery restart required = %#v, want true", got)
+	}
+	if got := state["desiredCanonicalHeight"]; got != float64(1080) {
+		t.Fatalf("desired canonical height = %#v, want 1080", got)
+	}
+	if got := state["activeCanonicalHeight"]; got != float64(srv.activeCanonicalHeight) {
+		t.Fatalf("active canonical height = %#v, want %d", got, srv.activeCanonicalHeight)
+	}
+	if got := state["canonicalRestartRequired"]; got != (srv.activeCanonicalHeight != 1080) {
+		t.Fatalf("canonical restart required = %#v", got)
+	}
+
+	persisted, err := settings.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.VideoQualityMode != "1080" {
+		t.Fatalf("partial playlist update reset video quality to %q", persisted.VideoQualityMode)
+	}
+	if persisted.MusicPlaylistDeliveryProfile != "hls-high" || persisted.MusicPlaylistCanonicalHeight != 1080 {
+		t.Fatalf("persisted playlist desired settings = %#v", persisted)
+	}
+
+	playlist := playlistState(t, mux)
+	if playlist["desiredDeliveryProfile"] != "hls-high" || playlist["activeDeliveryProfile"] != "rtsp-ultra" {
+		t.Fatalf("playlist state relabeled active delivery: %#v", playlist)
+	}
+
+	stateReq := httptest.NewRequest(http.MethodGet, "/api/state", nil)
+	stateRec := adminJSON(t, mux, stateReq)
+	if stateRec.Code != http.StatusOK {
+		t.Fatalf("GET state = %d, want 200: %s", stateRec.Code, stateRec.Body.String())
+	}
+	var fullState map[string]interface{}
+	if err := json.Unmarshal(stateRec.Body.Bytes(), &fullState); err != nil {
+		t.Fatal(err)
+	}
+	quality, ok := fullState["videoQuality"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("state videoQuality = %#v, want object", fullState["videoQuality"])
+	}
+	if quality["desiredDeliveryProfile"] != "hls-high" || quality["activeDeliveryProfile"] != "rtsp-ultra" {
+		t.Fatalf("state quality relabeled active delivery: %#v", quality)
 	}
 }

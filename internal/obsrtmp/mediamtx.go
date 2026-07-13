@@ -37,15 +37,17 @@ type mediaMTXPorts struct {
 // one publish path protected by a per-session credential, with every protocol
 // except RTSP and HLS disabled.
 type mediaMTXSessionConfig struct {
-	Path           string
-	PublishUser    string
-	PublishPass    string
-	Ports          mediaMTXPorts
-	AdvertiseHost  string
-	DebugLogPath   string
-	HLSVariant     string
-	HLSAlwaysRemux bool
-	HLSDirectory   string
+	Path               string
+	PublishUser        string
+	PublishPass        string
+	Ports              mediaMTXPorts
+	AdvertiseHost      string
+	DebugLogPath       string
+	HLSVariant         string
+	HLSAlwaysRemux     bool
+	HLSDirectory       string
+	HLSSegmentCount    int
+	HLSSegmentDuration string
 	// EnableRTMP opens a loopback RTMP ingest (the playlist radio's
 	// persistent publisher pushes FLV there).
 	EnableRTMP bool
@@ -97,6 +99,12 @@ func renderMediaMTXConfig(cfg mediaMTXSessionConfig) string {
 		hlsVariant = "lowLatency"
 	}
 	fmt.Fprintf(&b, "hlsVariant: %s\n", hlsVariant)
+	if cfg.HLSSegmentCount > 0 {
+		fmt.Fprintf(&b, "hlsSegmentCount: %d\n", cfg.HLSSegmentCount)
+	}
+	if cfg.HLSSegmentDuration != "" {
+		fmt.Fprintf(&b, "hlsSegmentDuration: %s\n", cfg.HLSSegmentDuration)
+	}
 	if cfg.HLSAlwaysRemux {
 		b.WriteString("hlsAlwaysRemux: yes\n")
 	} else {
@@ -146,8 +154,24 @@ type managedProcess interface {
 }
 
 type osManagedProcess struct {
-	cmd  *exec.Cmd
-	exit chan error
+	cmd      *exec.Cmd
+	mu       sync.Mutex
+	exitErr  error
+	exited   chan struct{}
+	exitOnce sync.Once
+}
+
+func newOSManagedProcess(cmd *exec.Cmd) *osManagedProcess {
+	return &osManagedProcess{cmd: cmd, exited: make(chan struct{})}
+}
+
+func (p *osManagedProcess) finish(err error) {
+	p.exitOnce.Do(func() {
+		p.mu.Lock()
+		p.exitErr = err
+		p.mu.Unlock()
+		close(p.exited)
+	})
 }
 
 func (p *osManagedProcess) pid() int {
@@ -176,7 +200,18 @@ func (p *osManagedProcess) kill() error {
 	return p.cmd.Process.Kill()
 }
 
-func (p *osManagedProcess) done() <-chan error { return p.exit }
+func (p *osManagedProcess) done() <-chan error {
+	result := make(chan error, 1)
+	go func() {
+		<-p.exited
+		p.mu.Lock()
+		err := p.exitErr
+		p.mu.Unlock()
+		result <- err
+		close(result)
+	}()
+	return result
+}
 
 func realStartMediaMTXProcess(ctx context.Context, exe, configPath string) (managedProcess, error) {
 	_ = ctx
@@ -186,13 +221,13 @@ func realStartMediaMTXProcess(ctx context.Context, exe, configPath string) (mana
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start MediaMTX: %w", err)
 	}
-	proc := &osManagedProcess{cmd: cmd, exit: make(chan error, 1)}
+	proc := newOSManagedProcess(cmd)
 	pid := proc.pid()
 	_ = registerMediaMTXProcess(pid)
 	go func() {
 		err := cmd.Wait()
 		_ = unregisterMediaMTXProcess(pid)
-		proc.exit <- err
+		proc.finish(err)
 	}()
 	return proc, nil
 }
@@ -224,6 +259,15 @@ func newMediaMTXRuntime(exe string, cfg mediaMTXSessionConfig) *mediaMTXRuntime 
 		startProcess: realStartMediaMTXProcess,
 		checkHealth:  defaultMediaMTXHealthCheck,
 	}
+}
+
+func (r *mediaMTXRuntime) ownedMediaMTXPIDs() []int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.proc == nil || r.proc.pid() <= 0 {
+		return nil
+	}
+	return []int{r.proc.pid()}
 }
 
 func defaultMediaMTXHealthCheck(ctx context.Context, apiBase string) error {
@@ -379,6 +423,10 @@ func (r *mediaMTXRuntime) rtspURL() string {
 		host = "127.0.0.1"
 	}
 	return fmt.Sprintf("rtsp://%s:%d/%s", host, r.cfg.Ports.RTSP, r.cfg.Path)
+}
+
+func (r *mediaMTXRuntime) backendRTSPURL() string {
+	return fmt.Sprintf("rtsp://127.0.0.1:%d/%s", r.cfg.Ports.mediaMTXRTSPPort(), r.cfg.Path)
 }
 
 // proxyHLS forwards a public LL-HLS request to the loopback MediaMTX HLS server
@@ -741,28 +789,58 @@ func (r *mediaMTXRuntime) fetch(ctx context.Context, name string) ([]byte, bool)
 		return nil, false
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if err != nil {
+	if err != nil || len(data) == 0 {
 		return nil, false
 	}
 	return data, true
 }
 
-// llhlsReady reports whether the LL-HLS media playlist advertises the full set
-// of low-latency tags, following the master playlist's first variant if needed.
-func (r *mediaMTXRuntime) llhlsReady(ctx context.Context) bool {
+// hlsReady validates the artifacts needed by the active delivery profile.
+// A successful playlist response alone is not enough for a receiver to start.
+func (r *mediaMTXRuntime) hlsReady(ctx context.Context, profile LatencyProfile) bool {
 	master, ok := r.fetch(ctx, "index.m3u8")
 	if !ok {
 		return false
 	}
-	if llhlsMediaReady(master) {
-		return true
-	}
+	media := master
 	if variant := firstVariantURI(master); variant != "" {
-		if media, ok := r.fetch(ctx, variant); ok {
-			return llhlsMediaReady(media)
+		media, ok = r.fetch(ctx, variant)
+		if !ok {
+			return false
 		}
 	}
-	return false
+	if NormalizeLatencyMode(profile.Mode) == LatencyModeHLS || NormalizeLatencyMode(profile.Mode) == LatencyModeHLSHigh {
+		return r.fmp4HLSMediaReady(ctx, media)
+	}
+	return r.llhlsMediaReady(ctx, media)
+}
+
+func (r *mediaMTXRuntime) fmp4HLSMediaReady(ctx context.Context, media []byte) bool {
+	initMap, segment, ok := hlsMediaArtifacts(media)
+	if !ok {
+		return false
+	}
+	if _, ok := r.fetch(ctx, initMap); !ok {
+		return false
+	}
+	_, ok = r.fetch(ctx, segment)
+	return ok
+}
+
+func (r *mediaMTXRuntime) llhlsMediaReady(ctx context.Context, media []byte) bool {
+	if !llhlsMediaReady(media) {
+		return false
+	}
+	initMap, part, preload, ok := llhlsMediaArtifacts(media)
+	if !ok {
+		return false
+	}
+	for _, name := range []string{initMap, part, preload} {
+		if _, ok := r.fetch(ctx, name); !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // pathReady reports whether the MediaMTX API shows the owned path with an
@@ -811,6 +889,49 @@ func llhlsMediaReady(playlist []byte) bool {
 		}
 	}
 	return true
+}
+
+func hlsMediaArtifacts(playlist []byte) (initMap, segment string, ok bool) {
+	for _, line := range strings.Split(string(playlist), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#EXT-X-MAP:") {
+			initMap = hlsURIAttribute(line)
+			continue
+		}
+		if line != "" && !strings.HasPrefix(line, "#") {
+			segment = line
+		}
+	}
+	return initMap, segment, initMap != "" && segment != ""
+}
+
+func llhlsMediaArtifacts(playlist []byte) (initMap, part, preload string, ok bool) {
+	for _, line := range strings.Split(string(playlist), "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "#EXT-X-MAP:"):
+			initMap = hlsURIAttribute(line)
+		case strings.HasPrefix(line, "#EXT-X-PART:"):
+			part = hlsURIAttribute(line)
+		case strings.HasPrefix(line, "#EXT-X-PRELOAD-HINT:"):
+			preload = hlsURIAttribute(line)
+		}
+	}
+	return initMap, part, preload, initMap != "" && part != "" && preload != ""
+}
+
+func hlsURIAttribute(line string) string {
+	const marker = "URI=\""
+	start := strings.Index(line, marker)
+	if start < 0 {
+		return ""
+	}
+	value := line[start+len(marker):]
+	end := strings.IndexByte(value, '"')
+	if end < 0 {
+		return ""
+	}
+	return value[:end]
 }
 
 // freeLoopbackPort asks the OS for an unused TCP port on the loopback

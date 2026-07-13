@@ -1,6 +1,7 @@
 package upnp
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -114,4 +115,90 @@ func TestBenchmarkMappingMeasuresDiscoveryMappingAndCleanup(t *testing.T) {
 	if got := deleteCalls.Load(); got != 1 {
 		t.Fatalf("DeletePortMapping calls = %d, want 1", got)
 	}
+}
+
+func TestCleanupImagePadRTSPMappingsDeletesOnlyOwnedRTSPEntries(t *testing.T) {
+	type mappingEntry struct {
+		protocol    string
+		external    int
+		internal    int
+		description string
+	}
+	entries := []mappingEntry{
+		{protocol: "TCP", external: 49714, internal: 49714, description: "ImagePadServer RTSP TCP"},
+		{protocol: "UDP", external: 49715, internal: 49715, description: "ImagePadServer RTSP RTP"},
+		{protocol: "UDP", external: 49716, internal: 49716, description: "ImagePadServer RTSP RTCP"},
+		{protocol: "TCP", external: 38810, internal: 38810, description: "Virtual Desktop"},
+	}
+	var deleted []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		action := r.Header.Get("SOAPAction")
+		body, _ := io.ReadAll(r.Body)
+		switch {
+		case strings.Contains(action, "#GetGenericPortMappingEntry"):
+			index := extractSOAPInt(string(body), "NewPortMappingIndex")
+			if index < 0 || index >= len(entries) {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = io.WriteString(w, `<Envelope><Body><Fault><detail><UPnPError><errorCode>713</errorCode><errorDescription>SpecifiedArrayIndexInvalid</errorDescription></UPnPError></detail></Fault></Body></Envelope>`)
+				return
+			}
+			entry := entries[index]
+			_, _ = fmt.Fprintf(w, `<Envelope><Body><GetGenericPortMappingEntryResponse><NewRemoteHost></NewRemoteHost><NewExternalPort>%d</NewExternalPort><NewProtocol>%s</NewProtocol><NewInternalPort>%d</NewInternalPort><NewInternalClient>192.168.0.234</NewInternalClient><NewEnabled>1</NewEnabled><NewPortMappingDescription>%s</NewPortMappingDescription><NewLeaseDuration>0</NewLeaseDuration></GetGenericPortMappingEntryResponse></Body></Envelope>`,
+				entry.external, entry.protocol, entry.internal, entry.description)
+		case strings.Contains(action, "#DeletePortMapping"):
+			external := extractSOAPInt(string(body), "NewExternalPort")
+			protocol := extractSOAPText(string(body), "NewProtocol")
+			deleted = append(deleted, fmt.Sprintf("%s:%d", protocol, external))
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.Error(w, "unexpected action", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+
+	oldDiscover := serviceDiscovererRace
+	serviceDiscovererRace = func() ([]gatewayService, string, error) {
+		return []gatewayService{{
+			DeviceURL:   server.URL,
+			ControlURL:  server.URL,
+			ServiceType: "urn:schemas-upnp-org:service:WANIPConnection:1",
+			LocalIP:     "192.168.0.234",
+		}}, "test", nil
+	}
+	t.Cleanup(func() { serviceDiscovererRace = oldDiscover })
+
+	count, err := CleanupImagePadRTSPMappings()
+	if err != nil {
+		t.Fatalf("CleanupImagePadRTSPMappings error = %v", err)
+	}
+	if count != 3 {
+		t.Fatalf("deleted count = %d, want 3", count)
+	}
+	got := strings.Join(deleted, ",")
+	want := "TCP:49714,UDP:49715,UDP:49716"
+	if got != want {
+		t.Fatalf("deleted = %s, want %s", got, want)
+	}
+}
+
+func extractSOAPInt(body, name string) int {
+	text := extractSOAPText(body, name)
+	var n int
+	_, _ = fmt.Sscanf(text, "%d", &n)
+	return n
+}
+
+func extractSOAPText(body, name string) string {
+	startTag := "<" + name + ">"
+	endTag := "</" + name + ">"
+	start := strings.Index(body, startTag)
+	if start < 0 {
+		return ""
+	}
+	start += len(startTag)
+	end := strings.Index(body[start:], endTag)
+	if end < 0 {
+		return ""
+	}
+	return body[start : start+end]
 }

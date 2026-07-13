@@ -93,6 +93,7 @@ type QualityPreset struct {
 	UploadMbps   int    `json:"uploadMbps"`
 	BitrateOnly  bool   `json:"bitrateOnly"`
 	Deinterlace  bool   `json:"deinterlace"`
+	RadioLatency string `json:"radioLatency,omitempty"`
 }
 
 func ResolveQuality(mode string, networkMbps int) QualityPreset {
@@ -163,25 +164,26 @@ func ResolveQualityForUpload(mode string, downloadMbps, uploadMbps int) QualityP
 // footage. CRF is raised and the bitrate ceiling is lowered to keep songs
 // small, but we avoid pushing it so hard that the waveform area becomes
 // blocky.
-// MusicRadioQualityPreset is the dedicated lower-bitrate setup for the
-// playlist radio. The visualizer is near-static footage, so the continuous
-// stream is capped at 720p with video bitrates scaled well below the
-// single-track music preset; audio quality is left untouched.
+// MusicRadioQualityPreset is the dedicated setup for the playlist radio. Keep
+// the continuous stream capped at 720p, but do not push the visualizer below
+// the standby/fallback bitrate floor: AVPro compatibility depends on the RTSP
+// mux boundary, while visible quality depends on the pre-rendered track.
 func MusicRadioQualityPreset(mode string, downloadMbps, uploadMbps int) QualityPreset {
 	preset := ResolveQualityForMusic(mode, downloadMbps, uploadMbps)
 	if preset.Height > 720 {
 		preset = ResolveQualityForMusic("720", downloadMbps, uploadMbps)
 	}
 	preset.CRF = clampInt(preset.CRF+2, 18, 40)
-	if preset.VideoBitrate != "" {
-		preset.VideoBitrate = scaleBitrate(preset.VideoBitrate, 0.60)
+	if preset.Height >= 720 {
+		preset.VideoBitrate = "900k"
+		preset.MaxRate = "1200k"
+		preset.BufferSize = "2200k"
+	} else if preset.Height >= 360 {
+		preset.VideoBitrate = "350k"
+		preset.MaxRate = "500k"
+		preset.BufferSize = "900k"
 	}
-	if preset.MaxRate != "" {
-		preset.MaxRate = scaleBitrate(preset.MaxRate, 0.60)
-	}
-	if preset.BufferSize != "" {
-		preset.BufferSize = scaleBitrate(preset.BufferSize, 0.60)
-	}
+	preset.VideoBitrate = capBitrateToMax(preset.VideoBitrate, preset.MaxRate)
 	return preset
 }
 
@@ -267,6 +269,35 @@ func scaleBitrate(s string, factor float64) string {
 		return s
 	}
 	return strconv.Itoa(int(float64(v)*factor)) + unit
+}
+
+func capBitrateToMax(videoBitrate, maxRate string) string {
+	videoK, okVideo := parseBitrateKValue(videoBitrate)
+	maxK, okMax := parseBitrateKValue(maxRate)
+	if !okVideo || !okMax || maxK <= 0 || videoK <= maxK {
+		return videoBitrate
+	}
+	return strconv.Itoa(maxK) + "k"
+}
+
+func parseBitrateKValue(s string) (int, bool) {
+	s = strings.TrimSpace(strings.ToLower(s))
+	if s == "" {
+		return 0, false
+	}
+	if strings.HasSuffix(s, "k") {
+		v, err := strconv.Atoi(strings.TrimSpace(strings.TrimSuffix(s, "k")))
+		return v, err == nil
+	}
+	if strings.HasSuffix(s, "m") {
+		v, err := strconv.Atoi(strings.TrimSpace(strings.TrimSuffix(s, "m")))
+		return v * 1000, err == nil
+	}
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, false
+	}
+	return v / 1000, true
 }
 
 func BitrateOnlyPreset(requested, active QualityPreset) QualityPreset {

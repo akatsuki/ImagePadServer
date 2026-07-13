@@ -527,6 +527,22 @@ func TestVideoAndMusicModeTogglesAreNotInSettings(t *testing.T) {
 	}
 }
 
+func TestUIContainsEncoderModeSetting(t *testing.T) {
+	html := getIndexHTML(t)
+	for _, want := range []string{
+		`id="encoderMode"`,
+		`value="auto">Auto`,
+		`value="gpu">GPU強制`,
+		`value="cpu">CPU強制`,
+		`apiFetch('/api/encoder-mode'`,
+		`applyEncoderMode(data.encoderMode || 'auto')`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("encoder mode setting missing %q", want)
+		}
+	}
+}
+
 func TestMusicWorkspaceModeMenu(t *testing.T) {
 	html := getIndexHTML(t)
 	for _, want := range []string{
@@ -642,6 +658,74 @@ func TestMusicWorkspacePlaylistUI(t *testing.T) {
 	}
 	if strings.Contains(html, `ミュージックHLSアドレス`) {
 		t.Fatal("music mode must not show the old music HLS address block")
+	}
+}
+
+func TestMusicWorkspacePlaylistUIShowsRadioFailureStatus(t *testing.T) {
+	html := getIndexHTML(t)
+	for _, want := range []string{
+		`const radioFailed = plState.phase === 'failed';`,
+		`'配信に失敗しました'`,
+		`'失敗: ' + (plState.lastError || '詳細不明')`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("playlist failure UI missing %q", want)
+		}
+	}
+}
+
+func TestPlaylistRTSPModeStopsLocalHLSPreview(t *testing.T) {
+	html := getIndexHTML(t)
+	for _, want := range []string{
+		`const shouldShow = active && urlMode === 'hls' && plState.playing && !!plState.hlsUrl;`,
+		`plUrlModeHLS.addEventListener('click', () => { urlMode = 'hls'; renderShareURL(); syncVideoPreview(); });`,
+		`plUrlModeRTSP.addEventListener('click', () => { urlMode = 'rtsp'; renderShareURL(); syncVideoPreview(); });`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("playlist RTSP mode must not keep the local HLS preview attached; missing %q", want)
+		}
+	}
+}
+
+func TestMusicPlaylistDeliveryProfileInConversionOptions(t *testing.T) {
+	html := getIndexHTML(t)
+	for _, want := range []string{
+		`id="musicPlaylistDeliveryProfile"`,
+		`id="musicPlaylistCanonicalHeight"`,
+		`id="musicPlaylistDeliveryStatus"`,
+		`id="musicPlaylistCanonicalStatus"`,
+		`プレイリスト配信`,
+		`素材解像度`,
+		`value="hls-high"`,
+		`value="hls"`,
+		`value="rtsp-ultra"`,
+		`value="rtsp-low"`,
+		`value="rtsp-realtime"`,
+		`value="360"`,
+		`value="720"`,
+		`value="1080"`,
+		`applyMusicPlaylistDeliveryState(data)`,
+		`applyMusicPlaylistCanonicalHeight(data.desiredCanonicalHeight || 720)`,
+		`state.videoQuality = data;`,
+		`desiredDeliveryProfile`,
+		`activeDeliveryProfile`,
+		`deliveryRestartRequired`,
+		`desiredCanonicalHeight`,
+		`activeCanonicalHeight`,
+		`canonicalRestartRequired`,
+		`musicPlaylistDeliveryProfile.value`,
+		`musicPlaylistDeliveryProfile: musicPlaylistDeliveryProfile.value`,
+		`musicPlaylistCanonicalHeight: Number(musicPlaylistCanonicalHeight.value)`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("playlist latency UI missing %q", want)
+		}
+	}
+	deliveryStart := strings.Index(html, `musicPlaylistDeliveryProfile.addEventListener('change'`)
+	deliveryDone := strings.Index(html, `toast.textContent = 'プレイリスト配信方式を更新しました';`)
+	canonicalStart := strings.Index(html, `musicPlaylistCanonicalHeight.addEventListener('change'`)
+	if deliveryStart < 0 || deliveryDone < deliveryStart || canonicalStart < deliveryDone {
+		t.Fatal("playlist delivery listener must finish before canonical listener begins")
 	}
 }
 
