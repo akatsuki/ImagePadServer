@@ -1,0 +1,14 @@
+FROM rust:1.86-bookworm
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends pkg-config libvulkan-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+
+RUN cargo test --locked
+RUN cargo build --locked --release
+
+ENTRYPOINT ["/src/target/release/playlist-compositord"]
