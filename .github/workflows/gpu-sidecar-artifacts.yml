@@ -1,0 +1,55 @@
+name: GPU sidecar artifacts
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-amd64
+            runs_on: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            ext: ""
+          - name: macos-amd64
+            runs_on: macos-13
+            target: x86_64-apple-darwin
+            ext: ""
+          - name: macos-arm64
+            runs_on: macos-14
+            target: aarch64-apple-darwin
+            ext: ""
+          - name: windows-amd64
+            runs_on: windows-latest
+            target: x86_64-pc-windows-msvc
+            ext: ".exe"
+    runs-on: ${{ matrix.runs_on }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build sidecar
+        shell: bash
+        env:
+          GPU_SIDECAR_TARGET: ${{ matrix.target }}
+          GPU_SIDECAR_DIR: ${{ github.workspace }}/dist/gpu
+        run: ./scripts/build-gpu-sidecar.sh
+      - name: Verify sidecar version and checksum
+        shell: bash
+        env:
+          GPU_SIDECAR_DIR: ${{ github.workspace }}/dist/gpu
+        run: ./scripts/verify-gpu-artifacts.sh
+      - name: Upload sidecar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpu-sidecar-${{ matrix.name }}
+          path: dist/gpu/**
