@@ -38,7 +38,7 @@ non-empty `reason`; it must never be rewritten as a successful smoke test.
 | --- | --- | --- | --- |
 | Windows | D3D12 (Vulkan fallback) | RTX 5070 Ti adapter, sidecar render, music FFmpeg smoke, fallback frame smoke; AMD Radeon(TM) Graphics 1800s soak (`output/gpu-acceptance-amd-1800s.json`, 2,165,455 frames) | `PASS_SHORT_SMOKE; AMD_SOAK_PASS` |
 | macOS | Metal | No macOS runner available in this workspace; no unsupported pass claimed | `BLOCKED_ENVIRONMENT` |
-| Linux | Vulkan | No Linux runner available in this workspace; no unsupported pass claimed | `BLOCKED_ENVIRONMENT` |
+| Linux | Vulkan | Docker contract build and software-adapter negative probe PASS (`docs/PLAYLIST_GPU_LINUX_CONTRACT.md`); no hardware Vulkan runner | `CONTRACT_PASS; HARDWARE_BLOCKED` |
 | Headless CI | no software adapter allowed | negative probe only | `BLOCKED` unless a labeled GPU runner is attached |
 
 Do not mark a lane `PASS` from a headless or software-adapter run. A lane is
