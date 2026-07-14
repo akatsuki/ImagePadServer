@@ -45,6 +45,9 @@ pub fn select(instance: &Instance) -> Result<Selection, String> {
             "gpu_renderer_unavailable: requested adapter not found: {needle}"
         ));
     }
+    if let Some(selection) = integrated {
+        return Ok(selection);
+    }
     Err("gpu_renderer_unavailable: no discrete or integrated adapter".into())
 }
 
@@ -92,5 +95,18 @@ mod tests {
     fn diagnostic_contains_limits() {
         let d = diagnostic(&info(DeviceType::IntegratedGpu), &wgpu::Limits::default());
         assert!(d.contains("max_texture_dimension_2d"));
+    }
+
+    #[test]
+    fn integrated_hardware_adapter_is_accepted() {
+        let instance = Instance::default();
+        if !instance
+            .enumerate_adapters(wgpu::Backends::all())
+            .iter()
+            .any(|adapter| adapter.get_info().device_type == DeviceType::IntegratedGpu)
+        {
+            return;
+        }
+        assert!(select(&instance).is_ok());
     }
 }

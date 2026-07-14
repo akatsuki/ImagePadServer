@@ -29,7 +29,10 @@ mod tests {
     #[test]
     fn names_are_sanitized() {
         let n = MappingName::for_session("a b/secret");
-        assert!(!n.as_str().contains(' '));
-        assert!(!n.as_str().contains('/'));
+        #[cfg(windows)]
+        let expected = r"Local\ImagePadServer.PlaylistCompositor.absecret";
+        #[cfg(not(windows))]
+        let expected = "/tmp/imagepadserver-playlist-compositor-absecret";
+        assert_eq!(n.as_str(), expected);
     }
 }
