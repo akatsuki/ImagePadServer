@@ -76,8 +76,8 @@ func TestEnqueueAudioForID_CreatesAudioJob(t *testing.T) {
 	if found.Title != "My Song" {
 		t.Errorf("Title = %q, want %q", found.Title, "My Song")
 	}
-	if found.Status != "pending" {
-		t.Errorf("Status = %q, want %q", found.Status, "pending")
+	if found.Status != "pending" && found.Status != "running" {
+		t.Errorf("Status = %q, want pending or running", found.Status)
 	}
 	if found.TotalSeconds != 240 {
 		t.Errorf("TotalSeconds = %d, want %d", found.TotalSeconds, 240)

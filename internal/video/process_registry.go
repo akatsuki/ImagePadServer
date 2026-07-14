@@ -437,7 +437,11 @@ func ownedProcessCommandLineMatches(commandLine, executableBase, requiredMarker 
 		return false
 	}
 	executable, arguments := splitOwnedCommandLine(commandLine)
-	if !strings.EqualFold(filepath.Base(executable), executableBase) {
+	// Command lines can use Windows-style paths even when inspected from a
+	// non-Windows test/runtime (for example, persisted process metadata or
+	// cross-platform contract tests). filepath.Base only recognizes the host
+	// platform's separator, so normalize both separators here.
+	if !strings.EqualFold(commandLineExecutableBase(executable), executableBase) {
 		return false
 	}
 	lowerMarker := strings.ToLower(requiredMarker)
@@ -445,6 +449,14 @@ func ownedProcessCommandLineMatches(commandLine, executableBase, requiredMarker 
 		return true
 	}
 	return isPathMarker(requiredMarker) && strings.Contains(strings.ToLower(commandLine), lowerMarker)
+}
+
+func commandLineExecutableBase(path string) string {
+	path = strings.TrimSpace(path)
+	if idx := strings.LastIndexAny(path, `/\\`); idx >= 0 {
+		return path[idx+1:]
+	}
+	return path
 }
 
 func isPathMarker(marker string) bool {

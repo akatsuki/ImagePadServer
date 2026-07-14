@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -2313,18 +2314,24 @@ func mustURL(rawURL string) *url.URL {
 
 func slowFFmpegPath(t *testing.T) string {
 	t.Helper()
+	realFFmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("ffmpeg not found; install ffmpeg with your package manager or add it to PATH; you can also set IMAGEPAD_FFMPEG")
+	}
 	dir := t.TempDir()
 	if filepath.Separator == '\\' {
+		t.Setenv("IMAGEPAD_REAL_FFMPEG", realFFmpeg)
 		path := filepath.Join(dir, "ffmpeg.cmd")
-		if err := os.WriteFile(path, []byte("@echo off\r\nping -n 6 127.0.0.1 > nul\r\nexit /b 1\r\n"), 0700); err != nil {
+		if err := os.WriteFile(path, []byte("@echo off\r\nif \"%~1\"==\"-version\" (echo ffmpeg test stub & exit /b 0)\r\nping -n 6 127.0.0.1 > nul\r\n\"%IMAGEPAD_REAL_FFMPEG%\" %*\r\n"), 0700); err != nil {
 			t.Fatal(err)
 		}
 		return path
 	}
 	path := filepath.Join(dir, "ffmpeg")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\nsleep 5\nexit 1\n"), 0700); err != nil {
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nif [ \"$1\" = \"-version\" ]; then echo 'ffmpeg test stub'; exit 0; fi\nsleep 5\nexec \"$IMAGEPAD_REAL_FFMPEG\" \"$@\"\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("IMAGEPAD_REAL_FFMPEG", realFFmpeg)
 	return path
 }
 func TestOptionsFromValuesQualityPresets(t *testing.T) {
