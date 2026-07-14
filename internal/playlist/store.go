@@ -575,6 +575,11 @@ func (s *Store) Load(name string) ([]Track, error) {
 func (s *Store) loadTracks(entry storedPlaylist, active video.RadioEncodingContract) ([]Track, error) {
 	manifest, err := s.readManifest(entry)
 	if err != nil {
+		// Canonical playlist paths must not fall back to index tracks when
+		// containment checks reject an unsafe version directory.
+		if entry.ID != "" && (strings.Contains(err.Error(), "symlink") || strings.Contains(err.Error(), "escapes playlist") || strings.Contains(err.Error(), "contained path")) {
+			return nil, err
+		}
 		if strings.Contains(err.Error(), "digest mismatch") {
 			return nil, err
 		}
