@@ -8,6 +8,9 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    env:
+      IMAGEPAD_FFMPEG: /usr/bin/ffmpeg
+      IMAGEPAD_YTDLP: /usr/bin/yt-dlp
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
