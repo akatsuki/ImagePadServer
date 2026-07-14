@@ -136,8 +136,8 @@ T00 ──┬── T1 ──┬── T2 ────┼── T5 ── T6 ─
 - **location**: `internal/server/music_radio_e2e_test.go`, `internal/server/music_radio_rtsp_acceptance_test.go`, `docs/PLAYLIST_GPU_COMPATIBILITY.md`, `docs/PLAYLIST_RENDERING_SMOKE.md`
 - **description**: Validate the exact T00-built sidecar (and repeat after T9 packaging) on discrete and integrated adapters on Windows, macOS, and Linux where available. Test music rendering, fallback, transitions, HLS readiness, RTSP/TCP continuity, codec parameters, PTS/DTS monotonicity, and resource usage. Keep the compatibility-copy lane as a control sample.
 - **validation**: All supported adapter/backend combinations pass short acceptance; a 30-minute soak on labeled hardware runners or scheduled/manual jobs passes with no reconnect, non-monotonic DTS, codec-parameter change, or unexplained frame drop. Unsupported adapters are explicitly recorded as blocked, not passed; packaged-artifact reacceptance cannot be skipped.
-- **status**: Not Completed
-- **log**:
+- **status**: Completed with explicit environment block
+- **log**: Windows NVIDIA and AMD hardware soaks passed; macOS verification was completed on the user's Mac and pushed to the branch. Linux Docker contract and software-adapter rejection passed; the user explicitly deferred Linux hardware testing, recorded as `HARDWARE_BLOCKED` in `docs/PLAYLIST_GPU_COMPATIBILITY.md`.
 - **files edited/created**:
 
 ### T8: Prototype Optional GPU-to-Encoder Zero-Copy
@@ -154,8 +154,8 @@ T00 ──┬── T1 ──┬── T2 ────┼── T5 ── T6 ─
 - **location**: `scripts/build-release.sh`, `.github/workflows/release.yml`, `scripts/`, `docs/PLAYLIST_GPU_COMPATIBILITY.md`, `docs/PLAYLIST_RENDERING_SMOKE.md`
 - **description**: Package the pinned `playlist-compositord` sidecar and native shader assets for Windows, macOS, and Linux. Add checksum/version checks, release artifact inspection, and hardware-runner evidence. Keep headless CI as contract/negative testing; run GPU acceptance and 30-minute soak on labeled hardware runners or manually scheduled jobs.
 - **validation**: Release archives contain the correct sidecar per target, startup discovery succeeds, mismatched artifacts are rejected, and every supported OS/backend has passed or an explicit blocked record. No software adapter is reported as a supported pass.
-- **status**: In Progress
-- **log**: Added `gpu-sidecar-artifacts.yml` matrix workflow for Linux amd64, macOS Intel/arm64, and Windows amd64; each target builds, verifies version/checksum, and uploads an artifact. Hardware runner evidence remains separate.
+- **status**: Completed with explicit environment block
+- **log**: OS matrix artifact workflow builds and verifies Linux amd64, macOS Intel/arm64, and Windows amd64 artifacts; PR #33 CI passed all 6 checks. Linux hardware runner remains explicitly blocked, while contract/negative evidence is recorded.
 - **files edited/created**:
 
 ## Parallel Execution Groups
