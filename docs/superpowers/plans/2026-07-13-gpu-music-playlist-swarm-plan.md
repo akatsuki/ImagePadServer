@@ -154,8 +154,8 @@ T00 ──┬── T1 ──┬── T2 ────┼── T5 ── T6 ─
 - **location**: `scripts/build-release.sh`, `.github/workflows/release.yml`, `scripts/`, `docs/PLAYLIST_GPU_COMPATIBILITY.md`, `docs/PLAYLIST_RENDERING_SMOKE.md`
 - **description**: Package the pinned `playlist-compositord` sidecar and native shader assets for Windows, macOS, and Linux. Add checksum/version checks, release artifact inspection, and hardware-runner evidence. Keep headless CI as contract/negative testing; run GPU acceptance and 30-minute soak on labeled hardware runners or manually scheduled jobs.
 - **validation**: Release archives contain the correct sidecar per target, startup discovery succeeds, mismatched artifacts are rejected, and every supported OS/backend has passed or an explicit blocked record. No software adapter is reported as a supported pass.
-- **status**: Not Completed
-- **log**:
+- **status**: In Progress
+- **log**: Added `gpu-sidecar-artifacts.yml` matrix workflow for Linux amd64, macOS Intel/arm64, and Windows amd64; each target builds, verifies version/checksum, and uploads an artifact. Hardware runner evidence remains separate.
 - **files edited/created**:
 
 ## Parallel Execution Groups
