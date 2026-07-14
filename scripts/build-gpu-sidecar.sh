@@ -17,9 +17,14 @@ else
   BIN="$ROOT_DIR/gpu/playlist-compositord/target/release/playlist-compositord"
 fi
 [ -f "$BIN" ] || { echo "sidecar binary not found: $BIN" >&2; exit 1; }
-case "$(uname -s)" in
-  MINGW*|MSYS*|CYGWIN*) EXT=.exe ;;
-  *) EXT= ;;
+case "$TARGET" in
+  *windows*) EXT=.exe ;;
+  *)
+    case "$(uname -s)" in
+      MINGW*|MSYS*|CYGWIN*) EXT=.exe ;;
+      *) EXT= ;;
+    esac
+    ;;
 esac
 OUT="$TARGET_DIR/playlist-compositord${EXT}"
 cp "$BIN" "$OUT"
