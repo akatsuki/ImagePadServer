@@ -53,10 +53,14 @@ func Load() (Settings, error) {
 
 func NormalizeEncoderMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case "cpu", "gpu":
-		return strings.ToLower(strings.TrimSpace(mode))
+	case "gpu":
+		return "gpu"
+	case "cpu":
+		// CPU rendering is intentionally not a production mode. Keep legacy
+		// settings readable, but normalize them to the GPU path.
+		return "gpu"
 	default:
-		return "auto"
+		return "gpu"
 	}
 }
 

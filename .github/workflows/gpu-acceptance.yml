@@ -1,0 +1,38 @@
+name: GPU acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      soak_seconds:
+        description: "GPU soak duration"
+        required: false
+        default: "1800"
+  schedule:
+    - cron: "0 3 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  gpu-acceptance:
+    # This job must never run on a software-only hosted runner.
+    runs-on: [self-hosted, windows, gpu]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build release sidecar
+        shell: pwsh
+        run: cargo build --manifest-path gpu/playlist-compositord/Cargo.toml --release
+      - name: Run GPU acceptance and soak
+        shell: pwsh
+        env:
+          SOAK_SECONDS: ${{ inputs.soak_seconds || '1800' }}
+        run: |
+          $sidecar = Join-Path $PWD 'gpu/playlist-compositord/target/release/playlist-compositord.exe'
+          ./scripts/verify-gpu-acceptance.ps1 -Sidecar $sidecar -SoakSeconds ([int]$env:SOAK_SECONDS) -Evidence output/gpu-acceptance.json
+      - name: Upload acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpu-acceptance-${{ github.run_id }}
+          path: output/gpu-acceptance.json

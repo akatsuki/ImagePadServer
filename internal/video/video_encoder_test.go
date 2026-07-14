@@ -86,9 +86,11 @@ func TestSelectVideoEncoderFallsBackToCPUWhenDiscoveryFails(t *testing.T) {
 	resetVideoEncoderCacheForTest()
 	oldMode := encoderModeProvider
 	oldList := listAvailableEncoders
+	oldProbe := probeEncoder
 	defer func() {
 		encoderModeProvider = oldMode
 		listAvailableEncoders = oldList
+		probeEncoder = oldProbe
 		resetVideoEncoderCacheForTest()
 	}()
 	encoderModeProvider = func() string { return "auto" }
@@ -96,8 +98,8 @@ func TestSelectVideoEncoderFallsBackToCPUWhenDiscoveryFails(t *testing.T) {
 		return nil, errors.New("ffmpeg failed")
 	}
 	got := selectVideoEncoderForOS(context.Background(), "broken-ffmpeg", "windows", EncoderStandard)
-	if got.Name != "libx264" || got.Hardware {
-		t.Fatalf("fallback profile = %#v, want CPU", got)
+	if got.Name != "h264_nvenc" || !got.Hardware || !got.Forced {
+		t.Fatalf("GPU-required profile = %#v, want forced hardware", got)
 	}
 }
 
@@ -105,19 +107,21 @@ func TestSelectVideoEncoderHonorsForcedCPU(t *testing.T) {
 	resetVideoEncoderCacheForTest()
 	oldMode := encoderModeProvider
 	oldList := listAvailableEncoders
+	oldProbe := probeEncoder
 	defer func() {
 		encoderModeProvider = oldMode
 		listAvailableEncoders = oldList
+		probeEncoder = oldProbe
 		resetVideoEncoderCacheForTest()
 	}()
-	encoderModeProvider = func() string { return "cpu" }
+	encoderModeProvider = func() string { return "cpu" } // legacy setting normalizes to GPU
 	listAvailableEncoders = func(context.Context, string) (map[string]bool, error) {
-		t.Fatal("forced CPU mode must not probe hardware encoders")
-		return nil, nil
+		return map[string]bool{"h264_nvenc": true}, nil
 	}
+	probeEncoder = func(context.Context, string, VideoEncoderProfile) error { return nil }
 	got := selectVideoEncoderForOS(context.Background(), "fake-ffmpeg", "windows", EncoderLowLatency)
-	if got.Name != "libx264" || got.Hardware || got.Forced {
-		t.Fatalf("forced CPU profile = %#v, want non-forced libx264", got)
+	if got.Name != "h264_nvenc" || !got.Hardware || !got.Forced {
+		t.Fatalf("legacy CPU setting profile = %#v, want forced GPU", got)
 	}
 }
 

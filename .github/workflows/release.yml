@@ -21,6 +21,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - uses: dtolnay/rust-toolchain@stable
       - name: Verify tag matches version
         run: |
           version="$(sed -n 's/.*Version[[:space:]]*=[[:space:]]*"\(v[^"]*\)".*/\1/p' internal/about/about.go | head -n 1)"
@@ -32,6 +33,10 @@ jobs:
         run: brew install ffmpeg webp
       - run: go test ./...
       - run: sh ./scripts/build-release.sh
+      - name: Build and verify GPU sidecar artifact
+        run: |
+          sh ./scripts/build-gpu-sidecar.sh
+          sh ./scripts/verify-gpu-artifacts.sh
       - name: Publish dev GitHub Release
         if: contains(github.ref_name, '-dev')
         uses: softprops/action-gh-release@v2
@@ -45,6 +50,7 @@ jobs:
             dist/**/win/*.zip
             dist/**/linux/imagepadserver-*
             dist/**/mac/imagepadserver-*-macos-universal.zip
+            dist/gpu/**
       - name: Publish stable GitHub Release
         if: ${{ !contains(github.ref_name, '-dev') }}
         uses: softprops/action-gh-release@v2
@@ -58,3 +64,4 @@ jobs:
             dist/**/win/*.zip
             dist/**/linux/imagepadserver-*
             dist/**/mac/imagepadserver-*-macos-universal.zip
+            dist/gpu/**

@@ -14,4 +14,9 @@
 *.app/
 coverage.out
 /outputs/
+/output/
+/gpu/playlist-compositord/target/
+auto.crt
+auto.key
+*.syso
 youtube_cookies.txt

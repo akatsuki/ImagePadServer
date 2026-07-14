@@ -27,3 +27,14 @@ jobs:
         with:
           go-version-file: go.mod
       - run: sh ./scripts/build-release.sh
+
+  gpu-sidecar:
+    name: GPU Sidecar Artifact
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build and verify playlist-compositord
+        run: |
+          sh ./scripts/build-gpu-sidecar.sh
+          sh ./scripts/verify-gpu-artifacts.sh

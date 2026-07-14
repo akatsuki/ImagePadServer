@@ -531,9 +531,7 @@ func TestUIContainsEncoderModeSetting(t *testing.T) {
 	html := getIndexHTML(t)
 	for _, want := range []string{
 		`id="encoderMode"`,
-		`value="auto">Auto`,
-		`value="gpu">GPU強制`,
-		`value="cpu">CPU強制`,
+		`value="gpu">GPU`,
 		`apiFetch('/api/encoder-mode'`,
 		`applyEncoderMode(data.encoderMode || 'auto')`,
 	} {

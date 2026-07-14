@@ -111,12 +111,12 @@ func TestNormalizeEncoderMode(t *testing.T) {
 	tests := []struct {
 		in, want string
 	}{
-		{"auto", "auto"},
+		{"auto", "gpu"},
 		{"gpu", "gpu"},
-		{"cpu", "cpu"},
+		{"cpu", "gpu"},
 		{"GPU", "gpu"},
-		{"", "auto"},
-		{"bad", "auto"},
+		{"", "gpu"},
+		{"bad", "gpu"},
 	}
 	for _, tc := range tests {
 		if got := NormalizeEncoderMode(tc.in); got != tc.want {

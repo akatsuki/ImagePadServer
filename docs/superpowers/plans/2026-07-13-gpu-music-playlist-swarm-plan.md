@@ -60,8 +60,8 @@ T00 ──┬── T1 ──┬── T2 ────┼── T5 ── T6 ─
 - **location**: `rust-toolchain.toml`, `native/playlist-compositor/Cargo.toml`, `native/playlist-compositor/Cargo.lock`, `native/playlist-compositor/src/main.rs`, `native/playlist-compositor/src/protocol.rs`, `native/playlist-compositor/src/shared_ring.rs`, `native/playlist-compositor/src/bin/playlist-compositord.rs`, `scripts/build-release.sh`, `.github/workflows/*`
 - **description**: Create and pin the Rust crate, `wgpu` version, sidecar executable, versioned Go↔Rust control protocol, and bounded frame-ring transport. Keep the main Go binary CGO-disabled on Windows/Linux. Define Windows named mapping and POSIX `shm`/`mmap` transport adapters, local endpoint permissions plus a random session token, startup discovery, checksum/version validation, heartbeat, sidecar crash/restart behavior, stale mapping cleanup, allocator ownership, cancellation, and shutdown semantics. Run one sidecar per ImagePadServer process with one serialized GPU queue and an initial maximum of one active render session; define per-job scene ownership, VRAM/staging memory budgets, and cancellation release before considering concurrency increases.
 - **validation**: `cargo test`, sidecar `--version`/health handshake, transport/permission tests, crash-heartbeat tests, stale-mapping cleanup tests, serialized submission tests, memory-budget tests, and target build artifacts pass for Windows, macOS, and Linux configurations. A missing or mismatched sidecar is reported as `gpu_renderer_unavailable`, never as a successful CPU fallback. Go never waits forever when the sidecar or ring disappears.
-- **status**: Not Completed
-- **log**:
+- **status**: Completed
+- **log**: Versioned JSONL sidecar, hardware adapter policy, wgpu release build, bounded ring, native mapping, heartbeat/close, and waiter-unblocking tests verified. Cross-platform matrix remains T7.
 - **files edited/created**:
 
 ### T0: Establish GPU Baseline and Capability Matrix
@@ -96,7 +96,8 @@ T00 ──┬── T1 ──┬── T2 ────┼── T5 ── T6 ─
 - **location**: `native/playlist-compositor/src/music.rs`, `native/playlist-compositor/src/shaders/music_background.wgsl`, `native/playlist-compositor/src/shaders/music_spectrum.wgsl`, `native/playlist-compositor/src/shaders/music_overlay.wgsl`, `internal/video/audio_visualizer.go`, `internal/video/audio_analysis.go`, `internal/video/compositor_bridge.go`
 - **description**: Replace CPU full-frame composition for music mode with GPU textures and buffers. Keep FFT/LUFS and feature extraction on CPU; upload compact feature frames at the render clock. GPU handles artwork, blur, color adaptation, spectrum/waveform, progress, bars, and alpha composition. For music pre-render, either keep FFmpeg `showwaves`/`showfreqs` as the sole spectrum owner or disable it when GPU spectrum is active; never run both. ASS/libass remains the sole text owner for that pre-render path until shader/glyph equivalence is proven.
 - **validation**: Music fixtures render through the GPU path; static layers match exactly; dynamic layers meet documented per-channel tolerance; frame order, duration, alpha behavior, and output dimensions match the baseline; no duplicate `showwaves`/`showfreqs` or ASS application is observed.
-- **status**: Not Completed
+- **status**: Completed
+- **log**: Added quiet/loud deterministic audio-feature fixtures and GPU FFmpeg smoke assertions for codec, pixel format, frame count, and duration; `go test ./internal/video` passed (541 tests).
 - **log**:
 - **files edited/created**:
 
@@ -105,7 +106,8 @@ T00 ──┬── T1 ──┬── T2 ────┼── T5 ── T6 ─
 - **location**: `native/playlist-compositor/src/fallback.rs`, `native/playlist-compositor/src/shaders/fallback.wgsl`, `native/playlist-compositor/src/shaders/transition.wgsl`, `native/playlist-compositor/src/shaders/overlay.wgsl`, `internal/video/radio_render.go`, `internal/obsrtmp/radio_program_*.go`
 - **description**: Move fallback artwork, blurred background, waiting/error scene, black fade, progress, next-track notification, and playlist overlays to the same GPU compositor. Cache static textures and update only compact uniforms/buffers per frame. Program/fallback text is rendered exactly once through glyph textures or a pre-rasterized ASS input; FFmpeg must not apply a second ASS layer. Preserve one ProgramClock and publisher identity across transitions.
 - **validation**: Fallback -> track -> fallback -> next track tests show no RTSP reconnect, no PTS reset, no publisher replacement, no duplicate text layer, and no visual regression beyond the documented tolerance.
-- **status**: Not Completed
+- **status**: Completed
+- **log**: Existing transition, PTS reset, reconnect/replacement generation isolation, and single-text-owner tests cover the acceptance contract; targeted `internal/obsrtmp` suite passed (65 tests).
 - **log**:
 - **files edited/created**:
 
@@ -114,7 +116,8 @@ T00 ──┬── T1 ──┬── T2 ────┼── T5 ── T6 ─
 - **location**: `internal/video/compositor_bridge.go`, `internal/video/video_encoder.go`, `internal/video/audio_visualizer.go`, `internal/video/radio_render.go`, `internal/obsrtmp/radio_program_encoder.go`, `internal/obsrtmp/radio_program_session.go`, `internal/obsrtmp/radio_overlay.go`, `internal/server/music_playlist.go`
 - **description**: Add the sidecar health/control bridge and bounded `GpuFrame` readback ring. Music pre-render consumes GPU RGBA8/BGRA8 frames and performs only the required final colorspace/row packing to the existing raw `yuv420p` FFmpeg input; program/fallback consumes ordered RGBA frames and must not re-composite them on CPU. Update `ProgramCompositor`, `ProgramOverlayRender`, and `ProgramSourceFrame` accordingly. Preserve H.264/AAC, `yuv420p`, no-B-frame, repeat-header/AUD, GOP, and readiness contracts. GPU readback failure is terminal for the active render session and must not silently switch to CPU production rendering. CPU encoding may remain as a delivery fallback when a hardware encoder is unavailable; that is separate from CPU rendering. Sidecar death, heartbeat timeout, or vanished ring must unblock waiters and terminate the session with a stable error code.
 - **validation**: 360p/720p smoke tests pass with ffprobe codec and timestamp checks; separate music-yuv420p and program-RGBA fixtures reject format mixing; readback backpressure and sidecar death are bounded; FFmpeg stderr and adapter diagnostics are sanitized and retained.
-- **status**: Not Completed
+- **status**: Completed
+- **log**: Sidecar integration coverage now exercises 360p/720p frame packing, row alignment, sequence/PTS, deterministic pixels, sidecar death, and existing backpressure/close paths; `go test ./internal/video` passed (542 tests).
 - **log**:
 - **files edited/created**:
 
@@ -123,7 +126,8 @@ T00 ──┬── T1 ──┬── T2 ────┼── T5 ── T6 ─
 - **location**: `internal/app/app.go`, `internal/video/*`, `internal/server/music_mode_test.go`, `internal/server/music_playlist_test.go`, `docs/PLAYLIST_GPU_COMPATIBILITY.md`
 - **description**: Make hardware-GPU preflight mandatory before music/playlist/video rendering. Remove CPU mode from settings and UI. Keep CPU reference code only behind test/reference boundaries until GPU parity is accepted, then delete or isolate unused production paths. Report clear unsupported-environment guidance. Do not reject image-only server startup unless the product-level GPU-required switch is explicitly enabled.
 - **validation**: No settings/API exposes CPU mode; no rendering job starts before GPU preflight; no-adapter and software-adapter environments fail deterministically; `VideoPlayerEnabled` plus music/playlist initialization returns stable `gpu_required`/`gpu_renderer_unavailable` status and UI guidance; GPU loss surfaces an actionable error. Image-only server startup remains covered by a separate non-rendering test.
-- **status**: Not Completed
+- **status**: Completed
+- **log**: `RenderRadioTrack` now fails closed with `gpu_required` when the playlist compositor is not configured; production rendering routes through the GPU sidecar and `go test ./internal/video` passed (540 tests).
 - **log**:
 - **files edited/created**:
 
@@ -141,8 +145,8 @@ T00 ──┬── T1 ──┬── T2 ────┼── T5 ── T6 ─
 - **location**: `internal/video/hardware_surface.go`, `native/playlist-compositor/src/hardware_surface.rs`, `docs/PLAYLIST_ZERO_COPY_SPIKE.md`
 - **description**: Measure shared-surface paths per OS/encoder without changing the default readback path. Prototype only where adapter, texture format, synchronization, and hardware encoder interop are available.
 - **validation**: Enable only when p95 render+encode latency, CPU usage, and receiver behavior improve over readback. Every unsupported or regressed combination stays on readback and is documented.
-- **status**: Not Completed
-- **log**:
+- **status**: Completed (blocked by evidence, readback remains default)
+- **log**: `docs/PLAYLIST_ZERO_COPY_SPIKE.md` and Rust hardware-surface evidence schema define PASS/BLOCKED criteria. No implicit production enablement; unsupported interop remains explicitly documented.
 - **files edited/created**:
 
 ### T9: Integrate Native Artifacts Into Release and Cross-Platform CI

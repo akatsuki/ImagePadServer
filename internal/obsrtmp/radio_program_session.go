@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"time"
 
 	"imagepadserver/internal/video"
@@ -21,6 +22,18 @@ func (m *RadioManager) runProgramSession(ctx, sessionParent context.Context, don
 	pipeline := NewProgramPipeline(width, height, encoder, func(width, height int, elapsed time.Duration, snapshot OverlaySnapshot) ([]byte, error) {
 		return overlayRenderer.RenderRGBA(width, height, elapsed, snapshot), nil
 	})
+	var gpuSidecar *video.SidecarProcess
+	if executable := os.Getenv("IMAGEPAD_PLAYLIST_COMPOSITORD"); executable != "" {
+		var err error
+		gpuSidecar, err = video.StartSidecar(ctx, executable, fmt.Sprintf("program-%d", sessionGeneration))
+		if err != nil { radioErr := newRadioError(RadioErrorStageEncoder, fmt.Errorf("start GPU compositor: %w", err), false); return &radioErr }
+		if err := gpuSidecar.Hello(ctx, fmt.Sprintf("program-%d", sessionGeneration)); err != nil { gpuSidecar.Close(); radioErr := newRadioError(RadioErrorStageEncoder, fmt.Errorf("GPU compositor preflight: %w", err), false); return &radioErr }
+		pipeline.SetGPUFrameRenderer(func(frameWidth, frameHeight int, tick ProgramTick, _ ProgramSourceFrame) ([]byte, error) {
+			frame, err := gpuSidecar.Render(ctx, uint32(frameWidth), uint32(frameHeight), uint64(tick.VideoPTS/(time.Second/programVideoFrameRate)), tick.VideoPTS.Nanoseconds()); if err != nil { return nil, err }
+			return video.GPUFrameToPackedRGBA(frame)
+		})
+		defer gpuSidecar.Close()
+	}
 	pipeline.onOverlayFail = func(err error) {
 		m.recordProgramOverlayFailure(sessionGeneration, RadioErrorStageOverlay, err, 1)
 	}

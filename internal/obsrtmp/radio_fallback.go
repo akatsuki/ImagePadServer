@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"time"
 
@@ -71,11 +72,15 @@ func (f *RadioFallbackFeeder) Run(ctx context.Context, timestampOffset float64, 
 	if f.selectEncoder != nil {
 		encoder = f.selectEncoder(ctx, ffmpeg, video.EncoderLowLatency)
 	}
-	renderer, err := f.newRenderer(renderWidth, renderHeight, logoPath, fonts.SemiBold600, fonts.Medium500)
-	if err != nil {
-		return 0, err
+	var renderer radioFallbackRenderer
+	gpuExecutable := os.Getenv("IMAGEPAD_PLAYLIST_COMPOSITORD")
+	if gpuExecutable == "" {
+		renderer, err = f.newRenderer(renderWidth, renderHeight, logoPath, fonts.SemiBold600, fonts.Medium500)
+		if err != nil {
+			return 0, err
+		}
+		defer renderer.Close()
 	}
-	defer renderer.Close()
 
 	procCtx, stopProc := context.WithCancel(context.Background())
 	defer stopProc()
@@ -124,7 +129,13 @@ func (f *RadioFallbackFeeder) Run(ctx context.Context, timestampOffset float64, 
 	}
 	renderErr := make(chan renderResult, 1)
 	go func() {
-		frames, err := f.writeFrames(ctx, stdin, renderer)
+		var frames int
+		var err error
+		if gpuExecutable != "" {
+			frames, err = writeGPURadioFallbackFrames(ctx, stdin, gpuExecutable, renderWidth, renderHeight)
+		} else {
+			frames, err = f.writeFrames(ctx, stdin, renderer)
+		}
 		renderErr <- renderResult{frames: frames, err: err}
 		_ = stdin.Close()
 	}()
@@ -149,6 +160,42 @@ func (f *RadioFallbackFeeder) Run(ctx context.Context, timestampOffset float64, 
 		return duration, fmt.Errorf("fallback feeder: %w: %s", waitErr, detail)
 	}
 	return duration, nil
+}
+
+func writeGPURadioFallbackFrames(ctx context.Context, out io.Writer, executable string, width, height int) (int, error) {
+	sidecar, err := video.StartSidecar(ctx, executable, "radio-fallback")
+	if err != nil {
+		return 0, err
+	}
+	defer sidecar.Close()
+	if err := sidecar.Hello(ctx, "radio-fallback"); err != nil {
+		return 0, err
+	}
+	ticker := time.NewTicker(time.Second / 30)
+	defer ticker.Stop()
+	frames := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return frames, err
+		}
+		frame, err := sidecar.Render(ctx, uint32(width), uint32(height), uint64(frames), int64(frames)*int64(time.Second/30))
+		if err != nil {
+			return frames, err
+		}
+		packed, err := video.GPUFrameToPackedRGBA(frame)
+		if err != nil {
+			return frames, err
+		}
+		if _, err := out.Write(packed); err != nil {
+			return frames, err
+		}
+		frames++
+		select {
+		case <-ctx.Done():
+			return frames, ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func writeRadioFallbackFrames(ctx context.Context, out io.Writer, renderer radioFallbackRenderer) (int, error) {

@@ -24,6 +24,7 @@ import (
 	"imagepadserver/internal/appicon"
 	"imagepadserver/internal/clipboard"
 	"imagepadserver/internal/config"
+	"imagepadserver/internal/gpu"
 	"imagepadserver/internal/imageproc"
 	"imagepadserver/internal/library"
 	"imagepadserver/internal/network"
@@ -2251,7 +2252,11 @@ func (s *Server) handleMusicMode(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if req.Enabled && !s.videoPlayerEnabled() {
-			http.Error(w, "music mode requires video player support", http.StatusConflict)
+			writeJSONError(w, gpu.RequiredError(), http.StatusConflict)
+			return
+		}
+		if req.Enabled && !gpu.RenderingAvailable() {
+			writeJSONError(w, gpu.UnavailableError(), http.StatusServiceUnavailable)
 			return
 		}
 		if err := settings.Update(func(appSettings *settings.Settings) error {
@@ -2350,7 +2355,7 @@ func (s *Server) handleEncoderMode(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		mode := settings.NormalizeEncoderMode(req.Mode)
-		if strings.TrimSpace(req.Mode) != "" && mode == "auto" && strings.ToLower(strings.TrimSpace(req.Mode)) != "auto" {
+		if !strings.EqualFold(strings.TrimSpace(req.Mode), "gpu") {
 			http.Error(w, "invalid encoder mode", http.StatusBadRequest)
 			return
 		}
@@ -3331,6 +3336,12 @@ func appendAccessLog(line string) {
 func writeJSON(w http.ResponseWriter, value interface{}) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(w).Encode(value)
+}
+
+func writeJSONError(w http.ResponseWriter, err error, status int) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 }
 
 func versionGreater(candidate, current string) bool {

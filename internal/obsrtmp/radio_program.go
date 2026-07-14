@@ -104,6 +104,15 @@ type ProgramCompositor struct {
 	lastOverlayError error
 	lastVideo        []byte
 	fadeFrame        int
+	gpuFrameRender   func(width, height int, tick ProgramTick, source ProgramSourceFrame) ([]byte, error)
+}
+
+// SetGPUFrameRenderer routes program video composition through the GPU bridge.
+// The callback must return packed RGBA for the current tick; audio and clock
+// ownership remain in ProgramCompositor. A nil callback preserves the
+// compatibility path for tests and explicitly disabled GPU rendering.
+func (c *ProgramCompositor) SetGPUFrameRenderer(render func(width, height int, tick ProgramTick, source ProgramSourceFrame) ([]byte, error)) {
+	c.mu.Lock(); c.gpuFrameRender = render; c.mu.Unlock()
 }
 
 func NewProgramCompositor(width, height int, encoder ProgramFrameWriter, renderOverlay ProgramOverlayRender) *ProgramCompositor {
@@ -143,7 +152,14 @@ func (c *ProgramCompositor) WriteTick(tick ProgramTick, source ProgramSourceFram
 	}
 	videoBytes := c.width * c.height * 4
 	videoFrame := make([]byte, videoBytes)
-	if len(source.VideoRGBA) == videoBytes {
+	c.mu.Lock(); gpuRender := c.gpuFrameRender; c.mu.Unlock()
+	if gpuRender != nil {
+		gpu, err := gpuRender(c.width, c.height, tick, source)
+		if err != nil { return fmt.Errorf("gpu program render: %w", err) }
+		if len(gpu) != videoBytes { return fmt.Errorf("gpu program render returned %d bytes, want %d", len(gpu), videoBytes) }
+		copy(videoFrame, gpu)
+		c.mu.Lock(); c.lastVideo = append(c.lastVideo[:0], gpu...); c.fadeFrame = 0; c.mu.Unlock()
+	} else if len(source.VideoRGBA) == videoBytes {
 		copy(videoFrame, source.VideoRGBA)
 		c.mu.Lock()
 		c.lastVideo = append(c.lastVideo[:0], source.VideoRGBA...)
@@ -233,6 +249,13 @@ func (p *ProgramPipeline) SetOverlay(snapshot OverlaySnapshot) {
 	p.mu.Lock()
 	p.overlayNotified = false
 	p.mu.Unlock()
+}
+
+// SetGPUFrameRenderer installs the GPU-backed program frame source for the
+// pipeline. It is intentionally explicit so the compatibility-copy lane can
+// remain the control path until runtime acceptance enables the GPU lane.
+func (p *ProgramPipeline) SetGPUFrameRenderer(render func(width, height int, tick ProgramTick, source ProgramSourceFrame) ([]byte, error)) {
+	p.compositor.SetGPUFrameRenderer(render)
 }
 
 func (p *ProgramPipeline) DisableOverlay() {

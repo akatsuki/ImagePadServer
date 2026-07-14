@@ -118,6 +118,17 @@ func TestProgramCompositorTreatsEncoderFailureAsFatal(t *testing.T) {
 	}
 }
 
+func TestProgramCompositorUsesGPUFrameRenderer(t *testing.T) {
+	encoder := &recordingProgramEncoder{}
+	compositor := NewProgramCompositor(2, 1, encoder, nil)
+	compositor.SetGPUFrameRenderer(func(width, height int, _ ProgramTick, _ ProgramSourceFrame) ([]byte, error) {
+		return []byte{1, 2, 3, 255, 4, 5, 6, 255}, nil
+	})
+	if err := compositor.WriteTick(NewProgramClock().Next(), ProgramSourceFrame{}); err != nil { t.Fatal(err) }
+	got := encoder.video[0]
+	if len(got) != 8 || got[0] != 1 || got[4] != 4 { t.Fatalf("gpu frame not forwarded: %v", got) }
+}
+
 func TestProgramCompositorTranslatesSourcePTSToProgramClock(t *testing.T) {
 	encoder := &recordingProgramEncoder{}
 	compositor := NewProgramCompositor(2, 1, encoder, nil)

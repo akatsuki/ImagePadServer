@@ -131,7 +131,10 @@ func assertProgramTrackFeederCompletes(t *testing.T, feeder *ProgramTrackFeeder)
 		if err != nil {
 			t.Fatalf("Run: %v", err)
 		}
-	case <-time.After(500 * time.Millisecond):
+	// The helper intentionally fills a pipe beyond its platform buffer. Under
+	// Windows process scheduling, draining and reaping the peer can exceed
+	// 500ms even when cancellation is progressing normally.
+	case <-time.After(2 * time.Second):
 		cancel()
 		<-result
 		t.Fatal("Run waited for the pipe-blocked peer decoder")
