@@ -11,8 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 	"testing"
+	"time"
 )
 
 type blockingVisualizerWriter struct{ release chan struct{} }
@@ -438,6 +438,16 @@ func TestWriteVisualizerRGBAFramesZeroFrames(t *testing.T) {
 	err := WriteVisualizerRGBAFrames(context.Background(), &buf, input, base, mode, layout, 128, 72)
 	if err == nil {
 		t.Fatal("expected error for zero frames")
+	}
+}
+
+func TestCanonicalMusicVideoFrameCountIncludesPartialTailTick(t *testing.T) {
+	analysis := AudioAnalysis{Duration: 5.233333, Frames: make([]AudioFrame, 151)}
+	if got := canonicalMusicVideoFrameCount(analysis); got != 157 {
+		t.Fatalf("canonical frame count = %d, want 157", got)
+	}
+	if got := canonicalMusicVideoFrameCount(AudioAnalysis{Frames: make([]AudioFrame, 4)}); got != 4 {
+		t.Fatalf("fallback frame count = %d, want 4", got)
 	}
 }
 

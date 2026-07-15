@@ -555,17 +555,13 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 	if audioFilter == "" {
 		audioFilter = "anull"
 	}
-	// The analysis frame slice is the canonical video clock shared by the CPU
-	// reference and the GPU renderer.  Do not derive the count from the media
-	// probe duration: container durations are commonly rounded/truncated by a
-	// few frames (especially for Opus), which otherwise makes FFmpeg stop the
-	// GPU stream early.  An explicit frame limit also keeps the HLS muxer from
-	// trimming the final raw-video frames when the audio stream ends first.
-	frameCount := len(input.Analysis.Frames)
-	if frameCount < 1 {
-		frameCount = int(math.Ceil(input.Analysis.Duration * 30))
-	}
-	args := []string{"-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", fmt.Sprintf("%dx%d", width, height), "-r", "30", "-i", "pipe:0", "-i", input.SourcePath, "-map", "0:v:0", "-map", "1:a:0", "-af", audioFilter, "-frames:v", strconv.Itoa(frameCount), "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2", "-f", "hls", "-hls_time", "4", "-hls_list_size", "0", "-hls_playlist_type", "event", "-hls_flags", "independent_segments", "-hls_segment_filename", filepath.Join(outDir, segmentPattern(id)), filepath.Join(outDir, playlistName(id))}
+	// FFmpeg's CPU filter graph runs at the media duration clock and may
+	// duplicate the tail frame when the analysis sampler has fewer samples
+	// (Opus commonly ends between 30 Hz ticks). The GPU path must emit the same
+	// duration-derived count, then clamp scene sampling to the last analysis
+	// frame. Using len(Analysis.Frames) here drops the final partial tick.
+	frameCount := canonicalMusicVideoFrameCount(input.Analysis)
+	args := []string{"-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", fmt.Sprintf("%dx%d", width, height), "-r", "30", "-i", "pipe:0", "-i", input.SourcePath, "-map", "0:v:0", "-map", "1:a:0", "-af", audioFilter, "-frames:v", strconv.Itoa(frameCount), "-fps_mode", "cfr", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2", "-f", "hls", "-hls_time", "4", "-hls_list_size", "0", "-hls_playlist_type", "event", "-hls_flags", "independent_segments", "-hls_segment_filename", filepath.Join(outDir, segmentPattern(id)), filepath.Join(outDir, playlistName(id))}
 	cmd := exec.CommandContext(ctx, ffmpeg, args...)
 	hideWindow(cmd)
 	in, err := cmd.StdinPipe()
@@ -599,13 +595,7 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 		_ = cmd.Process.Kill()
 		return fmt.Errorf("%w: sidecar hello: %v", ErrGPURendererUnavailable, err)
 	}
-	frames := len(input.Analysis.Frames)
-	if frames < 1 {
-		frames = int(math.Ceil(input.Analysis.Duration * 30))
-		if frames < 1 {
-			frames = 1
-		}
-	}
+	frames := frameCount
 	for i := 0; i < frames; i++ {
 		ptsNS := int64(float64(i) * float64(time.Second) / 30)
 		scene := CanonicalMusicScene(input, uint64(i), ptsNS)
@@ -629,6 +619,20 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 		return fmt.Errorf("GPU HLS encode: %w: %s", err, trimOutput(stderr.Bytes()))
 	}
 	return nil
+}
+
+// canonicalMusicVideoFrameCount returns the 30 Hz output clock used by the
+// CPU filter graph. Analysis samples can be shorter than the media duration;
+// the final tick is still a real video frame and must be represented in HLS.
+func canonicalMusicVideoFrameCount(analysis AudioAnalysis) int {
+	frames := int(math.Ceil(analysis.Duration * 30))
+	if frames < 1 {
+		frames = len(analysis.Frames)
+	}
+	if frames < 1 {
+		frames = 1
+	}
+	return frames
 }
 
 // writeGPUFrame makes cancellation observable even when the downstream
