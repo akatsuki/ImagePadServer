@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -554,7 +555,17 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 	if audioFilter == "" {
 		audioFilter = "anull"
 	}
-	args := []string{"-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", fmt.Sprintf("%dx%d", width, height), "-r", "30", "-i", "pipe:0", "-i", input.SourcePath, "-map", "0:v:0", "-map", "1:a:0", "-af", audioFilter, "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2", "-f", "hls", "-hls_time", "4", "-hls_list_size", "0", "-hls_playlist_type", "event", "-hls_flags", "independent_segments", "-hls_segment_filename", filepath.Join(outDir, segmentPattern(id)), filepath.Join(outDir, playlistName(id))}
+	// The analysis frame slice is the canonical video clock shared by the CPU
+	// reference and the GPU renderer.  Do not derive the count from the media
+	// probe duration: container durations are commonly rounded/truncated by a
+	// few frames (especially for Opus), which otherwise makes FFmpeg stop the
+	// GPU stream early.  An explicit frame limit also keeps the HLS muxer from
+	// trimming the final raw-video frames when the audio stream ends first.
+	frameCount := len(input.Analysis.Frames)
+	if frameCount < 1 {
+		frameCount = int(math.Ceil(input.Analysis.Duration * 30))
+	}
+	args := []string{"-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", fmt.Sprintf("%dx%d", width, height), "-r", "30", "-i", "pipe:0", "-i", input.SourcePath, "-map", "0:v:0", "-map", "1:a:0", "-af", audioFilter, "-frames:v", strconv.Itoa(frameCount), "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2", "-f", "hls", "-hls_time", "4", "-hls_list_size", "0", "-hls_playlist_type", "event", "-hls_flags", "independent_segments", "-hls_segment_filename", filepath.Join(outDir, segmentPattern(id)), filepath.Join(outDir, playlistName(id))}
 	cmd := exec.CommandContext(ctx, ffmpeg, args...)
 	hideWindow(cmd)
 	in, err := cmd.StdinPipe()
@@ -588,9 +599,12 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 		_ = cmd.Process.Kill()
 		return fmt.Errorf("%w: sidecar hello: %v", ErrGPURendererUnavailable, err)
 	}
-	frames := int(math.Ceil(input.Analysis.Duration * 30))
+	frames := len(input.Analysis.Frames)
 	if frames < 1 {
-		frames = 1
+		frames = int(math.Ceil(input.Analysis.Duration * 30))
+		if frames < 1 {
+			frames = 1
+		}
 	}
 	for i := 0; i < frames; i++ {
 		ptsNS := int64(float64(i) * float64(time.Second) / 30)
