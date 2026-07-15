@@ -72,7 +72,7 @@ func normalizeArtwork(path string) (ArtworkMetadata, bool) {
 		w, h = int(float64(w)*s), int(float64(h)*s)
 	}
 	dst := image.NewRGBA(image.Rect(0, 0, w, h))
-	draw.CatmullRom.Scale(dst, dst.Bounds(), src, b, draw.Over, nil)
+	draw.NearestNeighbor.Scale(dst, dst.Bounds(), src, b, draw.Src, nil)
 	stride := (w*4 + 255) &^ 255
 	payload := make([]byte, stride*h)
 	for y := 0; y < h; y++ {
