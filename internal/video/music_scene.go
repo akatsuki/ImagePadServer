@@ -83,7 +83,7 @@ func canonicalScenePalette(input AudioRenderInput) MusicScenePalette {
 	p := PaletteForFeatures(input.Analysis.Features)
 	primary := [4]uint8{255, 255, 255, 255}
 	accent := [4]uint8{p.End.R, p.End.G, p.End.B, 255}
-	background := [4]uint8{p.Start.R / 3, p.Start.G / 3, p.Start.B / 3, 255}
+	background := [4]uint8{p.Start.R, p.Start.G, p.Start.B, 255}
 	if a, ok := normalizeArtwork(input.ArtworkPath); ok && len(a.Payload) >= 4 {
 		var r, g, b, n uint64
 		for i := 0; i+3 < len(a.Payload); i += 4 {
