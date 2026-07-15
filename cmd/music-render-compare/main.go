@@ -65,6 +65,15 @@ type report struct {
 	CPU                   renderResult               `json:"cpu"`
 	GPU                   renderResult               `json:"gpu"`
 	ScreenshotComparisons map[string]imageComparison `json:"screenshotComparisons,omitempty"`
+	ComparisonGate        comparisonGate             `json:"comparisonGate"`
+}
+
+type comparisonGate struct {
+	DurationDeltaSeconds float64 `json:"durationDeltaSeconds"`
+	FrameDelta           int     `json:"frameDelta"`
+	DurationMatch        bool    `json:"durationMatch"`
+	FrameCountMatch      bool    `json:"frameCountMatch"`
+	Pass                 bool    `json:"pass"`
 }
 
 func loadImageMetrics(path string) (imageMetrics, error) {
@@ -368,6 +377,13 @@ func main() {
 			}
 		}
 	}
+	rep.ComparisonGate = comparisonGate{
+		DurationDeltaSeconds: math.Abs(rep.CPU.Probe.Duration - rep.GPU.Probe.Duration),
+		FrameDelta:           rep.CPU.Probe.Frames - rep.GPU.Probe.Frames,
+	}
+	rep.ComparisonGate.DurationMatch = rep.ComparisonGate.DurationDeltaSeconds <= 0.05
+	rep.ComparisonGate.FrameCountMatch = rep.ComparisonGate.FrameDelta == 0
+	rep.ComparisonGate.Pass = rep.ComparisonGate.DurationMatch && rep.ComparisonGate.FrameCountMatch
 	b, _ := json.MarshalIndent(rep, "", "  ")
 	_ = os.WriteFile(filepath.Join(*output, "report.json"), append(b, '\n'), 0644)
 	writeMarkdown(*output, rep)
