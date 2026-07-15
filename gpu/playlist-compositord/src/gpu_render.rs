@@ -10,13 +10,15 @@ use wgpu::util::DeviceExt;
 const SHADER: &str = r#"
 struct Params {
   width: u32, height: u32, row_words: u32, sequence: u32,
-  rms: u32, peak: u32, scene_enabled: u32, _pad: u32,
+  rms: u32, peak: u32, scene_enabled: u32, glyph_count: u32,
   spectrum: array<u32, 24>,
 }
 @group(0) @binding(0) var<storage, read_write> pixels: array<u32>;
 @group(0) @binding(1) var<uniform> params: Params;
 @group(0) @binding(2) var atlas_tex: texture_2d<f32>;
 @group(0) @binding(3) var atlas_sampler: sampler;
+struct GlyphInstance { screen: vec4<f32>, atlas: vec4<f32>, color: vec4<f32> }
+@group(0) @binding(4) var<storage, read> glyphs: array<GlyphInstance>;
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   if (id.x >= params.width || id.y >= params.height) { return; }
@@ -43,8 +45,18 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
       if (fx >= left && fx < right) { level = f32(params.spectrum[band]) / 65535.0; }
     }
     let bars = select(0.0, 0.35 + level * 0.5, fy > (1.0 - level * 0.65));
-    let atlas = textureSampleLevel(atlas_tex, atlas_sampler, vec2<f32>(fx, fy), 0.0);
-    let glyph = select(0.0, atlas.a * 0.18, params.scene_enabled > 1u);
+    var glyph = 0.0;
+    if (params.scene_enabled > 1u) {
+      let pixel = vec2<f32>(f32(id.x), f32(id.y));
+      for (var gi: u32 = 0u; gi < params.glyph_count; gi = gi + 1u) {
+        let g = glyphs[gi];
+        if (pixel.x >= g.screen.x && pixel.y >= g.screen.y && pixel.x < g.screen.x + g.screen.z && pixel.y < g.screen.y + g.screen.w) {
+          let uv = g.atlas.xy + (pixel - g.screen.xy) / max(g.screen.zw, vec2<f32>(1.0)) * g.atlas.zw;
+          glyph = max(glyph, textureSampleLevel(atlas_tex, atlas_sampler, uv, 0.0).a * g.color.a);
+        }
+      }
+      glyph = glyph * 0.85;
+    }
     r = u32(clamp((0.05 + glow + bars * 0.75 + wave * 0.45 + glyph) * 255.0, 0.0, 255.0));
     g = u32(clamp((0.08 + glow * 0.65 + bars * 0.20 + wave * 0.75 + glyph) * 255.0, 0.0, 255.0));
     b = u32(clamp((0.18 + glow * 0.95 + bars * 0.90 + wave * 0.35 + glyph) * 255.0, 0.0, 255.0));
@@ -80,6 +92,7 @@ fn scene_uniform_words(
         words[4] = scene.feature.rms_q15 as u32;
         words[5] = scene.feature.peak_q15 as u32;
         words[6] = if scene.artwork.is_some() || scene.glyph_atlas.as_ref().is_some_and(|a| !a.payload.is_empty()) { 2 } else { 1 };
+        words[7] = scene.glyph_atlas.as_ref().map(|a| a.glyphs.len().min(256) as u32).unwrap_or(0);
         for (dst, src) in words[8..]
             .iter_mut()
             .zip(scene.feature.spectrum_q16.iter().copied())
@@ -88,6 +101,33 @@ fn scene_uniform_words(
         }
     }
     words
+}
+
+fn glyph_instance_words(scene: Option<&MusicScenePayload>, width: u32, height: u32) -> Vec<u32> {
+    let mut out = Vec::new();
+    let Some(atlas) = scene.and_then(|s| s.glyph_atlas.as_ref()) else { return out };
+    if atlas.payload.is_empty() || atlas.glyphs.is_empty() { return out; }
+    for run in atlas.text_runs.iter().take(256) {
+        let mut cursor = run.x;
+        for ch in run.text.chars() {
+            if out.len() / 12 >= 256 { break; }
+            let id = ch.to_string();
+            let glyph = atlas.glyphs.iter().find(|g| g.id == id)
+                .or_else(|| atlas.glyphs.iter().find(|g| g.id == atlas.missing_glyph_id));
+            let Some(g) = glyph else { continue };
+            let scale = run.size_px / (g.height.max(1) as f32);
+            let sw = (g.width as f32 * scale).max(1.0);
+            let sh = run.size_px.max(1.0);
+            let vals = [cursor / width as f32, run.y / height as f32, sw / width as f32, sh / height as f32,
+                g.x as f32 / atlas.width as f32, g.y as f32 / atlas.height as f32,
+                g.width as f32 / atlas.width as f32, g.height as f32 / atlas.height as f32,
+                run.rgba[0] as f32 / 255.0, run.rgba[1] as f32 / 255.0, run.rgba[2] as f32 / 255.0,
+                (run.rgba[3] as f32 / 255.0) * run.opacity.clamp(0.0, 1.0)];
+            out.extend(vals.into_iter().map(f32::to_bits));
+            cursor += g.advance.max(g.width as f32) * scale;
+        }
+    }
+    out
 }
 
 impl Renderer {
@@ -172,6 +212,7 @@ impl Renderer {
                 },
                 wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
                 wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+                wgpu::BindGroupLayoutEntry { binding: 4, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
             ],
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -234,6 +275,9 @@ impl Renderer {
         });
         let atlas_view = atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor::default());
+        let mut glyph_words = glyph_instance_words(scene, width, height);
+        if glyph_words.is_empty() { glyph_words.resize(12, 0); }
+        let glyph_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("glyph-instances"), contents: bytemuck::cast_slice(&glyph_words), usage: wgpu::BufferUsages::STORAGE });
         let stride = ((width * 4 + ROW_ALIGNMENT - 1) / ROW_ALIGNMENT) * ROW_ALIGNMENT;
         let bytes = stride as usize * height as usize;
         let output = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -270,6 +314,7 @@ impl Renderer {
                 },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&atlas_view) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&sampler) },
+                wgpu::BindGroupEntry { binding: 4, resource: glyph_buffer.as_entire_binding() },
             ],
         });
         let mut enc = self
@@ -347,5 +392,30 @@ mod tests {
         assert_eq!(&words[..7], &[128, 72, 128, 9, 123, 456, 1]);
         assert_eq!(words[8], 0);
         assert_eq!(words[31], 23_000);
+    }
+
+    #[test]
+    fn glyph_instances_use_each_entry_rect_and_run_position() {
+        use crate::contracts::{GlyphAtlasMetadata, GlyphEntry, TextRun};
+        let scene = MusicScenePayload {
+            schema: MUSIC_SCENE_SCHEMA,
+            feature: AudioFeatureFrame { schema: CONTRACT_VERSION, sample_rate_hz: 48_000, frame_index: 0, pts_ns: 0, spectrum_q16: vec![], rms_q15: 0, peak_q15: 0 },
+            artwork: None,
+            glyph_atlas: Some(GlyphAtlasMetadata {
+                texture_id: "atlas".into(), font_family: "sans".into(), font_weight: 400,
+                fallback_order: vec![], width: 256, height: 256, row_stride: 1024, glyph_count: 2,
+                missing_glyph_id: "?".into(), payload: vec![1; 1024 * 256],
+                glyphs: vec![GlyphEntry { id: "A".into(), x: 8, y: 16, width: 32, height: 40, advance: 34.0 }, GlyphEntry { id: "?".into(), x: 0, y: 0, width: 20, height: 20, advance: 22.0 }],
+                text_runs: vec![TextRun { text: "A?".into(), x: 10.0, y: 12.0, size_px: 40.0, rgba: [255, 0, 0, 255], opacity: 1.0 }],
+            }),
+        };
+        let words = glyph_instance_words(Some(&scene), 100, 100);
+        assert_eq!(words.len(), 24);
+        let x0 = f32::from_bits(words[0]);
+        let atlas_x0 = f32::from_bits(words[4]);
+        let x1 = f32::from_bits(words[12]);
+        assert!((x0 - 0.1).abs() < 1e-6);
+        assert!((atlas_x0 - 8.0 / 256.0).abs() < 1e-6);
+        assert!(x1 > x0);
     }
 }
