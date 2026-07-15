@@ -95,7 +95,7 @@ T6 ─────────────────┘
 - **description**: Render every T3 visual group on the GPU in the canonical layer order: artwork tile/fallback, blurred background/palette, metadata glyph runs, bars/waveform/loudness, guide lines, progress/timing and fades. Use pre-rasterized textures/atlas only; no FFmpeg ASS/drawtext/showwaves production overlay.
 - **validation**: GPU fixtures show artwork and Japanese metadata at exact canonical rectangles; no-artwork/missing-glyph fallback works; visual comparisons meet structural/color thresholds for all fixture frames.
 - **status**: Partial
-- **log**: GPU artwork texture/fallback, glyph instances, palette/progress/loudness/fade uniforms are wired; loudness/trend now use bounded 64+64 storage samples and canonical rects scale to output (`41faa64`, `b154f1b`). Full CPU font rasterization, blurred background equivalence and pixel-level geometry gates remain.
+- **log**: GPU artwork texture/fallback, glyph instances, palette/progress/loudness/fade uniforms are wired; loudness/trend use bounded 64+64 storage samples and spectrum/artwork now use canonical rects (`41faa64`, `b154f1b`, `9ef7579`, `f56e93c`). Full CPU font rasterization, blurred background equivalence, HLS timing and pixel-level geometry gates remain.
 - **files edited/created**: `gpu/playlist-compositord/src/gpu_render.rs`
 
 ### T6a: Strengthen comparison artifacts and CPU baseline
