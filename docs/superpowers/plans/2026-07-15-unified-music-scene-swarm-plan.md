@@ -67,7 +67,7 @@ T0 ──┬── T1 ──┐
 - **description**: Render background, artwork, waveform, spectrum, glow, text ownership, and fades according to `MusicSceneSpec`. Use a pre-rasterized glyph atlas with font identity, fallback order, missing-glyph behavior, Unicode coverage, and atlas bounds defined by T2.
 - **validation**: GPU integration fixtures match CPU reference structure/colors within documented tolerances; glyph fallback and Unicode fixtures pass; ASS/showwaves duplication is rejected.
 - **status**: Partial
-- **log**: `MusicScenePayload` is consumed by the Rust renderer; WGSL renders deterministic background glow, waveform, and 24-band spectrum while preserving scene-absent compatibility (`c8a6a10`). Artwork and bounded glyph atlas RGBA/rect/layout data now validate and upload (`d39cf06`, `38e098a`). Actual text sampling in WGSL remains the final renderer gap.
+- **log**: `MusicScenePayload` is consumed by the Rust renderer; WGSL renders deterministic background glow, waveform, and 24-band spectrum while preserving scene-absent compatibility (`c8a6a10`). Artwork and bounded glyph atlas RGBA/rect/layout data validate and upload; WGSL now samples atlas alpha with a fallback texture (`d39cf06`, `38e098a`, `4bd0915`). Per-glyph instance placement remains limited.
 
 ### T4: Route single-track HLS through the GPU producer
 - **depends_on**: [T1, T2, T3]
@@ -91,7 +91,7 @@ T0 ──┬── T1 ──┐
 - **description**: Run focused Go/Rust tests, Windows NVIDIA/AMD and macOS smoke/soak, update evidence, and remove obsolete production CPU routing while retaining reference tests. Linux remains contract-only unless a Vulkan runner is provided.
 - **validation**: All focused tests pass; CI artifact checks pass; a static architecture/grep test proves no production music path invokes CPU composition; adapter selection, restart, Unicode, and negative cases are covered.
 - **status**: In Progress
-- **log**: Focused Go tests (44) and Rust tests (20) pass. Full Go suite has one unrelated Windows TempDir cleanup failure. Actual glyph sampling plus final static/runtime audit remain.
+- **log**: Focused Go tests (44) and Rust tests (20) pass. Full Go suite has one unrelated Windows TempDir cleanup failure. Per-glyph placement and final static/runtime audit remain.
 
 ## Parallel Execution Groups
 
