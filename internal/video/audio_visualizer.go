@@ -554,6 +554,9 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 	if audioFilter == "" {
 		audioFilter = "anull"
 	}
+	if input.Analysis.Duration > 0 {
+		audioFilter = fmt.Sprintf("%s,apad=whole_dur=%.6f", audioFilter, input.Analysis.Duration)
+	}
 	args := []string{"-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", fmt.Sprintf("%dx%d", width, height), "-r", "30", "-i", "pipe:0", "-i", input.SourcePath, "-map", "0:v:0", "-map", "1:a:0", "-af", audioFilter, "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2", "-f", "hls", "-hls_time", "4", "-hls_list_size", "0", "-hls_playlist_type", "event", "-hls_flags", "independent_segments", "-hls_segment_filename", filepath.Join(outDir, segmentPattern(id)), filepath.Join(outDir, playlistName(id))}
 	cmd := exec.CommandContext(ctx, ffmpeg, args...)
 	hideWindow(cmd)
