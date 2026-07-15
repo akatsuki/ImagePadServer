@@ -630,7 +630,7 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 	}
 	// Mux audio in a separate pass. Keeping audio away from the raw-video
 	// encoder prevents FFmpeg's audio EOF from truncating the final video GOP.
-	finalArgs := []string{"-hide_banner", "-loglevel", "error", "-i", tmpPath, "-i", input.SourcePath, "-map", "0:v:0", "-map", "1:a:0", "-af", audioFilter, "-c:v", "copy", "-c:a", "aac", "-ar", "48000", "-ac", "2", "-f", "hls", "-hls_time", "4", "-hls_list_size", "0", "-hls_playlist_type", "event", "-hls_flags", "independent_segments", "-hls_segment_filename", filepath.Join(outDir, segmentPattern(id)), filepath.Join(outDir, playlistName(id))}
+	finalArgs := []string{"-hide_banner", "-loglevel", "error", "-i", tmpPath, "-i", input.SourcePath, "-map", "0:v:0", "-map", "1:a:0", "-af", audioFilter, "-fps_mode", "passthrough", "-max_interleave_delta", "0", "-c:v", "copy", "-c:a", "aac", "-ar", "48000", "-ac", "2", "-f", "hls", "-hls_time", "4", "-hls_list_size", "0", "-hls_playlist_type", "event", "-hls_flags", "independent_segments", "-hls_segment_filename", filepath.Join(outDir, segmentPattern(id)), filepath.Join(outDir, playlistName(id))}
 	finalCmd := exec.CommandContext(ctx, ffmpeg, finalArgs...)
 	hideWindow(finalCmd)
 	var finalErr bytes.Buffer
