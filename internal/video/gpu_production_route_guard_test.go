@@ -1,0 +1,67 @@
+package video
+
+import (
+	"os"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"strings"
+	"testing"
+)
+
+// TestGPUProductionRoutesDoNotReintroduceCPUComposition is a narrow migration
+// guard. CPU ASS/showwaves composition remains available only through the
+// explicitly named reference helpers; production single-track and playlist
+// paths must feed the same canonical scene into the GPU sidecar.
+func TestGPUProductionRoutesDoNotReintroduceCPUComposition(t *testing.T) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	root := filepath.Dir(file)
+	audioSource := readRouteSource(t, filepath.Join(root, "audio_visualizer.go"))
+	radioSource := readRouteSource(t, filepath.Join(root, "radio_render.go"))
+
+	for name, source := range map[string]string{
+		"single-track GPU route": routeBody(sourceBetween(audioSource, "func runAudioVisualizerHLSGPU", "func writeGPUFrame")),
+		"playlist GPU route":     routeBody(sourceBetween(radioSource, "func renderRadioTrackGPU", "func audioVisualizerMP4ArgsWithEncoder")),
+	} {
+		for _, banned := range []string{"showwaves", "showfreqs", "drawtext", "ass=", "subtitles"} {
+			if strings.Contains(strings.ToLower(source), banned) {
+				t.Errorf("%s contains CPU composition filter %q", name, banned)
+			}
+		}
+		if !strings.Contains(source, "CanonicalMusicScene") {
+			t.Errorf("%s does not use CanonicalMusicScene", name)
+		}
+	}
+}
+
+func readRouteSource(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(b)
+}
+
+func sourceBetween(source, start, end string) string {
+	i := strings.Index(source, start)
+	if i < 0 {
+		return ""
+	}
+	source = source[i:]
+	if j := strings.Index(source, end); j >= 0 {
+		return source[:j]
+	}
+	return source
+}
+
+func routeBody(source string) string {
+	// Remove comments so the guard checks the executable route body rather than
+	// the migration rationale mentioning the old filters.
+	source = regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(source, "")
+	source = regexp.MustCompile(`//[^\r\n]*`).ReplaceAllString(source, "")
+	return source
+}
