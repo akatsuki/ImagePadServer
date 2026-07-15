@@ -11,7 +11,10 @@ const SHADER: &str = r#"
 struct Params {
   width: u32, height: u32, row_words: u32, sequence: u32,
   rms: u32, peak: u32, scene_enabled: u32, glyph_count: u32,
-  spectrum: array<u32, 24>,
+  // Uniform-buffer arrays have a 16-byte alignment/stride in WGSL. Packing
+  // the 24 scalar samples into six vec4s keeps the host's 32-word layout
+  // unchanged while satisfying that rule on all backends.
+  spectrum: array<vec4<u32>, 6>,
 }
 @group(0) @binding(0) var<storage, read_write> pixels: array<u32>;
 @group(0) @binding(1) var<uniform> params: Params;
@@ -42,7 +45,9 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     for (var band: u32 = 0u; band < 24u; band = band + 1u) {
       let left = f32(band) / 24.0;
       let right = f32(band + 1u) / 24.0;
-      if (fx >= left && fx < right) { level = f32(params.spectrum[band]) / 65535.0; }
+      if (fx >= left && fx < right) {
+        level = f32(params.spectrum[band / 4u][band % 4u]) / 65535.0;
+      }
     }
     let bars = select(0.0, 0.35 + level * 0.5, fy > (1.0 - level * 0.65));
     var glyph = 0.0;
@@ -417,5 +422,26 @@ mod tests {
         assert!((x0 - 0.1).abs() < 1e-6);
         assert!((atlas_x0 - 8.0 / 256.0).abs() < 1e-6);
         assert!(x1 > x0);
+    }
+
+    #[test]
+    fn shader_uniform_array_uses_wgsl_16_byte_stride() {
+        // Keep this contract close to the host packing: six vec4s are exactly
+        // 24 u32 samples, and avoid regressing to an illegally aligned
+        // array<u32, 24> uniform declaration (which makes wgpu exit at
+        // shader-module validation on some drivers).
+        assert!(SHADER.contains("spectrum: array<vec4<u32>, 6>"));
+        assert!(SHADER.contains("params.spectrum[band / 4u][band % 4u]"));
+        assert!(!SHADER.contains("spectrum: array<u32, 24>"));
+    }
+
+    #[test]
+    #[ignore = "requires a host GPU adapter; run explicitly for device smoke testing"]
+    fn shader_module_creation_smoke() {
+        // Renderer::new creates the shader module and compute pipeline. This
+        // test is intentionally opt-in because CI runners may not expose an
+        // adapter; fresh release sidecars should run it as part of the hello
+        // protocol smoke test.
+        Renderer::new().expect("WGSL shader module/pipeline creation");
     }
 }
