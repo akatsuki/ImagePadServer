@@ -66,7 +66,8 @@ T0 ──┬── T1 ──┐
 - **location**: `internal/video/gpu_music_renderer.go`, `internal/video/shaders/music_visualizer.wgsl`, `gpu/playlist-compositord/src/gpu_render.rs`
 - **description**: Render background, artwork, waveform, spectrum, glow, text ownership, and fades according to `MusicSceneSpec`. Use a pre-rasterized glyph atlas with font identity, fallback order, missing-glyph behavior, Unicode coverage, and atlas bounds defined by T2.
 - **validation**: GPU integration fixtures match CPU reference structure/colors within documented tolerances; glyph fallback and Unicode fixtures pass; ASS/showwaves duplication is rejected.
-- **status**: Not Completed
+- **status**: Partial
+- **log**: `MusicScenePayload` is consumed by the Rust renderer; WGSL now renders deterministic background glow, waveform, and 24-band spectrum while preserving scene-absent compatibility (`c8a6a10`). Rust 18 tests and Go GPU-focused tests pass. Artwork texture upload and glyph atlas rasterization remain for T4/T5.
 
 ### T4: Route single-track HLS through the GPU producer
 - **depends_on**: [T1, T2, T3]
