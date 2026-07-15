@@ -1,5 +1,30 @@
 use serde::{Deserialize, Serialize};
 
+/// Go's encoding/json marshals []byte as a base64 JSON string, while a plain
+/// serde Vec<u8> is an array of numbers. Accept both wire forms so sidecars
+/// can interoperate with existing Go producers, but always emit Go-compatible
+/// base64 strings.
+mod base64_bytes {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use serde::{de::Error, Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
+    where S: Serializer {
+        serializer.serialize_str(&STANDARD.encode(bytes))
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+    where D: Deserializer<'de> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire { Text(String), Bytes(Vec<u8>) }
+        match Wire::deserialize(deserializer)? {
+            Wire::Text(value) => STANDARD.decode(value.as_bytes()).map_err(D::Error::custom),
+            Wire::Bytes(value) => Ok(value),
+        }
+    }
+}
+
 pub const CONTRACT_VERSION: u16 = 1;
 pub const ROW_ALIGNMENT: u32 = 256;
 pub const MAX_DIMENSION: u32 = 16_384;
@@ -62,6 +87,7 @@ pub struct ArtworkMetadata {
     pub color_space: ColorSpace,
     pub alpha: bool,
     #[serde(default)]
+    #[serde(with = "base64_bytes")]
     pub payload: Vec<u8>,
     #[serde(default)]
     pub asset_hash: String,
@@ -82,6 +108,7 @@ pub struct GlyphAtlasMetadata {
     /// Optional premultiplied-RGBA atlas pixels. Empty means the renderer
     /// should use its deterministic tofu fallback.
     #[serde(default)]
+    #[serde(with = "base64_bytes")]
     pub payload: Vec<u8>,
     #[serde(default)]
     pub glyphs: Vec<GlyphEntry>,
@@ -185,6 +212,7 @@ pub struct GpuFrame {
     pub color_space: ColorSpace,
     pub alpha: bool,
     pub ownership: Ownership,
+    #[serde(with = "base64_bytes")]
     pub payload: Vec<u8>,
 }
 
@@ -445,5 +473,17 @@ mod tests {
         assert!(artwork.validate().is_ok());
         artwork.payload = vec![0; 255];
         assert_eq!(artwork.validate(), Err(ContractError::InvalidArtwork));
+    }
+
+    #[test]
+    fn byte_payload_accepts_go_base64_and_legacy_array() {
+        let json = r#"{"texture_id":"cover","width":1,"height":1,"row_stride":256,"format":"Rgba8","color_space":"Srgb","alpha":true,"payload":"AQID","asset_hash":""}"#;
+        let artwork: ArtworkMetadata = serde_json::from_str(json).unwrap();
+        assert_eq!(artwork.payload, vec![1, 2, 3]);
+        let legacy = json.replace("\"AQID\"", "[1,2,3]");
+        let artwork: ArtworkMetadata = serde_json::from_str(&legacy).unwrap();
+        assert_eq!(artwork.payload, vec![1, 2, 3]);
+        let encoded = serde_json::to_value(&artwork).unwrap();
+        assert_eq!(encoded["payload"], "AQID");
     }
 }
