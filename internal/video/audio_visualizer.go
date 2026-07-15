@@ -561,6 +561,9 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 	// duration-derived count, then clamp scene sampling to the last analysis
 	// frame. Using len(Analysis.Frames) here drops the final partial tick.
 	frameCount := canonicalMusicVideoFrameCount(input.Analysis)
+	if len(input.Analysis.Frames) > 0 {
+		frameCount = len(input.Analysis.Frames) + 6
+	}
 	tmp, err := os.CreateTemp(outDir, "gpu-video-*.ts")
 	if err != nil {
 		return err
@@ -568,7 +571,7 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 	tmpPath := tmp.Name()
 	_ = tmp.Close()
 	defer os.Remove(tmpPath)
-	args := []string{"-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", fmt.Sprintf("%dx%d", width, height), "-r", "30", "-i", "pipe:0", "-frames:v", strconv.Itoa(frameCount), "-fps_mode", "cfr", "-an", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-f", "mpegts", tmpPath}
+	args := []string{"-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", fmt.Sprintf("%dx%d", width, height), "-r", "30", "-i", "pipe:0", "-frames:v", strconv.Itoa(frameCount), "-fps_mode", "cfr", "-an", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-f", "mpegts", tmpPath}
 	cmd := exec.CommandContext(ctx, ffmpeg, args...)
 	hideWindow(cmd)
 	in, err := cmd.StdinPipe()

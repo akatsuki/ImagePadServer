@@ -16,8 +16,12 @@ import (
 func CanonicalMusicScene(input AudioRenderInput, frameIndex uint64, ptsNS int64) MusicScenePayload {
 	var spectrum []uint16
 	var rms, peak float64
-	if int(frameIndex) < len(input.Analysis.Frames) {
-		f := input.Analysis.Frames[frameIndex]
+	if len(input.Analysis.Frames) > 0 {
+		idx := int(frameIndex)
+		if idx >= len(input.Analysis.Frames) {
+			idx = len(input.Analysis.Frames) - 1
+		}
+		f := input.Analysis.Frames[idx]
 		spectrum = make([]uint16, len(f.Spectrum24))
 		for i, v := range f.Spectrum24 {
 			if v < 0 || math.IsNaN(v) {
