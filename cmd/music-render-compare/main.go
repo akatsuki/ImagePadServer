@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,16 +25,33 @@ type probeResult struct {
 	Frames   int64   `json:"frames"`
 }
 type renderResult struct {
-	Output      string      `json:"output,omitempty"`
-	Error       string      `json:"error,omitempty"`
-	WallSeconds float64     `json:"wallSeconds"`
-	Probe       probeResult `json:"probe"`
+	Output      string            `json:"output,omitempty"`
+	Error       string            `json:"error,omitempty"`
+	WallSeconds float64           `json:"wallSeconds"`
+	Probe       probeResult       `json:"probe"`
+	Screenshots map[string]string `json:"screenshots,omitempty"`
 }
 type report struct {
 	Input       string       `json:"input"`
+	InputSHA256 string       `json:"inputSha256,omitempty"`
 	GeneratedAt time.Time    `json:"generatedAt"`
+	FFmpeg      string       `json:"ffmpeg,omitempty"`
+	GPUAdapter  string       `json:"gpuAdapter,omitempty"`
 	CPU         renderResult `json:"cpu"`
 	GPU         renderResult `json:"gpu"`
+}
+
+func sha256File(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
 func latestAudio(dir string) (string, error) {
@@ -122,7 +141,26 @@ func render(ctx context.Context, gpu bool, out, ffmpeg string, input video.Audio
 	}
 	r.Output = matches[0]
 	r.Probe, _ = probe(ctx, r.Output)
+	r.Screenshots = extractScreenshots(ctx, ffmpeg, r.Output, out, r.Probe.Duration)
 	return r
+}
+
+func extractScreenshots(ctx context.Context, ffmpeg, playlist, out string, duration float64) map[string]string {
+	result := map[string]string{}
+	if duration <= 0 {
+		duration = 1
+	}
+	for name, at := range map[string]float64{"start": 0, "mid": duration / 2, "end": duration - 0.05} {
+		if at < 0 {
+			at = 0
+		}
+		path := filepath.Join(out, name+".png")
+		cmd := exec.CommandContext(ctx, ffmpeg, "-y", "-ss", fmt.Sprintf("%.3f", at), "-i", playlist, "-frames:v", "1", "-vf", "format=rgba", path)
+		if err := cmd.Run(); err == nil {
+			result[name] = path
+		}
+	}
+	return result
 }
 
 func main() {
@@ -159,7 +197,15 @@ func main() {
 	inputSpec := video.AudioRenderInput{SourcePath: *input, Kind: video.SourceMusic, Analysis: analysis}
 	id := "compare"
 	ctx := context.Background()
-	rep := report{Input: *input, GeneratedAt: time.Now()}
+	inputHash, _ := sha256File(*input)
+	adapter := os.Getenv("IMAGEPAD_GPU_ADAPTER")
+	if adapter == "" {
+		adapter = os.Getenv("WGPU_ADAPTER_NAME")
+	}
+	if adapter == "" {
+		adapter = "unknown (set IMAGEPAD_GPU_ADAPTER to record explicit adapter)"
+	}
+	rep := report{Input: *input, InputSHA256: inputHash, GeneratedAt: time.Now(), FFmpeg: ff, GPUAdapter: adapter}
 	rep.CPU = render(ctx, false, filepath.Join(*output, "cpu"), ff, inputSpec, id, p)
 	rep.GPU = render(ctx, true, filepath.Join(*output, "gpu"), ff, inputSpec, id, p)
 	b, _ := json.MarshalIndent(rep, "", "  ")
