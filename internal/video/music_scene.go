@@ -41,13 +41,35 @@ func CanonicalMusicScene(input AudioRenderInput, frameIndex uint64, ptsNS int64)
 	ratio := 0.0
 	if duration > 0 { ratio = sceneClamp01(current / duration) }
 	layout, _ := LayoutForSize(1280, 720)
-	scene := MusicScenePayload{Schema: MusicSceneSchema, Feature: AudioFeatureFrame{Schema: GPUContractVersion, SampleRateHz: 48000, FrameIndex: frameIndex, PTSNs: ptsNS, SpectrumQ16: spectrum, RMSQ15: uint16(math.Round(sceneClamp01(rms) * 32767)), PeakQ15: uint16(math.Round(sceneClamp01(peak) * 32767))}, Layout: musicSceneLayout(layout), Dynamics: musicSceneDynamics(input.Analysis.Features, current, duration, ratio), Palette: MusicScenePalette{Primary: [4]uint8{255,255,255,255}, Accent: [4]uint8{80,200,255,255}, Background: [4]uint8{10,12,18,255}, Overlay: [4]uint8{0,0,0,92}, BlurStrength: 220, Readability: 220}}
+	palette := canonicalScenePalette(input)
+	scene := MusicScenePayload{Schema: MusicSceneSchema, Feature: AudioFeatureFrame{Schema: GPUContractVersion, SampleRateHz: 48000, FrameIndex: frameIndex, PTSNs: ptsNS, SpectrumQ16: spectrum, RMSQ15: uint16(math.Round(sceneClamp01(rms) * 32767)), PeakQ15: uint16(math.Round(sceneClamp01(peak) * 32767))}, Layout: musicSceneLayout(layout), Dynamics: musicSceneDynamics(input.Analysis.Features, current, duration, ratio), Palette: palette}
 	if a, ok := normalizeArtwork(input.ArtworkPath); ok {
 		scene.Artwork = &a
 	}
-	scene.GlyphAtlas = normalizeGlyphs(input.Metadata)
+	scene.GlyphAtlas = normalizeGlyphs(input.Metadata, layout, palette.Primary)
 	scene.Fingerprint = musicSceneFingerprint(scene)
 	return scene
+}
+
+// canonicalScenePalette keeps GPU colors tied to the same feature palette used
+// by the CPU visualizer. Artwork contributes a restrained darkened average for
+// the background, preserving readability while avoiding a fixed cyan scene.
+func canonicalScenePalette(input AudioRenderInput) MusicScenePalette {
+	p := PaletteForFeatures(input.Analysis.Features)
+	primary := [4]uint8{255, 255, 255, 255}
+	accent := [4]uint8{p.End.R, p.End.G, p.End.B, 255}
+	background := [4]uint8{p.Start.R / 3, p.Start.G / 3, p.Start.B / 3, 255}
+	if a, ok := normalizeArtwork(input.ArtworkPath); ok && len(a.Payload) >= 4 {
+		var r, g, b, n uint64
+		for i := 0; i+3 < len(a.Payload); i += 4 {
+			if a.Payload[i+3] < 16 { continue }
+			r += uint64(a.Payload[i]); g += uint64(a.Payload[i+1]); b += uint64(a.Payload[i+2]); n++
+		}
+		if n > 0 {
+			background = [4]uint8{uint8(r / n / 3), uint8(g / n / 3), uint8(b / n / 3), 255}
+		}
+	}
+	return MusicScenePalette{Primary: primary, Accent: accent, Background: background, Overlay: [4]uint8{0, 0, 0, 92}, BlurStrength: 220, Readability: 220}
 }
 
 func musicSceneLayout(l VisualizerLayout) MusicSceneLayout {
@@ -120,13 +142,20 @@ func normalizeArtwork(path string) (ArtworkMetadata, bool) {
 	return ArtworkMetadata{TextureID: "artwork-" + hex.EncodeToString(sum[:8]), Width: uint32(w), Height: uint32(h), RowStride: uint32(stride), Format: PixelRGBA8, ColorSpace: ColorSRGB, Alpha: true, Payload: payload, AssetHash: hex.EncodeToString(sum[:])}, true
 }
 
-func normalizeGlyphs(meta AudioMetadata) *GlyphAtlasMetadata {
-	text := strings.TrimSpace(strings.Join([]string{meta.Title, meta.Artist, meta.Album}, " · "))
-	if text == "" {
+func normalizeGlyphs(meta AudioMetadata, layout VisualizerLayout, primary [4]uint8) *GlyphAtlasMetadata {
+	fields := []struct { text string; rect Rect; size float32 }{
+		{strings.TrimSpace(meta.Title), layout.Title, 48},
+		{strings.TrimSpace(meta.Artist), layout.Artist, 28},
+		{strings.TrimSpace(meta.Album), layout.Album, 24},
+	}
+	var all []rune
+	for _, f := range fields { all = append(all, []rune(f.text)...); if f.text != "" { all = append(all, '·') } }
+	if len(all) > 0 && all[len(all)-1] == '·' { all = all[:len(all)-1] }
+	if len(all) == 0 {
 		return nil
 	}
 	const gw, gh, cols = 24, 40, 32
-	runes := []rune(text)
+	runes := all
 	if len(runes) > 256 {
 		runes = runes[:256]
 	}
@@ -156,6 +185,10 @@ func normalizeGlyphs(meta AudioMetadata) *GlyphAtlasMetadata {
 		}
 	}
 	sum := sha256.Sum256(payload)
-	runs := []TextRun{{Text: text, X: 96, Y: 500, SizePx: 40, RGBA: [4]uint8{255, 255, 255, 255}, Opacity: 1}}
+	runs := make([]TextRun, 0, len(fields))
+	for _, f := range fields {
+		if f.text == "" { continue }
+		runs = append(runs, TextRun{Text: f.text, X: float32(f.rect.X), Y: float32(f.rect.Y), SizePx: f.size, RGBA: primary, Opacity: 1})
+	}
 	return &GlyphAtlasMetadata{TextureID: "glyphs-" + hex.EncodeToString(sum[:8]), FontFamily: "canonical-sans", FontWeight: 500, FallbackOrder: []string{"Noto Sans CJK JP", "Segoe UI", "sans-serif"}, Width: uint32(w), Height: uint32(h), RowStride: uint32(stride), GlyphCount: uint32(len(glyphs)), MissingGlyphID: "?", Payload: payload, AssetHash: hex.EncodeToString(sum[:]), Glyphs: glyphs, TextRuns: runs}
 }

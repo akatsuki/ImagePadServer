@@ -27,8 +27,11 @@ func TestCanonicalMusicSceneNormalizesAssetsAndMetadata(t *testing.T) {
 	if s.Artwork == nil || len(s.Artwork.Payload) == 0 || s.Artwork.AssetHash == "" {
 		t.Fatal("artwork was not normalized")
 	}
-	if s.GlyphAtlas == nil || len(s.GlyphAtlas.Glyphs) == 0 || len(s.GlyphAtlas.TextRuns) != 1 {
+	if s.GlyphAtlas == nil || len(s.GlyphAtlas.Glyphs) == 0 || len(s.GlyphAtlas.TextRuns) != 3 {
 		t.Fatal("text assets were not normalized")
+	}
+	if s.GlyphAtlas.TextRuns[0].X != float32(s.Layout.Title.X) || s.GlyphAtlas.TextRuns[1].Y != float32(s.Layout.Artist.Y) || s.GlyphAtlas.TextRuns[2].SizePx != 24 {
+		t.Fatalf("text runs did not preserve canonical field rectangles: %+v", s.GlyphAtlas.TextRuns)
 	}
 	if err := s.Validate(); err != nil {
 		t.Fatal(err)
