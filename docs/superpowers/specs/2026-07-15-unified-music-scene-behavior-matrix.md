@@ -6,6 +6,33 @@ This matrix records the behavior that the unified `MusicSceneSpec` migration
 must preserve. It is intentionally descriptive: it does not change routing or
 declare the existing CPU path to be the target production architecture.
 
+## CPU reference inventory (T3)
+
+This is the source-of-truth inventory for the CPU reference renderer. The GPU
+scene must consume the same normalized values and preserve ownership, geometry
+and timing; this is a behavioral contract, not a pixel-golden test.
+
+| Element | CPU implementation / evidence | Fixture assertion |
+|---|---|---|
+| Artwork tile | `SelectArtwork`, `ExtractEmbeddedArtwork`, `visualizer_color.go`, `RenderFallbackArtwork` | Front Cover wins; otherwise largest area/bytes; SoundCloud art is source-gated; cover-fit, rounded tile and shadow use `Layout.Artwork`; no artwork is a deterministic note tile |
+| Background/palette | `artworkAccent` and readability helpers in `visualizer_color.go` | 32px analysis, neutral/chroma clamp and readable foreground are preserved; dim/gradient overlay owns the canvas behind artwork |
+| Metadata | `ResolveAudioMetadata`, `BuildVisualizerASSWithMode`, `MeasureTextWithFFmpeg` | title/artist/album are independently optional; empty fields emit no command; title 600/48px, artist 500/28px, album 400/24px at 1280px; Unicode uses resolved fallback faces |
+| Text motion | `ScrollOffset`, `buildScrollingDialogue` | 3s pause, 40 canonical px/s, right-edge clamp, cycle reset; clip padding `max(1, round(2*width/1280))` |
+| Spectrum/waveform | `streamAnalyzer`, `drawSpectrumFixedFade`, waveform recipe | 24 log bands; frame-clock indexed features; fixed bottom fade; waveform uses the canonical rectangle |
+| Loudness/trend/guides | `renderLoudnessLayer` and `visualizer_loudness.go` | detailed envelope, smoothed trend and guide lines occupy `Layout.Loudness`; quiet/loud fixtures differ |
+| Playback UI | ASS time events and progress recipe | `FormatMediaTime` elapsed/total; rail/thumb and edge fade are frame-time driven; start/mid/end cover final state |
+| Scaling | `LayoutForSize` from `baseLayout` | 360/720/1080 heights use `math.Round` x/y scaling; every element box is recorded |
+
+### Deterministic fixture set
+
+The fixture names are `embedded-cover-latin`, `no-artwork-fallback`,
+`unicode-japanese-long-scroll`, `quiet-envelope`, `loud-envelope`, and
+`fade-start-mid-end`. Each records source identity, metadata presence, artwork
+ownership, feature-frame index, output size (640x360, 1280x720, 1920x1080),
+element rectangles and expected content ownership. It must not contain encoded
+video bytes or depend on installed fonts/FFmpeg output; those belong to the
+integration gate.
+
 ## Rendering and layout
 
 | Contract | Single-track HLS (`RunAudioVisualizerHLS`) | Playlist track (`RenderRadioTrack`) | Unified target / tolerance |
@@ -66,4 +93,3 @@ coordinates, and color conversion rounding (one code value per channel). Not
 allowed are changes to geometry, text ownership/content, feature normalization,
 fade windows, frame count, PTS order, alpha/color-space contract, or mux stream
 parameters.
-
