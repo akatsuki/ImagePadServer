@@ -85,7 +85,7 @@ T6 ─────────────────┘
 - **description**: Define the versioned source-of-truth scene plus deterministic asset normalization: canonical layout rects, crop/overlay/palette decision, decoded RGBA artwork/fallback and asset hashes, font-atlas generation, glyph runs, progress/time, loudness/waveform/trend data, fades and source identity. Populate assets once per job and compact frame inputs once per HLS/playlist frame; preserve bounded payloads and backwards compatibility where required.
 - **validation**: Go/Rust round-trip, limit, Unicode fallback, format/color-space, 360/720/1080, frame-clock and fade fixtures pass. HLS and playlist have identical canonical JSON/asset hashes and frame-input fingerprints for the same source/frame—not encoded-video byte identity.
 - **status**: Partial
-- **log**: Artwork SHA-256 normalization, bounded glyph atlas/TextRuns, canonical layout, progress/time/fade, loudness/trend/guides, palette and frame fingerprint are now populated; Go/Rust field-name/default compatibility was corrected (`94675db`, `5b76f3f`, `66d3d32`). Full CPU-derived adaptive palette and exact text metrics remain.
+- **log**: Artwork SHA-256 normalization, bounded glyph atlas/TextRuns, canonical layout, progress/time/fade, loudness/trend/guides, artwork-derived palette and frame fingerprint are populated; Go/Rust field-name/default compatibility was corrected (`94675db`, `5b76f3f`, `66d3d32`). Separate Title/Artist/Album runs now use canonical rects (`89f7225`). Exact CPU font rasterization/metrics remain.
 - **files edited/created**: `internal/video/music_scene.go`, `internal/video/gpu_contracts.go`, `gpu/playlist-compositord/src/contracts.rs`
 
 ### T5: Implement full GPU scene parity
@@ -95,7 +95,7 @@ T6 ─────────────────┘
 - **description**: Render every T3 visual group on the GPU in the canonical layer order: artwork tile/fallback, blurred background/palette, metadata glyph runs, bars/waveform/loudness, guide lines, progress/timing and fades. Use pre-rasterized textures/atlas only; no FFmpeg ASS/drawtext/showwaves production overlay.
 - **validation**: GPU fixtures show artwork and Japanese metadata at exact canonical rectangles; no-artwork/missing-glyph fallback works; visual comparisons meet structural/color thresholds for all fixture frames.
 - **status**: Partial
-- **log**: GPU artwork texture/fallback, glyph instances, palette/progress/loudness/fade uniforms are wired and shader module validation passes (`55ed735`, `5b76f3f`). Full title/artist/album metric fidelity, blurred background and exact loudness/trend sampling remain.
+- **log**: GPU artwork texture/fallback, glyph instances, palette/progress/loudness/fade uniforms are wired; loudness/trend now use bounded 64+64 storage samples and canonical rects scale to output (`41faa64`, `b154f1b`). Full CPU font rasterization, blurred background equivalence and pixel-level geometry gates remain.
 - **files edited/created**: `gpu/playlist-compositord/src/gpu_render.rs`
 
 ### T6a: Strengthen comparison artifacts and CPU baseline
@@ -104,8 +104,8 @@ T6 ─────────────────┘
 - **location**: `cmd/music-render-compare`, `scripts/`, documentation
 - **description**: Make the compare command choose a read-only cached audio input, hash it, export CPU output and fixed screenshots, record FFmpeg version plus analysis/scene/encode/mux timing and real-time factor. Preserve artifacts and report GPU startup failure distinctly. Reserve image metric implementation for T6b.
 - **validation**: The command writes CPU output, screenshots, source hash, JSON/Markdown report and stage timings without changing the cache; controlled failure is explicit and artifacts are retained.
-- **status**: Partial
-- **log**: Existing `cmd/music-render-compare` selects a read-only cached audio file, emits CPU/GPU HLS, JSON/Markdown and wall time; short cache copy now completes both paths (CPU 1.53s, GPU 37.64s, 5.23s audio). Structural image metrics and full metadata remain.
+- **status**: Completed
+- **log**: Compare command now records input SHA-256, FFmpeg path, GPU adapter metadata, CPU/GPU wall time, ffprobe duration/frame count and start/mid/end PNGs (`4ca3c24`). Short cached input completed both paths: CPU 2.03s/157 frames/5.23s, GPU 8.67s/151 frames/5.03s.
 - **files edited/created**: `cmd/music-render-compare/main.go`
 
 ### T6b: Run GPU comparison metrics and hardware evidence
