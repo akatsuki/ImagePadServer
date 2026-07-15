@@ -174,8 +174,15 @@ fn scene_uniform_words(
         words[52..56].copy_from_slice(&p.overlay.map(|v| v as u32));
         let rects = [&scene.layout.artwork, &scene.layout.title, &scene.layout.artist, &scene.layout.album,
             &scene.layout.spectrum, &scene.layout.loudness, &scene.layout.progress, &scene.layout.time];
-        for (i, r) in rects.iter().enumerate() {
-            words[56 + i * 4..60 + i * 4].copy_from_slice(&[r.x as u32, r.y as u32, r.w as u32, r.h as u32]);
+          // Layout coordinates are canonical 1200x720 units; scale them to the
+          // actual output so 180p comparison renders retain the same composition.
+          for (i, r) in rects.iter().enumerate() {
+              let sx = width as f32 / 1200.0;
+              let sy = height as f32 / 720.0;
+              words[56 + i * 4..60 + i * 4].copy_from_slice(&[
+                  (r.x as f32 * sx) as u32, (r.y as f32 * sy) as u32,
+                  (r.w as f32 * sx) as u32, (r.h as f32 * sy) as u32,
+              ]);
         }
         words[88..92].copy_from_slice(&d.loudness_guides.map(|v| v as u32));
     }
