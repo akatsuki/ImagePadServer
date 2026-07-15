@@ -33,6 +33,8 @@ pub struct ArtworkMetadata {
     pub alpha: bool,
     #[serde(default)]
     pub payload: Vec<u8>,
+    #[serde(default)]
+    pub asset_hash: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -55,6 +57,8 @@ pub struct GlyphAtlasMetadata {
     pub glyphs: Vec<GlyphEntry>,
     #[serde(default)]
     pub text_runs: Vec<TextRun>,
+    #[serde(default)]
+    pub asset_hash: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -382,7 +386,7 @@ mod tests {
             texture_id: "atlas".into(), font_family: "Noto Sans CJK".into(),
             font_weight: 400, fallback_order: vec!["Noto Color Emoji".into(), "sans".into()],
             width: 256, height: 256, row_stride: 1024, glyph_count: 3,
-            missing_glyph_id: "tofu".into(), payload: Vec::new(), glyphs: Vec::new(), text_runs: Vec::new(),
+            missing_glyph_id: "tofu".into(), payload: Vec::new(), glyphs: Vec::new(), text_runs: Vec::new(), asset_hash: String::new(),
         };
         assert!(atlas.validate().is_ok());
         assert_eq!(atlas.font_order().collect::<Vec<_>>(), vec!["Noto Sans CJK", "Noto Color Emoji", "sans"]);
@@ -396,7 +400,7 @@ mod tests {
         let mut artwork = ArtworkMetadata {
             texture_id: "cover".into(), width: 64, height: 64, row_stride: 256,
             format: PixelFormat::Rgba8, color_space: ColorSpace::Srgb, alpha: true,
-            payload: Vec::new(),
+            payload: Vec::new(), asset_hash: String::new(),
         };
         assert!(artwork.validate().is_ok());
         artwork.payload = vec![0; 255];

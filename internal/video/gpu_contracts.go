@@ -37,18 +37,40 @@ type ArtworkMetadata struct {
 	ColorSpace ColorSpace  `json:"color_space"`
 	Alpha      bool        `json:"alpha"`
 	Payload    []byte      `json:"payload,omitempty"`
+	AssetHash  string      `json:"asset_hash,omitempty"`
 }
 
 type GlyphAtlasMetadata struct {
-	TextureID      string   `json:"texture_id"`
-	FontFamily     string   `json:"font_family"`
-	FontWeight     uint16   `json:"font_weight"`
-	FallbackOrder  []string `json:"fallback_order,omitempty"`
-	Width          uint32   `json:"width"`
-	Height         uint32   `json:"height"`
-	RowStride      uint32   `json:"row_stride"`
-	GlyphCount     uint32   `json:"glyph_count"`
-	MissingGlyphID string   `json:"missing_glyph_id"`
+	TextureID      string       `json:"texture_id"`
+	FontFamily     string       `json:"font_family"`
+	FontWeight     uint16       `json:"font_weight"`
+	FallbackOrder  []string     `json:"fallback_order,omitempty"`
+	Width          uint32       `json:"width"`
+	Height         uint32       `json:"height"`
+	RowStride      uint32       `json:"row_stride"`
+	GlyphCount     uint32       `json:"glyph_count"`
+	MissingGlyphID string       `json:"missing_glyph_id"`
+	Payload        []byte       `json:"payload,omitempty"`
+	AssetHash      string       `json:"asset_hash,omitempty"`
+	Glyphs         []GlyphEntry `json:"glyphs,omitempty"`
+	TextRuns       []TextRun    `json:"text_runs,omitempty"`
+}
+
+type GlyphEntry struct {
+	ID      string  `json:"id"`
+	X       uint32  `json:"x"`
+	Y       uint32  `json:"y"`
+	Width   uint32  `json:"width"`
+	Height  uint32  `json:"height"`
+	Advance float32 `json:"advance"`
+}
+type TextRun struct {
+	Text    string   `json:"text"`
+	X       float32  `json:"x"`
+	Y       float32  `json:"y"`
+	SizePx  float32  `json:"size_px"`
+	RGBA    [4]uint8 `json:"rgba"`
+	Opacity float32  `json:"opacity,omitempty"`
 }
 
 func (s MusicScenePayload) Validate() error {
