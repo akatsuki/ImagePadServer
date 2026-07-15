@@ -56,7 +56,7 @@ fn response_for(request: Request, renderer: &mut Option<gpu_render::Renderer>) -
             scene,
         } => match renderer.as_ref() {
             Some(renderer) => {
-                if let Some(scene) = scene {
+                if let Some(scene) = scene.as_ref() {
                     if let Err(error) = scene.validate() {
                         return (
                             Response::Error {
@@ -67,7 +67,7 @@ fn response_for(request: Request, renderer: &mut Option<gpu_render::Renderer>) -
                         );
                     }
                 }
-                match renderer.render(width, height, sequence, pts_ns) {
+                match renderer.render_with_scene(width, height, sequence, pts_ns, scene.as_ref()) {
                     Ok(frame) => (Response::Frame { frame }, false),
                     Err(message) => (
                         Response::Error {

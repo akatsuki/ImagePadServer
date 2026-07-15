@@ -1,21 +1,49 @@
 use crate::adapter;
 use crate::contracts::{
-    ColorSpace, GpuFrame, Ownership, PixelFormat, CONTRACT_VERSION, ROW_ALIGNMENT,
+    ColorSpace, GpuFrame, MusicScenePayload, Ownership, PixelFormat, CONTRACT_VERSION,
+    ROW_ALIGNMENT,
 };
 use std::sync::mpsc::channel;
 use wgpu::util::DeviceExt;
 
 const SHADER: &str = r#"
-struct Params { width: u32, height: u32, row_words: u32, sequence: u32 }
+struct Params {
+  width: u32, height: u32, row_words: u32, sequence: u32,
+  rms: u32, peak: u32, scene_enabled: u32, _pad: u32,
+  spectrum: array<u32, 24>,
+}
 @group(0) @binding(0) var<storage, read_write> pixels: array<u32>;
 @group(0) @binding(1) var<uniform> params: Params;
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   if (id.x >= params.width || id.y >= params.height) { return; }
   let i = id.y * params.row_words + id.x;
-  let r = (id.x + params.sequence) & 255u;
-  let g = (id.y + params.sequence * 3u) & 255u;
-  let b = ((id.x + id.y) / 2u + params.sequence * 5u) & 255u;
+  var r: u32;
+  var g: u32;
+  var b: u32;
+  if (params.scene_enabled == 0u) {
+    r = (id.x + params.sequence) & 255u;
+    g = (id.y + params.sequence * 3u) & 255u;
+    b = ((id.x + id.y) / 2u + params.sequence * 5u) & 255u;
+  } else {
+    let fx = f32(id.x) / max(1.0, f32(params.width - 1u));
+    let fy = f32(id.y) / max(1.0, f32(params.height - 1u));
+    let rms = f32(params.rms) / 32767.0;
+    let peak = f32(params.peak) / 32767.0;
+    // Canonical scene background and glow, with a deterministic waveform.
+    let glow = max(0.0, 1.0 - distance(vec2<f32>(fx, fy), vec2<f32>(0.5, 0.48)) * 1.7) * (0.18 + rms * 0.42);
+    let wave = abs(sin(fx * 40.0 + f32(params.sequence) * 0.08 + fy * 5.0)) * (0.10 + peak * 0.25);
+    var level = 0.0;
+    for (var band: u32 = 0u; band < 24u; band = band + 1u) {
+      let left = f32(band) / 24.0;
+      let right = f32(band + 1u) / 24.0;
+      if (fx >= left && fx < right) { level = f32(params.spectrum[band]) / 65535.0; }
+    }
+    let bars = select(0.0, 0.35 + level * 0.5, fy > (1.0 - level * 0.65));
+    r = u32(clamp((0.05 + glow + bars * 0.75 + wave * 0.45) * 255.0, 0.0, 255.0));
+    g = u32(clamp((0.08 + glow * 0.65 + bars * 0.20 + wave * 0.75) * 255.0, 0.0, 255.0));
+    b = u32(clamp((0.18 + glow * 0.95 + bars * 0.90 + wave * 0.35) * 255.0, 0.0, 255.0));
+  }
   pixels[i] = r | (g << 8u) | (b << 16u) | (255u << 24u);
 }
 "#;
@@ -29,6 +57,32 @@ pub struct Renderer {
     layout: wgpu::BindGroupLayout,
     pipeline: wgpu::ComputePipeline,
     adapter_name: String,
+}
+
+fn scene_uniform_words(
+    width: u32,
+    height: u32,
+    stride: u32,
+    sequence: u64,
+    scene: Option<&MusicScenePayload>,
+) -> [u32; 32] {
+    let mut words = [0u32; 32];
+    words[0] = width;
+    words[1] = height;
+    words[2] = stride / 4;
+    words[3] = sequence as u32;
+    if let Some(scene) = scene {
+        words[4] = scene.feature.rms_q15 as u32;
+        words[5] = scene.feature.peak_q15 as u32;
+        words[6] = 1;
+        for (dst, src) in words[8..]
+            .iter_mut()
+            .zip(scene.feature.spectrum_q16.iter().copied())
+        {
+            *dst = src as u32;
+        }
+    }
+    words
 }
 
 impl Renderer {
@@ -104,6 +158,17 @@ impl Renderer {
         sequence: u64,
         pts_ns: i64,
     ) -> Result<GpuFrame, String> {
+        self.render_with_scene(width, height, sequence, pts_ns, None)
+    }
+
+    pub fn render_with_scene(
+        &self,
+        width: u32,
+        height: u32,
+        sequence: u64,
+        pts_ns: i64,
+        scene: Option<&MusicScenePayload>,
+    ) -> Result<GpuFrame, String> {
         if width == 0 || height == 0 {
             return Err("invalid render dimensions".into());
         }
@@ -121,11 +186,12 @@ impl Renderer {
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let scene_params = scene_uniform_words(width, height, stride, sequence, scene);
         let params = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("params"),
-                contents: bytemuck::cast_slice(&[width, height, stride / 4, sequence as u32]),
+                contents: bytemuck::cast_slice(&scene_params),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
         let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -188,4 +254,34 @@ impl Renderer {
 /// Compatibility helper for callers that need a one-shot render.
 pub fn render(width: u32, height: u32, sequence: u64, pts_ns: i64) -> Result<GpuFrame, String> {
     Renderer::new()?.render(width, height, sequence, pts_ns)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::contracts::{AudioFeatureFrame, MUSIC_SCENE_SCHEMA};
+
+    #[test]
+    fn legacy_uniforms_are_stable_and_scene_is_explicitly_enabled() {
+        let legacy = scene_uniform_words(128, 72, 512, 9, None);
+        assert_eq!(&legacy[..7], &[128, 72, 128, 9, 0, 0, 0]);
+        let scene = MusicScenePayload {
+            schema: MUSIC_SCENE_SCHEMA,
+            feature: AudioFeatureFrame {
+                schema: CONTRACT_VERSION,
+                sample_rate_hz: 48_000,
+                frame_index: 3,
+                pts_ns: 100,
+                spectrum_q16: (0..24).map(|n| n * 1000).collect(),
+                rms_q15: 123,
+                peak_q15: 456,
+            },
+            artwork: None,
+            glyph_atlas: None,
+        };
+        let words = scene_uniform_words(128, 72, 512, 9, Some(&scene));
+        assert_eq!(&words[..7], &[128, 72, 128, 9, 123, 456, 1]);
+        assert_eq!(words[8], 0);
+        assert_eq!(words[31], 23_000);
+    }
 }
