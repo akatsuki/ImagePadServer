@@ -43,7 +43,8 @@ T0 ──┬── T1 ──┐
 - **location**: `internal/video/audio_visualizer.go`, `internal/video/radio_render.go`, `internal/server/music_playlist.go`, existing GPU evidence docs
 - **description**: Inventory current single-track and playlist layouts, feature windows, PTS ownership, pixel formats, stride, FFmpeg mux tails, cancellation, and adapter/error behavior. Record deterministic reference fixtures before changing routing.
 - **validation**: A checked-in behavior matrix identifies every intentional parity target and every tolerated rasterization difference.
-- **status**: Not Completed
+- **status**: Completed
+- **log**: Behavior matrix and focused contract tests freeze single HLS/playlist geometry, 30fps/PTS, RGBA stride, mux tails, cancellation, errors, restart, and parity tolerances (`a5d2fe6`).
 
 ### T1: Extract the canonical scene model
 - **depends_on**: [T0]
@@ -57,7 +58,8 @@ T0 ──┬── T1 ──┐
 - **location**: `internal/video/gpu_contracts.go`, `gpu/playlist-compositord/src/contracts.rs`, `gpu/playlist-compositord/src/protocol.rs`
 - **description**: Add a backward-compatible scene payload or feature buffer contract with schema validation, bounded sizes, artwork dimensions/alpha/color-space rules, texture upload limits, and explicit glyph-atlas metadata.
 - **validation**: Go/Rust encode-decode tests, malformed/oversized payload tests, invalid-range tests, artwork limits, and protocol-version mismatch tests pass.
-- **status**: Not Completed
+- **status**: Completed
+- **log**: Versioned bounded `MusicScenePayload` with artwork/glyph metadata, validation, invalid-scene errors, and backward-compatible optional Render.scene (`8499a2c`). Go/Rust protocol tests pass.
 
 ### T3: Implement the shared GPU scene renderer
 - **depends_on**: [T1, T2]
