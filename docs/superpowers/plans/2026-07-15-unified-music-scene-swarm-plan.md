@@ -82,14 +82,16 @@ T0 ──┬── T1 ──┐
 - **location**: `internal/server/music_playlist.go`, `internal/video/radio_render.go`, `internal/video/*_integration_test.go`
 - **description**: Ensure both output types consume the same scene/frame producer and differ only in FFmpeg mux tail. Use one deterministic feature/artwork fixture for both.
 - **validation**: Same input fixture produces matching scene geometry, colors, text ownership, fades, and normalized feature response within explicit structural/color tolerances; frame drops and PTS discontinuities are rejected.
-- **status**: Not Completed
+- **status**: Completed
+- **log**: Added `CanonicalMusicScene`; single-track HLS and playlist now send identical frame index, PTS, quantized spectrum, and scene payload through `RenderScene`. Shared-feature parity tests pass (`4f6de7e`).
 
 ### T6: End-to-end acceptance and cleanup
 - **depends_on**: [T5]
 - **location**: `internal/server`, `internal/video`, `docs/PLAYLIST_GPU_COMPATIBILITY.md`
 - **description**: Run focused Go/Rust tests, Windows NVIDIA/AMD and macOS smoke/soak, update evidence, and remove obsolete production CPU routing while retaining reference tests. Linux remains contract-only unless a Vulkan runner is provided.
 - **validation**: All focused tests pass; CI artifact checks pass; a static architecture/grep test proves no production music path invokes CPU composition; adapter selection, restart, Unicode, and negative cases are covered.
-- **status**: Not Completed
+- **status**: In Progress
+- **log**: Focused Go tests (44) and Rust tests (20) pass. Full Go suite has one unrelated Windows TempDir cleanup failure. Glyph atlas raster binding and final static/runtime audit remain.
 
 ## Parallel Execution Groups
 
