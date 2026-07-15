@@ -54,9 +54,9 @@ T6 ─────────────────┘
 - **location**: `internal/video/gpu_sidecar_process.go`, `gpu/playlist-compositord/src/main.rs`, build/release sidecar scripts
 - **description**: Diagnose four distinct stages—artifact preflight, process start, hello write and hello response—rather than treating EOF as a renderer error. Drain bounded stderr while retaining its tail; collect absolute executable path, PE header/size/SHA-256, `--version`, protocol/build identity, exit code/Wait error, adapter environment and timeout/cancellation cause in a local-only report. Reproduce with a freshly built sidecar directly on stdin before testing the application's resolver path. Ensure response-reader goroutines are recovered after EOF, timeout and cancellation.
 - **validation**: A failing sidecar emits a typed actionable error with bounded local stderr/exit evidence; a fresh local sidecar answers `hello_ack` and `health`; tests cover start failure, exit-before-response EOF, panic/stderr, protocol mismatch, invalid JSON, timeout, cancellation and child shutdown.
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Reproduced on a fresh release sidecar: exit 101 before `hello_ack`; bounded stderr identified WGSL uniform `array<u32,24>` stride/alignment validation failure. Added 32 KiB stderr/process diagnostics and tests (`3b0a5d9`).
+- **files edited/created**: `internal/video/gpu_sidecar_process.go`, `internal/video/gpu_sidecar_process_test.go`
 
 ### T2: Repair and harden the GPU startup contract
 - **tier**: Tier 3 — Luna High
@@ -64,9 +64,9 @@ T6 ─────────────────┘
 - **location**: `internal/video/gpu_sidecar_process.go`, `internal/video/toolchain.go`, sidecar artifact workflow, `gpu/playlist-compositord/src/main.rs`
 - **description**: Fix the diagnosed startup cause. Add sidecar version/protocol/build-SHA and adapter backend/device-type to `hello_ack`; preflight/reject checksum or text files masquerading as executables; resolve the current platform artifact deterministically; keep bounded stderr in diagnostic tools/logs only and sanitized codes in public APIs. Escalate this task one tier after three inconclusive reproductions.
 - **validation**: Fresh NVIDIA and AMD local smoke runs establish hello/health/render; stale/mismatched/invalid executables fail before rendering with the correct code; API responses never expose raw stderr.
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Repaired WGSL uniform alignment (`array<u32,24>` to six `vec4<u32>` blocks) and preserved host packing. Fresh release sidecar now returns NVIDIA RTX 5070 Ti `hello_ack`, `health.ready=true`, and a 64x64 RGBA render (`a91ac7f`). GPU pipe/sidecar shutdown cancellation was hardened (`811a248`).
+- **files edited/created**: `gpu/playlist-compositord/src/gpu_render.rs`, `internal/video/audio_visualizer.go`, `internal/video/gpu_sidecar_process.go`
 
 ### T3: Freeze CPU visual contract and comparison fixtures
 - **tier**: Tier 1 — Luna Low
@@ -74,9 +74,9 @@ T6 ─────────────────┘
 - **location**: `internal/video/visualizer_*.go`, `internal/video/*_test.go`, `cmd/music-render-compare`
 - **description**: Produce a checked-in, frame-indexed matrix of every CPU visual input/output: artwork crop/interpolation, rounded corners, shadow and fallback note tile; blurred cover background/readability overlay and adaptive/WCAG foreground palette; title/artist/album font metrics, clipping, scroll pause/velocity/reset and Japanese fallback; spectrum, waveform, loudness/trend/guidelines; progress rail/thumb, elapsed/total formatting, edge fade/end state and 360/720/1080 rounding. Add deterministic fixtures and scene-element boxes, not image-metric implementation.
 - **validation**: Fixtures include embedded artwork, no artwork, Japanese/Unicode/long scrolling metadata, quiet/loud audio, 360/720/1080 and start/mid/end fade frames; each has expected geometry, asset and content ownership.
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Added CPU function/test correspondence and six deterministic fixtures covering artwork, palette/background, metadata/Unicode/scroll, feature layers, progress/fade and scaling (`804033f`).
+- **files edited/created**: `docs/superpowers/specs/2026-07-15-unified-music-scene-behavior-matrix.md`, `internal/video/unified_music_scene_inventory_test.go`
 
 ### T4: Extend the canonical scene model with all visual state
 - **tier**: Tier 4 — Terra Ultra
@@ -104,9 +104,9 @@ T6 ─────────────────┘
 - **location**: `cmd/music-render-compare`, `scripts/`, documentation
 - **description**: Make the compare command choose a read-only cached audio input, hash it, export CPU output and fixed screenshots, record FFmpeg version plus analysis/scene/encode/mux timing and real-time factor. Preserve artifacts and report GPU startup failure distinctly. Reserve image metric implementation for T6b.
 - **validation**: The command writes CPU output, screenshots, source hash, JSON/Markdown report and stage timings without changing the cache; controlled failure is explicit and artifacts are retained.
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Partial
+- **log**: Existing `cmd/music-render-compare` selects a read-only cached audio file, emits CPU/GPU HLS, JSON/Markdown and wall time; short cache copy now completes both paths (CPU 1.53s, GPU 37.64s, 5.23s audio). Structural image metrics and full metadata remain.
+- **files edited/created**: `cmd/music-render-compare/main.go`
 
 ### T6b: Run GPU comparison metrics and hardware evidence
 - **tier**: Tier 3 — Luna High
