@@ -113,7 +113,14 @@ func render(ctx context.Context, gpu bool, out, ffmpeg string, input video.Audio
 		r.Error = err.Error()
 		return r
 	}
-	r.Output = filepath.Join(out, "playlist-"+id+".m3u8")
+	// HLS helpers use the canonical current-<id>.m3u8 name; resolve it by
+	// globbing so the CLI remains independent of that internal naming detail.
+	matches, _ := filepath.Glob(filepath.Join(out, "*.m3u8"))
+	if len(matches) == 0 {
+		r.Error = "render succeeded but no HLS playlist was produced"
+		return r
+	}
+	r.Output = matches[0]
 	r.Probe, _ = probe(ctx, r.Output)
 	return r
 }
