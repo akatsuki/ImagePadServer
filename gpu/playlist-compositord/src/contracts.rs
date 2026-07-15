@@ -10,8 +10,9 @@ pub const MUSIC_MAX_ARTWORK_DIMENSION: u32 = 4096;
 pub const MUSIC_MAX_ARTWORK_BYTES: usize = 16 * 1024 * 1024;
 pub const MUSIC_MAX_GLYPHS: u32 = 4096;
 pub const MUSIC_MAX_TEXT_BYTES: usize = 64 * 1024;
+pub const MUSIC_MAX_GLYPH_RUNS: usize = 256;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MusicScenePayload {
     pub schema: u16,
     pub feature: AudioFeatureFrame,
@@ -34,7 +35,7 @@ pub struct ArtworkMetadata {
     pub payload: Vec<u8>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GlyphAtlasMetadata {
     pub texture_id: String,
     pub font_family: String,
@@ -46,6 +47,35 @@ pub struct GlyphAtlasMetadata {
     pub row_stride: u32,
     pub glyph_count: u32,
     pub missing_glyph_id: String,
+    /// Optional premultiplied-RGBA atlas pixels. Empty means the renderer
+    /// should use its deterministic tofu fallback.
+    #[serde(default)]
+    pub payload: Vec<u8>,
+    #[serde(default)]
+    pub glyphs: Vec<GlyphEntry>,
+    #[serde(default)]
+    pub text_runs: Vec<TextRun>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GlyphEntry {
+    pub id: String,
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    pub advance: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TextRun {
+    pub text: String,
+    pub x: f32,
+    pub y: f32,
+    pub size_px: f32,
+    pub rgba: [u8; 4],
+    #[serde(default)]
+    pub opacity: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -194,6 +224,8 @@ impl GlyphAtlasMetadata {
             || self.width > MUSIC_MAX_ARTWORK_DIMENSION
             || self.height > MUSIC_MAX_ARTWORK_DIMENSION
             || self.glyph_count > MUSIC_MAX_GLYPHS
+            || self.glyphs.len() > MUSIC_MAX_GLYPHS as usize
+            || self.text_runs.len() > MUSIC_MAX_GLYPH_RUNS
             || self.font_family.len() + self.missing_glyph_id.len() > MUSIC_MAX_TEXT_BYTES
             || self.fallback_order.iter().any(|name| name.is_empty())
             || self.fallback_order.iter().map(|name| name.len()).sum::<usize>() > MUSIC_MAX_TEXT_BYTES
@@ -207,6 +239,14 @@ impl GlyphAtlasMetadata {
         if self.row_stride < min_stride
             || self.row_stride % ROW_ALIGNMENT != 0
             || self.row_stride as usize * self.height as usize > MUSIC_MAX_ARTWORK_BYTES
+            || (!self.payload.is_empty() && self.payload.len() != self.row_stride as usize * self.height as usize)
+            || self.glyphs.iter().any(|g| g.id.is_empty()
+                || g.x.checked_add(g.width).map_or(true, |v| v > self.width)
+                || g.y.checked_add(g.height).map_or(true, |v| v > self.height)
+                || !g.advance.is_finite() || g.advance < 0.0)
+            || self.text_runs.iter().any(|r| r.text.len() > MUSIC_MAX_TEXT_BYTES
+                || !r.x.is_finite() || !r.y.is_finite() || !r.size_px.is_finite() || r.size_px <= 0.0
+                || !r.opacity.is_finite())
         {
             return Err(ContractError::InvalidGlyphAtlas);
         }
@@ -342,7 +382,7 @@ mod tests {
             texture_id: "atlas".into(), font_family: "Noto Sans CJK".into(),
             font_weight: 400, fallback_order: vec!["Noto Color Emoji".into(), "sans".into()],
             width: 256, height: 256, row_stride: 1024, glyph_count: 3,
-            missing_glyph_id: "tofu".into(),
+            missing_glyph_id: "tofu".into(), payload: Vec::new(), glyphs: Vec::new(), text_runs: Vec::new(),
         };
         assert!(atlas.validate().is_ok());
         assert_eq!(atlas.font_order().collect::<Vec<_>>(), vec!["Noto Sans CJK", "Noto Color Emoji", "sans"]);

@@ -109,6 +109,26 @@ impl Renderer {
         Ok(())
     }
 
+    fn upload_glyph_atlas(&self, atlas: &crate::contracts::GlyphAtlasMetadata) -> Result<(), String> {
+        atlas.validate().map_err(|e| format!("glyph atlas: {e:?}"))?;
+        if atlas.payload.is_empty() { return Ok(()); }
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("music-glyph-atlas"),
+            size: wgpu::Extent3d { width: atlas.width, height: atlas.height, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        self.queue.write_texture(
+            wgpu::ImageCopyTexture { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            &atlas.payload,
+            wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(NonZeroU32::new(atlas.row_stride).unwrap().into()), rows_per_image: Some(NonZeroU32::new(atlas.height).unwrap().into()) },
+            wgpu::Extent3d { width: atlas.width, height: atlas.height, depth_or_array_layers: 1 },
+        );
+        Ok(())
+    }
+
     pub fn new() -> Result<Self, String> {
         let instance = wgpu::Instance::default();
         let selected = adapter::select(&instance).map_err(|e| format!("gpu adapter: {e}"))?;
@@ -198,6 +218,7 @@ impl Renderer {
         if let Some(scene) = scene {
             scene.validate().map_err(|e| format!("scene: {e:?}"))?;
             if let Some(artwork) = &scene.artwork { self.upload_artwork(artwork)?; }
+            if let Some(atlas) = &scene.glyph_atlas { self.upload_glyph_atlas(atlas)?; }
         }
         let stride = ((width * 4 + ROW_ALIGNMENT - 1) / ROW_ALIGNMENT) * ROW_ALIGNMENT;
         let bytes = stride as usize * height as usize;
