@@ -11,8 +11,31 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 	"testing"
 )
+
+type blockingVisualizerWriter struct{ release chan struct{} }
+
+func (w *blockingVisualizerWriter) Write(p []byte) (int, error) {
+	<-w.release
+	return len(p), nil
+}
+
+func TestWriteGPUFrameCancellationUnblocks(t *testing.T) {
+	w := &blockingVisualizerWriter{release: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	started := time.Now()
+	err := writeGPUFrame(ctx, w, []byte{1, 2, 3})
+	if err != context.Canceled {
+		t.Fatalf("writeGPUFrame error = %v, want context canceled", err)
+	}
+	if time.Since(started) > time.Second {
+		t.Fatal("cancellation did not return promptly")
+	}
+	close(w.release)
+}
 
 func TestAudioVisualizerFFmpegArgsBasic(t *testing.T) {
 	args := AudioVisualizerFFmpegArgs("audio.m4a", "subtitles.ass", "C:\\fonts", "media-1", QualityPreset{Height: 720, CRF: 27, VideoBitrate: "2500k", MaxRate: "3000k", BufferSize: "5000k", AudioBitrate: "128k"})

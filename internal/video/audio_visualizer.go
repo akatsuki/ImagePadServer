@@ -562,6 +562,18 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+	// A pipe Write may block while FFmpeg is stalled (for example while it is
+	// flushing an HLS segment). Close the pipe on cancellation so the blocked
+	// writer wakes up and CommandContext can reap FFmpeg deterministically.
+	stopPipe := make(chan struct{})
+	defer close(stopPipe)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = in.Close()
+		case <-stopPipe:
+		}
+	}()
 	sidecar, err := StartSidecar(ctx, sidecarExe, "music-"+id)
 	if err != nil {
 		_ = cmd.Process.Kill()
@@ -589,7 +601,7 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 			_ = cmd.Process.Kill()
 			return fmt.Errorf("%w: pack frame: %v", ErrGPURendererUnavailable, e)
 		}
-		if _, e = in.Write(packed); e != nil {
+		if e = writeGPUFrame(ctx, in, packed); e != nil {
 			_ = cmd.Process.Kill()
 			return fmt.Errorf("GPU HLS frame write: %w", e)
 		}
@@ -599,6 +611,26 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 		return fmt.Errorf("GPU HLS encode: %w: %s", err, trimOutput(stderr.Bytes()))
 	}
 	return nil
+}
+
+// writeGPUFrame makes cancellation observable even when the downstream
+// encoder stops reading its stdin. The close-on-cancel watcher above unblocks
+// the pipe writer; this wrapper preserves short-write detection.
+func writeGPUFrame(ctx context.Context, dst io.Writer, frame []byte) error {
+	done := make(chan error, 1)
+	go func() {
+		n, err := dst.Write(frame)
+		if err == nil && n != len(frame) {
+			err = io.ErrShortWrite
+		}
+		done <- err
+	}()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case err := <-done:
+		return err
+	}
 }
 
 // visualizerProgressWriter reports the fraction of raw frame bytes streamed

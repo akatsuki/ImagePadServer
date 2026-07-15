@@ -247,12 +247,32 @@ func (p *SidecarProcess) Close() error {
 		return nil
 	}
 	p.mu.Unlock()
-	_ = p.rpc(context.Background(), sidecarRequest{Type: "shutdown"})
+	// If the child has already exited, its stdout may be closed and a shutdown
+	// RPC can wait forever for a response. Prefer the lifecycle signal first.
+	select {
+	case err := <-p.wait:
+		p.mu.Lock()
+		p.closed = true
+		p.mu.Unlock()
+		return err
+	default:
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	_ = p.rpc(shutdownCtx, sidecarRequest{Type: "shutdown"})
+	cancel()
 	p.mu.Lock()
 	p.closed = true
 	p.mu.Unlock()
 	_ = p.in.Close()
-	return <-p.wait
+	select {
+	case err := <-p.wait:
+		return err
+	case <-time.After(2 * time.Second):
+		if p.cmd != nil && p.cmd.Process != nil {
+			_ = p.cmd.Process.Kill()
+		}
+		return <-p.wait
+	}
 }
 
 var ErrSharedMappingUnsupported = errors.New("gpu shared mapping backend is not supported on this build")
