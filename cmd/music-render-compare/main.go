@@ -70,7 +70,7 @@ type report struct {
 
 type comparisonGate struct {
 	DurationDeltaSeconds float64 `json:"durationDeltaSeconds"`
-	FrameDelta           int     `json:"frameDelta"`
+	FrameDelta           int64   `json:"frameDelta"`
 	DurationMatch        bool    `json:"durationMatch"`
 	FrameCountMatch      bool    `json:"frameCountMatch"`
 	Pass                 bool    `json:"pass"`
