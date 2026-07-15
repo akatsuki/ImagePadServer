@@ -114,7 +114,9 @@ func renderRadioTrackGPU(ctx context.Context, outDir, ffmpeg, sidecarExe string,
 		frames = 1
 	}
 	for i := 0; i < frames; i++ {
-		frame, err := sidecar.Render(ctx, uint32(width), uint32(height), uint64(i), int64(float64(i)*float64(time.Second)/30))
+		ptsNS := int64(float64(i) * float64(time.Second) / 30)
+		scene := CanonicalMusicScene(input, uint64(i), ptsNS)
+		frame, err := sidecar.RenderScene(ctx, uint32(width), uint32(height), uint64(i), ptsNS, &scene)
 		if err != nil {
 			_ = cmd.Process.Kill()
 			return "", fmt.Errorf("%w: render frame: %v", ErrGPURendererUnavailable, err)

@@ -17,27 +17,73 @@ type sidecarRequest struct {
 	Session string `json:"session,omitempty"`
 }
 type sidecarResponse struct {
-	Type    string `json:"type"`
-	Version uint16 `json:"version,omitempty"`
-	Ready   bool   `json:"ready,omitempty"`
-	Code    string `json:"code,omitempty"`
-	Message string `json:"message,omitempty"`
+	Type    string    `json:"type"`
+	Version uint16    `json:"version,omitempty"`
+	Ready   bool      `json:"ready,omitempty"`
+	Code    string    `json:"code,omitempty"`
+	Message string    `json:"message,omitempty"`
 	Frame   *GpuFrame `json:"frame,omitempty"`
 }
 
 // Render requests one GPU-produced frame. The response is validated before it
 // enters the bounded transport, so malformed sidecar output fails closed.
 func (p *SidecarProcess) Render(ctx context.Context, width, height uint32, sequence uint64, ptsNS int64) (GpuFrame, error) {
-	p.mu.Lock(); defer p.mu.Unlock()
-	if p.closed { return GpuFrame{}, ErrGPUUnavailable }
+	return p.RenderScene(ctx, width, height, sequence, ptsNS, nil)
+}
+
+// RenderScene sends the canonical music scene when provided. Keeping the
+// legacy Render wrapper preserves callers that intentionally exercise the
+// compatibility renderer.
+func (p *SidecarProcess) RenderScene(ctx context.Context, width, height uint32, sequence uint64, ptsNS int64, scene *MusicScenePayload) (GpuFrame, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return GpuFrame{}, ErrGPUUnavailable
+	}
 	// Encode the render fields as a small anonymous request to preserve the
 	// existing JSONL protocol without widening the control struct used by Hello.
-	b, _ := json.Marshal(struct { Type string `json:"type"`; Width uint32 `json:"width"`; Height uint32 `json:"height"`; Sequence uint64 `json:"sequence"`; PTSNS int64 `json:"pts_ns"` }{"render", width, height, sequence, ptsNS})
-	if _, err := fmt.Fprintln(p.in, string(b)); err != nil { return GpuFrame{}, err }
-	line := make(chan []byte, 1); errs := make(chan error, 1)
-	go func() { s, e := p.out.ReadBytes('\n'); if e != nil { errs <- e } else { line <- s } }()
-	select { case <-ctx.Done(): return GpuFrame{}, ctx.Err(); case e := <-errs: return GpuFrame{}, e; case b := <-line:
-		var resp sidecarResponse; if err := json.Unmarshal(b, &resp); err != nil { return GpuFrame{}, err }; if resp.Code != "" { return GpuFrame{}, fmt.Errorf("sidecar %s: %s", resp.Code, resp.Message) }; if resp.Frame == nil { return GpuFrame{}, errors.New("sidecar frame missing") }; if err := resp.Frame.Validate(); err != nil { return GpuFrame{}, err }; return *resp.Frame, nil }
+	b, _ := json.Marshal(struct {
+		Type     string             `json:"type"`
+		Width    uint32             `json:"width"`
+		Height   uint32             `json:"height"`
+		Sequence uint64             `json:"sequence"`
+		PTSNS    int64              `json:"pts_ns"`
+		Scene    *MusicScenePayload `json:"scene,omitempty"`
+	}{"render", width, height, sequence, ptsNS, scene})
+	if _, err := fmt.Fprintln(p.in, string(b)); err != nil {
+		return GpuFrame{}, err
+	}
+	line := make(chan []byte, 1)
+	errs := make(chan error, 1)
+	go func() {
+		s, e := p.out.ReadBytes('\n')
+		if e != nil {
+			errs <- e
+		} else {
+			line <- s
+		}
+	}()
+	select {
+	case <-ctx.Done():
+		return GpuFrame{}, ctx.Err()
+	case e := <-errs:
+		return GpuFrame{}, e
+	case b := <-line:
+		var resp sidecarResponse
+		if err := json.Unmarshal(b, &resp); err != nil {
+			return GpuFrame{}, err
+		}
+		if resp.Code != "" {
+			return GpuFrame{}, fmt.Errorf("sidecar %s: %s", resp.Code, resp.Message)
+		}
+		if resp.Frame == nil {
+			return GpuFrame{}, errors.New("sidecar frame missing")
+		}
+		if err := resp.Frame.Validate(); err != nil {
+			return GpuFrame{}, err
+		}
+		return *resp.Frame, nil
+	}
 }
 
 // SidecarProcess is the JSONL control-plane client for playlist-compositord.
