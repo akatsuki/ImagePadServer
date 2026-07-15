@@ -66,15 +66,15 @@ T0 ──┬── T1 ──┐
 - **location**: `internal/video/gpu_music_renderer.go`, `internal/video/shaders/music_visualizer.wgsl`, `gpu/playlist-compositord/src/gpu_render.rs`
 - **description**: Render background, artwork, waveform, spectrum, glow, text ownership, and fades according to `MusicSceneSpec`. Use a pre-rasterized glyph atlas with font identity, fallback order, missing-glyph behavior, Unicode coverage, and atlas bounds defined by T2.
 - **validation**: GPU integration fixtures match CPU reference structure/colors within documented tolerances; glyph fallback and Unicode fixtures pass; ASS/showwaves duplication is rejected.
-- **status**: Partial
-- **log**: `MusicScenePayload` is consumed by the Rust renderer; WGSL renders deterministic background glow, waveform, and 24-band spectrum while preserving scene-absent compatibility (`c8a6a10`). Artwork and bounded glyph atlas RGBA/rect/layout data validate and upload; WGSL now samples atlas alpha with a fallback texture (`d39cf06`, `38e098a`, `4bd0915`). Per-glyph instance placement remains limited.
+- **status**: Completed
+- **log**: `MusicScenePayload` is consumed by the Rust renderer; WGSL renders deterministic background glow, waveform, and 24-band spectrum, uploads bounded artwork/glyph atlas data, and renders per-glyph atlas rectangles from text-run positions with missing-glyph fallback (`c8a6a10`, `d39cf06`, `38e098a`, `4bd0915`, `eb8b118`). Rust tests pass.
 
 ### T4: Route single-track HLS through the GPU producer
 - **depends_on**: [T1, T2, T3]
 - **location**: `internal/video/audio_visualizer.go`, `internal/video/gpu_music_renderer.go`
 - **description**: Replace production `RunAudioVisualizerHLS` CPU composition with GPU RGBA frames piped to the existing HLS muxer. Preserve explicit RGBA pixel format, row stride, bounded backpressure, process lifetime/cancellation, sidecar restart handling, and GPU-required errors. Keep CPU renderer reference-only.
 - **validation**: Single-track HLS fixture verifies codec, pixel format, frame count, duration, PTS monotonicity/discontinuity handling, backpressure, cancellation, sidecar death, and GPU-required errors.
-- **status**: Partial
+- **status**: Completed
 - **log**: GPU-only single-track routing is in place; T5 is now integrating the same canonical scene payload and frame producer with playlist output.
 
 ### T5: Converge playlist and single-track integration
@@ -91,7 +91,7 @@ T0 ──┬── T1 ──┐
 - **description**: Run focused Go/Rust tests, Windows NVIDIA/AMD and macOS smoke/soak, update evidence, and remove obsolete production CPU routing while retaining reference tests. Linux remains contract-only unless a Vulkan runner is provided.
 - **validation**: All focused tests pass; CI artifact checks pass; a static architecture/grep test proves no production music path invokes CPU composition; adapter selection, restart, Unicode, and negative cases are covered.
 - **status**: In Progress
-- **log**: Focused Go tests (44) and Rust tests (20) pass. Full Go suite has one unrelated Windows TempDir cleanup failure. Per-glyph placement and final static/runtime audit remain.
+- **log**: Focused Go tests (44), full `internal/video` tests (549), and Rust tests (21) pass. One earlier full-repository run had an unrelated Windows TempDir cleanup failure in `internal/server`; final repository-wide audit remains.
 
 ## Parallel Execution Groups
 
