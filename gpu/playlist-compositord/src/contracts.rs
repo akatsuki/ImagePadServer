@@ -11,6 +11,7 @@ pub const MUSIC_MAX_ARTWORK_BYTES: usize = 16 * 1024 * 1024;
 pub const MUSIC_MAX_GLYPHS: u32 = 4096;
 pub const MUSIC_MAX_TEXT_BYTES: usize = 64 * 1024;
 pub const MUSIC_MAX_GLYPH_RUNS: usize = 256;
+pub const MUSIC_MAX_LOUDNESS_SAMPLES: usize = 1000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MusicScenePayload {
@@ -20,6 +21,35 @@ pub struct MusicScenePayload {
     pub artwork: Option<ArtworkMetadata>,
     #[serde(default)]
     pub glyph_atlas: Option<GlyphAtlasMetadata>,
+    #[serde(default)]
+    pub layout: MusicSceneLayout,
+    #[serde(default)]
+    pub dynamics: MusicSceneDynamics,
+    #[serde(default)]
+    pub palette: MusicScenePalette,
+    #[serde(default)]
+    pub fingerprint: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SceneRect { pub x: i32, pub y: i32, pub w: i32, pub h: i32 }
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MusicSceneLayout {
+    pub artwork: SceneRect, pub title: SceneRect, pub artist: SceneRect, pub album: SceneRect,
+    pub spectrum: SceneRect, pub loudness: SceneRect, pub progress: SceneRect, pub time: SceneRect,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct MusicSceneDynamics {
+    pub current_seconds: f64, pub duration_seconds: f64, pub progress_ratio: f64,
+    pub edge_fade_alpha: f32, pub end_fade_alpha: f32,
+    #[serde(default)] pub loudness_envelope: Vec<u16>,
+    #[serde(default)] pub loudness_trend: Vec<u16>,
+    #[serde(default)] pub loudness_guides: [u16; 4],
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MusicScenePalette {
+    pub primary: [u8; 4], pub accent: [u8; 4], pub background: [u8; 4], pub overlay: [u8; 4],
+    #[serde(default)] pub blur_strength: u16, #[serde(default)] pub readability: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -178,6 +208,16 @@ impl MusicScenePayload {
         {
             return Err(ContractError::InvalidScene);
         }
+        if self.dynamics.loudness_envelope.len() > MUSIC_MAX_LOUDNESS_SAMPLES
+            || self.dynamics.loudness_trend.len() > MUSIC_MAX_LOUDNESS_SAMPLES
+            || !self.dynamics.current_seconds.is_finite() || !self.dynamics.duration_seconds.is_finite()
+            || !self.dynamics.progress_ratio.is_finite() || self.dynamics.current_seconds < 0.0
+            || self.dynamics.duration_seconds < 0.0 || self.dynamics.progress_ratio < 0.0 || self.dynamics.progress_ratio > 1.0
+            || !self.dynamics.edge_fade_alpha.is_finite() || !self.dynamics.end_fade_alpha.is_finite()
+            || self.dynamics.edge_fade_alpha < 0.0 || self.dynamics.edge_fade_alpha > 1.0
+            || self.dynamics.end_fade_alpha < 0.0 || self.dynamics.end_fade_alpha > 1.0
+            || (!self.fingerprint.is_empty() && self.fingerprint.len() != 64)
+        { return Err(ContractError::InvalidScene); }
         self.feature
             .validate()
             .map_err(|_| ContractError::InvalidScene)?;

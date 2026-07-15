@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 )
 
 const GPUContractVersion uint16 = 1
@@ -16,6 +17,8 @@ const MusicMaxArtworkDimension uint32 = 4096
 const MusicMaxArtworkBytes = 16 * 1024 * 1024
 const MusicMaxGlyphs = 4096
 const MusicMaxTextBytes = 64 * 1024
+const MusicMaxLoudnessSamples = 1000
+const MusicMaxLayoutRects = 8
 
 // MusicScenePayload is an optional, versioned extension to Render. It is
 // deliberately bounded so malformed metadata cannot turn a JSONL request into
@@ -26,6 +29,30 @@ type MusicScenePayload struct {
 	Feature    AudioFeatureFrame   `json:"feature"`
 	Artwork    *ArtworkMetadata    `json:"artwork,omitempty"`
 	GlyphAtlas *GlyphAtlasMetadata `json:"glyph_atlas,omitempty"`
+	Layout     MusicSceneLayout    `json:"layout"`
+	Dynamics   MusicSceneDynamics  `json:"dynamics"`
+	Palette    MusicScenePalette   `json:"palette"`
+	Fingerprint string              `json:"fingerprint,omitempty"`
+}
+
+type SceneRect struct {
+	X int `json:"x"`; Y int `json:"y"`; W int `json:"w"`; H int `json:"h"`
+}
+
+type MusicSceneLayout struct {
+	Artwork, Title, Artist, Album, Spectrum, Loudness, Progress, Time SceneRect
+}
+
+type MusicSceneDynamics struct {
+	CurrentSeconds, DurationSeconds, ProgressRatio float64 `json:",omitempty"`
+	EdgeFadeAlpha, EndFadeAlpha float32 `json:",omitempty"`
+	LoudnessEnvelope, LoudnessTrend []uint16 `json:",omitempty"`
+	LoudnessGuides [4]uint16 `json:"loudness_guides"`
+}
+
+type MusicScenePalette struct {
+	Primary, Accent, Background, Overlay [4]uint8
+	BlurStrength, Readability float32
 }
 
 type ArtworkMetadata struct {
@@ -83,6 +110,8 @@ func (s MusicScenePayload) Validate() error {
 	if len(s.Feature.SpectrumQ16) > MusicMaxFeatureBins {
 		return errors.New("too many feature bins")
 	}
+	if err := s.validateDynamics(); err != nil { return err }
+	if s.Fingerprint != "" && len(s.Fingerprint) != 64 { return errors.New("invalid scene fingerprint") }
 	if s.Artwork != nil {
 		if err := s.Artwork.Validate(); err != nil {
 			return fmt.Errorf("scene artwork: %w", err)
@@ -93,6 +122,14 @@ func (s MusicScenePayload) Validate() error {
 			return fmt.Errorf("scene glyph atlas: %w", err)
 		}
 	}
+	return nil
+}
+
+func (s MusicScenePayload) validateDynamics() error {
+	if len(s.Dynamics.LoudnessEnvelope) > MusicMaxLoudnessSamples || len(s.Dynamics.LoudnessTrend) > MusicMaxLoudnessSamples { return errors.New("too many loudness samples") }
+	for _, v := range append(append([]uint16{}, s.Dynamics.LoudnessEnvelope...), s.Dynamics.LoudnessTrend...) { if v > 65535 { return errors.New("invalid loudness sample") } }
+	for _, v := range []float64{s.Dynamics.CurrentSeconds, s.Dynamics.DurationSeconds, s.Dynamics.ProgressRatio} { if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 { return errors.New("invalid scene timing") } }
+	if s.Dynamics.ProgressRatio > 1 || s.Dynamics.EdgeFadeAlpha < 0 || s.Dynamics.EdgeFadeAlpha > 1 || s.Dynamics.EndFadeAlpha < 0 || s.Dynamics.EndFadeAlpha > 1 { return errors.New("invalid scene fade") }
 	return nil
 }
 

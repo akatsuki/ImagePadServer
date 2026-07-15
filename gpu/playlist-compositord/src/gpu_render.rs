@@ -15,6 +15,11 @@ struct Params {
   // the 24 scalar samples into six vec4s keeps the host's 32-word layout
   // unchanged while satisfying that rule on all backends.
   spectrum: array<vec4<u32>, 6>,
+  // Dynamics/palette/rects are deliberately fixed-size and 16-byte aligned.
+  dynamics: array<vec4<u32>, 2>,
+  palette: array<vec4<u32>, 4>,
+  rects: array<vec4<i32>, 8>,
+  guides: vec4<u32>,
 }
 @group(0) @binding(0) var<storage, read_write> pixels: array<u32>;
 @group(0) @binding(1) var<uniform> params: Params;
@@ -40,6 +45,9 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let fy = f32(id.y) / max(1.0, f32(params.height - 1u));
     let rms = f32(params.rms) / 32767.0;
     let peak = f32(params.peak) / 32767.0;
+    let primary = vec3<f32>(params.palette[0].xyz) / 255.0;
+    let accent = vec3<f32>(params.palette[1].xyz) / 255.0;
+    let background = vec3<f32>(params.palette[2].xyz) / 255.0;
     // Canonical scene background and glow, with a deterministic waveform.
     var glow = max(0.0, 1.0 - distance(vec2<f32>(fx, fy), vec2<f32>(0.5, 0.48)) * 1.7) * (0.18 + rms * 0.42);
     // Artwork is a first-class layer. Keep the tile bounded and deterministic
@@ -72,6 +80,23 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
       }
     }
     let bars = select(0.0, 0.35 + level * 0.5, fy > (1.0 - level * 0.65));
+    // Progress rail and thumb use the canonical progress rectangle.
+    let progress = f32(params.dynamics[0].z) / 65535.0;
+    let rail = params.rects[6];
+    let rx = f32(id.x); let ry = f32(id.y);
+    let in_rail = rx >= f32(rail.x) && rx < f32(rail.x + rail.z) && ry >= f32(rail.y) && ry < f32(rail.y + rail.w);
+    let thumb_x = f32(rail.x) + f32(rail.z) * progress;
+    let thumb = select(0.0, 1.0, distance(vec2<f32>(rx, ry), vec2<f32>(thumb_x, f32(rail.y) + f32(rail.w) * 0.5)) < max(2.0, f32(rail.w) * 0.8));
+    // Loudness envelope/trend are bounded Q0.16 samples. Render them in the
+    // loudness rectangle as two thin deterministic traces.
+    let loud = params.rects[5];
+    var loudness = 0.0;
+    if (rx >= f32(loud.x) && rx < f32(loud.x + loud.z) && ry >= f32(loud.y) && ry < f32(loud.y + loud.w)) {
+      let u = clamp((rx - f32(loud.x)) / max(1.0, f32(loud.z - 1)), 0.0, 1.0);
+      let sample = f32(params.dynamics[1].x) / 65535.0;
+      let y = f32(loud.y + loud.w) - sample * f32(loud.w);
+      loudness = select(0.0, 1.0, abs(ry - y) < 1.5);
+    }
     var glyph = 0.0;
     if ((params.scene_enabled & 4u) != 0u) {
       let pixel = vec2<f32>(f32(id.x), f32(id.y));
@@ -84,9 +109,11 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
       }
       glyph = glyph * 0.85;
     }
-    r = u32(clamp((0.05 + glow + bars * 0.75 + wave * 0.45 + glyph + artwork * 0.70) * 255.0, 0.0, 255.0));
-    g = u32(clamp((0.08 + glow * 0.65 + bars * 0.20 + wave * 0.75 + glyph + artwork * 0.70) * 255.0, 0.0, 255.0));
-    b = u32(clamp((0.18 + glow * 0.95 + bars * 0.90 + wave * 0.35 + glyph + artwork * 0.70) * 255.0, 0.0, 255.0));
+    let mixc = background * 0.75 + primary * (glow + glyph + artwork * 0.35) + accent * (bars * 0.75 + wave * 0.35 + thumb + loudness);
+    let fade = clamp(f32(params.dynamics[0].w) / 65535.0, 0.0, 1.0);
+    r = u32(clamp(mixc.r * 255.0 * fade, 0.0, 255.0));
+    g = u32(clamp(mixc.g * 255.0 * fade, 0.0, 255.0));
+    b = u32(clamp(mixc.b * 255.0 * fade, 0.0, 255.0));
   }
   pixels[i] = r | (g << 8u) | (b << 16u) | (255u << 24u);
 }
@@ -109,8 +136,8 @@ fn scene_uniform_words(
     stride: u32,
     sequence: u64,
     scene: Option<&MusicScenePayload>,
-) -> [u32; 32] {
-    let mut words = [0u32; 32];
+) -> [u32; 96] {
+    let mut words = [0u32; 96];
     words[0] = width;
     words[1] = height;
     words[2] = stride / 4;
@@ -128,6 +155,24 @@ fn scene_uniform_words(
         {
             *dst = src as u32;
         }
+        let d = &scene.dynamics;
+        words[32] = (d.current_seconds.clamp(0.0, 4_294_967.0) * 1000.0) as u32;
+        words[33] = (d.duration_seconds.clamp(0.0, 4_294_967.0) * 1000.0) as u32;
+        words[34] = (d.progress_ratio.clamp(0.0, 1.0) * 65535.0) as u32;
+        words[35] = ((d.edge_fade_alpha.clamp(0.0, 1.0) * d.end_fade_alpha.clamp(0.0, 1.0)) * 65535.0) as u32;
+        words[36] = d.loudness_envelope.first().copied().unwrap_or(scene.feature.rms_q15) as u32;
+        words[37] = d.loudness_trend.first().copied().unwrap_or(scene.feature.rms_q15) as u32;
+        let p = &scene.palette;
+        words[40..44].copy_from_slice(&p.primary.map(|v| v as u32));
+        words[44..48].copy_from_slice(&p.accent.map(|v| v as u32));
+        words[48..52].copy_from_slice(&p.background.map(|v| v as u32));
+        words[52..56].copy_from_slice(&p.overlay.map(|v| v as u32));
+        let rects = [&scene.layout.artwork, &scene.layout.title, &scene.layout.artist, &scene.layout.album,
+            &scene.layout.spectrum, &scene.layout.loudness, &scene.layout.progress, &scene.layout.time];
+        for (i, r) in rects.iter().enumerate() {
+            words[56 + i * 4..60 + i * 4].copy_from_slice(&[r.x as u32, r.y as u32, r.w as u32, r.h as u32]);
+        }
+        words[88..92].copy_from_slice(&d.loudness_guides.map(|v| v as u32));
     }
     words
 }
@@ -425,6 +470,7 @@ mod tests {
             },
             artwork: None,
             glyph_atlas: None,
+            layout: Default::default(), dynamics: Default::default(), palette: Default::default(), fingerprint: String::new(),
         };
         let words = scene_uniform_words(128, 72, 512, 9, Some(&scene));
         assert_eq!(&words[..7], &[128, 72, 128, 9, 123, 456, 1]);
@@ -446,6 +492,7 @@ mod tests {
                 glyphs: vec![GlyphEntry { id: "A".into(), x: 8, y: 16, width: 32, height: 40, advance: 34.0 }, GlyphEntry { id: "?".into(), x: 0, y: 0, width: 20, height: 20, advance: 22.0 }],
                 text_runs: vec![TextRun { text: "A?".into(), x: 10.0, y: 12.0, size_px: 40.0, rgba: [255, 0, 0, 255], opacity: 1.0 }], asset_hash: String::new(),
             }),
+            layout: Default::default(), dynamics: Default::default(), palette: Default::default(), fingerprint: String::new(),
         };
         let words = glyph_instance_words(Some(&scene), 100, 100);
         assert_eq!(words.len(), 24);

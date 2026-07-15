@@ -3,6 +3,7 @@ package video
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"image"
 	_ "image/png"
 	"math"
@@ -32,12 +33,44 @@ func CanonicalMusicScene(input AudioRenderInput, frameIndex uint64, ptsNS int64)
 		}
 		rms = peak * 0.707
 	}
-	scene := MusicScenePayload{Schema: MusicSceneSchema, Feature: AudioFeatureFrame{Schema: GPUContractVersion, SampleRateHz: 48000, FrameIndex: frameIndex, PTSNs: ptsNS, SpectrumQ16: spectrum, RMSQ15: uint16(math.Round(sceneClamp01(rms) * 32767)), PeakQ15: uint16(math.Round(sceneClamp01(peak) * 32767))}}
+	duration := input.Analysis.Duration
+	if duration < 0 || math.IsNaN(duration) { duration = 0 }
+	fps := input.Analysis.FPS
+	if fps <= 0 { fps = 30 }
+	current := float64(frameIndex) / float64(fps)
+	ratio := 0.0
+	if duration > 0 { ratio = sceneClamp01(current / duration) }
+	layout, _ := LayoutForSize(1280, 720)
+	scene := MusicScenePayload{Schema: MusicSceneSchema, Feature: AudioFeatureFrame{Schema: GPUContractVersion, SampleRateHz: 48000, FrameIndex: frameIndex, PTSNs: ptsNS, SpectrumQ16: spectrum, RMSQ15: uint16(math.Round(sceneClamp01(rms) * 32767)), PeakQ15: uint16(math.Round(sceneClamp01(peak) * 32767))}, Layout: musicSceneLayout(layout), Dynamics: musicSceneDynamics(input.Analysis.Features, current, duration, ratio), Palette: MusicScenePalette{Primary: [4]uint8{255,255,255,255}, Accent: [4]uint8{80,200,255,255}, Background: [4]uint8{10,12,18,255}, Overlay: [4]uint8{0,0,0,92}, BlurStrength: 220, Readability: 220}}
 	if a, ok := normalizeArtwork(input.ArtworkPath); ok {
 		scene.Artwork = &a
 	}
 	scene.GlyphAtlas = normalizeGlyphs(input.Metadata)
+	scene.Fingerprint = musicSceneFingerprint(scene)
 	return scene
+}
+
+func musicSceneLayout(l VisualizerLayout) MusicSceneLayout {
+	r := func(v Rect) SceneRect { return SceneRect{X:v.X, Y:v.Y, W:v.W, H:v.H} }
+	return MusicSceneLayout{Artwork:r(l.Artwork), Title:r(l.Title), Artist:r(l.Artist), Album:r(l.Album), Spectrum:r(l.Spectrum), Loudness:r(l.Loudness), Progress:r(l.Progress), Time:r(l.Time)}
+}
+
+func musicSceneDynamics(features AudioFeatures, current, duration, ratio float64) MusicSceneDynamics {
+	toQ := func(v float64) uint16 { v = sceneClamp01(v); return uint16(math.Round(v*65535)) }
+	env := make([]uint16, len(features.LoudnessEnvelope)); trend := SmoothLoudnessTrend(features.LoudnessEnvelope, duration)
+	for i, v := range features.LoudnessEnvelope { env[i] = toQ(v) }
+	trendQ := make([]uint16, len(trend)); for i, v := range trend { trendQ[i] = toQ(v) }
+	alphaIn, alphaOut := float32(1), float32(1)
+	if current < radioEdgeFadeSeconds { alphaIn = float32(sceneClamp01(current/radioEdgeFadeSeconds)) }
+	if duration > 0 && duration-current < radioEdgeFadeSeconds { alphaOut = float32(sceneClamp01((duration-current)/radioEdgeFadeSeconds)) }
+	return MusicSceneDynamics{CurrentSeconds: current, DurationSeconds: duration, ProgressRatio: ratio, EdgeFadeAlpha: alphaIn, EndFadeAlpha: alphaOut, LoudnessEnvelope: env, LoudnessTrend: trendQ, LoudnessGuides: [4]uint16{toQ(.25),toQ(.5),toQ(.75),toQ(1)}}
+}
+
+func musicSceneFingerprint(scene MusicScenePayload) string {
+	scene.Fingerprint = ""
+	b, _ := json.Marshal(scene)
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 func sceneClamp01(v float64) float64 {

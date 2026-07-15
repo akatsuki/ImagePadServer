@@ -83,6 +83,7 @@ mod tests {
                 },
                 artwork: None,
                 glyph_atlas: None,
+                layout: Default::default(), dynamics: Default::default(), palette: Default::default(), fingerprint: String::new(),
             }),
         };
         let encoded = encode(&request).unwrap();

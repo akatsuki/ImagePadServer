@@ -16,7 +16,9 @@ func TestCanonicalMusicSceneNormalizesAssetsAndMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := png.Encode(f, image.NewUniform(color.RGBA{20, 40, 80, 255})); err != nil {
+	cover := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	cover.SetRGBA(0, 0, color.RGBA{20, 40, 80, 255})
+	if err := png.Encode(f, cover); err != nil {
 		t.Fatal(err)
 	}
 	_ = f.Close()
