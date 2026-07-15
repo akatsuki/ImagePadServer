@@ -74,7 +74,8 @@ T0 ──┬── T1 ──┐
 - **location**: `internal/video/audio_visualizer.go`, `internal/video/gpu_music_renderer.go`
 - **description**: Replace production `RunAudioVisualizerHLS` CPU composition with GPU RGBA frames piped to the existing HLS muxer. Preserve explicit RGBA pixel format, row stride, bounded backpressure, process lifetime/cancellation, sidecar restart handling, and GPU-required errors. Keep CPU renderer reference-only.
 - **validation**: Single-track HLS fixture verifies codec, pixel format, frame count, duration, PTS monotonicity/discontinuity handling, backpressure, cancellation, sidecar death, and GPU-required errors.
-- **status**: Not Completed
+- **status**: Partial
+- **log**: GPU-only single-track routing is in place; T5 is now integrating the same canonical scene payload and frame producer with playlist output.
 
 ### T5: Converge playlist and single-track integration
 - **depends_on**: [T3, T4]
