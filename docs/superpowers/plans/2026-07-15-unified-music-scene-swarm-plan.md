@@ -90,8 +90,8 @@ T0 ──┬── T1 ──┐
 - **location**: `internal/server`, `internal/video`, `docs/PLAYLIST_GPU_COMPATIBILITY.md`
 - **description**: Run focused Go/Rust tests, Windows NVIDIA/AMD and macOS smoke/soak, update evidence, and remove obsolete production CPU routing while retaining reference tests. Linux remains contract-only unless a Vulkan runner is provided.
 - **validation**: All focused tests pass; CI artifact checks pass; a static architecture/grep test proves no production music path invokes CPU composition; adapter selection, restart, Unicode, and negative cases are covered.
-- **status**: In Progress
-- **log**: Focused Go tests (44), full `internal/video` tests (549), and Rust tests (21) pass. One earlier full-repository run had an unrelated Windows TempDir cleanup failure in `internal/server`; final repository-wide audit remains.
+- **status**: Completed
+- **log**: Full Go suite passes (1224 tests across 26 packages), focused `internal/video` passes (549), and Rust compositor tests pass (21). Production HLS is GPU-only with CPU reference isolated; existing Windows NVIDIA/AMD, macOS, artifact, and Linux contract evidence remains documented. Final static audit confirms the CPU symbol is reference/test-only.
 
 ## Parallel Execution Groups
 
