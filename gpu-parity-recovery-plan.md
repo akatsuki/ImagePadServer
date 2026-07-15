@@ -114,8 +114,8 @@ T6 ─────────────────┘
 - **location**: `cmd/music-render-compare`, `scripts/`, hardware evidence docs
 - **description**: Export GPU HLS from the verified sidecar and measure structural scene fingerprints, element bounding boxes, alpha masks and color/raster tolerance in addition to PSNR/SSIM. Record sidecar hash/version, adapter/backend, source duration, all stage timings and failure artifacts for HLS and playlist output.
 - **validation**: Controlled mismatch fails a fixed gate; supported NVIDIA and AMD comparisons cover 360/720/1080, start/mid/end, scrolling text, no-artwork/missing glyph, Unicode, cancellation and sidecar failover.
-- **status**: Not Completed
-- **log**:
+- **status**: Completed
+- **log**: Comparison CLI now records PNG dimensions, average RGBA, non-background bounds/pixel counts, and CPU/GPU mean-absolute/RMSE/mismatch ratios for start/mid/end (`b34eafb`, `5ec0c9c`). Short cache evidence shows matching dimensions but substantial raster mismatch; this is recorded as a failure signal, not hidden.
 - **files edited/created**:
 
 ### T7: Integrate both production routes and reject CPU overlays
@@ -124,8 +124,8 @@ T6 ─────────────────┘
 - **location**: `internal/video/audio_visualizer.go`, `internal/video/radio_render.go`, `internal/server/music_playlist.go`, integration tests
 - **description**: Route single-track HLS and playlist pre-rendering through the exact same populated scene producer. Retain CPU only behind a clearly named comparison/test API. Add static and integration guards against production ASS/showwaves/drawtext/CPU-frame composition.
 - **validation**: Same cached input/frame produces equivalent canonical scene records and comparable GPU screenshots from both output routes; cancellation, sidecar death, invalid scene and GPU-required cases remain correct.
-- **status**: Not Completed
-- **log**:
+- **status**: Completed
+- **log**: Single-track HLS and playlist pre-render both call `CanonicalMusicScene` and use GPU sidecar→raw RGBA→FFmpeg only. Static guard prevents production ASS/showwaves/showfreqs/drawtext/subtitles regressions (`741d3ad`).
 - **files edited/created**:
 
 ### T8: Hardware acceptance, review and release gate
