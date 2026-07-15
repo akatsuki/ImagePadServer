@@ -195,6 +195,8 @@ impl GlyphAtlasMetadata {
             || self.height > MUSIC_MAX_ARTWORK_DIMENSION
             || self.glyph_count > MUSIC_MAX_GLYPHS
             || self.font_family.len() + self.missing_glyph_id.len() > MUSIC_MAX_TEXT_BYTES
+            || self.fallback_order.iter().any(|name| name.is_empty())
+            || self.fallback_order.iter().map(|name| name.len()).sum::<usize>() > MUSIC_MAX_TEXT_BYTES
         {
             return Err(ContractError::InvalidGlyphAtlas);
         }
@@ -209,6 +211,13 @@ impl GlyphAtlasMetadata {
             return Err(ContractError::InvalidGlyphAtlas);
         }
         Ok(())
+    }
+
+    /// Returns the deterministic font lookup order.  The primary family is
+    /// always attempted first, followed by declared fallbacks; an absent
+    /// glyph is represented by the protocol's explicit missing-glyph id.
+    pub fn font_order(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.font_family.as_str()).chain(self.fallback_order.iter().map(String::as_str))
     }
 }
 
@@ -325,5 +334,32 @@ mod tests {
             serde_json::from_str::<SceneSnapshot>(&serde_json::to_string(&s).unwrap()).unwrap(),
             s
         );
+    }
+
+    #[test]
+    fn glyph_atlas_preserves_unicode_fallback_order_and_rejects_empty_fallback() {
+        let atlas = GlyphAtlasMetadata {
+            texture_id: "atlas".into(), font_family: "Noto Sans CJK".into(),
+            font_weight: 400, fallback_order: vec!["Noto Color Emoji".into(), "sans".into()],
+            width: 256, height: 256, row_stride: 1024, glyph_count: 3,
+            missing_glyph_id: "tofu".into(),
+        };
+        assert!(atlas.validate().is_ok());
+        assert_eq!(atlas.font_order().collect::<Vec<_>>(), vec!["Noto Sans CJK", "Noto Color Emoji", "sans"]);
+        let mut bad = atlas;
+        bad.fallback_order.push(String::new());
+        assert_eq!(bad.validate(), Err(ContractError::InvalidGlyphAtlas));
+    }
+
+    #[test]
+    fn artwork_payload_is_bounded_and_optional() {
+        let mut artwork = ArtworkMetadata {
+            texture_id: "cover".into(), width: 64, height: 64, row_stride: 256,
+            format: PixelFormat::Rgba8, color_space: ColorSpace::Srgb, alpha: true,
+            payload: Vec::new(),
+        };
+        assert!(artwork.validate().is_ok());
+        artwork.payload = vec![0; 255];
+        assert_eq!(artwork.validate(), Err(ContractError::InvalidArtwork));
     }
 }
