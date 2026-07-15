@@ -7,7 +7,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"image"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,20 +29,160 @@ type probeResult struct {
 	Frames   int64   `json:"frames"`
 }
 type renderResult struct {
-	Output      string            `json:"output,omitempty"`
-	Error       string            `json:"error,omitempty"`
-	WallSeconds float64           `json:"wallSeconds"`
-	Probe       probeResult       `json:"probe"`
-	Screenshots map[string]string `json:"screenshots,omitempty"`
+	Output            string                  `json:"output,omitempty"`
+	Error             string                  `json:"error,omitempty"`
+	WallSeconds       float64                 `json:"wallSeconds"`
+	Probe             probeResult             `json:"probe"`
+	Screenshots       map[string]string       `json:"screenshots,omitempty"`
+	ScreenshotMetrics map[string]imageMetrics `json:"screenshotMetrics,omitempty"`
+}
+type imageBounds struct {
+	MinX int `json:"minX"`
+	MinY int `json:"minY"`
+	MaxX int `json:"maxX"`
+	MaxY int `json:"maxY"`
+}
+type imageMetrics struct {
+	Width               int          `json:"width"`
+	Height              int          `json:"height"`
+	AverageRGBA         [4]float64   `json:"averageRgba"`
+	NonBackgroundPixels int          `json:"nonBackgroundPixels"`
+	NonBackgroundBounds *imageBounds `json:"nonBackgroundBounds,omitempty"`
+}
+type imageComparison struct {
+	SizeMatch        bool    `json:"sizeMatch"`
+	MeanAbsoluteRGBA float64 `json:"meanAbsoluteRgba"`
+	RMSE             float64 `json:"rmse"`
+	MismatchedPixels int     `json:"mismatchedPixels"`
+	MismatchRatio    float64 `json:"mismatchRatio"`
 }
 type report struct {
-	Input       string       `json:"input"`
-	InputSHA256 string       `json:"inputSha256,omitempty"`
-	GeneratedAt time.Time    `json:"generatedAt"`
-	FFmpeg      string       `json:"ffmpeg,omitempty"`
-	GPUAdapter  string       `json:"gpuAdapter,omitempty"`
-	CPU         renderResult `json:"cpu"`
-	GPU         renderResult `json:"gpu"`
+	Input                 string                     `json:"input"`
+	InputSHA256           string                     `json:"inputSha256,omitempty"`
+	GeneratedAt           time.Time                  `json:"generatedAt"`
+	FFmpeg                string                     `json:"ffmpeg,omitempty"`
+	GPUAdapter            string                     `json:"gpuAdapter,omitempty"`
+	CPU                   renderResult               `json:"cpu"`
+	GPU                   renderResult               `json:"gpu"`
+	ScreenshotComparisons map[string]imageComparison `json:"screenshotComparisons,omitempty"`
+}
+
+func loadImageMetrics(path string) (imageMetrics, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return imageMetrics{}, err
+	}
+	defer f.Close()
+	im, _, err := image.Decode(f)
+	if err != nil {
+		return imageMetrics{}, err
+	}
+	b := im.Bounds()
+	w, h := b.Dx(), b.Dy()
+	if w == 0 || h == 0 {
+		return imageMetrics{}, fmt.Errorf("empty image %s", path)
+	}
+	var sums [4]uint64
+	// Use the top-left pixel as a stable background reference. A 12/255
+	// channel distance excludes the uniform canvas while retaining artwork,
+	// text, spectrum and progress elements.
+	bg := im.At(b.Min.X, b.Min.Y)
+	br, bgG, bb, ba := bg.RGBA()
+	const threshold uint32 = 12 * 257
+	m := imageMetrics{Width: w, Height: h, NonBackgroundBounds: nil}
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			r, g, bl, a := im.At(x, y).RGBA()
+			sums[0] += uint64(r)
+			sums[1] += uint64(g)
+			sums[2] += uint64(bl)
+			sums[3] += uint64(a)
+			d := absU32(r, br) + absU32(g, bgG) + absU32(bl, bb) + absU32(a, ba)
+			if d > threshold {
+				m.NonBackgroundPixels++
+				if m.NonBackgroundBounds == nil {
+					m.NonBackgroundBounds = &imageBounds{MinX: x, MinY: y, MaxX: x, MaxY: y}
+				} else {
+					q := m.NonBackgroundBounds
+					if x < q.MinX {
+						q.MinX = x
+					}
+					if y < q.MinY {
+						q.MinY = y
+					}
+					if x > q.MaxX {
+						q.MaxX = x
+					}
+					if y > q.MaxY {
+						q.MaxY = y
+					}
+				}
+			}
+		}
+	}
+	for i := range sums {
+		m.AverageRGBA[i] = float64(sums[i]) / float64(w*h*257)
+	}
+	return m, nil
+}
+func absU32(a, b uint32) uint32 {
+	if a > b {
+		return a - b
+	}
+	return b - a
+}
+func compareImages(aPath, bPath string) (imageComparison, error) {
+	af, err := os.Open(aPath)
+	if err != nil {
+		return imageComparison{}, err
+	}
+	defer af.Close()
+	bf, err := os.Open(bPath)
+	if err != nil {
+		return imageComparison{}, err
+	}
+	defer bf.Close()
+	a, _, err := image.Decode(af)
+	if err != nil {
+		return imageComparison{}, err
+	}
+	b, _, err := image.Decode(bf)
+	if err != nil {
+		return imageComparison{}, err
+	}
+	ab, bb := a.Bounds(), b.Bounds()
+	c := imageComparison{SizeMatch: ab.Dx() == bb.Dx() && ab.Dy() == bb.Dy()}
+	if !c.SizeMatch {
+		return c, nil
+	}
+	var sum, sq float64
+	total := ab.Dx() * ab.Dy() * 4
+	mism := 0
+	for y := 0; y < ab.Dy(); y++ {
+		for x := 0; x < ab.Dx(); x++ {
+			ar, ag, abv, aa := a.At(x+ab.Min.X, y+ab.Min.Y).RGBA()
+			br, bg, bbv, ba := b.At(x+bb.Min.X, y+bb.Min.Y).RGBA()
+			vals := [...]uint32{ar, ag, abv, aa}
+			vals2 := [...]uint32{br, bg, bbv, ba}
+			pixelDiff := false
+			for i := 0; i < 4; i++ {
+				d := float64(absU32(vals[i], vals2[i])) / 257
+				sum += d
+				sq += d * d
+				if d > 8 {
+					pixelDiff = true
+				}
+			}
+			if pixelDiff {
+				mism++
+			}
+		}
+	}
+	c.MeanAbsoluteRGBA = sum / float64(total)
+	c.RMSE = math.Sqrt(sq / float64(total))
+	c.MismatchedPixels = mism
+	c.MismatchRatio = float64(mism) / float64(ab.Dx()*ab.Dy())
+	return c, nil
 }
 
 func sha256File(path string) (string, error) {
@@ -142,6 +286,12 @@ func render(ctx context.Context, gpu bool, out, ffmpeg string, input video.Audio
 	r.Output = matches[0]
 	r.Probe, _ = probe(ctx, r.Output)
 	r.Screenshots = extractScreenshots(ctx, ffmpeg, r.Output, out, r.Probe.Duration)
+	r.ScreenshotMetrics = map[string]imageMetrics{}
+	for name, path := range r.Screenshots {
+		if m, e := loadImageMetrics(path); e == nil {
+			r.ScreenshotMetrics[name] = m
+		}
+	}
 	return r
 }
 
@@ -208,6 +358,16 @@ func main() {
 	rep := report{Input: *input, InputSHA256: inputHash, GeneratedAt: time.Now(), FFmpeg: ff, GPUAdapter: adapter}
 	rep.CPU = render(ctx, false, filepath.Join(*output, "cpu"), ff, inputSpec, id, p)
 	rep.GPU = render(ctx, true, filepath.Join(*output, "gpu"), ff, inputSpec, id, p)
+	rep.ScreenshotComparisons = map[string]imageComparison{}
+	for _, name := range []string{"start", "mid", "end"} {
+		if a, ok := rep.CPU.Screenshots[name]; ok {
+			if b, ok := rep.GPU.Screenshots[name]; ok {
+				if c, e := compareImages(a, b); e == nil {
+					rep.ScreenshotComparisons[name] = c
+				}
+			}
+		}
+	}
 	b, _ := json.MarshalIndent(rep, "", "  ")
 	_ = os.WriteFile(filepath.Join(*output, "report.json"), append(b, '\n'), 0644)
 	writeMarkdown(*output, rep)
@@ -219,6 +379,12 @@ func writeMarkdown(dir string, r report) {
 	fmt.Fprintf(&b, "# Music render comparison\n\nInput: `%s`\n\n| Mode | Wall time (s) | Duration (s) | Frames | Error |\n|---|---:|---:|---:|---|\n", r.Input)
 	fmt.Fprintf(&b, "| CPU | %.3f | %.3f | %d | %s |\n", r.CPU.WallSeconds, r.CPU.Probe.Duration, r.CPU.Probe.Frames, r.CPU.Error)
 	fmt.Fprintf(&b, "| GPU | %.3f | %.3f | %d | %s |\n", r.GPU.WallSeconds, r.GPU.Probe.Duration, r.GPU.Probe.Frames, r.GPU.Error)
+	b.WriteString("\n## Screenshot comparisons\n\n| Point | Size match | Mean absolute RGBA | RMSE | Mismatch ratio |\n|---|---|---:|---:|---:|\n")
+	for _, name := range []string{"start", "mid", "end"} {
+		if c, ok := r.ScreenshotComparisons[name]; ok {
+			fmt.Fprintf(&b, "| %s | %t | %.3f | %.3f | %.3f |\n", name, c.SizeMatch, c.MeanAbsoluteRGBA, c.RMSE, c.MismatchRatio)
+		}
+	}
 	_ = os.WriteFile(filepath.Join(dir, "report.md"), []byte(b.String()), 0644)
 }
 func fatal(err error) {
