@@ -72,16 +72,23 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         glow = glow + luminance * 0.08 * alpha;
       }
     }
-    let wave = abs(sin(fx * 40.0 + f32(params.sequence) * 0.08 + fy * 5.0)) * (0.10 + peak * 0.25);
+    let spectrum_rect = params.rects[4];
+    let sx = f32(id.x);
+    let sy = f32(id.y);
+    let in_spectrum = sx >= f32(spectrum_rect.x) && sx < f32(spectrum_rect.x + spectrum_rect.z) &&
+      sy >= f32(spectrum_rect.y) && sy < f32(spectrum_rect.y + spectrum_rect.w);
+    let spectrum_u = clamp((sx - f32(spectrum_rect.x)) / max(1.0, f32(spectrum_rect.z - 1)), 0.0, 1.0);
     var level = 0.0;
     for (var band: u32 = 0u; band < 24u; band = band + 1u) {
       let left = f32(band) / 24.0;
       let right = f32(band + 1u) / 24.0;
-      if (fx >= left && fx < right) {
+      if (spectrum_u >= left && spectrum_u < right) {
         level = f32(params.spectrum[band / 4u][band % 4u]) / 65535.0;
       }
     }
-    let bars = select(0.0, 0.35 + level * 0.5, fy > (1.0 - level * 0.65));
+    let spectrum_v = clamp((sy - f32(spectrum_rect.y)) / max(1.0, f32(spectrum_rect.w)), 0.0, 1.0);
+    let bars = select(0.0, 0.7 + level * 0.3, in_spectrum && spectrum_v > (1.0 - level));
+    let wave = 0.0;
     // Progress rail and thumb use the canonical progress rectangle.
     let progress = f32(params.dynamics[0].z) / 65535.0;
     let rail = params.rects[6];
