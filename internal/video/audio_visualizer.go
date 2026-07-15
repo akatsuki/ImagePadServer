@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 )
 
 func AudioVisualizerFFmpegArgs(audioPath, assPath, fontDir, id string, preset QualityPreset) []string {
@@ -522,10 +523,80 @@ func drawCircle(canvas *image.RGBA, cx, cy, radius int, c color.RGBA) {
 // ---------------------------------------------------------------------------
 
 func RunAudioVisualizerHLS(ctx context.Context, outDir, ffmpeg string, input AudioRenderInput, id string, preset QualityPreset) error {
+	if executable := strings.TrimSpace(os.Getenv("IMAGEPAD_PLAYLIST_COMPOSITORD")); executable != "" {
+		return runAudioVisualizerHLSGPU(ctx, outDir, ffmpeg, executable, input, id, preset)
+	}
+	return ErrGPURequired
+}
+
+// RunAudioVisualizerHLSCPUReference is retained for deterministic reference
+// tests and migration comparisons. It must not be used by production routes.
+func RunAudioVisualizerHLSCPUReference(ctx context.Context, outDir, ffmpeg string, input AudioRenderInput, id string, preset QualityPreset) error {
 	buildArgs := func(assPath, fontDir string, mode *ForegroundMode, encoder VideoEncoderProfile) []string {
 		return formatVisualizerOutputArgs(audioVisualizerFFmpegArgsWithEncoder(input.SourcePath, assPath, fontDir, id, preset, mode, encoder, audioLoudnormFilter(input.Kind)), outDir)
 	}
 	return runAudioVisualizerEncode(ctx, outDir, ffmpeg, input, id, preset, EncoderStandard, buildArgs, func() { removeHLSForID(outDir, id) }, nil)
+}
+
+// runAudioVisualizerHLSGPU owns dynamic visuals in the wgpu sidecar and lets
+// FFmpeg perform only raw-frame encoding and HLS muxing. This deliberately
+// contains no showwaves/showfreqs/ASS filters, preventing double rendering.
+func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe string, input AudioRenderInput, id string, preset QualityPreset) error {
+	height := preset.Height
+	if height <= 0 {
+		height = 720
+	}
+	width := height * 16 / 9
+	if width%2 != 0 {
+		width++
+	}
+	args := []string{"-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", fmt.Sprintf("%dx%d", width, height), "-r", "30", "-i", "pipe:0", "-i", input.SourcePath, "-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2", "-f", "hls", "-hls_time", "4", "-hls_list_size", "0", "-hls_playlist_type", "event", "-hls_flags", "independent_segments", "-hls_segment_filename", filepath.Join(outDir, segmentPattern(id)), filepath.Join(outDir, playlistName(id))}
+	cmd := exec.CommandContext(ctx, ffmpeg, args...)
+	hideWindow(cmd)
+	in, err := cmd.StdinPipe()
+	if err != nil {
+		return err
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	sidecar, err := StartSidecar(ctx, sidecarExe, "music-"+id)
+	if err != nil {
+		_ = cmd.Process.Kill()
+		return fmt.Errorf("%w: start sidecar: %v", ErrGPURendererUnavailable, err)
+	}
+	defer sidecar.Close()
+	if err := sidecar.Hello(ctx, "music-"+id); err != nil {
+		_ = cmd.Process.Kill()
+		return fmt.Errorf("%w: sidecar hello: %v", ErrGPURendererUnavailable, err)
+	}
+	frames := int(math.Ceil(input.Analysis.Duration * 30))
+	if frames < 1 {
+		frames = 1
+	}
+	for i := 0; i < frames; i++ {
+		frame, e := sidecar.Render(ctx, uint32(width), uint32(height), uint64(i), int64(float64(i)*float64(time.Second)/30))
+		if e != nil {
+			_ = cmd.Process.Kill()
+			return fmt.Errorf("%w: render frame: %v", ErrGPURendererUnavailable, e)
+		}
+		packed, e := GPUFrameToPackedRGBA(frame)
+		if e != nil {
+			_ = cmd.Process.Kill()
+			return fmt.Errorf("%w: pack frame: %v", ErrGPURendererUnavailable, e)
+		}
+		if _, e = in.Write(packed); e != nil {
+			_ = cmd.Process.Kill()
+			return fmt.Errorf("GPU HLS frame write: %w", e)
+		}
+	}
+	_ = in.Close()
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("GPU HLS encode: %w: %s", err, trimOutput(stderr.Bytes()))
+	}
+	return nil
 }
 
 // visualizerProgressWriter reports the fraction of raw frame bytes streamed
