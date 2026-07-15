@@ -22,6 +22,8 @@ struct Params {
 @group(0) @binding(3) var atlas_sampler: sampler;
 struct GlyphInstance { screen: vec4<f32>, atlas: vec4<f32>, color: vec4<f32> }
 @group(0) @binding(4) var<storage, read> glyphs: array<GlyphInstance>;
+@group(0) @binding(5) var artwork_tex: texture_2d<f32>;
+@group(0) @binding(6) var artwork_sampler: sampler;
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   if (id.x >= params.width || id.y >= params.height) { return; }
@@ -39,7 +41,27 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let rms = f32(params.rms) / 32767.0;
     let peak = f32(params.peak) / 32767.0;
     // Canonical scene background and glow, with a deterministic waveform.
-    let glow = max(0.0, 1.0 - distance(vec2<f32>(fx, fy), vec2<f32>(0.5, 0.48)) * 1.7) * (0.18 + rms * 0.42);
+    var glow = max(0.0, 1.0 - distance(vec2<f32>(fx, fy), vec2<f32>(0.5, 0.48)) * 1.7) * (0.18 + rms * 0.42);
+    // Artwork is a first-class layer. Keep the tile bounded and deterministic
+    // so malformed/absent artwork can use the same fallback texture without
+    // changing the bind group contract. The soft edge is a rounded-tile
+    // approximation suitable for the compute renderer.
+    var artwork = 0.0;
+    if ((params.scene_enabled & 2u) != 0u) {
+      let tile_min = vec2<f32>(0.06, 0.14);
+      let tile_max = vec2<f32>(0.34, 0.64);
+      if (fx >= tile_min.x && fx < tile_max.x && fy >= tile_min.y && fy < tile_max.y) {
+        let uv = (vec2<f32>(fx, fy) - tile_min) / (tile_max - tile_min);
+        let edge = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
+        let alpha = smoothstep(0.0, 0.025, edge);
+        artwork = textureSampleLevel(artwork_tex, artwork_sampler, uv, 0.0).a * alpha;
+        // Feed a restrained artwork luminance into the background layer; this
+        // provides a stable palette/blur approximation without extra passes.
+        let cover = textureSampleLevel(artwork_tex, artwork_sampler, uv, 0.0).rgb;
+        let luminance = dot(cover, vec3<f32>(0.2126, 0.7152, 0.0722));
+        glow = glow + luminance * 0.08 * alpha;
+      }
+    }
     let wave = abs(sin(fx * 40.0 + f32(params.sequence) * 0.08 + fy * 5.0)) * (0.10 + peak * 0.25);
     var level = 0.0;
     for (var band: u32 = 0u; band < 24u; band = band + 1u) {
@@ -51,7 +73,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     let bars = select(0.0, 0.35 + level * 0.5, fy > (1.0 - level * 0.65));
     var glyph = 0.0;
-    if (params.scene_enabled > 1u) {
+    if ((params.scene_enabled & 4u) != 0u) {
       let pixel = vec2<f32>(f32(id.x), f32(id.y));
       for (var gi: u32 = 0u; gi < params.glyph_count; gi = gi + 1u) {
         let g = glyphs[gi];
@@ -62,9 +84,9 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
       }
       glyph = glyph * 0.85;
     }
-    r = u32(clamp((0.05 + glow + bars * 0.75 + wave * 0.45 + glyph) * 255.0, 0.0, 255.0));
-    g = u32(clamp((0.08 + glow * 0.65 + bars * 0.20 + wave * 0.75 + glyph) * 255.0, 0.0, 255.0));
-    b = u32(clamp((0.18 + glow * 0.95 + bars * 0.90 + wave * 0.35 + glyph) * 255.0, 0.0, 255.0));
+    r = u32(clamp((0.05 + glow + bars * 0.75 + wave * 0.45 + glyph + artwork * 0.70) * 255.0, 0.0, 255.0));
+    g = u32(clamp((0.08 + glow * 0.65 + bars * 0.20 + wave * 0.75 + glyph + artwork * 0.70) * 255.0, 0.0, 255.0));
+    b = u32(clamp((0.18 + glow * 0.95 + bars * 0.90 + wave * 0.35 + glyph + artwork * 0.70) * 255.0, 0.0, 255.0));
   }
   pixels[i] = r | (g << 8u) | (b << 16u) | (255u << 24u);
 }
@@ -96,7 +118,9 @@ fn scene_uniform_words(
     if let Some(scene) = scene {
         words[4] = scene.feature.rms_q15 as u32;
         words[5] = scene.feature.peak_q15 as u32;
-        words[6] = if scene.artwork.is_some() || scene.glyph_atlas.as_ref().is_some_and(|a| !a.payload.is_empty()) { 2 } else { 1 };
+        words[6] = 1
+            | if scene.artwork.as_ref().is_some_and(|a| !a.payload.is_empty()) { 2 } else { 0 }
+            | if scene.glyph_atlas.as_ref().is_some_and(|a| !a.payload.is_empty() && !a.glyphs.is_empty()) { 4 } else { 0 };
         words[7] = scene.glyph_atlas.as_ref().map(|a| a.glyphs.len().min(256) as u32).unwrap_or(0);
         for (dst, src) in words[8..]
             .iter_mut()
@@ -218,6 +242,8 @@ impl Renderer {
                 wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
                 wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
                 wgpu::BindGroupLayoutEntry { binding: 4, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 5, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 6, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
             ],
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -267,17 +293,22 @@ impl Renderer {
         if width == 0 || height == 0 {
             return Err("invalid render dimensions".into());
         }
-        let atlas_texture = if let Some(scene) = scene {
+        let (artwork_texture, atlas_texture) = if let Some(scene) = scene {
             scene.validate().map_err(|e| format!("scene: {e:?}"))?;
-            if let Some(atlas) = &scene.glyph_atlas { if !atlas.payload.is_empty() { Some(self.upload_glyph_atlas(atlas)?) } else { None } }
-            else if let Some(artwork) = &scene.artwork { if !artwork.payload.is_empty() { Some(self.upload_artwork(artwork)?) } else { None } }
-            else { None }
-        } else { None };
+            let artwork = scene.artwork.as_ref().filter(|a| !a.payload.is_empty())
+                .map(|a| self.upload_artwork(a)).transpose()?;
+            let atlas = scene.glyph_atlas.as_ref().filter(|a| !a.payload.is_empty())
+                .map(|a| self.upload_glyph_atlas(a)).transpose()?;
+            (artwork, atlas)
+        } else { (None, None) };
         let fallback = [255u8, 255, 255, 255];
-        let atlas_texture = atlas_texture.unwrap_or_else(|| {
+        let fallback_texture = || {
             let texture = self.device.create_texture(&wgpu::TextureDescriptor { label: Some("fallback-atlas"), size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba8UnormSrgb, usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] });
             self.queue.write_texture(wgpu::ImageCopyTexture { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All }, &fallback, wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(NonZeroU32::new(4).unwrap().into()), rows_per_image: Some(NonZeroU32::new(1).unwrap().into()) }, wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }); texture
-        });
+        };
+        let artwork_texture = artwork_texture.unwrap_or_else(fallback_texture);
+        let atlas_texture = atlas_texture.unwrap_or_else(fallback_texture);
+        let artwork_view = artwork_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let atlas_view = atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor::default());
         let mut glyph_words = glyph_instance_words(scene, width, height);
@@ -320,6 +351,8 @@ impl Renderer {
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&atlas_view) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&sampler) },
                 wgpu::BindGroupEntry { binding: 4, resource: glyph_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&artwork_view) },
+                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::Sampler(&sampler) },
             ],
         });
         let mut enc = self
@@ -411,7 +444,7 @@ mod tests {
                 fallback_order: vec![], width: 256, height: 256, row_stride: 1024, glyph_count: 2,
                 missing_glyph_id: "?".into(), payload: vec![1; 1024 * 256],
                 glyphs: vec![GlyphEntry { id: "A".into(), x: 8, y: 16, width: 32, height: 40, advance: 34.0 }, GlyphEntry { id: "?".into(), x: 0, y: 0, width: 20, height: 20, advance: 22.0 }],
-                text_runs: vec![TextRun { text: "A?".into(), x: 10.0, y: 12.0, size_px: 40.0, rgba: [255, 0, 0, 255], opacity: 1.0 }],
+                text_runs: vec![TextRun { text: "A?".into(), x: 10.0, y: 12.0, size_px: 40.0, rgba: [255, 0, 0, 255], opacity: 1.0 }], asset_hash: String::new(),
             }),
         };
         let words = glyph_instance_words(Some(&scene), 100, 100);
@@ -433,6 +466,14 @@ mod tests {
         assert!(SHADER.contains("spectrum: array<vec4<u32>, 6>"));
         assert!(SHADER.contains("params.spectrum[band / 4u][band % 4u]"));
         assert!(!SHADER.contains("spectrum: array<u32, 24>"));
+    }
+
+    #[test]
+    fn shader_declares_artwork_layer_and_separate_texture_binding() {
+        assert!(SHADER.contains("@group(0) @binding(5) var artwork_tex"));
+        assert!(SHADER.contains("textureSampleLevel(artwork_tex"));
+        assert!(SHADER.contains("params.scene_enabled & 2u"));
+        assert!(SHADER.contains("tile_min = vec2<f32>(0.06, 0.14)"));
     }
 
     #[test]
