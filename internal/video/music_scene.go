@@ -3,7 +3,6 @@ package video
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"golang.org/x/image/draw"
 	"image"
 	_ "image/png"
 	"math"
@@ -72,7 +71,13 @@ func normalizeArtwork(path string) (ArtworkMetadata, bool) {
 		w, h = int(float64(w)*s), int(float64(h)*s)
 	}
 	dst := image.NewRGBA(image.Rect(0, 0, w, h))
-	draw.NearestNeighbor.Scale(dst, dst.Bounds(), src, b, draw.Src, nil)
+	for yy := 0; yy < h; yy++ {
+		for xx := 0; xx < w; xx++ {
+			sx := b.Min.X + xx*b.Dx()/w
+			sy := b.Min.Y + yy*b.Dy()/h
+			dst.Set(xx, yy, src.At(sx, sy))
+		}
+	}
 	stride := (w*4 + 255) &^ 255
 	payload := make([]byte, stride*h)
 	for y := 0; y < h; y++ {
