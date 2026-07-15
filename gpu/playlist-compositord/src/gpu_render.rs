@@ -88,8 +88,21 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
       }
     }
     let spectrum_v = clamp((sy - f32(spectrum_rect.y)) / max(1.0, f32(spectrum_rect.w)), 0.0, 1.0);
-    let bars = select(0.0, 0.7 + level * 0.3, in_spectrum && spectrum_v > (1.0 - level));
-    let wave = 0.0;
+    // Keep a small gap between bands like the CPU renderer.  The previous
+    // full-width fill made the GPU result a single solid block and erased the
+    // high-frequency structure visible in the reference render.
+    let band_pos = spectrum_u * 24.0;
+    let band_gap = fract(band_pos);
+    let bars = select(0.0, 0.7 + level * 0.3,
+      in_spectrum && band_gap > 0.10 && band_gap < 0.90 && spectrum_v > (1.0 - level));
+    // The CPU scene also carries a fine waveform over the bars.  The canonical
+    // payload has bounded spectrum samples rather than a second texture, so
+    // use the interpolated band energy as a deterministic proxy centered in
+    // the spectrum rect.  This preserves the line silhouette and avoids a
+    // second per-frame readback path.
+    let wave_y = f32(spectrum_rect.y) + f32(spectrum_rect.w) * (0.70 - level * 0.42);
+    let wave = select(0.0, 1.0,
+      in_spectrum && band_gap > 0.04 && band_gap < 0.96 && abs(sy - wave_y) < 1.0);
     // Progress rail and thumb use the canonical progress rectangle.
     let progress = f32(params.dynamics[0].z) / 65535.0;
     let rail = params.rects[6];
