@@ -58,8 +58,9 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     // approximation suitable for the compute renderer.
     var artwork = 0.0;
     if ((params.scene_enabled & 2u) != 0u) {
-      let tile_min = vec2<f32>(0.06, 0.14);
-      let tile_max = vec2<f32>(0.34, 0.64);
+      let artwork_rect = params.rects[0];
+      let tile_min = vec2<f32>(f32(artwork_rect.x) / f32(params.width), f32(artwork_rect.y) / f32(params.height));
+      let tile_max = vec2<f32>(f32(artwork_rect.x + artwork_rect.z) / f32(params.width), f32(artwork_rect.y + artwork_rect.w) / f32(params.height));
       if (fx >= tile_min.x && fx < tile_max.x && fy >= tile_min.y && fy < tile_max.y) {
         let uv = (vec2<f32>(fx, fy) - tile_min) / (tile_max - tile_min);
         let edge = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
