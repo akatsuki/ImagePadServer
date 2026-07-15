@@ -28,7 +28,9 @@ struct Params {
 struct GlyphInstance { screen: vec4<f32>, atlas: vec4<f32>, color: vec4<f32> }
 @group(0) @binding(4) var<storage, read> glyphs: array<GlyphInstance>;
 @group(0) @binding(5) var artwork_tex: texture_2d<f32>;
-@group(0) @binding(6) var artwork_sampler: sampler;
+  @group(0) @binding(6) var artwork_sampler: sampler;
+  // Bounded 64-sample envelope/trend pairs, uploaded as a read-only storage buffer.
+  @group(0) @binding(7) var<storage, read> dynamics_samples: array<u32>;
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   if (id.x >= params.width || id.y >= params.height) { return; }
@@ -89,14 +91,17 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let thumb = select(0.0, 1.0, distance(vec2<f32>(rx, ry), vec2<f32>(thumb_x, f32(rail.y) + f32(rail.w) * 0.5)) < max(2.0, f32(rail.w) * 0.8));
     // Loudness envelope/trend are bounded Q0.16 samples. Render them in the
     // loudness rectangle as two thin deterministic traces.
-    let loud = params.rects[5];
+      let loud = params.rects[5];
     var loudness = 0.0;
-    if (rx >= f32(loud.x) && rx < f32(loud.x + loud.z) && ry >= f32(loud.y) && ry < f32(loud.y + loud.w)) {
+      if (rx >= f32(loud.x) && rx < f32(loud.x + loud.z) && ry >= f32(loud.y) && ry < f32(loud.y + loud.w)) {
       let u = clamp((rx - f32(loud.x)) / max(1.0, f32(loud.z - 1)), 0.0, 1.0);
-      let sample = f32(params.dynamics[1].x) / 65535.0;
-      let y = f32(loud.y + loud.w) - sample * f32(loud.w);
-      loudness = select(0.0, 1.0, abs(ry - y) < 1.5);
-    }
+      let sample_index = min(63u, u32(u * 63.0 + 0.5));
+      let envelope = f32(dynamics_samples[sample_index]) / 65535.0;
+      let trend = f32(dynamics_samples[64u + sample_index]) / 65535.0;
+      let y_env = f32(loud.y + loud.w) - envelope * f32(loud.w);
+      let y_trend = f32(loud.y + loud.w) - trend * f32(loud.w);
+      loudness = select(0.0, 1.0, abs(ry - y_env) < 1.5) + select(0.0, 0.65, abs(ry - y_trend) < 1.5);
+      }
     var glyph = 0.0;
     if ((params.scene_enabled & 4u) != 0u) {
       let pixel = vec2<f32>(f32(id.x), f32(id.y));
@@ -204,6 +209,24 @@ fn glyph_instance_words(scene: Option<&MusicScenePayload>, width: u32, height: u
     out
 }
 
+fn dynamics_sample_words(scene: Option<&MusicScenePayload>) -> Vec<u32> {
+    let mut out = vec![0u32; 128];
+    if let Some(scene) = scene {
+        let env = &scene.dynamics.loudness_envelope;
+        let trend = &scene.dynamics.loudness_trend;
+        for i in 0..64 {
+            let sample = |values: &Vec<u16>| -> u32 {
+                if values.is_empty() { return scene.feature.rms_q15 as u32; }
+                let idx = i * values.len().saturating_sub(1) / 63;
+                values[idx] as u32
+            };
+            out[i] = sample(env);
+            out[64 + i] = sample(trend);
+        }
+    }
+    out
+}
+
 impl Renderer {
     fn upload_artwork(&self, artwork: &crate::contracts::ArtworkMetadata) -> Result<wgpu::Texture, String> {
         artwork.validate().map_err(|e| format!("artwork: {e:?}"))?;
@@ -289,6 +312,7 @@ impl Renderer {
                 wgpu::BindGroupLayoutEntry { binding: 4, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
                 wgpu::BindGroupLayoutEntry { binding: 5, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
                 wgpu::BindGroupLayoutEntry { binding: 6, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+                wgpu::BindGroupLayoutEntry { binding: 7, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
             ],
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -359,6 +383,7 @@ impl Renderer {
         let mut glyph_words = glyph_instance_words(scene, width, height);
         if glyph_words.is_empty() { glyph_words.resize(12, 0); }
         let glyph_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("glyph-instances"), contents: bytemuck::cast_slice(&glyph_words), usage: wgpu::BufferUsages::STORAGE });
+        let dynamics_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("dynamics-samples"), contents: bytemuck::cast_slice(&dynamics_sample_words(scene)), usage: wgpu::BufferUsages::STORAGE });
         let stride = ((width * 4 + ROW_ALIGNMENT - 1) / ROW_ALIGNMENT) * ROW_ALIGNMENT;
         let bytes = stride as usize * height as usize;
         let output = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -398,6 +423,7 @@ impl Renderer {
                 wgpu::BindGroupEntry { binding: 4, resource: glyph_buffer.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&artwork_view) },
                 wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::Sampler(&sampler) },
+                wgpu::BindGroupEntry { binding: 7, resource: dynamics_buffer.as_entire_binding() },
             ],
         });
         let mut enc = self
