@@ -15,6 +15,8 @@ struct Params {
 }
 @group(0) @binding(0) var<storage, read_write> pixels: array<u32>;
 @group(0) @binding(1) var<uniform> params: Params;
+@group(0) @binding(2) var atlas_tex: texture_2d<f32>;
+@group(0) @binding(3) var atlas_sampler: sampler;
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   if (id.x >= params.width || id.y >= params.height) { return; }
@@ -41,9 +43,11 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
       if (fx >= left && fx < right) { level = f32(params.spectrum[band]) / 65535.0; }
     }
     let bars = select(0.0, 0.35 + level * 0.5, fy > (1.0 - level * 0.65));
-    r = u32(clamp((0.05 + glow + bars * 0.75 + wave * 0.45) * 255.0, 0.0, 255.0));
-    g = u32(clamp((0.08 + glow * 0.65 + bars * 0.20 + wave * 0.75) * 255.0, 0.0, 255.0));
-    b = u32(clamp((0.18 + glow * 0.95 + bars * 0.90 + wave * 0.35) * 255.0, 0.0, 255.0));
+    let atlas = textureSampleLevel(atlas_tex, atlas_sampler, vec2<f32>(fx, fy), 0.0);
+    let glyph = select(0.0, atlas.a * 0.18, params.scene_enabled > 1u);
+    r = u32(clamp((0.05 + glow + bars * 0.75 + wave * 0.45 + glyph) * 255.0, 0.0, 255.0));
+    g = u32(clamp((0.08 + glow * 0.65 + bars * 0.20 + wave * 0.75 + glyph) * 255.0, 0.0, 255.0));
+    b = u32(clamp((0.18 + glow * 0.95 + bars * 0.90 + wave * 0.35 + glyph) * 255.0, 0.0, 255.0));
   }
   pixels[i] = r | (g << 8u) | (b << 16u) | (255u << 24u);
 }
@@ -75,7 +79,7 @@ fn scene_uniform_words(
     if let Some(scene) = scene {
         words[4] = scene.feature.rms_q15 as u32;
         words[5] = scene.feature.peak_q15 as u32;
-        words[6] = 1;
+        words[6] = if scene.artwork.is_some() || scene.glyph_atlas.as_ref().is_some_and(|a| !a.payload.is_empty()) { 2 } else { 1 };
         for (dst, src) in words[8..]
             .iter_mut()
             .zip(scene.feature.spectrum_q16.iter().copied())
@@ -87,9 +91,9 @@ fn scene_uniform_words(
 }
 
 impl Renderer {
-    fn upload_artwork(&self, artwork: &crate::contracts::ArtworkMetadata) -> Result<(), String> {
+    fn upload_artwork(&self, artwork: &crate::contracts::ArtworkMetadata) -> Result<wgpu::Texture, String> {
         artwork.validate().map_err(|e| format!("artwork: {e:?}"))?;
-        if artwork.payload.is_empty() { return Ok(()); }
+        if artwork.payload.is_empty() { return Err("empty artwork payload".into()); }
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("music-artwork"),
             size: wgpu::Extent3d { width: artwork.width, height: artwork.height, depth_or_array_layers: 1 },
@@ -106,12 +110,12 @@ impl Renderer {
             wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(NonZeroU32::new(artwork.row_stride).unwrap().into()), rows_per_image: Some(NonZeroU32::new(artwork.height).unwrap().into()) },
             wgpu::Extent3d { width: artwork.width, height: artwork.height, depth_or_array_layers: 1 },
         );
-        Ok(())
+        Ok(texture)
     }
 
-    fn upload_glyph_atlas(&self, atlas: &crate::contracts::GlyphAtlasMetadata) -> Result<(), String> {
+    fn upload_glyph_atlas(&self, atlas: &crate::contracts::GlyphAtlasMetadata) -> Result<wgpu::Texture, String> {
         atlas.validate().map_err(|e| format!("glyph atlas: {e:?}"))?;
-        if atlas.payload.is_empty() { return Ok(()); }
+        if atlas.payload.is_empty() { return Err("empty glyph atlas payload".into()); }
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("music-glyph-atlas"),
             size: wgpu::Extent3d { width: atlas.width, height: atlas.height, depth_or_array_layers: 1 },
@@ -126,7 +130,7 @@ impl Renderer {
             wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(NonZeroU32::new(atlas.row_stride).unwrap().into()), rows_per_image: Some(NonZeroU32::new(atlas.height).unwrap().into()) },
             wgpu::Extent3d { width: atlas.width, height: atlas.height, depth_or_array_layers: 1 },
         );
-        Ok(())
+        Ok(texture)
     }
 
     pub fn new() -> Result<Self, String> {
@@ -166,6 +170,8 @@ impl Renderer {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
             ],
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -215,11 +221,19 @@ impl Renderer {
         if width == 0 || height == 0 {
             return Err("invalid render dimensions".into());
         }
-        if let Some(scene) = scene {
+        let atlas_texture = if let Some(scene) = scene {
             scene.validate().map_err(|e| format!("scene: {e:?}"))?;
-            if let Some(artwork) = &scene.artwork { self.upload_artwork(artwork)?; }
-            if let Some(atlas) = &scene.glyph_atlas { self.upload_glyph_atlas(atlas)?; }
-        }
+            if let Some(atlas) = &scene.glyph_atlas { if !atlas.payload.is_empty() { Some(self.upload_glyph_atlas(atlas)?) } else { None } }
+            else if let Some(artwork) = &scene.artwork { if !artwork.payload.is_empty() { Some(self.upload_artwork(artwork)?) } else { None } }
+            else { None }
+        } else { None };
+        let fallback = [255u8, 255, 255, 255];
+        let atlas_texture = atlas_texture.unwrap_or_else(|| {
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor { label: Some("fallback-atlas"), size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba8UnormSrgb, usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] });
+            self.queue.write_texture(wgpu::ImageCopyTexture { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All }, &fallback, wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(NonZeroU32::new(4).unwrap().into()), rows_per_image: Some(NonZeroU32::new(1).unwrap().into()) }, wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }); texture
+        });
+        let atlas_view = atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor::default());
         let stride = ((width * 4 + ROW_ALIGNMENT - 1) / ROW_ALIGNMENT) * ROW_ALIGNMENT;
         let bytes = stride as usize * height as usize;
         let output = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -254,6 +268,8 @@ impl Renderer {
                     binding: 1,
                     resource: params.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&atlas_view) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&sampler) },
             ],
         });
         let mut enc = self
