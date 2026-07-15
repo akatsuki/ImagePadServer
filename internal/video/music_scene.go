@@ -34,21 +34,46 @@ func CanonicalMusicScene(input AudioRenderInput, frameIndex uint64, ptsNS int64)
 		rms = peak * 0.707
 	}
 	duration := input.Analysis.Duration
-	if duration < 0 || math.IsNaN(duration) { duration = 0 }
+	if duration < 0 || math.IsNaN(duration) {
+		duration = 0
+	}
 	fps := input.Analysis.FPS
-	if fps <= 0 { fps = 30 }
+	if fps <= 0 {
+		fps = 30
+	}
 	current := float64(frameIndex) / float64(fps)
 	ratio := 0.0
-	if duration > 0 { ratio = sceneClamp01(current / duration) }
+	if duration > 0 {
+		ratio = sceneClamp01(current / duration)
+	}
 	layout, _ := LayoutForSize(1280, 720)
 	palette := canonicalScenePalette(input)
 	scene := MusicScenePayload{Schema: MusicSceneSchema, Feature: AudioFeatureFrame{Schema: GPUContractVersion, SampleRateHz: 48000, FrameIndex: frameIndex, PTSNs: ptsNS, SpectrumQ16: spectrum, RMSQ15: uint16(math.Round(sceneClamp01(rms) * 32767)), PeakQ15: uint16(math.Round(sceneClamp01(peak) * 32767))}, Layout: musicSceneLayout(layout), Dynamics: musicSceneDynamics(input.Analysis.Features, current, duration, ratio), Palette: palette}
 	if a, ok := normalizeArtwork(input.ArtworkPath); ok {
 		scene.Artwork = &a
+	} else {
+		// Keep the fallback tile explicit in the canonical scene so GPU and CPU
+		// routes both render an artwork element when the source has no cover.
+		a := fallbackArtwork()
+		scene.Artwork = &a
 	}
 	scene.GlyphAtlas = normalizeGlyphs(input.Metadata, layout, palette.Primary)
 	scene.Fingerprint = musicSceneFingerprint(scene)
 	return scene
+}
+
+func fallbackArtwork() ArtworkMetadata {
+	const w, h = 64, 64
+	payload := make([]byte, w*h*4)
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			i := (y*w + x) * 4
+			v := uint8(28 + (x+y)%20)
+			payload[i], payload[i+1], payload[i+2], payload[i+3] = v, uint8(24+(x%12)), uint8(42+(y%16)), 255
+		}
+	}
+	sum := sha256.Sum256(payload)
+	return ArtworkMetadata{TextureID: "fallback-artwork-" + hex.EncodeToString(sum[:8]), Width: w, Height: h, RowStride: w * 4, Format: PixelRGBA8, ColorSpace: ColorSRGB, Alpha: true, Payload: payload, AssetHash: hex.EncodeToString(sum[:])}
 }
 
 // canonicalScenePalette keeps GPU colors tied to the same feature palette used
@@ -62,8 +87,13 @@ func canonicalScenePalette(input AudioRenderInput) MusicScenePalette {
 	if a, ok := normalizeArtwork(input.ArtworkPath); ok && len(a.Payload) >= 4 {
 		var r, g, b, n uint64
 		for i := 0; i+3 < len(a.Payload); i += 4 {
-			if a.Payload[i+3] < 16 { continue }
-			r += uint64(a.Payload[i]); g += uint64(a.Payload[i+1]); b += uint64(a.Payload[i+2]); n++
+			if a.Payload[i+3] < 16 {
+				continue
+			}
+			r += uint64(a.Payload[i])
+			g += uint64(a.Payload[i+1])
+			b += uint64(a.Payload[i+2])
+			n++
 		}
 		if n > 0 {
 			background = [4]uint8{uint8(r / n / 3), uint8(g / n / 3), uint8(b / n / 3), 255}
@@ -73,19 +103,29 @@ func canonicalScenePalette(input AudioRenderInput) MusicScenePalette {
 }
 
 func musicSceneLayout(l VisualizerLayout) MusicSceneLayout {
-	r := func(v Rect) SceneRect { return SceneRect{X:v.X, Y:v.Y, W:v.W, H:v.H} }
-	return MusicSceneLayout{Artwork:r(l.Artwork), Title:r(l.Title), Artist:r(l.Artist), Album:r(l.Album), Spectrum:r(l.Spectrum), Loudness:r(l.Loudness), Progress:r(l.Progress), Time:r(l.Time)}
+	r := func(v Rect) SceneRect { return SceneRect{X: v.X, Y: v.Y, W: v.W, H: v.H} }
+	return MusicSceneLayout{Artwork: r(l.Artwork), Title: r(l.Title), Artist: r(l.Artist), Album: r(l.Album), Spectrum: r(l.Spectrum), Loudness: r(l.Loudness), Progress: r(l.Progress), Time: r(l.Time)}
 }
 
 func musicSceneDynamics(features AudioFeatures, current, duration, ratio float64) MusicSceneDynamics {
-	toQ := func(v float64) uint16 { v = sceneClamp01(v); return uint16(math.Round(v*65535)) }
-	env := make([]uint16, len(features.LoudnessEnvelope)); trend := SmoothLoudnessTrend(features.LoudnessEnvelope, duration)
-	for i, v := range features.LoudnessEnvelope { env[i] = toQ(v) }
-	trendQ := make([]uint16, len(trend)); for i, v := range trend { trendQ[i] = toQ(v) }
+	toQ := func(v float64) uint16 { v = sceneClamp01(v); return uint16(math.Round(v * 65535)) }
+	env := make([]uint16, len(features.LoudnessEnvelope))
+	trend := SmoothLoudnessTrend(features.LoudnessEnvelope, duration)
+	for i, v := range features.LoudnessEnvelope {
+		env[i] = toQ(v)
+	}
+	trendQ := make([]uint16, len(trend))
+	for i, v := range trend {
+		trendQ[i] = toQ(v)
+	}
 	alphaIn, alphaOut := float32(1), float32(1)
-	if current < radioEdgeFadeSeconds { alphaIn = float32(sceneClamp01(current/radioEdgeFadeSeconds)) }
-	if duration > 0 && duration-current < radioEdgeFadeSeconds { alphaOut = float32(sceneClamp01((duration-current)/radioEdgeFadeSeconds)) }
-	return MusicSceneDynamics{CurrentSeconds: current, DurationSeconds: duration, ProgressRatio: ratio, EdgeFadeAlpha: alphaIn, EndFadeAlpha: alphaOut, LoudnessEnvelope: env, LoudnessTrend: trendQ, LoudnessGuides: [4]uint16{toQ(.25),toQ(.5),toQ(.75),toQ(1)}}
+	if current < radioEdgeFadeSeconds {
+		alphaIn = float32(sceneClamp01(current / radioEdgeFadeSeconds))
+	}
+	if duration > 0 && duration-current < radioEdgeFadeSeconds {
+		alphaOut = float32(sceneClamp01((duration - current) / radioEdgeFadeSeconds))
+	}
+	return MusicSceneDynamics{CurrentSeconds: current, DurationSeconds: duration, ProgressRatio: ratio, EdgeFadeAlpha: alphaIn, EndFadeAlpha: alphaOut, LoudnessEnvelope: env, LoudnessTrend: trendQ, LoudnessGuides: [4]uint16{toQ(.25), toQ(.5), toQ(.75), toQ(1)}}
 }
 
 func musicSceneFingerprint(scene MusicScenePayload) string {
@@ -143,14 +183,25 @@ func normalizeArtwork(path string) (ArtworkMetadata, bool) {
 }
 
 func normalizeGlyphs(meta AudioMetadata, layout VisualizerLayout, primary [4]uint8) *GlyphAtlasMetadata {
-	fields := []struct { text string; rect Rect; size float32 }{
+	fields := []struct {
+		text string
+		rect Rect
+		size float32
+	}{
 		{strings.TrimSpace(meta.Title), layout.Title, 48},
 		{strings.TrimSpace(meta.Artist), layout.Artist, 28},
 		{strings.TrimSpace(meta.Album), layout.Album, 24},
 	}
 	var all []rune
-	for _, f := range fields { all = append(all, []rune(f.text)...); if f.text != "" { all = append(all, '·') } }
-	if len(all) > 0 && all[len(all)-1] == '·' { all = all[:len(all)-1] }
+	for _, f := range fields {
+		all = append(all, []rune(f.text)...)
+		if f.text != "" {
+			all = append(all, '·')
+		}
+	}
+	if len(all) > 0 && all[len(all)-1] == '·' {
+		all = all[:len(all)-1]
+	}
 	if len(all) == 0 {
 		return nil
 	}
@@ -187,7 +238,9 @@ func normalizeGlyphs(meta AudioMetadata, layout VisualizerLayout, primary [4]uin
 	sum := sha256.Sum256(payload)
 	runs := make([]TextRun, 0, len(fields))
 	for _, f := range fields {
-		if f.text == "" { continue }
+		if f.text == "" {
+			continue
+		}
 		runs = append(runs, TextRun{Text: f.text, X: float32(f.rect.X), Y: float32(f.rect.Y), SizePx: f.size, RGBA: primary, Opacity: 1})
 	}
 	return &GlyphAtlasMetadata{TextureID: "glyphs-" + hex.EncodeToString(sum[:8]), FontFamily: "canonical-sans", FontWeight: 500, FallbackOrder: []string{"Noto Sans CJK JP", "Segoe UI", "sans-serif"}, Width: uint32(w), Height: uint32(h), RowStride: uint32(stride), GlyphCount: uint32(len(glyphs)), MissingGlyphID: "?", Payload: payload, AssetHash: hex.EncodeToString(sum[:]), Glyphs: glyphs, TextRuns: runs}
