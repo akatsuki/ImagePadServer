@@ -25,34 +25,52 @@ const MusicMaxLayoutRects = 8
 // an unbounded texture or glyph upload. Existing Render requests omit this
 // field and remain valid.
 type MusicScenePayload struct {
-	Schema     uint16              `json:"schema"`
-	Feature    AudioFeatureFrame   `json:"feature"`
-	Artwork    *ArtworkMetadata    `json:"artwork,omitempty"`
-	GlyphAtlas *GlyphAtlasMetadata `json:"glyph_atlas,omitempty"`
-	Layout     MusicSceneLayout    `json:"layout"`
-	Dynamics   MusicSceneDynamics  `json:"dynamics"`
-	Palette    MusicScenePalette   `json:"palette"`
+	Schema      uint16              `json:"schema"`
+	Feature     AudioFeatureFrame   `json:"feature"`
+	Artwork     *ArtworkMetadata    `json:"artwork,omitempty"`
+	GlyphAtlas  *GlyphAtlasMetadata `json:"glyph_atlas,omitempty"`
+	Layout      MusicSceneLayout    `json:"layout"`
+	Dynamics    MusicSceneDynamics  `json:"dynamics"`
+	Palette     MusicScenePalette   `json:"palette"`
 	Fingerprint string              `json:"fingerprint,omitempty"`
 }
 
 type SceneRect struct {
-	X int `json:"x"`; Y int `json:"y"`; W int `json:"w"`; H int `json:"h"`
+	X int `json:"x"`
+	Y int `json:"y"`
+	W int `json:"w"`
+	H int `json:"h"`
 }
 
 type MusicSceneLayout struct {
-	Artwork, Title, Artist, Album, Spectrum, Loudness, Progress, Time SceneRect
+	Artwork  SceneRect `json:"artwork"`
+	Title    SceneRect `json:"title"`
+	Artist   SceneRect `json:"artist"`
+	Album    SceneRect `json:"album"`
+	Spectrum SceneRect `json:"spectrum"`
+	Loudness SceneRect `json:"loudness"`
+	Progress SceneRect `json:"progress"`
+	Time     SceneRect `json:"time"`
 }
 
 type MusicSceneDynamics struct {
-	CurrentSeconds, DurationSeconds, ProgressRatio float64 `json:",omitempty"`
-	EdgeFadeAlpha, EndFadeAlpha float32 `json:",omitempty"`
-	LoudnessEnvelope, LoudnessTrend []uint16 `json:",omitempty"`
-	LoudnessGuides [4]uint16 `json:"loudness_guides"`
+	CurrentSeconds   float64   `json:"current_seconds,omitempty"`
+	DurationSeconds  float64   `json:"duration_seconds,omitempty"`
+	ProgressRatio    float64   `json:"progress_ratio,omitempty"`
+	EdgeFadeAlpha    float32   `json:"edge_fade_alpha,omitempty"`
+	EndFadeAlpha     float32   `json:"end_fade_alpha,omitempty"`
+	LoudnessEnvelope []uint16  `json:"loudness_envelope,omitempty"`
+	LoudnessTrend    []uint16  `json:"loudness_trend,omitempty"`
+	LoudnessGuides   [4]uint16 `json:"loudness_guides"`
 }
 
 type MusicScenePalette struct {
-	Primary, Accent, Background, Overlay [4]uint8
-	BlurStrength, Readability float32
+	Primary      [4]uint8 `json:"primary"`
+	Accent       [4]uint8 `json:"accent"`
+	Background   [4]uint8 `json:"background"`
+	Overlay      [4]uint8 `json:"overlay"`
+	BlurStrength float32  `json:"blur_strength"`
+	Readability  float32  `json:"readability"`
 }
 
 type ArtworkMetadata struct {
@@ -110,8 +128,12 @@ func (s MusicScenePayload) Validate() error {
 	if len(s.Feature.SpectrumQ16) > MusicMaxFeatureBins {
 		return errors.New("too many feature bins")
 	}
-	if err := s.validateDynamics(); err != nil { return err }
-	if s.Fingerprint != "" && len(s.Fingerprint) != 64 { return errors.New("invalid scene fingerprint") }
+	if err := s.validateDynamics(); err != nil {
+		return err
+	}
+	if s.Fingerprint != "" && len(s.Fingerprint) != 64 {
+		return errors.New("invalid scene fingerprint")
+	}
 	if s.Artwork != nil {
 		if err := s.Artwork.Validate(); err != nil {
 			return fmt.Errorf("scene artwork: %w", err)
@@ -126,10 +148,22 @@ func (s MusicScenePayload) Validate() error {
 }
 
 func (s MusicScenePayload) validateDynamics() error {
-	if len(s.Dynamics.LoudnessEnvelope) > MusicMaxLoudnessSamples || len(s.Dynamics.LoudnessTrend) > MusicMaxLoudnessSamples { return errors.New("too many loudness samples") }
-	for _, v := range append(append([]uint16{}, s.Dynamics.LoudnessEnvelope...), s.Dynamics.LoudnessTrend...) { if v > 65535 { return errors.New("invalid loudness sample") } }
-	for _, v := range []float64{s.Dynamics.CurrentSeconds, s.Dynamics.DurationSeconds, s.Dynamics.ProgressRatio} { if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 { return errors.New("invalid scene timing") } }
-	if s.Dynamics.ProgressRatio > 1 || s.Dynamics.EdgeFadeAlpha < 0 || s.Dynamics.EdgeFadeAlpha > 1 || s.Dynamics.EndFadeAlpha < 0 || s.Dynamics.EndFadeAlpha > 1 { return errors.New("invalid scene fade") }
+	if len(s.Dynamics.LoudnessEnvelope) > MusicMaxLoudnessSamples || len(s.Dynamics.LoudnessTrend) > MusicMaxLoudnessSamples {
+		return errors.New("too many loudness samples")
+	}
+	for _, v := range append(append([]uint16{}, s.Dynamics.LoudnessEnvelope...), s.Dynamics.LoudnessTrend...) {
+		if v > 65535 {
+			return errors.New("invalid loudness sample")
+		}
+	}
+	for _, v := range []float64{s.Dynamics.CurrentSeconds, s.Dynamics.DurationSeconds, s.Dynamics.ProgressRatio} {
+		if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+			return errors.New("invalid scene timing")
+		}
+	}
+	if s.Dynamics.ProgressRatio > 1 || s.Dynamics.EdgeFadeAlpha < 0 || s.Dynamics.EdgeFadeAlpha > 1 || s.Dynamics.EndFadeAlpha < 0 || s.Dynamics.EndFadeAlpha > 1 {
+		return errors.New("invalid scene fade")
+	}
 	return nil
 }
 

@@ -64,6 +64,7 @@ pub struct MusicSceneLayout {
     pub spectrum: SceneRect, pub loudness: SceneRect, pub progress: SceneRect, pub time: SceneRect,
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct MusicSceneDynamics {
     pub current_seconds: f64, pub duration_seconds: f64, pub progress_ratio: f64,
     pub edge_fade_alpha: f32, pub end_fade_alpha: f32,
