@@ -1,4 +1,4 @@
-use crate::contracts::GpuFrame;
+use crate::contracts::{GpuFrame, MusicScenePayload};
 use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_VERSION: u16 = 1;
@@ -17,6 +17,8 @@ pub enum Request {
         height: u32,
         sequence: u64,
         pts_ns: i64,
+        #[serde(default)]
+        scene: Option<MusicScenePayload>,
     },
 }
 
@@ -47,4 +49,61 @@ pub fn encode<T: Serialize>(value: &T) -> Result<String, serde_json::Error> {
 }
 pub fn decode_request(line: &str) -> Result<Request, serde_json::Error> {
     serde_json::from_str(line)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_render_without_scene_remains_compatible() {
+        let request =
+            decode_request(r#"{"type":"render","width":64,"height":64,"sequence":1,"pts_ns":0}"#)
+                .unwrap();
+        assert!(matches!(request, Request::Render { scene: None, .. }));
+    }
+
+    #[test]
+    fn scene_payload_round_trips_and_rejects_bad_schema() {
+        let request = Request::Render {
+            width: 64,
+            height: 64,
+            sequence: 1,
+            pts_ns: 0,
+            scene: Some(MusicScenePayload {
+                schema: crate::contracts::MUSIC_SCENE_SCHEMA,
+                feature: crate::contracts::AudioFeatureFrame {
+                    schema: 1,
+                    sample_rate_hz: 48000,
+                    frame_index: 0,
+                    pts_ns: 0,
+                    spectrum_q16: vec![1, 2],
+                    rms_q15: 1,
+                    peak_q15: 2,
+                },
+                artwork: None,
+                glyph_atlas: None,
+            }),
+        };
+        let encoded = encode(&request).unwrap();
+        let decoded = decode_request(&encoded).unwrap();
+        if let Request::Render {
+            scene: Some(scene), ..
+        } = decoded
+        {
+            assert!(scene.validate().is_ok());
+        } else {
+            panic!("scene was lost");
+        }
+
+        let bad = r#"{"type":"render","width":64,"height":64,"sequence":1,"pts_ns":0,"scene":{"schema":9,"feature":{"schema":1,"sample_rate_hz":48000,"frame_index":0,"pts_ns":0,"spectrum_q16":[],"rms_q15":0,"peak_q15":0}}}"#;
+        if let Request::Render {
+            scene: Some(scene), ..
+        } = decode_request(bad).unwrap()
+        {
+            assert!(scene.validate().is_err());
+        } else {
+            panic!("scene missing");
+        }
+    }
 }

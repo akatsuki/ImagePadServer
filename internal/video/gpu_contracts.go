@@ -10,6 +10,105 @@ const GPUContractVersion uint16 = 1
 const GPURowAlignment uint32 = 256
 const GPUMaxDimension uint32 = 16384
 const GPUMaxPayload = 256 * 1024 * 1024
+const MusicSceneSchema uint16 = 1
+const MusicMaxFeatureBins = 256
+const MusicMaxArtworkDimension uint32 = 4096
+const MusicMaxArtworkBytes = 16 * 1024 * 1024
+const MusicMaxGlyphs = 4096
+const MusicMaxTextBytes = 64 * 1024
+
+// MusicScenePayload is an optional, versioned extension to Render. It is
+// deliberately bounded so malformed metadata cannot turn a JSONL request into
+// an unbounded texture or glyph upload. Existing Render requests omit this
+// field and remain valid.
+type MusicScenePayload struct {
+	Schema     uint16              `json:"schema"`
+	Feature    AudioFeatureFrame   `json:"feature"`
+	Artwork    *ArtworkMetadata    `json:"artwork,omitempty"`
+	GlyphAtlas *GlyphAtlasMetadata `json:"glyph_atlas,omitempty"`
+}
+
+type ArtworkMetadata struct {
+	TextureID  string      `json:"texture_id"`
+	Width      uint32      `json:"width"`
+	Height     uint32      `json:"height"`
+	RowStride  uint32      `json:"row_stride"`
+	Format     PixelFormat `json:"format"`
+	ColorSpace ColorSpace  `json:"color_space"`
+	Alpha      bool        `json:"alpha"`
+	Payload    []byte      `json:"payload,omitempty"`
+}
+
+type GlyphAtlasMetadata struct {
+	TextureID      string   `json:"texture_id"`
+	FontFamily     string   `json:"font_family"`
+	FontWeight     uint16   `json:"font_weight"`
+	FallbackOrder  []string `json:"fallback_order,omitempty"`
+	Width          uint32   `json:"width"`
+	Height         uint32   `json:"height"`
+	RowStride      uint32   `json:"row_stride"`
+	GlyphCount     uint32   `json:"glyph_count"`
+	MissingGlyphID string   `json:"missing_glyph_id"`
+}
+
+func (s MusicScenePayload) Validate() error {
+	if s.Schema != MusicSceneSchema {
+		return errors.New("invalid music scene schema")
+	}
+	if err := s.Feature.Validate(); err != nil {
+		return fmt.Errorf("scene feature: %w", err)
+	}
+	if len(s.Feature.SpectrumQ16) > MusicMaxFeatureBins {
+		return errors.New("too many feature bins")
+	}
+	if s.Artwork != nil {
+		if err := s.Artwork.Validate(); err != nil {
+			return fmt.Errorf("scene artwork: %w", err)
+		}
+	}
+	if s.GlyphAtlas != nil {
+		if err := s.GlyphAtlas.Validate(); err != nil {
+			return fmt.Errorf("scene glyph atlas: %w", err)
+		}
+	}
+	return nil
+}
+
+func (a ArtworkMetadata) Validate() error {
+	if a.TextureID == "" || a.Width == 0 || a.Height == 0 || a.Width > MusicMaxArtworkDimension || a.Height > MusicMaxArtworkDimension {
+		return errors.New("invalid artwork metadata")
+	}
+	if a.RowStride < a.Width*4 || a.RowStride%GPURowAlignment != 0 {
+		return errors.New("invalid artwork stride")
+	}
+	n := uint64(a.RowStride) * uint64(a.Height)
+	if n > MusicMaxArtworkBytes {
+		return errors.New("artwork texture too large")
+	}
+	if len(a.Payload) != 0 && uint64(len(a.Payload)) != n {
+		return errors.New("invalid artwork payload length")
+	}
+	if a.Format != PixelRGBA8 && a.Format != PixelBGRA8 {
+		return errors.New("invalid artwork format")
+	}
+	if a.ColorSpace != ColorSRGB && a.ColorSpace != ColorLinear {
+		return errors.New("invalid artwork color space")
+	}
+	return nil
+}
+
+func (g GlyphAtlasMetadata) Validate() error {
+	if g.TextureID == "" || g.FontFamily == "" || g.Width == 0 || g.Height == 0 || g.Width > MusicMaxArtworkDimension || g.Height > MusicMaxArtworkDimension || g.GlyphCount > MusicMaxGlyphs || g.MissingGlyphID == "" {
+		return errors.New("invalid glyph atlas metadata")
+	}
+	if g.RowStride < g.Width*4 || g.RowStride%GPURowAlignment != 0 || uint64(g.RowStride)*uint64(g.Height) > MusicMaxArtworkBytes {
+		return errors.New("invalid glyph atlas bounds")
+	}
+	if len(g.FontFamily)+len(g.MissingGlyphID) > MusicMaxTextBytes {
+		return errors.New("glyph metadata too large")
+	}
+	return nil
+}
 
 type SceneSnapshot struct {
 	Schema   uint16           `json:"schema"`

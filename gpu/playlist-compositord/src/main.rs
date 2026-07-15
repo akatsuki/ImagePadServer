@@ -53,17 +53,31 @@ fn response_for(request: Request, renderer: &mut Option<gpu_render::Renderer>) -
             height,
             sequence,
             pts_ns,
+            scene,
         } => match renderer.as_ref() {
-            Some(renderer) => match renderer.render(width, height, sequence, pts_ns) {
-                Ok(frame) => (Response::Frame { frame }, false),
-                Err(message) => (
-                    Response::Error {
-                        code: "gpu_render_failed".into(),
-                        message,
-                    },
-                    false,
-                ),
-            },
+            Some(renderer) => {
+                if let Some(scene) = scene {
+                    if let Err(error) = scene.validate() {
+                        return (
+                            Response::Error {
+                                code: "invalid_scene".into(),
+                                message: format!("{error:?}"),
+                            },
+                            false,
+                        );
+                    }
+                }
+                match renderer.render(width, height, sequence, pts_ns) {
+                    Ok(frame) => (Response::Frame { frame }, false),
+                    Err(message) => (
+                        Response::Error {
+                            code: "gpu_render_failed".into(),
+                            message,
+                        },
+                        false,
+                    ),
+                }
+            }
             None => (
                 Response::Error {
                     code: "gpu_renderer_unavailable".into(),

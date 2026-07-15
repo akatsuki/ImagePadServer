@@ -4,6 +4,49 @@ pub const CONTRACT_VERSION: u16 = 1;
 pub const ROW_ALIGNMENT: u32 = 256;
 pub const MAX_DIMENSION: u32 = 16_384;
 pub const MAX_PAYLOAD_BYTES: usize = 256 * 1024 * 1024;
+pub const MUSIC_SCENE_SCHEMA: u16 = 1;
+pub const MUSIC_MAX_FEATURE_BINS: usize = 256;
+pub const MUSIC_MAX_ARTWORK_DIMENSION: u32 = 4096;
+pub const MUSIC_MAX_ARTWORK_BYTES: usize = 16 * 1024 * 1024;
+pub const MUSIC_MAX_GLYPHS: u32 = 4096;
+pub const MUSIC_MAX_TEXT_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MusicScenePayload {
+    pub schema: u16,
+    pub feature: AudioFeatureFrame,
+    #[serde(default)]
+    pub artwork: Option<ArtworkMetadata>,
+    #[serde(default)]
+    pub glyph_atlas: Option<GlyphAtlasMetadata>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ArtworkMetadata {
+    pub texture_id: String,
+    pub width: u32,
+    pub height: u32,
+    pub row_stride: u32,
+    pub format: PixelFormat,
+    pub color_space: ColorSpace,
+    pub alpha: bool,
+    #[serde(default)]
+    pub payload: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GlyphAtlasMetadata {
+    pub texture_id: String,
+    pub font_family: String,
+    pub font_weight: u16,
+    #[serde(default)]
+    pub fallback_order: Vec<String>,
+    pub width: u32,
+    pub height: u32,
+    pub row_stride: u32,
+    pub glyph_count: u32,
+    pub missing_glyph_id: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SceneSnapshot {
@@ -37,7 +80,7 @@ pub enum OverlayCommand {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AudioFeatureFrame {
     pub schema: u16,
     pub sample_rate_hz: u32,
@@ -89,6 +132,84 @@ pub enum ContractError {
     PayloadLength,
     InvalidAudio,
     NonMonotonicPts,
+    InvalidScene,
+    InvalidArtwork,
+    InvalidGlyphAtlas,
+}
+
+impl MusicScenePayload {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        if self.schema != MUSIC_SCENE_SCHEMA
+            || self.feature.spectrum_q16.len() > MUSIC_MAX_FEATURE_BINS
+        {
+            return Err(ContractError::InvalidScene);
+        }
+        self.feature
+            .validate()
+            .map_err(|_| ContractError::InvalidScene)?;
+        if let Some(artwork) = &self.artwork {
+            artwork.validate()?;
+        }
+        if let Some(atlas) = &self.glyph_atlas {
+            atlas.validate()?;
+        }
+        Ok(())
+    }
+}
+
+impl ArtworkMetadata {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        if self.texture_id.is_empty()
+            || self.width == 0
+            || self.height == 0
+            || self.width > MUSIC_MAX_ARTWORK_DIMENSION
+            || self.height > MUSIC_MAX_ARTWORK_DIMENSION
+        {
+            return Err(ContractError::InvalidArtwork);
+        }
+        let min_stride = self
+            .width
+            .checked_mul(4)
+            .ok_or(ContractError::InvalidArtwork)?;
+        if self.row_stride < min_stride || self.row_stride % ROW_ALIGNMENT != 0 {
+            return Err(ContractError::InvalidArtwork);
+        }
+        let size = self.row_stride as usize * self.height as usize;
+        if size > MUSIC_MAX_ARTWORK_BYTES
+            || (!self.payload.is_empty() && self.payload.len() != size)
+        {
+            return Err(ContractError::InvalidArtwork);
+        }
+        Ok(())
+    }
+}
+
+impl GlyphAtlasMetadata {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        if self.texture_id.is_empty()
+            || self.font_family.is_empty()
+            || self.missing_glyph_id.is_empty()
+            || self.width == 0
+            || self.height == 0
+            || self.width > MUSIC_MAX_ARTWORK_DIMENSION
+            || self.height > MUSIC_MAX_ARTWORK_DIMENSION
+            || self.glyph_count > MUSIC_MAX_GLYPHS
+            || self.font_family.len() + self.missing_glyph_id.len() > MUSIC_MAX_TEXT_BYTES
+        {
+            return Err(ContractError::InvalidGlyphAtlas);
+        }
+        let min_stride = self
+            .width
+            .checked_mul(4)
+            .ok_or(ContractError::InvalidGlyphAtlas)?;
+        if self.row_stride < min_stride
+            || self.row_stride % ROW_ALIGNMENT != 0
+            || self.row_stride as usize * self.height as usize > MUSIC_MAX_ARTWORK_BYTES
+        {
+            return Err(ContractError::InvalidGlyphAtlas);
+        }
+        Ok(())
+    }
 }
 
 impl SceneSnapshot {

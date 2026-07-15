@@ -1,6 +1,9 @@
 package video
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestGPUContractFrameValidation(t *testing.T) {
 	f := GpuFrame{Schema: 1, Width: 64, Height: 2, RowStride: 256, Format: PixelRGBA8, ColorSpace: ColorSRGB, Ownership: "OwnedByTransport", Payload: make([]byte, 512)}
@@ -30,5 +33,34 @@ func TestGPUContractJSONRoundTrip(t *testing.T) {
 	}
 	if len(b) == 0 {
 		t.Fatal("empty encoding")
+	}
+}
+
+func TestMusicScenePayloadValidationAndRoundTrip(t *testing.T) {
+	scene := MusicScenePayload{Schema: MusicSceneSchema, Feature: AudioFeatureFrame{Schema: GPUContractVersion, SampleRateHz: 48000, SpectrumQ16: make([]uint16, 24)}, Artwork: &ArtworkMetadata{TextureID: "cover", Width: 64, Height: 64, RowStride: 256, Format: PixelRGBA8, ColorSpace: ColorSRGB, Payload: make([]byte, 16384)}, GlyphAtlas: &GlyphAtlasMetadata{TextureID: "atlas", FontFamily: "sans", Width: 256, Height: 256, RowStride: 1024, GlyphCount: 32, MissingGlyphID: "missing"}}
+	if err := scene.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	b, err := EncodeGPUContract(scene)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded MusicScenePayload
+	if err := json.Unmarshal(b, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if err := decoded.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMusicScenePayloadRejectsOversizedData(t *testing.T) {
+	scene := MusicScenePayload{Schema: MusicSceneSchema, Feature: AudioFeatureFrame{Schema: GPUContractVersion, SampleRateHz: 48000}, Artwork: &ArtworkMetadata{TextureID: "cover", Width: MusicMaxArtworkDimension + 1, Height: 1, RowStride: 256, Format: PixelRGBA8, ColorSpace: ColorSRGB}}
+	if err := scene.Validate(); err == nil {
+		t.Fatal("expected oversized artwork rejection")
+	}
+	scene = MusicScenePayload{Schema: MusicSceneSchema, Feature: AudioFeatureFrame{Schema: GPUContractVersion, SampleRateHz: 48000, SpectrumQ16: make([]uint16, MusicMaxFeatureBins+1)}}
+	if err := scene.Validate(); err == nil {
+		t.Fatal("expected oversized feature rejection")
 	}
 }
