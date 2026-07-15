@@ -561,7 +561,7 @@ mod tests {
         assert!(SHADER.contains("@group(0) @binding(5) var artwork_tex"));
         assert!(SHADER.contains("textureSampleLevel(artwork_tex"));
         assert!(SHADER.contains("params.scene_enabled & 2u"));
-        assert!(SHADER.contains("tile_min = vec2<f32>(0.06, 0.14)"));
+        assert!(SHADER.contains("let artwork_rect = params.rects[0]"));
     }
 
     #[test]
