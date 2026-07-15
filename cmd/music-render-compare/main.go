@@ -314,7 +314,10 @@ func extractScreenshots(ctx context.Context, ffmpeg, playlist, out string, durat
 			at = 0
 		}
 		path := filepath.Join(out, name+".png")
-		cmd := exec.CommandContext(ctx, ffmpeg, "-y", "-ss", fmt.Sprintf("%.3f", at), "-i", playlist, "-frames:v", "1", "-vf", "format=rgba", path)
+		// Seek after opening the HLS input so the end frame is decoded accurately;
+		// fast pre-input seeking can land on an earlier TS keyframe or return a
+		// black frame when the audio tail extends beyond the last video keyframe.
+		cmd := exec.CommandContext(ctx, ffmpeg, "-y", "-i", playlist, "-ss", fmt.Sprintf("%.3f", at), "-frames:v", "1", "-vf", "format=rgba", path)
 		if err := cmd.Run(); err == nil {
 			result[name] = path
 		}
