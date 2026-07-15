@@ -29,7 +29,7 @@ struct GlyphInstance { screen: vec4<f32>, atlas: vec4<f32>, color: vec4<f32> }
 @group(0) @binding(4) var<storage, read> glyphs: array<GlyphInstance>;
 @group(0) @binding(5) var artwork_tex: texture_2d<f32>;
   @group(0) @binding(6) var artwork_sampler: sampler;
-  // Bounded 64-sample envelope/trend pairs, uploaded as a read-only storage buffer.
+  // Bounded 256-sample envelope/trend pairs, uploaded as a read-only storage buffer.
   @group(0) @binding(7) var<storage, read> dynamics_samples: array<u32>;
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -116,9 +116,9 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     var loudness = 0.0;
       if (rx >= f32(loud.x) && rx < f32(loud.x + loud.z) && ry >= f32(loud.y) && ry < f32(loud.y + loud.w)) {
       let u = clamp((rx - f32(loud.x)) / max(1.0, f32(loud.z - 1)), 0.0, 1.0);
-      let sample_index = min(63u, u32(u * 63.0 + 0.5));
+      let sample_index = min(255u, u32(u * 255.0 + 0.5));
       let envelope = f32(dynamics_samples[sample_index]) / 65535.0;
-      let trend = f32(dynamics_samples[64u + sample_index]) / 65535.0;
+      let trend = f32(dynamics_samples[256u + sample_index]) / 65535.0;
       let y_env = f32(loud.y + loud.w) - envelope * f32(loud.w);
       let y_trend = f32(loud.y + loud.w) - trend * f32(loud.w);
       loudness = select(0.0, 1.0, abs(ry - y_env) < 1.5) + select(0.0, 0.65, abs(ry - y_trend) < 1.5);
@@ -238,18 +238,22 @@ fn glyph_instance_words(scene: Option<&MusicScenePayload>, width: u32, height: u
 }
 
 fn dynamics_sample_words(scene: Option<&MusicScenePayload>) -> Vec<u32> {
-    let mut out = vec![0u32; 128];
+    // Keep the storage contract bounded while retaining enough samples to
+    // preserve the CPU renderer's fine detail at 720p and below.  The source
+    // analysis is capped at 1000 samples; resample it deterministically into
+    // 256 points per curve for the GPU.
+    let mut out = vec![0u32; 512];
     if let Some(scene) = scene {
         let env = &scene.dynamics.loudness_envelope;
         let trend = &scene.dynamics.loudness_trend;
-        for i in 0..64 {
+        for i in 0..256 {
             let sample = |values: &Vec<u16>| -> u32 {
                 if values.is_empty() { return scene.feature.rms_q15 as u32; }
-                let idx = i * values.len().saturating_sub(1) / 63;
+                let idx = i * values.len().saturating_sub(1) / 255;
                 values[idx] as u32
             };
             out[i] = sample(env);
-            out[64 + i] = sample(trend);
+            out[256 + i] = sample(trend);
         }
     }
     out
