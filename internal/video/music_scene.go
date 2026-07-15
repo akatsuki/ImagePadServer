@@ -58,7 +58,7 @@ func CanonicalMusicScene(input AudioRenderInput, frameIndex uint64, ptsNS int64)
 	} else {
 		// Keep the fallback tile explicit in the canonical scene so GPU and CPU
 		// routes both render an artwork element when the source has no cover.
-		a := fallbackArtwork()
+		a := fallbackArtwork(input.Analysis.Features)
 		scene.Artwork = &a
 	}
 	scene.GlyphAtlas = normalizeGlyphs(input.Metadata, layout, palette.Primary)
@@ -66,14 +66,36 @@ func CanonicalMusicScene(input AudioRenderInput, frameIndex uint64, ptsNS int64)
 	return scene
 }
 
-func fallbackArtwork() ArtworkMetadata {
-	const w, h = 64, 64
+func fallbackArtwork(features AudioFeatures) ArtworkMetadata {
+	const w, h = 128, 128
+	p := PaletteForFeatures(features)
 	payload := make([]byte, w*h*4)
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			i := (y*w + x) * 4
-			v := uint8(28 + (x+y)%20)
-			payload[i], payload[i+1], payload[i+2], payload[i+3] = v, uint8(24+(x%12)), uint8(42+(y%16)), 255
+			t := uint32(y * 255 / (h - 1))
+			payload[i] = uint8((uint32(p.Start.R)*(255-t) + uint32(p.End.R)*t) / 255)
+			payload[i+1] = uint8((uint32(p.Start.G)*(255-t) + uint32(p.End.G)*t) / 255)
+			payload[i+2] = uint8((uint32(p.Start.B)*(255-t) + uint32(p.End.B)*t) / 255)
+			payload[i+3] = 255
+		}
+	}
+	// Deterministic music-note silhouette, matching the CPU fallback's central
+	// icon without introducing a font dependency into the GPU scene producer.
+	for y := 38; y < 98; y++ {
+		for x := 62; x < 72; x++ {
+			if y < 78 || x < 68 {
+				i := (y*w + x) * 4
+				payload[i], payload[i+1], payload[i+2] = 255, 255, 255
+			}
+		}
+	}
+	for y := 86; y < 104; y++ {
+		for x := 42; x < 70; x++ {
+			if ((x-56)*(x-56))/196+((y-95)*(y-95))/81 <= 1 {
+				i := (y*w + x) * 4
+				payload[i], payload[i+1], payload[i+2] = 255, 255, 255
+			}
 		}
 	}
 	sum := sha256.Sum256(payload)
