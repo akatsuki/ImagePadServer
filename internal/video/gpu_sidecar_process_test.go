@@ -15,6 +15,9 @@ func TestSidecarHelper(t *testing.T) {
 	}
 	dec := json.NewDecoder(os.Stdin)
 	enc := json.NewEncoder(os.Stdout)
+	if os.Getenv("IMAGEPAD_SIDECAR_WRITE_STDERR") == "1" {
+		_, _ = os.Stderr.WriteString("sidecar diagnostic: adapter init failed\n" + string(make([]byte, 40*1024)))
+	}
 	for {
 		var req map[string]any
 		if dec.Decode(&req) != nil {
@@ -35,6 +38,43 @@ func TestSidecarHelper(t *testing.T) {
 			return
 		}
 	}
+}
+
+func TestSidecarDiagnosticsCaptureBoundedStderrAndExit(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=TestSidecarHelper")
+	cmd.Env = append(os.Environ(), "IMAGEPAD_SIDECAR_HELPER=1", "IMAGEPAD_SIDECAR_WRITE_STDERR=1")
+	p, err := startSidecarCommand(context.Background(), cmd, "diagnostic-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := p.Hello(ctx, "diagnostic-session"); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
+	}
+	d := p.Diagnostics()
+	if d.Executable == "" || len(d.Args) == 0 {
+		t.Fatalf("missing executable evidence: %+v", d)
+	}
+	if d.FinishedAt.IsZero() || d.ExitError != nil {
+		t.Fatalf("missing clean exit evidence: %+v", d)
+	}
+	if len(d.Stderr) == 0 || len(d.Stderr) > sidecarStderrLimit+32 {
+		t.Fatalf("stderr capture not bounded: %d", len(d.Stderr))
+	}
+	if d.Stderr == "" || d.Stderr[:len("sidecar diagnostic")] != "sidecar diagnostic" {
+		t.Fatalf("stderr evidence missing prefix: %q", d.Stderr[:min(len(d.Stderr), 64)])
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func TestSidecarProcessRenderUnblocksOnDeath(t *testing.T) {

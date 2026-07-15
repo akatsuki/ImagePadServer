@@ -2,6 +2,7 @@ package video
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,7 +10,56 @@ import (
 	"io"
 	"os/exec"
 	"sync"
+	"time"
 )
+
+const sidecarStderrLimit = 32 * 1024
+
+type boundedBuffer struct {
+	mu        sync.Mutex
+	b         bytes.Buffer
+	max       int
+	truncated bool
+}
+
+func (w *boundedBuffer) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.b.Len() < w.max {
+		n := w.max - w.b.Len()
+		if n > len(p) {
+			n = len(p)
+		}
+		_, _ = w.b.Write(p[:n])
+		if n < len(p) {
+			w.truncated = true
+		}
+	} else if len(p) != 0 {
+		w.truncated = true
+	}
+	return len(p), nil
+}
+
+func (w *boundedBuffer) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	s := w.b.String()
+	if w.truncated {
+		s += "\n[stderr truncated]"
+	}
+	return s
+}
+
+// SidecarDiagnostics is local process evidence used by diagnostics and tests.
+// It deliberately excludes stderr from normal request errors.
+type SidecarDiagnostics struct {
+	Executable string
+	Args       []string
+	StartedAt  time.Time
+	FinishedAt time.Time
+	ExitError  error
+	Stderr     string
+}
 
 type sidecarRequest struct {
 	Type    string `json:"type"`
@@ -90,12 +140,16 @@ func (p *SidecarProcess) RenderScene(ctx context.Context, width, height uint32, 
 // Frame bytes intentionally stay on GPUFrameTransport until the native mapping
 // backend is available.
 type SidecarProcess struct {
-	cmd    *exec.Cmd
-	in     io.WriteCloser
-	out    *bufio.Reader
-	mu     sync.Mutex
-	wait   chan error
-	closed bool
+	cmd        *exec.Cmd
+	in         io.WriteCloser
+	out        *bufio.Reader
+	mu         sync.Mutex
+	wait       chan error
+	stderr     *boundedBuffer
+	startedAt  time.Time
+	finishedAt time.Time
+	exitError  error
+	closed     bool
 }
 
 func StartSidecar(ctx context.Context, executable, session string) (*SidecarProcess, error) {
@@ -112,12 +166,36 @@ func startSidecarCommand(ctx context.Context, cmd *exec.Cmd, session string) (*S
 	if err != nil {
 		return nil, err
 	}
+	stderr := &boundedBuffer{max: sidecarStderrLimit}
+	cmd.Stderr = stderr
+	startedAt := time.Now()
 	if err = cmd.Start(); err != nil {
 		return nil, err
 	}
-	p := &SidecarProcess{cmd: cmd, in: in, out: bufio.NewReader(stdout), wait: make(chan error, 1)}
-	go func() { p.wait <- cmd.Wait() }()
+	p := &SidecarProcess{cmd: cmd, in: in, out: bufio.NewReader(stdout), wait: make(chan error, 1), stderr: stderr, startedAt: startedAt}
+	go func() {
+		err := cmd.Wait()
+		p.mu.Lock()
+		p.finishedAt, p.exitError = time.Now(), err
+		p.mu.Unlock()
+		p.wait <- err
+	}()
 	return p, nil
+}
+
+// Diagnostics returns a snapshot for local troubleshooting. Callers should
+// not include this data in user-facing request errors.
+func (p *SidecarProcess) Diagnostics() SidecarDiagnostics {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	d := SidecarDiagnostics{StartedAt: p.startedAt, FinishedAt: p.finishedAt, ExitError: p.exitError}
+	if p.cmd != nil {
+		d.Executable, d.Args = p.cmd.Path, append([]string(nil), p.cmd.Args[1:]...)
+	}
+	if p.stderr != nil {
+		d.Stderr = p.stderr.String()
+	}
+	return d
 }
 
 func (p *SidecarProcess) rpc(ctx context.Context, req sidecarRequest) error {
