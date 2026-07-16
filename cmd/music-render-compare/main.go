@@ -73,6 +73,16 @@ type regionComparison struct {
 	Region  imageBounds                `json:"region"`
 	Samples map[string]imageComparison `json:"samples,omitempty"`
 }
+
+// sidecarProvenance identifies the exact binary used by a GPU comparison.
+type sidecarProvenance struct {
+	Path        string             `json:"path,omitempty"`
+	SHA256      string             `json:"sha256,omitempty"`
+	SizeBytes   int64              `json:"sizeBytes,omitempty"`
+	ModTime     string             `json:"modTime,omitempty"`
+	Fingerprint runtimeFingerprint `json:"fingerprint"`
+	Error       string             `json:"error,omitempty"`
+}
 type report struct {
 	Input                   string                      `json:"input"`
 	InputSHA256             string                      `json:"inputSha256,omitempty"`
@@ -80,6 +90,7 @@ type report struct {
 	FFmpeg                  string                      `json:"ffmpeg,omitempty"`
 	GPUAdapter              string                      `json:"gpuAdapter,omitempty"`
 	GPUFingerprint          runtimeFingerprint          `json:"gpuFingerprint"`
+	GPUSidecar              sidecarProvenance           `json:"gpuSidecar"`
 	CPUOnly                 bool                        `json:"cpuOnly,omitempty"`
 	CPU                     renderResult                `json:"cpu"`
 	GPU                     renderResult                `json:"gpu"`
@@ -94,19 +105,19 @@ type report struct {
 // It makes an empty compare fixture distinguishable from a real metadata/
 // artwork parity run without embedding the potentially large raster twice.
 type sceneEvidence struct {
-	Fingerprint string `json:"fingerprint,omitempty"`
-	ArtworkHash string `json:"artworkHash,omitempty"`
-	GlyphHash   string `json:"glyphHash,omitempty"`
-	GlyphPayloadHash string `json:"glyphPayloadHash,omitempty"`
-	GlyphWidth uint32 `json:"glyphWidth,omitempty"`
-	GlyphHeight uint32 `json:"glyphHeight,omitempty"`
-	GlyphRowStride uint32 `json:"glyphRowStride,omitempty"`
-	GlyphCount int `json:"glyphCount,omitempty"`
-	TextRunCount int `json:"textRunCount,omitempty"`
-	GlyphCoveragePixels int `json:"glyphCoveragePixels,omitempty"`
-	Title       string `json:"title,omitempty"`
-	Artist      string `json:"artist,omitempty"`
-	Album       string `json:"album,omitempty"`
+	Fingerprint         string `json:"fingerprint,omitempty"`
+	ArtworkHash         string `json:"artworkHash,omitempty"`
+	GlyphHash           string `json:"glyphHash,omitempty"`
+	GlyphPayloadHash    string `json:"glyphPayloadHash,omitempty"`
+	GlyphWidth          uint32 `json:"glyphWidth,omitempty"`
+	GlyphHeight         uint32 `json:"glyphHeight,omitempty"`
+	GlyphRowStride      uint32 `json:"glyphRowStride,omitempty"`
+	GlyphCount          int    `json:"glyphCount,omitempty"`
+	TextRunCount        int    `json:"textRunCount,omitempty"`
+	GlyphCoveragePixels int    `json:"glyphCoveragePixels,omitempty"`
+	Title               string `json:"title,omitempty"`
+	Artist              string `json:"artist,omitempty"`
+	Album               string `json:"album,omitempty"`
 }
 
 // glyphAtlasEvidence is deliberately derived from the exact bytes sent to
@@ -383,6 +394,26 @@ func sha256File(path string) (string, error) {
 	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
+func inspectSidecar(path string, fingerprint runtimeFingerprint) sidecarProvenance {
+	p := sidecarProvenance{Path: path, Fingerprint: fingerprint}
+	if strings.TrimSpace(path) == "" {
+		p.Error = "sidecar path not configured"
+		return p
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		p.Error = err.Error()
+		return p
+	}
+	p.SizeBytes = info.Size()
+	p.ModTime = info.ModTime().UTC().Format(time.RFC3339Nano)
+	p.SHA256, err = sha256File(path)
+	if err != nil {
+		p.Error = err.Error()
+	}
+	return p
+}
+
 func ffmpegVersion(ctx context.Context, ff string) string {
 	out, err := exec.CommandContext(ctx, ff, "-version").Output()
 	if err != nil {
@@ -606,10 +637,15 @@ func main() {
 		adapter = "unknown (set GPU fingerprint environment variables to record explicit runtime)"
 	}
 	rep := report{Input: *input, InputSHA256: inputHash, GeneratedAt: time.Now(), FFmpeg: ffmpegVersion(ctx, ff), GPUAdapter: adapter, GPUFingerprint: fingerprint, CPUOnly: *cpuOnly}
+	if !*cpuOnly {
+		rep.GPUSidecar = inspectSidecar(strings.TrimSpace(os.Getenv("IMAGEPAD_PLAYLIST_COMPOSITORD")), fingerprint)
+	}
 	rep.FrameContract.ExpectedFrames = int64(math.Max(1, math.Ceil(analysis.Duration*30)))
 	scene := video.CanonicalMusicScene(inputSpec, 0, 0)
 	rep.SceneEvidence = sceneEvidence{Fingerprint: scene.Fingerprint, Title: inputSpec.Metadata.Title, Artist: inputSpec.Metadata.Artist, Album: inputSpec.Metadata.Album}
-	if scene.Artwork != nil { rep.SceneEvidence.ArtworkHash = scene.Artwork.AssetHash }
+	if scene.Artwork != nil {
+		rep.SceneEvidence.ArtworkHash = scene.Artwork.AssetHash
+	}
 	if glyphEvidence, ok := glyphAtlasEvidence(scene.GlyphAtlas); ok {
 		rep.SceneEvidence.GlyphHash = glyphEvidence.GlyphHash
 		rep.SceneEvidence.GlyphPayloadHash = glyphEvidence.GlyphPayloadHash
