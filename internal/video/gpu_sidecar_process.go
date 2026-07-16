@@ -177,7 +177,15 @@ func ProbeGPUSceneTextOverlayComposite(ctx context.Context, executable string, w
 }
 
 func ProbeGPUSceneArtworkComposite(ctx context.Context, executable string, width, height uint32, scene *MusicScenePayload) (GpuFrame, error) {
-	p, err := StartSidecar(ctx, executable, "compare-artwork-composite"); if err != nil { return GpuFrame{}, err }; defer p.Close(); if err:=p.Hello(ctx,"compare-artwork-composite"); err!=nil{return GpuFrame{},err}; return p.RenderScene(ctx,width,height,0xfffffffdu,0,scene)
+	p, err := StartSidecar(ctx, executable, "compare-artwork-composite")
+	if err != nil {
+		return GpuFrame{}, err
+	}
+	defer p.Close()
+	if err := p.Hello(ctx, "compare-artwork-composite"); err != nil {
+		return GpuFrame{}, err
+	}
+	return p.RenderScene(ctx, width, height, 0xfffffffd, 0, scene)
 }
 
 // ProbeGPUSceneTextOverlay is an opt-in compare diagnostic. It returns only
