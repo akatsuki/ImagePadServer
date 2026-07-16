@@ -73,6 +73,9 @@ func CanonicalMusicScene(input AudioRenderInput, frameIndex uint64, ptsNS int64)
 	} else {
 		scene.TextOverlay = RenderCanonicalTextOverlay(input.Metadata, layout, 1280, 720)
 	}
+	if input.WaveformTexture != nil {
+		scene.WaveformTexture = input.WaveformTexture
+	}
 	scene.Fingerprint = musicSceneFingerprint(scene)
 	return scene
 }
