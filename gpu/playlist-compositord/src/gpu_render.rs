@@ -147,6 +147,9 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     if ((params.scene_enabled & 4u) != 0u) {
       let pixel = vec2<f32>(f32(id.x), f32(id.y));
       for (var gi: u32 = 0u; gi < params.glyph_count; gi = gi + 1u) {
+        // The reserved synthetic probe isolates the first manifest glyph so
+        // CPU atlas crop and GPU coverage can be compared one-to-one.
+        if (params.sequence == 0xffffffffu && gi > 0u) { continue; }
         let g = glyphs[gi];
         // GlyphInstance.screen is serialized in normalized target coordinates
         // (the same contract used by the CPU manifest). Convert to pixel
