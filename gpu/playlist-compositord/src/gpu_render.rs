@@ -374,7 +374,9 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
       mixc = mix(blurred_bg, accent, clamp(bars, 0.0, 1.0));
       mixc = mix(mixc, primary, clamp(wave * 0.55, 0.0, 1.0));
       mixc = mix(mixc, primary, clamp(glyph, 0.0, 1.0));
-      mixc = mix(mixc, accent, clamp(loudness * 0.80, 0.0, 1.0));
+      // A/B diagnostic: the production reference's showwaves texture is the
+      // authoritative lower graph; keep the analytical loudness trace out of
+      // the final base path while parity is measured.
       // The CPU reference's final progress pass is emitted as an opaque
       // foreground by the FFmpeg graph (the alpha is already represented in
       // the graph's colour). Keep the rail/marker at full source-over alpha.
