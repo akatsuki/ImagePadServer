@@ -562,6 +562,7 @@ fn scene_uniform_words(
             | if scene.text_overlay.as_ref().is_some_and(|o| o.kind == "screen_rgba" && !o.payload.is_empty()) { 16 } else { 0 };
         words[6] |= if scene.waveform_texture.as_ref().is_some_and(|w| !w.payload.is_empty()) { 32 } else { 0 };
         words[6] |= if scene.loudness_texture.as_ref().is_some_and(|w| !w.payload.is_empty()) { 64 } else { 0 };
+        words[6] |= if scene.spectrum_texture.as_ref().is_some_and(|w| !w.payload.is_empty()) { 128 } else { 0 };
         words[7] = scene
             .glyph_atlas
             .as_ref()
