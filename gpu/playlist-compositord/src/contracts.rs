@@ -9,15 +9,22 @@ mod base64_bytes {
     use serde::{de::Error, Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
-    where S: Serializer {
+    where
+        S: Serializer,
+    {
         serializer.serialize_str(&STANDARD.encode(bytes))
     }
 
     pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
-    where D: Deserializer<'de> {
+    where
+        D: Deserializer<'de>,
+    {
         #[derive(Deserialize)]
         #[serde(untagged)]
-        enum Wire { Text(String), Bytes(Vec<u8>) }
+        enum Wire {
+            Text(String),
+            Bytes(Vec<u8>),
+        }
         match Wire::deserialize(deserializer)? {
             Wire::Text(value) => STANDARD.decode(value.as_bytes()).map_err(D::Error::custom),
             Wire::Bytes(value) => Ok(value),
@@ -57,25 +64,48 @@ pub struct MusicScenePayload {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SceneRect { pub x: i32, pub y: i32, pub w: i32, pub h: i32 }
+pub struct SceneRect {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+}
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MusicSceneLayout {
-    pub artwork: SceneRect, pub title: SceneRect, pub artist: SceneRect, pub album: SceneRect,
-    pub spectrum: SceneRect, pub loudness: SceneRect, pub progress: SceneRect, pub time: SceneRect,
+    pub artwork: SceneRect,
+    pub title: SceneRect,
+    pub artist: SceneRect,
+    pub album: SceneRect,
+    pub spectrum: SceneRect,
+    pub loudness: SceneRect,
+    pub progress: SceneRect,
+    pub time: SceneRect,
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct MusicSceneDynamics {
-    pub current_seconds: f64, pub duration_seconds: f64, pub progress_ratio: f64,
-    pub edge_fade_alpha: f32, pub end_fade_alpha: f32,
-    #[serde(default)] pub loudness_envelope: Vec<u16>,
-    #[serde(default)] pub loudness_trend: Vec<u16>,
-    #[serde(default)] pub loudness_guides: [u16; 4],
+    pub current_seconds: f64,
+    pub duration_seconds: f64,
+    pub progress_ratio: f64,
+    pub edge_fade_alpha: f32,
+    pub end_fade_alpha: f32,
+    #[serde(default)]
+    pub loudness_envelope: Vec<u16>,
+    #[serde(default)]
+    pub loudness_trend: Vec<u16>,
+    #[serde(default)]
+    pub loudness_guides: [u16; 4],
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MusicScenePalette {
-    pub primary: [u8; 4], pub accent: [u8; 4], pub background: [u8; 4], pub overlay: [u8; 4],
-    #[serde(default)] pub blur_strength: u16, #[serde(default)] pub readability: u16,
+    pub primary: [u8; 4],
+    pub accent: [u8; 4],
+    pub background: [u8; 4],
+    pub overlay: [u8; 4],
+    #[serde(default)]
+    pub blur_strength: u16,
+    #[serde(default)]
+    pub readability: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -252,14 +282,23 @@ impl MusicScenePayload {
         }
         if self.dynamics.loudness_envelope.len() > MUSIC_MAX_LOUDNESS_SAMPLES
             || self.dynamics.loudness_trend.len() > MUSIC_MAX_LOUDNESS_SAMPLES
-            || !self.dynamics.current_seconds.is_finite() || !self.dynamics.duration_seconds.is_finite()
-            || !self.dynamics.progress_ratio.is_finite() || self.dynamics.current_seconds < 0.0
-            || self.dynamics.duration_seconds < 0.0 || self.dynamics.progress_ratio < 0.0 || self.dynamics.progress_ratio > 1.0
-            || !self.dynamics.edge_fade_alpha.is_finite() || !self.dynamics.end_fade_alpha.is_finite()
-            || self.dynamics.edge_fade_alpha < 0.0 || self.dynamics.edge_fade_alpha > 1.0
-            || self.dynamics.end_fade_alpha < 0.0 || self.dynamics.end_fade_alpha > 1.0
+            || !self.dynamics.current_seconds.is_finite()
+            || !self.dynamics.duration_seconds.is_finite()
+            || !self.dynamics.progress_ratio.is_finite()
+            || self.dynamics.current_seconds < 0.0
+            || self.dynamics.duration_seconds < 0.0
+            || self.dynamics.progress_ratio < 0.0
+            || self.dynamics.progress_ratio > 1.0
+            || !self.dynamics.edge_fade_alpha.is_finite()
+            || !self.dynamics.end_fade_alpha.is_finite()
+            || self.dynamics.edge_fade_alpha < 0.0
+            || self.dynamics.edge_fade_alpha > 1.0
+            || self.dynamics.end_fade_alpha < 0.0
+            || self.dynamics.end_fade_alpha > 1.0
             || (!self.fingerprint.is_empty() && self.fingerprint.len() != 64)
-        { return Err(ContractError::InvalidScene); }
+        {
+            return Err(ContractError::InvalidScene);
+        }
         self.feature
             .validate()
             .map_err(|_| ContractError::InvalidScene)?;
@@ -314,7 +353,12 @@ impl GlyphAtlasMetadata {
             || self.text_runs.len() > MUSIC_MAX_GLYPH_RUNS
             || self.font_family.len() + self.missing_glyph_id.len() > MUSIC_MAX_TEXT_BYTES
             || self.fallback_order.iter().any(|name| name.is_empty())
-            || self.fallback_order.iter().map(|name| name.len()).sum::<usize>() > MUSIC_MAX_TEXT_BYTES
+            || self
+                .fallback_order
+                .iter()
+                .map(|name| name.len())
+                .sum::<usize>()
+                > MUSIC_MAX_TEXT_BYTES
         {
             return Err(ContractError::InvalidGlyphAtlas);
         }
@@ -325,14 +369,23 @@ impl GlyphAtlasMetadata {
         if self.row_stride < min_stride
             || self.row_stride % ROW_ALIGNMENT != 0
             || self.row_stride as usize * self.height as usize > MUSIC_MAX_ARTWORK_BYTES
-            || (!self.payload.is_empty() && self.payload.len() != self.row_stride as usize * self.height as usize)
-            || self.glyphs.iter().any(|g| g.id.is_empty()
-                || g.x.checked_add(g.width).map_or(true, |v| v > self.width)
-                || g.y.checked_add(g.height).map_or(true, |v| v > self.height)
-                || !g.advance.is_finite() || g.advance < 0.0)
-            || self.text_runs.iter().any(|r| r.text.len() > MUSIC_MAX_TEXT_BYTES
-                || !r.x.is_finite() || !r.y.is_finite() || !r.size_px.is_finite() || r.size_px <= 0.0
-                || !r.opacity.is_finite())
+            || (!self.payload.is_empty()
+                && self.payload.len() != self.row_stride as usize * self.height as usize)
+            || self.glyphs.iter().any(|g| {
+                g.id.is_empty()
+                    || g.x.checked_add(g.width).map_or(true, |v| v > self.width)
+                    || g.y.checked_add(g.height).map_or(true, |v| v > self.height)
+                    || !g.advance.is_finite()
+                    || g.advance < 0.0
+            })
+            || self.text_runs.iter().any(|r| {
+                r.text.len() > MUSIC_MAX_TEXT_BYTES
+                    || !r.x.is_finite()
+                    || !r.y.is_finite()
+                    || !r.size_px.is_finite()
+                    || r.size_px <= 0.0
+                    || !r.opacity.is_finite()
+            })
         {
             return Err(ContractError::InvalidGlyphAtlas);
         }
@@ -343,7 +396,8 @@ impl GlyphAtlasMetadata {
     /// always attempted first, followed by declared fallbacks; an absent
     /// glyph is represented by the protocol's explicit missing-glyph id.
     pub fn font_order(&self) -> impl Iterator<Item = &str> {
-        std::iter::once(self.font_family.as_str()).chain(self.fallback_order.iter().map(String::as_str))
+        std::iter::once(self.font_family.as_str())
+            .chain(self.fallback_order.iter().map(String::as_str))
     }
 }
 
@@ -466,13 +520,25 @@ mod tests {
     #[test]
     fn glyph_atlas_preserves_unicode_fallback_order_and_rejects_empty_fallback() {
         let atlas = GlyphAtlasMetadata {
-            texture_id: "atlas".into(), font_family: "Noto Sans CJK".into(),
-            font_weight: 400, fallback_order: vec!["Noto Color Emoji".into(), "sans".into()],
-            width: 256, height: 256, row_stride: 1024, glyph_count: 3,
-            missing_glyph_id: "tofu".into(), payload: Vec::new(), glyphs: Vec::new(), text_runs: Vec::new(), asset_hash: String::new(),
+            texture_id: "atlas".into(),
+            font_family: "Noto Sans CJK".into(),
+            font_weight: 400,
+            fallback_order: vec!["Noto Color Emoji".into(), "sans".into()],
+            width: 256,
+            height: 256,
+            row_stride: 1024,
+            glyph_count: 3,
+            missing_glyph_id: "tofu".into(),
+            payload: Vec::new(),
+            glyphs: Vec::new(),
+            text_runs: Vec::new(),
+            asset_hash: String::new(),
         };
         assert!(atlas.validate().is_ok());
-        assert_eq!(atlas.font_order().collect::<Vec<_>>(), vec!["Noto Sans CJK", "Noto Color Emoji", "sans"]);
+        assert_eq!(
+            atlas.font_order().collect::<Vec<_>>(),
+            vec!["Noto Sans CJK", "Noto Color Emoji", "sans"]
+        );
         let mut bad = atlas;
         bad.fallback_order.push(String::new());
         assert_eq!(bad.validate(), Err(ContractError::InvalidGlyphAtlas));
@@ -481,9 +547,15 @@ mod tests {
     #[test]
     fn artwork_payload_is_bounded_and_optional() {
         let mut artwork = ArtworkMetadata {
-            texture_id: "cover".into(), width: 64, height: 64, row_stride: 256,
-            format: PixelFormat::Rgba8, color_space: ColorSpace::Srgb, alpha: true,
-            payload: Vec::new(), asset_hash: String::new(),
+            texture_id: "cover".into(),
+            width: 64,
+            height: 64,
+            row_stride: 256,
+            format: PixelFormat::Rgba8,
+            color_space: ColorSpace::Srgb,
+            alpha: true,
+            payload: Vec::new(),
+            asset_hash: String::new(),
         };
         assert!(artwork.validate().is_ok());
         artwork.payload = vec![0; 255];

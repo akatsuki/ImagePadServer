@@ -1,12 +1,12 @@
 use crate::adapter;
 use crate::contracts::{
-    ColorSpace, GpuFrame, GlyphAtlasReceipt, MusicScenePayload, Ownership, PixelFormat, CONTRACT_VERSION,
-    ROW_ALIGNMENT,
+    ColorSpace, GlyphAtlasReceipt, GpuFrame, MusicScenePayload, Ownership, PixelFormat,
+    CONTRACT_VERSION, ROW_ALIGNMENT,
 };
-use std::sync::mpsc::channel;
-use std::num::NonZeroU32;
-use wgpu::util::DeviceExt;
 use sha2::{Digest, Sha256};
+use std::num::NonZeroU32;
+use std::sync::mpsc::channel;
+use wgpu::util::DeviceExt;
 
 const SHADER: &str = r#"
 struct Params {
@@ -220,10 +220,29 @@ fn scene_uniform_words(
     if let Some(scene) = scene {
         words[4] = scene.feature.rms_q15 as u32;
         words[5] = scene.feature.peak_q15 as u32;
-        words[6] = 1
-            | if scene.artwork.as_ref().is_some_and(|a| !a.payload.is_empty()) { 2 } else { 0 }
-            | if scene.glyph_atlas.as_ref().is_some_and(|a| !a.payload.is_empty() && !a.glyphs.is_empty()) { 4 } else { 0 };
-        words[7] = scene.glyph_atlas.as_ref().map(|a| a.glyphs.len().min(256) as u32).unwrap_or(0);
+        words[6] =
+            1 | if scene
+                .artwork
+                .as_ref()
+                .is_some_and(|a| !a.payload.is_empty())
+            {
+                2
+            } else {
+                0
+            } | if scene
+                .glyph_atlas
+                .as_ref()
+                .is_some_and(|a| !a.payload.is_empty() && !a.glyphs.is_empty())
+            {
+                4
+            } else {
+                0
+            };
+        words[7] = scene
+            .glyph_atlas
+            .as_ref()
+            .map(|a| a.glyphs.len().min(256) as u32)
+            .unwrap_or(0);
         for (dst, src) in words[8..]
             .iter_mut()
             .zip(scene.feature.spectrum_q16.iter().copied())
@@ -234,25 +253,44 @@ fn scene_uniform_words(
         words[32] = (d.current_seconds.clamp(0.0, 4_294_967.0) * 1000.0) as u32;
         words[33] = (d.duration_seconds.clamp(0.0, 4_294_967.0) * 1000.0) as u32;
         words[34] = (d.progress_ratio.clamp(0.0, 1.0) * 65535.0) as u32;
-        words[35] = ((d.edge_fade_alpha.clamp(0.0, 1.0) * d.end_fade_alpha.clamp(0.0, 1.0)) * 65535.0) as u32;
-        words[36] = d.loudness_envelope.first().copied().unwrap_or(scene.feature.rms_q15) as u32;
-        words[37] = d.loudness_trend.first().copied().unwrap_or(scene.feature.rms_q15) as u32;
+        words[35] = ((d.edge_fade_alpha.clamp(0.0, 1.0) * d.end_fade_alpha.clamp(0.0, 1.0))
+            * 65535.0) as u32;
+        words[36] = d
+            .loudness_envelope
+            .first()
+            .copied()
+            .unwrap_or(scene.feature.rms_q15) as u32;
+        words[37] = d
+            .loudness_trend
+            .first()
+            .copied()
+            .unwrap_or(scene.feature.rms_q15) as u32;
         let p = &scene.palette;
         words[40..44].copy_from_slice(&p.primary.map(|v| v as u32));
         words[44..48].copy_from_slice(&p.accent.map(|v| v as u32));
         words[48..52].copy_from_slice(&p.background.map(|v| v as u32));
         words[52..56].copy_from_slice(&p.overlay.map(|v| v as u32));
-        let rects = [&scene.layout.artwork, &scene.layout.title, &scene.layout.artist, &scene.layout.album,
-            &scene.layout.spectrum, &scene.layout.loudness, &scene.layout.progress, &scene.layout.time];
-          // Layout coordinates are canonical 1280x720 units; scale them to the
-          // actual output so 180p comparison renders retain the same composition.
-          for (i, r) in rects.iter().enumerate() {
-              let sx = width as f32 / 1280.0;
-              let sy = height as f32 / 720.0;
-              words[56 + i * 4..60 + i * 4].copy_from_slice(&[
-                  (r.x as f32 * sx) as u32, (r.y as f32 * sy) as u32,
-                  (r.w as f32 * sx) as u32, (r.h as f32 * sy) as u32,
-              ]);
+        let rects = [
+            &scene.layout.artwork,
+            &scene.layout.title,
+            &scene.layout.artist,
+            &scene.layout.album,
+            &scene.layout.spectrum,
+            &scene.layout.loudness,
+            &scene.layout.progress,
+            &scene.layout.time,
+        ];
+        // Layout coordinates are canonical 1280x720 units; scale them to the
+        // actual output so 180p comparison renders retain the same composition.
+        for (i, r) in rects.iter().enumerate() {
+            let sx = width as f32 / 1280.0;
+            let sy = height as f32 / 720.0;
+            words[56 + i * 4..60 + i * 4].copy_from_slice(&[
+                (r.x as f32 * sx) as u32,
+                (r.y as f32 * sy) as u32,
+                (r.w as f32 * sx) as u32,
+                (r.h as f32 * sy) as u32,
+            ]);
         }
         words[88..92].copy_from_slice(&d.loudness_guides.map(|v| v as u32));
     }
@@ -261,8 +299,12 @@ fn scene_uniform_words(
 
 fn glyph_instance_words(scene: Option<&MusicScenePayload>, width: u32, height: u32) -> Vec<u32> {
     let mut out = Vec::new();
-    let Some(atlas) = scene.and_then(|s| s.glyph_atlas.as_ref()) else { return out };
-    if atlas.payload.is_empty() || atlas.glyphs.is_empty() { return out; }
+    let Some(atlas) = scene.and_then(|s| s.glyph_atlas.as_ref()) else {
+        return out;
+    };
+    if atlas.payload.is_empty() || atlas.glyphs.is_empty() {
+        return out;
+    }
     // TextRun coordinates are part of the canonical 1280x720 scene contract.
     // Convert them to the actual render target here; the previous code treated
     // canonical pixels as target pixels, pushing title/artist/album glyphs out
@@ -272,19 +314,42 @@ fn glyph_instance_words(scene: Option<&MusicScenePayload>, width: u32, height: u
     for run in atlas.text_runs.iter().take(256) {
         let mut cursor = run.x * sx;
         for ch in run.text.chars() {
-            if out.len() / 12 >= 256 { break; }
+            if out.len() / 12 >= 256 {
+                break;
+            }
             let id = ch.to_string();
-            let glyph = atlas.glyphs.iter().find(|g| g.id == id)
+            let glyph = atlas
+                .glyphs
+                .iter()
+                .find(|g| g.id == id)
                 .or_else(|| atlas.glyphs.iter().find(|g| g.id == atlas.missing_glyph_id));
             let Some(g) = glyph else { continue };
-            let scale = run.size_px / (g.height.max(1) as f32);
+            // The Go atlas is rasterized once at a 48px face size into 64px
+            // cells (baseline 52px).  Scaling by the cell height (the old
+            // implementation) shrank the ink and made its baseline differ
+            // from the CPU renderer.  Scale from the actual face size and
+            // keep the complete cell so the atlas coverage is sampled at the
+            // same coordinates as the source raster.
+            const ATLAS_FACE_SIZE: f32 = 48.0;
+            const ATLAS_INK_TOP: f32 = 7.0;
+            let scale = run.size_px / ATLAS_FACE_SIZE;
             let sw = (g.width as f32 * scale).max(1.0);
-            let sh = (run.size_px * sy).max(1.0);
-            let vals = [cursor / width as f32, (run.y * sy) / height as f32, (sw * sx) / width as f32, sh / height as f32,
-                g.x as f32 / atlas.width as f32, g.y as f32 / atlas.height as f32,
-                g.width as f32 / atlas.width as f32, g.height as f32 / atlas.height as f32,
-                run.rgba[0] as f32 / 255.0, run.rgba[1] as f32 / 255.0, run.rgba[2] as f32 / 255.0,
-                (run.rgba[3] as f32 / 255.0) * run.opacity.clamp(0.0, 1.0)];
+            let sh = (g.height as f32 * scale * sy).max(1.0);
+            let screen_y = (run.y - ATLAS_INK_TOP * scale).max(0.0) * sy;
+            let vals = [
+                cursor / width as f32,
+                screen_y / height as f32,
+                (sw * sx) / width as f32,
+                sh / height as f32,
+                g.x as f32 / atlas.width as f32,
+                g.y as f32 / atlas.height as f32,
+                g.width as f32 / atlas.width as f32,
+                g.height as f32 / atlas.height as f32,
+                run.rgba[0] as f32 / 255.0,
+                run.rgba[1] as f32 / 255.0,
+                run.rgba[2] as f32 / 255.0,
+                (run.rgba[3] as f32 / 255.0) * run.opacity.clamp(0.0, 1.0),
+            ];
             out.extend(vals.into_iter().map(f32::to_bits));
             cursor += g.advance.max(g.width as f32) * scale * sx;
         }
@@ -303,7 +368,9 @@ fn dynamics_sample_words(scene: Option<&MusicScenePayload>) -> Vec<u32> {
         let trend = &scene.dynamics.loudness_trend;
         for i in 0..256 {
             let sample = |values: &Vec<u16>| -> u32 {
-                if values.is_empty() { return scene.feature.rms_q15 as u32; }
+                if values.is_empty() {
+                    return scene.feature.rms_q15 as u32;
+                }
                 let idx = i * values.len().saturating_sub(1) / 255;
                 values[idx] as u32
             };
@@ -315,12 +382,21 @@ fn dynamics_sample_words(scene: Option<&MusicScenePayload>) -> Vec<u32> {
 }
 
 impl Renderer {
-    fn upload_artwork(&self, artwork: &crate::contracts::ArtworkMetadata) -> Result<wgpu::Texture, String> {
+    fn upload_artwork(
+        &self,
+        artwork: &crate::contracts::ArtworkMetadata,
+    ) -> Result<wgpu::Texture, String> {
         artwork.validate().map_err(|e| format!("artwork: {e:?}"))?;
-        if artwork.payload.is_empty() { return Err("empty artwork payload".into()); }
+        if artwork.payload.is_empty() {
+            return Err("empty artwork payload".into());
+        }
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("music-artwork"),
-            size: wgpu::Extent3d { width: artwork.width, height: artwork.height, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: artwork.width,
+                height: artwork.height,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -329,30 +405,69 @@ impl Renderer {
             view_formats: &[],
         });
         self.queue.write_texture(
-            wgpu::ImageCopyTexture { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::ImageCopyTexture {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
             &artwork.payload,
-            wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(NonZeroU32::new(artwork.row_stride).unwrap().into()), rows_per_image: Some(NonZeroU32::new(artwork.height).unwrap().into()) },
-            wgpu::Extent3d { width: artwork.width, height: artwork.height, depth_or_array_layers: 1 },
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(NonZeroU32::new(artwork.row_stride).unwrap().into()),
+                rows_per_image: Some(NonZeroU32::new(artwork.height).unwrap().into()),
+            },
+            wgpu::Extent3d {
+                width: artwork.width,
+                height: artwork.height,
+                depth_or_array_layers: 1,
+            },
         );
         Ok(texture)
     }
 
-    fn upload_glyph_atlas(&self, atlas: &crate::contracts::GlyphAtlasMetadata) -> Result<wgpu::Texture, String> {
-        atlas.validate().map_err(|e| format!("glyph atlas: {e:?}"))?;
-        if atlas.payload.is_empty() { return Err("empty glyph atlas payload".into()); }
+    fn upload_glyph_atlas(
+        &self,
+        atlas: &crate::contracts::GlyphAtlasMetadata,
+    ) -> Result<wgpu::Texture, String> {
+        atlas
+            .validate()
+            .map_err(|e| format!("glyph atlas: {e:?}"))?;
+        if atlas.payload.is_empty() {
+            return Err("empty glyph atlas payload".into());
+        }
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("music-glyph-atlas"),
-            size: wgpu::Extent3d { width: atlas.width, height: atlas.height, depth_or_array_layers: 1 },
-            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+            size: wgpu::Extent3d {
+                width: atlas.width,
+                height: atlas.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8UnormSrgb,
             usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
         self.queue.write_texture(
-            wgpu::ImageCopyTexture { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::ImageCopyTexture {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
             &atlas.payload,
-            wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(NonZeroU32::new(atlas.row_stride).unwrap().into()), rows_per_image: Some(NonZeroU32::new(atlas.height).unwrap().into()) },
-            wgpu::Extent3d { width: atlas.width, height: atlas.height, depth_or_array_layers: 1 },
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(NonZeroU32::new(atlas.row_stride).unwrap().into()),
+                rows_per_image: Some(NonZeroU32::new(atlas.height).unwrap().into()),
+            },
+            wgpu::Extent3d {
+                width: atlas.width,
+                height: atlas.height,
+                depth_or_array_layers: 1,
+            },
         );
         Ok(texture)
     }
@@ -395,12 +510,58 @@ impl Renderer {
                     },
                     count: None,
                 },
-                wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
-                wgpu::BindGroupLayoutEntry { binding: 4, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 5, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 6, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
-                wgpu::BindGroupLayoutEntry { binding: 7, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -457,33 +618,106 @@ impl Renderer {
         }
         let (artwork_texture, atlas_texture) = if let Some(scene) = scene {
             scene.validate().map_err(|e| format!("scene: {e:?}"))?;
-            let artwork = scene.artwork.as_ref().filter(|a| !a.payload.is_empty())
-                .map(|a| self.upload_artwork(a)).transpose()?;
-            let atlas = scene.glyph_atlas.as_ref().filter(|a| !a.payload.is_empty())
-                .map(|a| self.upload_glyph_atlas(a)).transpose()?;
+            let artwork = scene
+                .artwork
+                .as_ref()
+                .filter(|a| !a.payload.is_empty())
+                .map(|a| self.upload_artwork(a))
+                .transpose()?;
+            let atlas = scene
+                .glyph_atlas
+                .as_ref()
+                .filter(|a| !a.payload.is_empty())
+                .map(|a| self.upload_glyph_atlas(a))
+                .transpose()?;
             (artwork, atlas)
-        } else { (None, None) };
+        } else {
+            (None, None)
+        };
         let glyph_atlas_receipt = scene.and_then(|s| s.glyph_atlas.as_ref()).map(|atlas| {
             let mut h = Sha256::new();
             h.update(&atlas.payload);
-            GlyphAtlasReceipt { sha256: format!("{:x}", h.finalize()), width: atlas.width,
-                height: atlas.height, row_stride: atlas.row_stride, glyph_count: atlas.glyph_count,
-                text_run_count: atlas.text_runs.len() as u32, format: "Rgba8".into() }
+            GlyphAtlasReceipt {
+                sha256: format!("{:x}", h.finalize()),
+                width: atlas.width,
+                height: atlas.height,
+                row_stride: atlas.row_stride,
+                glyph_count: atlas.glyph_count,
+                text_run_count: atlas.text_runs.len() as u32,
+                format: "Rgba8".into(),
+            }
         });
         let fallback = [255u8, 255, 255, 255];
         let fallback_texture = || {
-            let texture = self.device.create_texture(&wgpu::TextureDescriptor { label: Some("fallback-atlas"), size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba8UnormSrgb, usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] });
-            self.queue.write_texture(wgpu::ImageCopyTexture { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All }, &fallback, wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(NonZeroU32::new(4).unwrap().into()), rows_per_image: Some(NonZeroU32::new(1).unwrap().into()) }, wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }); texture
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("fallback-atlas"),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            self.queue.write_texture(
+                wgpu::ImageCopyTexture {
+                    texture: &texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &fallback,
+                wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(NonZeroU32::new(4).unwrap().into()),
+                    rows_per_image: Some(NonZeroU32::new(1).unwrap().into()),
+                },
+                wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+            );
+            texture
         };
         let artwork_texture = artwork_texture.unwrap_or_else(fallback_texture);
         let atlas_texture = atlas_texture.unwrap_or_else(fallback_texture);
         let artwork_view = artwork_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let atlas_view = atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor::default());
+        // Atlas coverage is CPU-rasterized RGBA8.  Linear filtering blends
+        // neighbouring fixed cells and creates halos at glyph boundaries;
+        // nearest sampling preserves the source coverage contract. Artwork
+        // remains deterministic with the same clamp mode.
+        let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            ..Default::default()
+        });
         let mut glyph_words = glyph_instance_words(scene, width, height);
-        if glyph_words.is_empty() { glyph_words.resize(12, 0); }
-        let glyph_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("glyph-instances"), contents: bytemuck::cast_slice(&glyph_words), usage: wgpu::BufferUsages::STORAGE });
-        let dynamics_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("dynamics-samples"), contents: bytemuck::cast_slice(&dynamics_sample_words(scene)), usage: wgpu::BufferUsages::STORAGE });
+        if glyph_words.is_empty() {
+            glyph_words.resize(12, 0);
+        }
+        let glyph_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("glyph-instances"),
+                contents: bytemuck::cast_slice(&glyph_words),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+        let dynamics_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("dynamics-samples"),
+                contents: bytemuck::cast_slice(&dynamics_sample_words(scene)),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
         let stride = ((width * 4 + ROW_ALIGNMENT - 1) / ROW_ALIGNMENT) * ROW_ALIGNMENT;
         let bytes = stride as usize * height as usize;
         let output = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -518,12 +752,30 @@ impl Renderer {
                     binding: 1,
                     resource: params.as_entire_binding(),
                 },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&atlas_view) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&sampler) },
-                wgpu::BindGroupEntry { binding: 4, resource: glyph_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&artwork_view) },
-                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::Sampler(&sampler) },
-                wgpu::BindGroupEntry { binding: 7, resource: dynamics_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&atlas_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: glyph_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(&artwork_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: dynamics_buffer.as_entire_binding(),
+                },
             ],
         });
         let mut enc = self
@@ -597,7 +849,10 @@ mod tests {
             },
             artwork: None,
             glyph_atlas: None,
-            layout: Default::default(), dynamics: Default::default(), palette: Default::default(), fingerprint: String::new(),
+            layout: Default::default(),
+            dynamics: Default::default(),
+            palette: Default::default(),
+            fingerprint: String::new(),
         };
         let words = scene_uniform_words(128, 72, 512, 9, Some(&scene));
         assert_eq!(&words[..7], &[128, 72, 128, 9, 123, 456, 1]);
@@ -610,16 +865,59 @@ mod tests {
         use crate::contracts::{GlyphAtlasMetadata, GlyphEntry, TextRun};
         let scene = MusicScenePayload {
             schema: MUSIC_SCENE_SCHEMA,
-            feature: AudioFeatureFrame { schema: CONTRACT_VERSION, sample_rate_hz: 48_000, frame_index: 0, pts_ns: 0, spectrum_q16: vec![], rms_q15: 0, peak_q15: 0 },
+            feature: AudioFeatureFrame {
+                schema: CONTRACT_VERSION,
+                sample_rate_hz: 48_000,
+                frame_index: 0,
+                pts_ns: 0,
+                spectrum_q16: vec![],
+                rms_q15: 0,
+                peak_q15: 0,
+            },
             artwork: None,
             glyph_atlas: Some(GlyphAtlasMetadata {
-                texture_id: "atlas".into(), font_family: "sans".into(), font_weight: 400,
-                fallback_order: vec![], width: 256, height: 256, row_stride: 1024, glyph_count: 2,
-                missing_glyph_id: "?".into(), payload: vec![1; 1024 * 256],
-                glyphs: vec![GlyphEntry { id: "A".into(), x: 8, y: 16, width: 32, height: 40, advance: 34.0 }, GlyphEntry { id: "?".into(), x: 0, y: 0, width: 20, height: 20, advance: 22.0 }],
-                text_runs: vec![TextRun { text: "A?".into(), x: 10.0, y: 12.0, size_px: 40.0, rgba: [255, 0, 0, 255], opacity: 1.0 }], asset_hash: String::new(),
+                texture_id: "atlas".into(),
+                font_family: "sans".into(),
+                font_weight: 400,
+                fallback_order: vec![],
+                width: 256,
+                height: 256,
+                row_stride: 1024,
+                glyph_count: 2,
+                missing_glyph_id: "?".into(),
+                payload: vec![1; 1024 * 256],
+                glyphs: vec![
+                    GlyphEntry {
+                        id: "A".into(),
+                        x: 8,
+                        y: 16,
+                        width: 32,
+                        height: 40,
+                        advance: 34.0,
+                    },
+                    GlyphEntry {
+                        id: "?".into(),
+                        x: 0,
+                        y: 0,
+                        width: 20,
+                        height: 20,
+                        advance: 22.0,
+                    },
+                ],
+                text_runs: vec![TextRun {
+                    text: "A?".into(),
+                    x: 10.0,
+                    y: 12.0,
+                    size_px: 40.0,
+                    rgba: [255, 0, 0, 255],
+                    opacity: 1.0,
+                }],
+                asset_hash: String::new(),
             }),
-            layout: Default::default(), dynamics: Default::default(), palette: Default::default(), fingerprint: String::new(),
+            layout: Default::default(),
+            dynamics: Default::default(),
+            palette: Default::default(),
+            fingerprint: String::new(),
         };
         let words = glyph_instance_words(Some(&scene), 100, 100);
         assert_eq!(words.len(), 24);

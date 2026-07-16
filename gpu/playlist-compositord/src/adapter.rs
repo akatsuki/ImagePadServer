@@ -23,11 +23,18 @@ impl Selection {
 }
 
 fn fingerprint_from_info(i: &AdapterInfo) -> RuntimeFingerprint {
-        RuntimeFingerprint {
-            adapter: format!("{} (type={:?};driver={};driver_info={})", i.name, i.device_type, i.driver, i.driver_info),
-            backend: format!("{:?}", i.backend).to_ascii_lowercase(),
-            toolchain: format!("wgpu/{}/rustc/{}", env!("CARGO_PKG_VERSION"), option_env!("RUSTC_VERSION").unwrap_or("unknown")),
-        }
+    RuntimeFingerprint {
+        adapter: format!(
+            "{} (type={:?};driver={};driver_info={})",
+            i.name, i.device_type, i.driver, i.driver_info
+        ),
+        backend: format!("{:?}", i.backend).to_ascii_lowercase(),
+        toolchain: format!(
+            "wgpu/{}/rustc/{}",
+            env!("CARGO_PKG_VERSION"),
+            option_env!("RUSTC_VERSION").unwrap_or("unknown")
+        ),
+    }
 }
 
 /// Select a real hardware adapter. Discrete GPUs are preferred, while

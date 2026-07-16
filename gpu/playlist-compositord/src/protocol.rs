@@ -85,7 +85,10 @@ mod tests {
                 },
                 artwork: None,
                 glyph_atlas: None,
-                layout: Default::default(), dynamics: Default::default(), palette: Default::default(), fingerprint: String::new(),
+                layout: Default::default(),
+                dynamics: Default::default(),
+                palette: Default::default(),
+                fingerprint: String::new(),
             }),
         };
         let encoded = encode(&request).unwrap();
@@ -114,7 +117,12 @@ mod tests {
     fn go_base64_scene_payload_decodes_and_renders_request() {
         let line = r#"{"type":"render","width":64,"height":64,"sequence":1,"pts_ns":0,"scene":{"schema":1,"feature":{"schema":1,"sample_rate_hz":48000,"frame_index":0,"pts_ns":0,"spectrum_q16":[],"rms_q15":0,"peak_q15":0},"artwork":{"texture_id":"cover","width":1,"height":1,"row_stride":256,"format":"Rgba8","color_space":"Srgb","alpha":true,"payload":"AQID","asset_hash":""}}}"#;
         let request = decode_request(line).unwrap();
-        let Request::Render { scene: Some(scene), .. } = request else { panic!("scene missing") };
+        let Request::Render {
+            scene: Some(scene), ..
+        } = request
+        else {
+            panic!("scene missing")
+        };
         assert_eq!(scene.artwork.unwrap().payload, vec![1, 2, 3]);
     }
 }
