@@ -116,6 +116,10 @@ type TextRun struct {
 	SizePx  float32  `json:"size_px"`
 	RGBA    [4]uint8 `json:"rgba"`
 	Opacity float32  `json:"opacity,omitempty"`
+	// Font fields make the CPU ASS face/weight explicit at the GPU boundary.
+	// They are diagnostic metadata until the sidecar supports multi-face atlases.
+	FontFamily string `json:"font_family,omitempty"`
+	FontWeight uint16 `json:"font_weight,omitempty"`
 }
 
 func (s MusicScenePayload) Validate() error {

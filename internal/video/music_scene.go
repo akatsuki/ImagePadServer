@@ -219,12 +219,13 @@ func normalizeGlyphs(meta AudioMetadata, layout VisualizerLayout, primary [4]uin
 		text   string
 		rect   Rect
 		size   float32
+		weight uint16
 		center bool
 	}{
-		{strings.TrimSpace(meta.Title), layout.Title, 48, false},
-		{strings.TrimSpace(meta.Artist), layout.Artist, 28, false},
-		{strings.TrimSpace(meta.Album), layout.Album, 24, false},
-		{FormatMediaTime(int(math.Max(0, math.Floor(current)))) + " / " + FormatMediaTime(int(math.Max(0, math.Floor(duration)))), layout.Time, 22, true},
+		{strings.TrimSpace(meta.Title), layout.Title, 48, 600, false},
+		{strings.TrimSpace(meta.Artist), layout.Artist, 28, 500, false},
+		{strings.TrimSpace(meta.Album), layout.Album, 24, 400, false},
+		{FormatMediaTime(int(math.Max(0, math.Floor(current)))) + " / " + FormatMediaTime(int(math.Max(0, math.Floor(duration)))), layout.Time, 22, 500, true},
 	}
 	var all []rune
 	for _, f := range fields {
@@ -322,7 +323,7 @@ func normalizeGlyphs(meta AudioMetadata, layout VisualizerLayout, primary [4]uin
 		// TextRun coordinates are top-left screen bounds; CPU ASS positions
 		// title/artist/album at the vertical center of each rect.
 		y := float32(f.rect.Y) + (float32(f.rect.H)-f.size)/2
-		runs = append(runs, TextRun{Text: f.text, X: x, Y: y, SizePx: f.size, RGBA: primary, Opacity: 1})
+		runs = append(runs, TextRun{Text: f.text, X: x, Y: y, SizePx: f.size, RGBA: primary, Opacity: 1, FontFamily: "Noto Sans JP", FontWeight: f.weight})
 	}
 	return &GlyphAtlasMetadata{TextureID: "glyphs-" + hex.EncodeToString(sum[:8]), FontFamily: "Go Regular", FontWeight: 400, FallbackOrder: []string{"Noto Sans CJK JP", "Segoe UI", "sans-serif"}, Width: uint32(w), Height: uint32(h), RowStride: uint32(stride), GlyphCount: uint32(len(glyphs)), MissingGlyphID: "?", Payload: payload, AssetHash: hex.EncodeToString(sum[:]), Glyphs: glyphs, TextRuns: runs}
 }

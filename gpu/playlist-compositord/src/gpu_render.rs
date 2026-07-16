@@ -954,6 +954,8 @@ mod tests {
                     size_px: 40.0,
                     rgba: [255, 0, 0, 255],
                     opacity: 1.0,
+                    font_family: String::new(),
+                    font_weight: 0,
                 }],
                 asset_hash: String::new(),
             }),

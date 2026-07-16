@@ -168,6 +168,10 @@ pub struct TextRun {
     pub rgba: [u8; 4],
     #[serde(default)]
     pub opacity: f32,
+    #[serde(default)]
+    pub font_family: String,
+    #[serde(default)]
+    pub font_weight: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
