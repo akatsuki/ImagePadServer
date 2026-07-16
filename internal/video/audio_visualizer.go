@@ -555,15 +555,11 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 	if audioFilter == "" {
 		audioFilter = "anull"
 	}
-	// FFmpeg's CPU filter graph runs at the media duration clock and may
-	// duplicate the tail frame when the analysis sampler has fewer samples
-	// (Opus commonly ends between 30 Hz ticks). The GPU path must emit the same
-	// duration-derived count, then clamp scene sampling to the last analysis
-	// frame. Using len(Analysis.Frames) here drops the final partial tick.
+	// The GPU path uses the same duration-derived 30 Hz clock as the CPU
+	// reference. Scene sampling itself clamps to the final analysis sample when
+	// a partial tail tick has no corresponding analysis frame; silently adding
+	// synthetic frames would make the two renderers diverge.
 	frameCount := canonicalMusicVideoFrameCount(input.Analysis)
-	if len(input.Analysis.Frames) > 0 {
-		frameCount = len(input.Analysis.Frames) + 6
-	}
 	tmp, err := os.CreateTemp(outDir, "gpu-video-*.ts")
 	if err != nil {
 		return err
@@ -571,7 +567,7 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 	tmpPath := tmp.Name()
 	_ = tmp.Close()
 	defer os.Remove(tmpPath)
-	args := []string{"-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", fmt.Sprintf("%dx%d", width, height), "-r", "30", "-i", "pipe:0", "-frames:v", strconv.Itoa(frameCount), "-fps_mode", "cfr", "-an", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-f", "mpegts", tmpPath}
+	args := []string{"-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", fmt.Sprintf("%dx%d", width, height), "-r", "30", "-i", "pipe:0", "-frames:v", strconv.Itoa(frameCount), "-fps_mode", "cfr", "-an", "-sws_flags", "bicubic+accurate_rnd+full_chroma_int", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv", "-f", "mpegts", tmpPath}
 	cmd := exec.CommandContext(ctx, ffmpeg, args...)
 	hideWindow(cmd)
 	in, err := cmd.StdinPipe()
