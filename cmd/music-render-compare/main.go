@@ -446,6 +446,9 @@ type comparisonGate struct {
 	FrameCountMatch      bool    `json:"frameCountMatch"`
 	Pass                 bool    `json:"pass"`
 	FingerprintRecorded  bool    `json:"fingerprintRecorded"`
+	VisualParityPass     bool    `json:"visualParityPass"`
+	MaxVisualMAE         float64 `json:"maxVisualMae"`
+	MaxVisualRMSE        float64 `json:"maxVisualRmse"`
 }
 
 type runtimeFingerprint struct {
@@ -1252,7 +1255,17 @@ func main() {
 		// of hiding it as a CPU-vs-GPU delta.
 		rep.ComparisonGate.FrameCountMatch = rep.FrameContract.CPUMuxDelta == 0 && rep.FrameContract.GPUMuxDelta == 0
 		rep.ComparisonGate.FingerprintRecorded = rep.GPUFingerprint.Complete()
-		rep.ComparisonGate.Pass = rep.ComparisonGate.DurationMatch && rep.ComparisonGate.FrameCountMatch && rep.ComparisonGate.FingerprintRecorded
+		for _, c := range rep.ScreenshotComparisons {
+			if c.MeanAbsoluteRGBA > rep.ComparisonGate.MaxVisualMAE {
+				rep.ComparisonGate.MaxVisualMAE = c.MeanAbsoluteRGBA
+			}
+			if c.RMSE > rep.ComparisonGate.MaxVisualRMSE {
+				rep.ComparisonGate.MaxVisualRMSE = c.RMSE
+			}
+		}
+		// GO requires the final rendered pixels, not just mux/PTS parity.
+		rep.ComparisonGate.VisualParityPass = rep.ComparisonGate.MaxVisualMAE <= 1.0 && rep.ComparisonGate.MaxVisualRMSE <= 2.0
+		rep.ComparisonGate.Pass = rep.ComparisonGate.DurationMatch && rep.ComparisonGate.FrameCountMatch && rep.ComparisonGate.FingerprintRecorded && rep.ComparisonGate.VisualParityPass
 	}
 	b, _ := json.MarshalIndent(rep, "", "  ")
 	_ = os.WriteFile(filepath.Join(*output, "report.json"), append(b, '\n'), 0644)
