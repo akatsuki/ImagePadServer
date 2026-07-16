@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"image"
+	"image/color"
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
@@ -141,6 +142,7 @@ type sceneEvidence struct {
 	TextOverlayAlphaCoverage   int                           `json:"textOverlayAlphaCoverage,omitempty"`
 	TextOverlayRegionCrop      imageBounds                   `json:"textOverlayRegionCrop,omitempty"`
 	TextOverlayRenderer        string                        `json:"textOverlayRenderer,omitempty"`
+	TextOverlayParity          *video.OverlayParityMetric    `json:"textOverlayParity,omitempty"`
 	TextOverlayCompositeSHA    string                        `json:"textOverlayCompositeSha,omitempty"`
 	TextOverlayCPUCompositeSHA string                        `json:"textOverlayCpuCompositeSha,omitempty"`
 	CPUInstanceManifest        video.GlyphInstanceManifest   `json:"cpuInstanceManifest,omitempty"`
@@ -778,6 +780,21 @@ func main() {
 				if cf, ce := video.ProbeGPUSceneTextOverlayComposite(cctx, executable, uint32(math.Round(float64(p.Height)*16.0/9.0)), uint32(p.Height), &scene); ce == nil {
 					h := sha256.Sum256(cf.Payload)
 					rep.SceneEvidence.TextOverlayCompositeSHA = fmt.Sprintf("%x", h[:])
+					w, hgt := int(cf.Width), int(cf.Height)
+					gpuImg := image.NewRGBA(image.Rect(0, 0, w, hgt))
+					for y := 0; y < hgt; y++ {
+						for x := 0; x < w; x++ {
+							off := y*int(cf.RowStride) + x*4
+							if off+3 < len(cf.Payload) {
+								gpuImg.SetRGBA(x, y, color.RGBA{R: cf.Payload[off], G: cf.Payload[off+1], B: cf.Payload[off+2], A: cf.Payload[off+3]})
+							}
+						}
+					}
+					cpuImg := video.RenderTextOverlayScreenRGBA(scene.TextOverlay, uint32(w), uint32(hgt), scene.Layout.Title)
+					rep.SceneEvidence.TextOverlayParity = func() *video.OverlayParityMetric {
+						m := video.CompareOverlayParityCPUImageGPUImage(cpuImg, gpuImg, image.Rect(scene.Layout.Title.X, scene.Layout.Title.Y, scene.Layout.Title.X+scene.Layout.Title.W, scene.Layout.Title.Y+scene.Layout.Title.H))
+						return &m
+					}()
 				}
 				if scene.TextOverlay != nil {
 					crop := scene.Layout.Title
