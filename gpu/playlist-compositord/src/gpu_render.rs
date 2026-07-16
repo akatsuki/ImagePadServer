@@ -501,6 +501,7 @@ impl Renderer {
     fn upload_artwork(
         &self,
         artwork: &crate::contracts::ArtworkMetadata,
+        diagnostic_raw: bool,
     ) -> Result<wgpu::Texture, String> {
         artwork.validate().map_err(|e| format!("artwork: {e:?}"))?;
         if artwork.payload.is_empty() {
@@ -516,7 +517,7 @@ impl Renderer {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            format: if diagnostic_raw { wgpu::TextureFormat::Rgba8Unorm } else { wgpu::TextureFormat::Rgba8UnormSrgb },
             usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
@@ -740,7 +741,7 @@ impl Renderer {
                 .artwork
                 .as_ref()
                 .filter(|a| !a.payload.is_empty())
-                .map(|a| self.upload_artwork(a))
+                .map(|a| self.upload_artwork(a, sequence == 0xfffffffdu64))
                 .transpose()?;
             let atlas = scene
                 .glyph_atlas
