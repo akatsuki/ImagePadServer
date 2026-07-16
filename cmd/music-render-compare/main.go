@@ -963,7 +963,17 @@ func main() {
 		if af, ae := video.ProbeGPUSceneArtworkComposite(actx, strings.TrimSpace(os.Getenv("IMAGEPAD_PLAYLIST_COMPOSITORD")), uint32(math.Round(float64(p.Height)*16.0/9.0)), uint32(p.Height), &scene); ae == nil {
 			h := sha256.Sum256(af.Payload)
 			rep.SceneEvidence.ArtworkGPUHash = fmt.Sprintf("%x", h[:])
-			cpu := video.RenderArtworkCoverCPU(image.NewRGBA(image.Rect(0, 0, int(scene.Artwork.Width), int(scene.Artwork.Height))), int(af.Width), int(af.Height))
+			src := image.NewRGBA(image.Rect(0, 0, int(scene.Artwork.Width), int(scene.Artwork.Height)))
+			for y := 0; y < int(scene.Artwork.Height); y++ {
+				for x := 0; x < int(scene.Artwork.Width); x++ {
+					off := y*int(scene.Artwork.RowStride) + x*4
+					if off+3 < len(scene.Artwork.Payload) {
+						src.SetRGBA(x, y, color.RGBA{scene.Artwork.Payload[off], scene.Artwork.Payload[off+1], scene.Artwork.Payload[off+2], scene.Artwork.Payload[off+3]})
+					}
+				}
+			}
+			cpu := video.RenderArtworkCoverCPU(src, int(af.Width), int(af.Height))
+			rep.SceneEvidence.ArtworkCPUHash = func() string { h := sha256.Sum256(cpu.Pix); return fmt.Sprintf("%x", h[:]) }()
 			gi := image.NewRGBA(image.Rect(0, 0, int(af.Width), int(af.Height)))
 			for y := 0; y < int(af.Height); y++ {
 				for x := 0; x < int(af.Width); x++ {
