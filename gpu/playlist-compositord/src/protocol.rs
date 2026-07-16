@@ -29,6 +29,8 @@ pub enum Response {
         version: u16,
         session: String,
         adapter: String,
+        backend: String,
+        toolchain: String,
     },
     Health {
         ready: bool,

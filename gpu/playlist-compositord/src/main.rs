@@ -32,13 +32,15 @@ fn response_for(request: Request, renderer: &mut Option<gpu_render::Renderer>) -
                 false,
             ),
             Ok(selected) => {
-                let name = selected.adapter_name().to_string();
+                let fingerprint = selected.fingerprint();
                 *renderer = Some(selected);
                 (
                     Response::HelloAck {
                         version: PROTOCOL_VERSION,
                         session,
-                        adapter: name,
+                        adapter: fingerprint.adapter,
+                        backend: fingerprint.backend,
+                        toolchain: fingerprint.toolchain,
                     },
                     false,
                 )

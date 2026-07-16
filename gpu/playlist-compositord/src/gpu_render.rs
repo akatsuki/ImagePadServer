@@ -163,6 +163,7 @@ pub struct Renderer {
     layout: wgpu::BindGroupLayout,
     pipeline: wgpu::ComputePipeline,
     adapter_name: String,
+    runtime_fingerprint: adapter::RuntimeFingerprint,
 }
 
 fn scene_uniform_words(
@@ -314,7 +315,8 @@ impl Renderer {
     pub fn new() -> Result<Self, String> {
         let instance = wgpu::Instance::default();
         let selected = adapter::select(&instance).map_err(|e| format!("gpu adapter: {e}"))?;
-        let adapter_name = selected.info.name;
+        let adapter_name = selected.info.name.clone();
+        let runtime_fingerprint = selected.fingerprint();
         let (device, queue) = pollster::block_on(
             selected
                 .adapter
@@ -375,11 +377,16 @@ impl Renderer {
             layout,
             pipeline,
             adapter_name,
+            runtime_fingerprint,
         })
     }
 
     pub fn adapter_name(&self) -> &str {
         &self.adapter_name
+    }
+
+    pub fn fingerprint(&self) -> adapter::RuntimeFingerprint {
+        self.runtime_fingerprint.clone()
     }
 
     pub fn render(

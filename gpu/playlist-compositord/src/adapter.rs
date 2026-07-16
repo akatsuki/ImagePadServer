@@ -6,6 +6,30 @@ pub struct Selection {
     pub info: AdapterInfo,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeFingerprint {
+    pub adapter: String,
+    pub backend: String,
+    pub toolchain: String,
+}
+
+impl Selection {
+    /// Stable, explicit runtime evidence for acceptance reports. Keep driver
+    /// and driver_info in the adapter field so two similarly named adapters
+    /// cannot be mistaken for one another.
+    pub fn fingerprint(&self) -> RuntimeFingerprint {
+        fingerprint_from_info(&self.info)
+    }
+}
+
+fn fingerprint_from_info(i: &AdapterInfo) -> RuntimeFingerprint {
+        RuntimeFingerprint {
+            adapter: format!("{} (type={:?};driver={};driver_info={})", i.name, i.device_type, i.driver, i.driver_info),
+            backend: format!("{:?}", i.backend).to_ascii_lowercase(),
+            toolchain: format!("wgpu/{}/rustc/{}", env!("CARGO_PKG_VERSION"), option_env!("RUSTC_VERSION").unwrap_or("unknown")),
+        }
+}
+
 /// Select a real hardware adapter. Discrete GPUs are preferred, while
 /// integrated GPUs are accepted. Software/CPU adapters are never selected.
 pub fn select(instance: &Instance) -> Result<Selection, String> {
@@ -95,6 +119,20 @@ mod tests {
     fn diagnostic_contains_limits() {
         let d = diagnostic(&info(DeviceType::IntegratedGpu), &wgpu::Limits::default());
         assert!(d.contains("max_texture_dimension_2d"));
+    }
+
+    #[test]
+    fn runtime_fingerprint_contains_adapter_driver_backend_and_toolchain() {
+        let mut i = info(DeviceType::IntegratedGpu);
+        i.name = "Intel Test".into();
+        i.driver = "test-driver".into();
+        i.driver_info = "test-info".into();
+        let fp = fingerprint_from_info(&i);
+        assert!(fp.adapter.contains("Intel Test"));
+        assert!(fp.adapter.contains("test-driver"));
+        assert!(fp.adapter.contains("test-info"));
+        assert_eq!(fp.backend, "vulkan");
+        assert!(fp.toolchain.starts_with("wgpu/"));
     }
 
     #[test]
