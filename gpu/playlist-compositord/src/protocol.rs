@@ -85,6 +85,7 @@ mod tests {
                 },
                 artwork: None,
                 glyph_atlas: None,
+                text_overlay: None,
                 layout: Default::default(),
                 dynamics: Default::default(),
                 palette: Default::default(),

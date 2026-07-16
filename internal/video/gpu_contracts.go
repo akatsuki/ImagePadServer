@@ -1,6 +1,7 @@
 package video
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,14 +26,38 @@ const MusicMaxLayoutRects = 8
 // an unbounded texture or glyph upload. Existing Render requests omit this
 // field and remain valid.
 type MusicScenePayload struct {
-	Schema      uint16              `json:"schema"`
-	Feature     AudioFeatureFrame   `json:"feature"`
-	Artwork     *ArtworkMetadata    `json:"artwork,omitempty"`
-	GlyphAtlas  *GlyphAtlasMetadata `json:"glyph_atlas,omitempty"`
-	Layout      MusicSceneLayout    `json:"layout"`
-	Dynamics    MusicSceneDynamics  `json:"dynamics"`
-	Palette     MusicScenePalette   `json:"palette"`
-	Fingerprint string              `json:"fingerprint,omitempty"`
+	Schema      uint16               `json:"schema"`
+	Feature     AudioFeatureFrame    `json:"feature"`
+	Artwork     *ArtworkMetadata     `json:"artwork,omitempty"`
+	GlyphAtlas  *GlyphAtlasMetadata  `json:"glyph_atlas,omitempty"`
+	TextOverlay *TextOverlayMetadata `json:"text_overlay,omitempty"`
+	Layout      MusicSceneLayout     `json:"layout"`
+	Dynamics    MusicSceneDynamics   `json:"dynamics"`
+	Palette     MusicScenePalette    `json:"palette"`
+	Fingerprint string               `json:"fingerprint,omitempty"`
+}
+
+// TextOverlayMetadata is an optional, bounded description of the canonical
+// metadata overlay. It is transport-only until a renderer explicitly opts in.
+type TextOverlayMetadata struct {
+	Title           string      `json:"title,omitempty"`
+	Artist          string      `json:"artist,omitempty"`
+	Album           string      `json:"album,omitempty"`
+	FontFamily      string      `json:"font_family,omitempty"`
+	FontWeight      uint16      `json:"font_weight,omitempty"`
+	SizePx          float32     `json:"size_px,omitempty"`
+	RGBA            [4]uint8    `json:"rgba,omitempty"`
+	Opacity         float32     `json:"opacity,omitempty"`
+	Width           uint32      `json:"width,omitempty"`
+	Height          uint32      `json:"height,omitempty"`
+	RowStride       uint32      `json:"row_stride,omitempty"`
+	Format          PixelFormat `json:"format,omitempty"`
+	ColorSpace      ColorSpace  `json:"color_space,omitempty"`
+	Premultiplied   bool        `json:"premultiplied,omitempty"`
+	Payload         []byte      `json:"payload,omitempty"`
+	AssetHash       string      `json:"asset_hash,omitempty"`
+	RendererID      string      `json:"renderer_id,omitempty"`
+	RendererVersion string      `json:"renderer_version,omitempty"`
 }
 
 type SceneRect struct {
@@ -147,6 +172,36 @@ func (s MusicScenePayload) Validate() error {
 		if err := s.GlyphAtlas.Validate(); err != nil {
 			return fmt.Errorf("scene glyph atlas: %w", err)
 		}
+	}
+	if s.TextOverlay != nil {
+		if err := s.TextOverlay.Validate(); err != nil {
+			return fmt.Errorf("scene text overlay: %w", err)
+		}
+	}
+	return nil
+}
+
+func (o TextOverlayMetadata) Validate() error {
+	if len(o.Title)+len(o.Artist)+len(o.Album)+len(o.FontFamily)+len(o.RendererID)+len(o.RendererVersion) > MusicMaxTextBytes || o.SizePx < 0 || math.IsNaN(float64(o.SizePx)) || math.IsInf(float64(o.SizePx), 0) || o.Opacity < 0 || o.Opacity > 1 || math.IsNaN(float64(o.Opacity)) || math.IsInf(float64(o.Opacity), 0) {
+		return errors.New("invalid text overlay metadata")
+	}
+	if o.Width == 0 || o.Height == 0 || o.Width > MusicMaxArtworkDimension || o.Height > MusicMaxArtworkDimension || o.RowStride < o.Width*4 || o.RowStride%GPURowAlignment != 0 {
+		return errors.New("invalid text overlay dimensions")
+	}
+	if uint64(o.RowStride)*uint64(o.Height) > MusicMaxArtworkBytes || (len(o.Payload) != 0 && uint64(len(o.Payload)) != uint64(o.RowStride)*uint64(o.Height)) {
+		return errors.New("invalid text overlay payload")
+	}
+	if o.Format != PixelRGBA8 && o.Format != PixelBGRA8 {
+		return errors.New("invalid text overlay format")
+	}
+	if len(o.AssetHash) != 64 {
+		return errors.New("invalid text overlay asset hash")
+	}
+	if _, err := hex.DecodeString(o.AssetHash); err != nil || o.RendererID == "" || o.RendererVersion == "" {
+		return errors.New("invalid text overlay provenance")
+	}
+	if o.ColorSpace != ColorSRGB && o.ColorSpace != ColorLinear {
+		return errors.New("invalid text overlay color space")
 	}
 	return nil
 }

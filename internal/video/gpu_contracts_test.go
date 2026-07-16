@@ -2,8 +2,32 @@ package video
 
 import (
 	"encoding/json"
+	"reflect"
+	"strings"
 	"testing"
 )
+
+func TestTextOverlayMetadataRoundTripAndValidation(t *testing.T) {
+	o := TextOverlayMetadata{Title: "T", RendererID: "cpu-ass", RendererVersion: "1", Width: 1, Height: 1, RowStride: 256, Format: PixelRGBA8, ColorSpace: ColorSRGB, AssetHash: strings.Repeat("a", 64), Payload: make([]byte, 256), Opacity: 1}
+	if err := o.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got TextOverlayMetadata
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(o, got) {
+		t.Fatalf("roundtrip mismatch: %#v != %#v", o, got)
+	}
+	got.AssetHash = "bad"
+	if err := got.Validate(); err == nil {
+		t.Fatal("expected malformed asset hash rejection")
+	}
+}
 
 func TestGPUContractFrameValidation(t *testing.T) {
 	f := GpuFrame{Schema: 1, Width: 64, Height: 2, RowStride: 256, Format: PixelRGBA8, ColorSpace: ColorSRGB, Ownership: "OwnedByTransport", Payload: make([]byte, 512)}

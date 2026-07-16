@@ -54,6 +54,8 @@ pub struct MusicScenePayload {
     #[serde(default)]
     pub glyph_atlas: Option<GlyphAtlasMetadata>,
     #[serde(default)]
+    pub text_overlay: Option<TextOverlayMetadata>,
+    #[serde(default)]
     pub layout: MusicSceneLayout,
     #[serde(default)]
     pub dynamics: MusicSceneDynamics,
@@ -61,6 +63,29 @@ pub struct MusicScenePayload {
     pub palette: MusicScenePalette,
     #[serde(default)]
     pub fingerprint: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TextOverlayMetadata {
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub font_family: String,
+    pub font_weight: u16,
+    pub size_px: f32,
+    pub rgba: [u8; 4],
+    pub opacity: f32,
+    pub width: u32,
+    pub height: u32,
+    pub row_stride: u32,
+    pub format: PixelFormat,
+    pub color_space: ColorSpace,
+    pub premultiplied: bool,
+    #[serde(with = "base64_bytes")]
+    pub payload: Vec<u8>,
+    pub asset_hash: String,
+    pub renderer_id: String,
+    pub renderer_version: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -333,6 +358,25 @@ impl MusicScenePayload {
         if let Some(atlas) = &self.glyph_atlas {
             atlas.validate()?;
         }
+        if let Some(overlay) = &self.text_overlay {
+            overlay.validate()?;
+        }
+        Ok(())
+    }
+}
+
+impl TextOverlayMetadata {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        if self.title.len() + self.artist.len() + self.album.len() + self.font_family.len() > MUSIC_MAX_TEXT_BYTES
+            || !self.size_px.is_finite() || self.size_px < 0.0
+            || !self.opacity.is_finite() || self.opacity < 0.0 || self.opacity > 1.0
+        || self.width == 0 || self.height == 0 || self.width > MUSIC_MAX_ARTWORK_DIMENSION || self.height > MUSIC_MAX_ARTWORK_DIMENSION
+            || self.row_stride < self.width.saturating_mul(4) || self.row_stride % ROW_ALIGNMENT != 0
+            || (self.row_stride as usize).saturating_mul(self.height as usize) > MUSIC_MAX_ARTWORK_BYTES
+            || (!self.payload.is_empty() && self.payload.len() != self.row_stride as usize * self.height as usize)
+            || self.asset_hash.len() != 64 || !self.asset_hash.bytes().all(|b| b.is_ascii_hexdigit())
+            || self.renderer_id.is_empty() || self.renderer_version.is_empty()
+        { return Err(ContractError::InvalidScene); }
         Ok(())
     }
 }
@@ -480,6 +524,17 @@ fn valid_dimensions(width: u32, height: u32) -> Result<(), ContractError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn text_overlay_roundtrip_and_rejects_bad_provenance() {
+        let overlay = TextOverlayMetadata { title: "T".into(), artist: String::new(), album: String::new(), font_family: "sans".into(), font_weight: 400, size_px: 16.0, rgba: [255,255,255,255], opacity: 1.0, width: 1, height: 1, row_stride: 256, format: PixelFormat::Rgba8, color_space: ColorSpace::Srgb, premultiplied: true, payload: vec![0;256], asset_hash: "a".repeat(64), renderer_id: "cpu-ass".into(), renderer_version: "1".into() };
+        assert!(overlay.validate().is_ok());
+        let encoded = serde_json::to_string(&overlay).unwrap();
+        let decoded: TextOverlayMetadata = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(overlay, decoded);
+        let mut bad = decoded;
+        bad.asset_hash = "bad".into();
+        assert!(bad.validate().is_err());
+    }
     #[test]
     fn gpu_frame_alignment_and_bounds() {
         let good = GpuFrame {
