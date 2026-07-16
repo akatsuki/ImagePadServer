@@ -473,7 +473,9 @@ fn dynamics_sample_words(scene: Option<&MusicScenePayload>) -> Vec<u32> {
 impl Renderer {
     fn upload_text_overlay(&self, o: &crate::contracts::TextOverlayMetadata) -> Result<wgpu::Texture, String> {
         if o.payload.is_empty() || o.width == 0 || o.height == 0 { return Err("empty text overlay payload".into()); }
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor { label: Some("text-overlay"), size: wgpu::Extent3d { width:o.width,height:o.height,depth_or_array_layers:1 }, mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Rgba8UnormSrgb,usage:wgpu::TextureUsages::COPY_DST|wgpu::TextureUsages::TEXTURE_BINDING,view_formats:&[] });
+        // Keep canonical premultiplied bytes numerically identical to the Go
+        // parity reference; sRGB decode would alter low-alpha edge luminance.
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor { label: Some("text-overlay"), size: wgpu::Extent3d { width:o.width,height:o.height,depth_or_array_layers:1 }, mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Rgba8Unorm,usage:wgpu::TextureUsages::COPY_DST|wgpu::TextureUsages::TEXTURE_BINDING,view_formats:&[] });
         self.queue.write_texture(wgpu::ImageCopyTexture { texture:&texture,mip_level:0,origin:wgpu::Origin3d::ZERO,aspect:wgpu::TextureAspect::All }, &o.payload, wgpu::ImageDataLayout { offset:0,bytes_per_row:Some(NonZeroU32::new(o.row_stride).unwrap().into()),rows_per_image:Some(NonZeroU32::new(o.height).unwrap().into()) }, wgpu::Extent3d { width:o.width,height:o.height,depth_or_array_layers:1 });
         Ok(texture)
     }
