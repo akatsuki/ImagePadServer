@@ -139,6 +139,9 @@ type sceneEvidence struct {
 	TextOverlayCPUHash         string                                           `json:"textOverlayCpuHash,omitempty"`
 	TextOverlayGPUReceipt      *video.TextOverlayReceipt                        `json:"textOverlayGpuReceipt,omitempty"`
 	TextOverlayParityByPoint   map[string]map[string]*video.OverlayParityMetric `json:"textOverlayParityByPoint,omitempty"`
+	ArtworkCPUHash             string                                           `json:"artworkCpuHash,omitempty"`
+	ArtworkGPUHash             string                                           `json:"artworkGpuHash,omitempty"`
+	ArtworkParity              *video.OverlayParityMetric                       `json:"artworkParity,omitempty"`
 	TextOverlaySHAEqual        bool                                             `json:"textOverlayShaEqual,omitempty"`
 	TextOverlayAlphaCoverage   int                                              `json:"textOverlayAlphaCoverage,omitempty"`
 	TextOverlayRegionCrop      imageBounds                                      `json:"textOverlayRegionCrop,omitempty"`
@@ -954,6 +957,26 @@ func main() {
 			ev := probeTextOverlayEvidence(ctx, strings.TrimSpace(os.Getenv("IMAGEPAD_PLAYLIST_COMPOSITORD")), pt.name, sp, uint32(math.Round(float64(p.Height)*16.0/9.0)), uint32(p.Height))
 			rep.SceneEvidence.TextOverlayParityByPoint[pt.name] = ev.Regions
 		}
+	}
+	if !*cpuOnly && scene.Artwork != nil {
+		actx, acancel := context.WithTimeout(ctx, 3*time.Second)
+		if af, ae := video.ProbeGPUSceneArtworkComposite(actx, strings.TrimSpace(os.Getenv("IMAGEPAD_PLAYLIST_COMPOSITORD")), uint32(math.Round(float64(p.Height)*16.0/9.0)), uint32(p.Height), &scene); ae == nil {
+			h := sha256.Sum256(af.Payload)
+			rep.SceneEvidence.ArtworkGPUHash = fmt.Sprintf("%x", h[:])
+			cpu := video.RenderArtworkCoverCPU(image.NewRGBA(image.Rect(0, 0, int(scene.Artwork.Width), int(scene.Artwork.Height))), int(af.Width), int(af.Height))
+			gi := image.NewRGBA(image.Rect(0, 0, int(af.Width), int(af.Height)))
+			for y := 0; y < int(af.Height); y++ {
+				for x := 0; x < int(af.Width); x++ {
+					off := y*int(af.RowStride) + x*4
+					if off+3 < len(af.Payload) {
+						gi.SetRGBA(x, y, color.RGBA{af.Payload[off], af.Payload[off+1], af.Payload[off+2], af.Payload[off+3]})
+					}
+				}
+			}
+			m := video.CompareOverlayParityCPUImageGPUImage(cpu, gi, gi.Bounds())
+			rep.SceneEvidence.ArtworkParity = &m
+		}
+		acancel()
 	}
 	if *cpuOnly {
 		rep.SceneEvidence.CPUInstanceManifest = video.ExpandMusicGlyphManifest(&scene, uint32(math.Round(float64(p.Height)*16.0/9.0)), uint32(p.Height))
