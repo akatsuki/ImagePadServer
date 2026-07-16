@@ -418,13 +418,14 @@ func minInt(a, b int) int {
 // short encoder-drain tail; that is evidence about packaging, not permission
 // to alter the GPU scene frame count.
 type frameContract struct {
-	ExpectedFrames    int64 `json:"expectedFrames"`
-	CPUObservedFrames int64 `json:"cpuObservedFrames"`
-	GPUObservedFrames int64 `json:"gpuObservedFrames"`
-	CPUMuxDelta       int64 `json:"cpuMuxDelta"`
-	GPUMuxDelta       int64 `json:"gpuMuxDelta"`
-	CPUZeroOriginPTS  bool  `json:"cpuZeroOriginPts"`
-	GPUZeroOriginPTS  bool  `json:"gpuZeroOriginPts"`
+	ExpectedFrames    int64  `json:"expectedFrames"`
+	CPUObservedFrames int64  `json:"cpuObservedFrames"`
+	GPUObservedFrames int64  `json:"gpuObservedFrames"`
+	CPUMuxDelta       int64  `json:"cpuMuxDelta"`
+	GPUMuxDelta       int64  `json:"gpuMuxDelta"`
+	CPUZeroOriginPTS  bool   `json:"cpuZeroOriginPts"`
+	GPUZeroOriginPTS  bool   `json:"gpuZeroOriginPts"`
+	SharedMuxPolicy   string `json:"sharedMuxPolicy,omitempty"`
 }
 
 type comparisonGate struct {
@@ -841,6 +842,7 @@ func main() {
 		rep.GPUSidecar = inspectSidecar(strings.TrimSpace(os.Getenv("IMAGEPAD_PLAYLIST_COMPOSITORD")), fingerprint)
 	}
 	rep.FrameContract.ExpectedFrames = int64(math.Max(1, math.Ceil(analysis.Duration*30)))
+	rep.FrameContract.SharedMuxPolicy = "raw:30fps,cfr,frames:v;hls:passthrough,video-copy"
 	scene := video.CanonicalMusicScene(inputSpec, 0, 0)
 	rep.SceneEvidence = sceneEvidence{Fingerprint: scene.Fingerprint, Title: inputSpec.Metadata.Title, Artist: inputSpec.Metadata.Artist, Album: inputSpec.Metadata.Album}
 	if scene.Artwork != nil {
