@@ -30,8 +30,8 @@ type probeResult struct {
 	PixFmt     string  `json:"pixFmt,omitempty"`
 	ColorSpace string  `json:"colorSpace,omitempty"`
 	ColorRange string  `json:"colorRange,omitempty"`
-	FirstPTS   float64 `json:"firstPts,omitempty"`
-	LastPTS    float64 `json:"lastPts,omitempty"`
+	FirstPTS   float64 `json:"firstPts"`
+	LastPTS    float64 `json:"lastPts"`
 }
 type renderResult struct {
 	Output            string                  `json:"output,omitempty"`
