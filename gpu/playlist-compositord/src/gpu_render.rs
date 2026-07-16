@@ -148,8 +148,14 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
       let pixel = vec2<f32>(f32(id.x), f32(id.y));
       for (var gi: u32 = 0u; gi < params.glyph_count; gi = gi + 1u) {
         let g = glyphs[gi];
-        if (pixel.x >= g.screen.x && pixel.y >= g.screen.y && pixel.x < g.screen.x + g.screen.z && pixel.y < g.screen.y + g.screen.w) {
-          let uv = g.atlas.xy + (pixel - g.screen.xy) / max(g.screen.zw, vec2<f32>(1.0)) * g.atlas.zw;
+        // GlyphInstance.screen is serialized in normalized target coordinates
+        // (the same contract used by the CPU manifest). Convert to pixel
+        // space before the coverage test; comparing pixel IDs with [0,1]
+        // values made every glyph disappear except at the origin.
+        let screen = vec4<f32>(g.screen.x * f32(params.width), g.screen.y * f32(params.height),
+          g.screen.z * f32(params.width), g.screen.w * f32(params.height));
+        if (pixel.x >= screen.x && pixel.y >= screen.y && pixel.x < screen.x + screen.z && pixel.y < screen.y + screen.w) {
+          let uv = g.atlas.xy + (pixel - screen.xy) / max(screen.zw, vec2<f32>(1.0)) * g.atlas.zw;
           glyph = max(glyph, textureSampleLevel(atlas_tex, atlas_sampler, uv, 0.0).a * g.color.a);
         }
       }
