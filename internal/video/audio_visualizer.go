@@ -578,6 +578,36 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 	if width%2 != 0 {
 		width++
 	}
+	// The GPU compositor must consume the same immutable base raster as the
+	// CPU reference (blur, overlay, artwork mask and shadow). Generate it once
+	// before the frame loop; dynamic layers remain GPU-owned.
+	baseTexture := input.BaseTexture
+	if baseTexture == nil {
+		layout, layoutErr := LayoutForSize(width, height)
+		if layoutErr != nil {
+			return fmt.Errorf("GPU base layout: %w", layoutErr)
+		}
+		fonts, fontErr := VisualizerFonts()
+		if fontErr != nil {
+			return fmt.Errorf("GPU base fonts: %w", fontErr)
+		}
+		var fallback *image.RGBA
+		if input.ArtworkPath == "" {
+			fallback, fontErr = RenderFallbackArtwork(ctx, ffmpeg, fonts, input.Analysis.Features, color.RGBA{255, 255, 255, 224}, layout.Artwork.W)
+			if fontErr != nil {
+				return fmt.Errorf("GPU base fallback artwork: %w", fontErr)
+			}
+		}
+		base, _, baseErr := RenderVisualizerBaseCPU(ctx, ffmpeg, input.ArtworkPath, fallback, layout)
+		if baseErr != nil {
+			return fmt.Errorf("GPU base raster: %w", baseErr)
+		}
+		meta, metaErr := NewBaseTextureMetadata("music-base-"+id, base, ColorSRGB)
+		if metaErr != nil {
+			return fmt.Errorf("GPU base metadata: %w", metaErr)
+		}
+		baseTexture = &meta
+	}
 	audioFilter := audioLoudnormFilter(input.Kind)
 	if audioFilter == "" {
 		audioFilter = "anull"
@@ -632,8 +662,8 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 	for i := 0; i < frames; i++ {
 		ptsNS := int64(float64(i) * float64(time.Second) / 30)
 		scene := CanonicalMusicScene(input, uint64(i), ptsNS)
-		if input.BaseTexture != nil {
-			scene.BaseTexture = input.BaseTexture
+		if baseTexture != nil {
+			scene.BaseTexture = baseTexture
 		}
 		frame, e := sidecar.RenderScene(ctx, uint32(width), uint32(height), uint64(i), ptsNS, &scene)
 		if e != nil {
