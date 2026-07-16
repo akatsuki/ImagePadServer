@@ -538,7 +538,13 @@ func RunAudioVisualizerHLSCPUReference(ctx context.Context, outDir, ffmpeg strin
 		// Keep the CPU reference on the same canonical 30 Hz frame clock as
 		// the GPU route; this prevents source-duration rounding from adding a
 		// mux tail frame.
-		args = append(args, "-frames:v", strconv.Itoa(canonicalMusicVideoFrameCount(input.Analysis)))
+		limit := []string{"-frames:v", strconv.Itoa(canonicalMusicVideoFrameCount(input.Analysis))}
+		for i := 0; i+1 < len(args); i++ {
+			if args[i] == "-f" && args[i+1] == "hls" {
+				args = append(args[:i], append(limit, args[i:]...)...)
+				break
+			}
+		}
 		return formatVisualizerOutputArgs(args, outDir)
 	}
 	return runAudioVisualizerEncode(ctx, outDir, ffmpeg, input, id, preset, EncoderStandard, buildArgs, func() { removeHLSForID(outDir, id) }, nil)
