@@ -31,6 +31,14 @@ func RenderASSOverlayRGBA(ctx context.Context, ffmpeg, assPath, fontDir string, 
 	if uint64(len(out)) != uint64(rowBytes)*uint64(height) {
 		return nil, 0, fmt.Errorf("unexpected ASS overlay bytes: got %d want %d", len(out), uint64(rowBytes)*uint64(height))
 	}
+	// libass emits straight-alpha RGBA. Convert once at the transport boundary
+	// so the GPU can use the contract's premultiplied source-over equation.
+	for i := 0; i+3 < len(out); i += 4 {
+		a := uint32(out[i+3])
+		out[i] = byte((uint32(out[i])*a + 127) / 255)
+		out[i+1] = byte((uint32(out[i+1])*a + 127) / 255)
+		out[i+2] = byte((uint32(out[i+2])*a + 127) / 255)
+	}
 	// The transport contract requires aligned rows. Expand each row without
 	// changing the libass-generated texels.
 	if stride != rowBytes {
