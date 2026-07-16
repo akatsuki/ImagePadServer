@@ -10,7 +10,17 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"imagepadserver/internal/video"
 )
+
+func TestGlyphAtlasEvidenceUsesPayloadAndStride(t *testing.T) {
+	atlas := &video.GlyphAtlasMetadata{Width: 2, Height: 1, RowStride: 8, Payload: []byte{0, 0, 0, 255, 0, 0, 0, 0}, Glyphs: []video.GlyphEntry{{ID: "x"}}, TextRuns: []video.TextRun{{Text: "x"}}, AssetHash: "asset"}
+	e, ok := glyphAtlasEvidence(atlas)
+	if !ok || e.GlyphCoveragePixels != 1 || e.GlyphWidth != 2 || e.GlyphRowStride != 8 || e.GlyphCount != 1 || e.TextRunCount != 1 { t.Fatalf("unexpected atlas evidence: %+v", e) }
+	want := sha256.Sum256(atlas.Payload)
+	if e.GlyphPayloadHash != fmt.Sprintf("%x", want[:]) { t.Fatalf("payload hash mismatch: %s", e.GlyphPayloadHash) }
+}
 
 func TestSHA256FileMatchesBytes(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "frame.png")

@@ -97,9 +97,43 @@ type sceneEvidence struct {
 	Fingerprint string `json:"fingerprint,omitempty"`
 	ArtworkHash string `json:"artworkHash,omitempty"`
 	GlyphHash   string `json:"glyphHash,omitempty"`
+	GlyphPayloadHash string `json:"glyphPayloadHash,omitempty"`
+	GlyphWidth uint32 `json:"glyphWidth,omitempty"`
+	GlyphHeight uint32 `json:"glyphHeight,omitempty"`
+	GlyphRowStride uint32 `json:"glyphRowStride,omitempty"`
+	GlyphCount int `json:"glyphCount,omitempty"`
+	TextRunCount int `json:"textRunCount,omitempty"`
+	GlyphCoveragePixels int `json:"glyphCoveragePixels,omitempty"`
 	Title       string `json:"title,omitempty"`
 	Artist      string `json:"artist,omitempty"`
 	Album       string `json:"album,omitempty"`
+}
+
+// glyphAtlasEvidence is deliberately derived from the exact bytes sent to
+// the sidecar.  It catches stride/format/payload drift without making the
+// comparison tool depend on a renderer implementation.
+func glyphAtlasEvidence(atlas *video.GlyphAtlasMetadata) (sceneEvidence, bool) {
+	if atlas == nil {
+		return sceneEvidence{}, false
+	}
+	sum := sha256.Sum256(atlas.Payload)
+	coverage := 0
+	stride := int(atlas.RowStride)
+	if stride > 0 && int(atlas.Height) > 0 && len(atlas.Payload) >= stride*int(atlas.Height) {
+		for y := 0; y < int(atlas.Height); y++ {
+			row := atlas.Payload[y*stride : (y+1)*stride]
+			for x := 3; x < len(row); x += 4 {
+				if row[x] != 0 {
+					coverage++
+				}
+			}
+		}
+	}
+	return sceneEvidence{
+		GlyphHash: atlas.AssetHash, GlyphPayloadHash: fmt.Sprintf("%x", sum[:]),
+		GlyphWidth: atlas.Width, GlyphHeight: atlas.Height, GlyphRowStride: atlas.RowStride,
+		GlyphCount: len(atlas.Glyphs), TextRunCount: len(atlas.TextRuns), GlyphCoveragePixels: coverage,
+	}, true
 }
 
 func compareImageRegion(aPath, bPath string, region imageBounds) (imageComparison, error) {
@@ -576,7 +610,16 @@ func main() {
 	scene := video.CanonicalMusicScene(inputSpec, 0, 0)
 	rep.SceneEvidence = sceneEvidence{Fingerprint: scene.Fingerprint, Title: inputSpec.Metadata.Title, Artist: inputSpec.Metadata.Artist, Album: inputSpec.Metadata.Album}
 	if scene.Artwork != nil { rep.SceneEvidence.ArtworkHash = scene.Artwork.AssetHash }
-	if scene.GlyphAtlas != nil { rep.SceneEvidence.GlyphHash = scene.GlyphAtlas.AssetHash }
+	if glyphEvidence, ok := glyphAtlasEvidence(scene.GlyphAtlas); ok {
+		rep.SceneEvidence.GlyphHash = glyphEvidence.GlyphHash
+		rep.SceneEvidence.GlyphPayloadHash = glyphEvidence.GlyphPayloadHash
+		rep.SceneEvidence.GlyphWidth = glyphEvidence.GlyphWidth
+		rep.SceneEvidence.GlyphHeight = glyphEvidence.GlyphHeight
+		rep.SceneEvidence.GlyphRowStride = glyphEvidence.GlyphRowStride
+		rep.SceneEvidence.GlyphCount = glyphEvidence.GlyphCount
+		rep.SceneEvidence.TextRunCount = glyphEvidence.TextRunCount
+		rep.SceneEvidence.GlyphCoveragePixels = glyphEvidence.GlyphCoveragePixels
+	}
 	rep.CPU = render(ctx, false, filepath.Join(*output, "cpu"), ff, inputSpec, id, p)
 	if !*cpuOnly {
 		rep.GPU = render(ctx, true, filepath.Join(*output, "gpu"), ff, inputSpec, id, p)
