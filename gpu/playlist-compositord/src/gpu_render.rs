@@ -31,7 +31,9 @@ struct GlyphInstance { screen: vec4<f32>, atlas: vec4<f32>, color: vec4<f32> }
 @group(0) @binding(5) var artwork_tex: texture_2d<f32>;
   @group(0) @binding(6) var artwork_sampler: sampler;
   // Bounded 256-sample envelope/trend pairs, uploaded as a read-only storage buffer.
-  @group(0) @binding(7) var<storage, read> dynamics_samples: array<u32>;
+@group(0) @binding(7) var<storage, read> dynamics_samples: array<u32>;
+@group(0) @binding(8) var overlay_tex: texture_2d<f32>;
+@group(0) @binding(9) var overlay_sampler: sampler;
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   if (id.x >= params.width || id.y >= params.height) { return; }
@@ -607,6 +609,8 @@ impl Renderer {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry { binding: 8, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 9, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
             ],
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -829,6 +833,8 @@ impl Renderer {
                     binding: 7,
                     resource: dynamics_buffer.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(&atlas_view) },
+                wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::Sampler(&atlas_sampler) },
             ],
         });
         let mut enc = self
