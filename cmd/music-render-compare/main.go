@@ -357,6 +357,11 @@ func probe(ctx context.Context, path string) (probeResult, error) {
 	if r.LastPTS != 0 || r.FirstPTS != 0 {
 		r.NormalizedFirstPTS = 0
 		r.NormalizedLastPTS = r.LastPTS - r.FirstPTS
+		if r.VideoDuration == 0 {
+			// MPEG-TS/HLS often omits stream duration. Reconstruct the observed
+			// video clock from normalized PTS plus one frame period (30 Hz).
+			r.VideoDuration = r.NormalizedLastPTS + 1.0/30.0
+		}
 	}
 	// The probe explicitly selects v:0; audio is excluded from these metrics.
 	r.AudioExcluded = true
