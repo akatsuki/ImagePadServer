@@ -423,6 +423,8 @@ type frameContract struct {
 	GPUObservedFrames int64 `json:"gpuObservedFrames"`
 	CPUMuxDelta       int64 `json:"cpuMuxDelta"`
 	GPUMuxDelta       int64 `json:"gpuMuxDelta"`
+	CPUZeroOriginPTS  bool  `json:"cpuZeroOriginPts"`
+	GPUZeroOriginPTS  bool  `json:"gpuZeroOriginPts"`
 }
 
 type comparisonGate struct {
@@ -1044,6 +1046,8 @@ func main() {
 		rep.FrameContract.GPUObservedFrames = rep.GPU.Probe.Frames
 		rep.FrameContract.CPUMuxDelta = rep.CPU.Probe.Frames - rep.FrameContract.ExpectedFrames
 		rep.FrameContract.GPUMuxDelta = rep.GPU.Probe.Frames - rep.FrameContract.ExpectedFrames
+		rep.FrameContract.CPUZeroOriginPTS = rep.CPU.Probe.NormalizedFirstPTS == 0
+		rep.FrameContract.GPUZeroOriginPTS = rep.GPU.Probe.NormalizedFirstPTS == 0
 		cpuVideoDuration := rep.CPU.Probe.VideoDuration
 		gpuVideoDuration := rep.GPU.Probe.VideoDuration
 		if cpuVideoDuration == 0 {
