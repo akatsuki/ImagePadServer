@@ -176,6 +176,10 @@ func ProbeGPUSceneTextOverlayComposite(ctx context.Context, executable string, w
 	return p.RenderScene(ctx, width, height, 0xfffffffe, 0, scene)
 }
 
+func ProbeGPUSceneArtworkComposite(ctx context.Context, executable string, width, height uint32, scene *MusicScenePayload) (GpuFrame, error) {
+	p, err := StartSidecar(ctx, executable, "compare-artwork-composite"); if err != nil { return GpuFrame{}, err }; defer p.Close(); if err:=p.Hello(ctx,"compare-artwork-composite"); err!=nil{return GpuFrame{},err}; return p.RenderScene(ctx,width,height,0xfffffffdu,0,scene)
+}
+
 // ProbeGPUSceneTextOverlay is an opt-in compare diagnostic. It returns only
 // transport receipt evidence and does not alter production shader output.
 func ProbeGPUSceneTextOverlay(ctx context.Context, executable, session string, width, height uint32, scene *MusicScenePayload) (*TextOverlayReceipt, error) {
