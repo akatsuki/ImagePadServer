@@ -95,7 +95,9 @@ func CompareSyntheticGlyph(atlas *GlyphAtlasMetadata, manifest GlyphInstanceMani
 					maxY = int(y)
 				}
 			}
-			if int(x) >= sx0 && int(x) < sx0+sw && int(y) >= sy0 && int(y) < sy0+sh && v > 8 { gpuScreenMask[int(y)*int(width)+int(x)] = struct{}{} }
+			if int(x) >= sx0 && int(x) < sx0+sw && int(y) >= sy0 && int(y) < sy0+sh && v > 8 {
+				gpuScreenMask[int(y)*int(width)+int(x)] = struct{}{}
+			}
 		}
 	}
 	h := sha256.Sum256(raw)
@@ -104,9 +106,16 @@ func CompareSyntheticGlyph(atlas *GlyphAtlasMetadata, manifest GlyphInstanceMani
 		e.GPUVisibleBounds = [4]int{minX, minY, maxX + 1, maxY + 1}
 	}
 	e.GPUScreenCoverage = len(gpuScreenMask)
-	inter := 0; for p := range cpuScreenMask { if _, ok := gpuScreenMask[p]; ok { inter++ } }
-	union := len(cpuScreenMask)+len(gpuScreenMask)-inter
-	if union > 0 { e.ScreenIoU = float64(inter)/float64(union) }
+	inter := 0
+	for p := range cpuScreenMask {
+		if _, ok := gpuScreenMask[p]; ok {
+			inter++
+		}
+	}
+	union := len(cpuScreenMask) + len(gpuScreenMask) - inter
+	if union > 0 {
+		e.ScreenIoU = float64(inter) / float64(union)
+	}
 	return e
 }
 
