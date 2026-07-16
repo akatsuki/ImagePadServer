@@ -84,8 +84,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   // can be compared against the CPU background contract in isolation.
   if (params.sequence == 0xfffffffcu) {
     let c = params.palette[2];
-    let rr=u32(clamp(c.x,0.0,255.0)); let gg=u32(clamp(c.y,0.0,255.0));
-    let bb=u32(clamp(c.z,0.0,255.0)); let aa=u32(clamp(c.w,0.0,255.0));
+    let rr=min(c.x,255u); let gg=min(c.y,255u);
+    let bb=min(c.z,255u); let aa=min(c.w,255u);
     pixels[i]=rr|(gg<<8u)|(bb<<16u)|(aa<<24u); return;
   }
   var r: u32;
