@@ -37,6 +37,17 @@ func validateTextOverlayReceipt(overlay *TextOverlayMetadata, receipt *TextOverl
 	}
 	return nil
 }
+func validateArtworkReceipt(a *ArtworkMetadata, r *ArtworkReceipt) error {
+	if a == nil || r == nil {
+		return errors.New("sidecar artwork receipt missing")
+	}
+	sum := sha256.Sum256(a.Payload)
+	want := fmt.Sprintf("%x", sum[:])
+	if r.SHA256 != want || r.SourceWidth != a.Width || r.SourceHeight != a.Height || r.CropMode == "" || r.AspectMode == "" {
+		return errors.New("sidecar artwork receipt mismatch")
+	}
+	return nil
+}
 
 const sidecarStderrLimit = 32 * 1024
 
@@ -264,6 +275,11 @@ func (p *SidecarProcess) RenderScene(ctx context.Context, width, height uint32, 
 		}
 		if scene != nil && scene.TextOverlay != nil {
 			if err := validateTextOverlayReceipt(scene.TextOverlay, resp.Frame.TextOverlayReceipt); err != nil {
+				return GpuFrame{}, err
+			}
+		}
+		if scene != nil && scene.Artwork != nil {
+			if err := validateArtworkReceipt(scene.Artwork, resp.Frame.ArtworkReceipt); err != nil {
 				return GpuFrame{}, err
 			}
 		}
