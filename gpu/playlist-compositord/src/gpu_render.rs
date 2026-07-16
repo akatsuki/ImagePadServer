@@ -114,6 +114,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let accent = vec3<f32>(params.palette[1].xyz) / 255.0;
     let background = vec3<f32>(params.palette[2].xyz) / 255.0;
     let overlay = vec4<f32>(params.palette[3]) / 255.0;
+    let has_base = (params.scene_enabled & 8u) != 0u;
     // Canonical scene background and glow, with a deterministic waveform.
     var glow = max(0.0, 1.0 - distance(vec2<f32>(fx, fy), vec2<f32>(0.5, 0.48)) * 1.7) * (0.18 + rms * 0.42);
     // Artwork is a first-class layer. Keep the tile bounded and deterministic
@@ -123,7 +124,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     var artwork = 0.0;
     var artwork_color = background;
     var artwork_alpha = 0.0;
-    if ((params.scene_enabled & 2u) != 0u) {
+    if ((params.scene_enabled & 2u) != 0u && !has_base) {
       let artwork_rect = params.rects[0];
       let tile_min = vec2<f32>(f32(artwork_rect.x) / f32(params.width), f32(artwork_rect.y) / f32(params.height));
       let tile_max = vec2<f32>(f32(artwork_rect.x + artwork_rect.z) / f32(params.width), f32(artwork_rect.y + artwork_rect.w) / f32(params.height));
@@ -261,7 +262,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     // background colour remains the deterministic fallback when artwork is
     // absent or malformed.
     var blurred_bg = background;
-    if ((params.scene_enabled & 2u) != 0u) {
+    if ((params.scene_enabled & 2u) != 0u && !has_base) {
       let dims = vec2<f32>(textureDimensions(artwork_tex));
       let source_aspect = dims.x / max(1.0, dims.y);
       let frame_aspect = f32(params.width) / max(1.0, f32(params.height));
@@ -276,6 +277,13 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
       let c1 = textureSampleLevel(artwork_tex, artwork_sampler, clamp(buv + vec2<f32>(texel.x, 0.0), vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).rgb;
       let c2 = textureSampleLevel(artwork_tex, artwork_sampler, clamp(buv + vec2<f32>(0.0, texel.y), vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).rgb;
       blurred_bg = mix(background, (c0 + c1 + c2) / 3.0, 0.55);
+    }
+    if (has_base) {
+      let bd = vec2<f32>(textureDimensions(base_tex));
+      let buv = (vec2<f32>(f32(id.x), f32(id.y)) + vec2<f32>(0.5)) / bd;
+      blurred_bg = textureSampleLevel(base_tex, base_sampler, buv, 0.0).rgb;
+      artwork = 0.0;
+      artwork_alpha = 0.0;
     }
     var mixc = blurred_bg + primary * (glow + glyph + artwork * 0.35) + accent * (bars * 0.75 + wave * 0.35 + thumb + loudness);
     let overlay_alpha = overlay.a;
@@ -339,7 +347,7 @@ fn scene_uniform_words(
                 4
             } else {
                 0
-            };
+            } | if scene.base_texture.as_ref().is_some_and(|b| !b.payload.is_empty()) { 8 } else { 0 };
         words[7] = scene
             .glyph_atlas
             .as_ref()
