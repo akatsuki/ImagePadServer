@@ -299,11 +299,12 @@ channel reaches H.264. `-colorspace bt709 -color_primaries bt709
 ### D4. Static raster constants (owner: Tier4; source evidence required)
 
 Cover fit is centered, preserving aspect ratio; crop uses floor origin and
-bilinear sampling. Background analysis is 32x32 then a 3x3 box kernel;
-full-canvas blur is `gblur=sigma=64` with edge pixels clamped. Tile corners
-use the canonical radius from `RoundedRect` (12 px at 720p, scaled and
-rounded); shadow is CPU `draw.Shadow` with offset `(0,8)`, blur radius 24,
-opacity 0.35. Fallback uses `PaletteForFeatures`, 64 rays, width 3 px,
+`xdraw.CatmullRom.Scale` as implemented by `visualizer_background.go`.
+Background analysis is 32x32 then a 3x3 box kernel; full-canvas blur is
+`gblur=sigma=64` with edge pixels clamped. Tile corners use the canonical
+radius from `RoundedRect` (12 px at 720p, scaled and rounded); shadow is the
+CPU `renderShadow` routine with its source-defined offset, blur radius, and
+20% opacity (all three values are serialized in the fixture). Fallback uses `PaletteForFeatures`, 64 rays, width 3 px,
 foreground alpha 0.26, and the note glyph constants in
 `internal/video/fallback_artwork.go`. Any differing constant must be added to
 the fixture rather than shader-local. Evidence: the cited source files plus
@@ -406,3 +407,99 @@ wave, rather than patching around it, if a CPU invariant changes, a fixture is
 regenerated without a contract-version change, a shader duplicates a formula,
 PTS diverges, a region gate fails, or an adapter is silently substituted.
 Production remains unchanged until owner approval.
+
+## Tier4 closeout addendum (2026-07-16)
+
+This addendum closes the remaining specification questions without changing
+code or authorizing the production route.
+
+### Fixture set and manifest schema
+
+The frozen fixture directory is `testdata/music-render/<fixture-id>/`. It must
+contain `manifest.json`, `analysis.json`, `cpu/start.png`, `cpu/mid.png`,
+`cpu/end.png`, `cpu/frame-hashes.json`, and (when applicable) `audio.pcm` and
+`artwork.*`. The eight required IDs are:
+
+1. `embedded-opaque-cover`
+2. `transparent-cover`
+3. `no-artwork-fallback`
+4. `long-japanese-scroll`
+5. `short-metadata-no-scroll`
+6. `silent-near-silent`
+7. `high-bpm-high-lufs`
+8. `playlist-track-reset`
+
+Every manifest is versioned and has this shape (unknown fields are rejected):
+
+```json
+{
+  "schemaVersion": "music-render-fixture.v1",
+  "id": "embedded-opaque-cover",
+  "source": {"audio":"audio.opus", "artwork":"artwork.png", "metadata":{"title":"...","artist":"...","album":"..."}},
+  "expected": {"fps":30, "width":1280, "height":720, "frameCount":0, "durationSeconds":0},
+  "analysis": {"sha256":"", "json":"analysis.json", "filterGraph":""},
+  "artwork": {"sourceKind":"embedded", "selectedIndex":0, "format":"png", "width":0, "height":0, "hasAlpha":true},
+  "layout": {"contract":"canonical-1280x720-v1", "rects":{}},
+  "text": {"fontPath":"", "fontSha256":"", "runs":[]},
+  "samples": {"frames":[], "times":[], "regions":{}},
+  "cpu": {"commit":"", "frameHashes":"cpu/frame-hashes.json", "images":{"start":"cpu/start.png","mid":"cpu/mid.png","end":"cpu/end.png"}},
+  "toolchain": {"ffmpeg":"", "ffprobe":"", "go":"", "wgpu":"", "shaderCompiler":"", "fontRasterizer":""},
+  "commands": {"analyze":[], "renderCpu":[], "renderGpu":[], "compare":[]}
+}
+```
+
+`expected.frameCount` is `ceil(durationSeconds*30)` and must be populated by
+the generator, never hand-edited. Generation is deterministic and uses:
+`go run ./cmd/music-render-fixture -id <fixture-id> -out testdata/music-render/<fixture-id>`.
+Validation is `go test ./cmd/music-render-compare -run 'TestFixture(Metadata|Schema|Region)' -count=1`.
+The generator records command vectors, source commit, hashes, and toolchain
+fingerprints in the manifest; a missing artifact is a P1 failure.
+
+### Source-aligned raster decisions
+
+The current CPU evidence is authoritative: artwork/background cover scaling
+uses `xdraw.CatmullRom.Scale` in `visualizer_background.go` (not bilinear),
+and the shadow constants are read from `renderShadow` at fixture generation
+time rather than prescribed by prose. The fixture records corner radius,
+blur radius, offset, and effective alpha. The embedded font contract is the
+three committed `NotoSansJP-{Regular,Medium,SemiBold}.ttf` files in
+`internal/video/fonts`; platform font paths are only an optional diagnostic,
+not the CPU golden source. Their SHA-256 and `font.go` family mapping are
+mandatory evidence. These decisions replace any conflicting values in D2/D4.
+
+### Exact frame/tail policy
+
+The canonical frame count is exactly `len(Analysis.Frames)` (equivalent to
+`ceil(Duration*30)`). `music_scene.go` may clamp a lookup index to the final
+analysis frame for defensive reads, but the renderer must never emit a frame
+outside that count. The current `audio_visualizer.go` `len(Frames)+6` path is a
+P1 implementation defect and is explicitly assigned to Wave 4/6: remove it,
+then assert raw frame count, PTS `i/30`, and decoded HLS duration in a fixture.
+No tail padding or seek workaround is permitted.
+
+### Encode/color acceptance
+
+Wave 6 must make the GPU mux command vector explicit: `-pix_fmt yuv420p`,
+`-colorspace bt709`, `-color_primaries bt709`, `-color_trc bt709`,
+`-color_range tv`, and the declared `scale=in_range=full:out_range=tv` graph.
+The acceptance test runs `ffprobe -show_streams -show_format -of json` and
+asserts each field, plus frame count/PTS; command presence alone is P1 evidence.
+
+### Cancellation and cleanup tests
+
+The required bounded tests are `TestMusicRenderCancelTerminatesChildren`,
+`TestMusicRenderCancelCleansPartialHLS`, `TestMusicRenderCancelCleansTempTS`,
+`TestMusicRenderMalformedFramePrecedesMuxError`, and
+`TestMusicRenderNoSidecarAfterCancel`. Each uses a temporary output root,
+injects a blocking FFmpeg/sidecar stub, cancels the context, and observes:
+children gone and pipe closed within 2s, no partial HLS/TS/MP4 within 5s, and
+the documented error class/precedence. Process and filesystem observations
+must be recorded in the fixture report.
+
+### Evidence fingerprint procedure
+
+The fixture generator captures `ffmpeg -version`, `ffprobe -show_versions`,
+`go version`, the Rust/wgpu crate lock versions, shader compiler version, and
+SHA-256 of every font. Adapter evidence is captured by the sidecar hello
+(`backend`, `adapter`, `features`, `limits`) and stored under
+`evidence/adapter-<backend>.json`; no hardware result may be inferred.

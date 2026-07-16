@@ -77,3 +77,22 @@ implementation are not yet aligned:
 No implementation or production-route switch is authorized until these
 residuals are resolved and Tier5 returns PASS. The final execution decision
 remains with the owner.
+
+## Tier4 closeout handoff (2026-07-16)
+
+Tier4 has now made the residuals actionable without changing implementation:
+
+| Severity | Residual | Required evidence/owner |
+|---|---|---|
+| P1 | Eight fixture manifests and CPU goldens absent | Generate with the command and schema in inventory; Tier2 owns generation, Tier5 audits hashes. |
+| P1 | `len(Frames)+6` emits forbidden tail frames | Tier3 removes the path in Waves 4/6; raw count/PTS/HLS probe must pass. |
+| P1 | Color flags not proven at mux boundary | Tier3 emits explicit BT.709/tv flags; Tier2 ffprobe test asserts stream metadata. |
+| P1 | Cancellation cleanup bounds untested | Tier2 adds the five named bounded tests; Tier5 reviews timing and error precedence. |
+| P1 | Font/blur/shadow prose conflicted with CPU source | Resolved: embedded NotoSansJP hashes and source-read CatmullRom/shadow constants are fixture authority. |
+| P1 | Toolchain/adapter fingerprints absent | Fixture generator records all commands and sidecar hello evidence; Tier3 executes adapters, Tier5 audits. |
+
+The handoff is ready for a fresh Tier5 read-only audit. This remains a
+specification-only closeout: no code change, fixture generation, or production
+switch is implied by this document. Tier5 should return PASS only after the
+fixture artifacts and evidence commands actually exist; otherwise retain
+NO-GO with the concrete severity above.
