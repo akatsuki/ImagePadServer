@@ -379,6 +379,18 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     // alpha/luminance affected the background, leaving the GPU tile unlike the
     // CPU reference even when the same artwork bytes were present.
     mixc = mix(mixc, artwork_color, artwork_alpha * 0.9);
+    // Optional FFmpeg showwaves ground-truth raster. It is a bounded
+    // per-frame texture; GPU owns the final source-over composition.
+    if ((params.scene_enabled & 32u) != 0u) {
+      let wr = params.rects[4];
+      if (id.x >= u32(wr.x) && id.x < u32(wr.x + wr.z) && id.y >= u32(wr.y) && id.y < u32(wr.y + wr.w)) {
+        let wd = textureDimensions(waveform_tex);
+        let wx = min(wd.x - 1u, u32(id.x) - u32(wr.x));
+        let wy = min(wd.y - 1u, u32(id.y) - u32(wr.y));
+        let wc = textureLoad(waveform_tex, vec2<i32>(i32(wx), i32(wy)), 0);
+        mixc = mix(mixc, wc.rgb, wc.a);
+      }
+    }
     // A screen_rgba overlay is already premultiplied and uses target-space
     // texels. Apply it last, after the dynamic scene layers, matching the
     // CPU ASS ordering. The scene bit is only set for the new explicit
@@ -447,6 +459,7 @@ fn scene_uniform_words(
                 0
             } | if scene.base_texture.as_ref().is_some_and(|b| !b.payload.is_empty()) { 8 } else { 0 }
             | if scene.text_overlay.as_ref().is_some_and(|o| o.kind == "screen_rgba" && !o.payload.is_empty()) { 16 } else { 0 };
+        words[6] |= if scene.waveform_texture.as_ref().is_some_and(|w| !w.payload.is_empty()) { 32 } else { 0 };
         words[7] = scene
             .glyph_atlas
             .as_ref()
