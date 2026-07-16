@@ -1128,6 +1128,7 @@ mod tests {
             },
             artwork: None,
             base_texture: None,
+            waveform_texture: None,
             glyph_atlas: None,
             text_overlay: None,
             layout: Default::default(),
@@ -1157,6 +1158,7 @@ mod tests {
             },
             artwork: None,
             base_texture: None,
+            waveform_texture: None,
             glyph_atlas: Some(GlyphAtlasMetadata {
                 texture_id: "atlas".into(),
                 font_family: "sans".into(),

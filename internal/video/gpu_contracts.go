@@ -30,12 +30,15 @@ type MusicScenePayload struct {
 	Feature     AudioFeatureFrame    `json:"feature"`
 	Artwork     *ArtworkMetadata     `json:"artwork,omitempty"`
 	BaseTexture *BaseTextureMetadata `json:"base_texture,omitempty"`
-	GlyphAtlas  *GlyphAtlasMetadata  `json:"glyph_atlas,omitempty"`
-	TextOverlay *TextOverlayMetadata `json:"text_overlay,omitempty"`
-	Layout      MusicSceneLayout     `json:"layout"`
-	Dynamics    MusicSceneDynamics   `json:"dynamics"`
-	Palette     MusicScenePalette    `json:"palette"`
-	Fingerprint string               `json:"fingerprint,omitempty"`
+	// WaveformTexture is a per-frame FFmpeg showwaves raster. It reuses the
+	// bounded RGBA contract while the GPU binding is being introduced.
+	WaveformTexture *BaseTextureMetadata `json:"waveform_texture,omitempty"`
+	GlyphAtlas      *GlyphAtlasMetadata  `json:"glyph_atlas,omitempty"`
+	TextOverlay     *TextOverlayMetadata `json:"text_overlay,omitempty"`
+	Layout          MusicSceneLayout     `json:"layout"`
+	Dynamics        MusicSceneDynamics   `json:"dynamics"`
+	Palette         MusicScenePalette    `json:"palette"`
+	Fingerprint     string               `json:"fingerprint,omitempty"`
 }
 
 // BaseTextureMetadata is the immutable CPU compositor output shared with the
@@ -208,6 +211,11 @@ func (s MusicScenePayload) Validate() error {
 	if s.BaseTexture != nil {
 		if err := s.BaseTexture.Validate(); err != nil {
 			return fmt.Errorf("scene base texture: %w", err)
+		}
+	}
+	if s.WaveformTexture != nil {
+		if err := s.WaveformTexture.Validate(); err != nil {
+			return fmt.Errorf("scene waveform texture: %w", err)
 		}
 	}
 	if s.GlyphAtlas != nil {
