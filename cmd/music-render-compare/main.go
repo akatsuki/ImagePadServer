@@ -66,19 +66,95 @@ type imageComparison struct {
 	MismatchedPixels int     `json:"mismatchedPixels"`
 	MismatchRatio    float64 `json:"mismatchRatio"`
 }
+
+// regionComparison is intentionally diagnostic-only. It lets the parity gate
+// identify which static layer diverges without changing the aggregate gate.
+type regionComparison struct {
+	Region  imageBounds                `json:"region"`
+	Samples map[string]imageComparison `json:"samples,omitempty"`
+}
 type report struct {
-	Input                 string                     `json:"input"`
-	InputSHA256           string                     `json:"inputSha256,omitempty"`
-	GeneratedAt           time.Time                  `json:"generatedAt"`
-	FFmpeg                string                     `json:"ffmpeg,omitempty"`
-	GPUAdapter            string                     `json:"gpuAdapter,omitempty"`
-	GPUFingerprint        runtimeFingerprint         `json:"gpuFingerprint"`
-	CPUOnly               bool                       `json:"cpuOnly,omitempty"`
-	CPU                   renderResult               `json:"cpu"`
-	GPU                   renderResult               `json:"gpu"`
-	FrameContract         frameContract              `json:"frameContract"`
-	ScreenshotComparisons map[string]imageComparison `json:"screenshotComparisons,omitempty"`
-	ComparisonGate        comparisonGate             `json:"comparisonGate"`
+	Input                   string                      `json:"input"`
+	InputSHA256             string                      `json:"inputSha256,omitempty"`
+	GeneratedAt             time.Time                   `json:"generatedAt"`
+	FFmpeg                  string                      `json:"ffmpeg,omitempty"`
+	GPUAdapter              string                      `json:"gpuAdapter,omitempty"`
+	GPUFingerprint          runtimeFingerprint          `json:"gpuFingerprint"`
+	CPUOnly                 bool                        `json:"cpuOnly,omitempty"`
+	CPU                     renderResult                `json:"cpu"`
+	GPU                     renderResult                `json:"gpu"`
+	FrameContract           frameContract               `json:"frameContract"`
+	ScreenshotComparisons   map[string]imageComparison  `json:"screenshotComparisons,omitempty"`
+	StaticRegionComparisons map[string]regionComparison `json:"staticRegionComparisons,omitempty"`
+	ComparisonGate          comparisonGate              `json:"comparisonGate"`
+}
+
+func compareImageRegion(aPath, bPath string, region imageBounds) (imageComparison, error) {
+	af, err := os.Open(aPath)
+	if err != nil {
+		return imageComparison{}, err
+	}
+	defer af.Close()
+	bf, err := os.Open(bPath)
+	if err != nil {
+		return imageComparison{}, err
+	}
+	defer bf.Close()
+	a, _, err := image.Decode(af)
+	if err != nil {
+		return imageComparison{}, err
+	}
+	b, _, err := image.Decode(bf)
+	if err != nil {
+		return imageComparison{}, err
+	}
+	ab, bb := a.Bounds(), b.Bounds()
+	x0, y0 := maxInt(region.MinX, 0), maxInt(region.MinY, 0)
+	x1, y1 := minInt(region.MaxX, ab.Dx()), minInt(region.MaxY, ab.Dy())
+	if x1 <= x0 || y1 <= y0 || x1 > bb.Dx() || y1 > bb.Dy() {
+		return imageComparison{}, fmt.Errorf("invalid comparison region %+v", region)
+	}
+	c := imageComparison{SizeMatch: true}
+	total := (x1 - x0) * (y1 - y0) * 4
+	var sum, sq float64
+	mism := 0
+	for y := y0; y < y1; y++ {
+		for x := x0; x < x1; x++ {
+			ar, ag, abv, aa := a.At(x+ab.Min.X, y+ab.Min.Y).RGBA()
+			br, bg, bbv, ba := b.At(x+bb.Min.X, y+bb.Min.Y).RGBA()
+			vals := [...]uint32{ar, ag, abv, aa}
+			vals2 := [...]uint32{br, bg, bbv, ba}
+			pixel := false
+			for i := 0; i < 4; i++ {
+				d := float64(absU32(vals[i], vals2[i])) / 257
+				sum += d
+				sq += d * d
+				if d > 8 {
+					pixel = true
+				}
+			}
+			if pixel {
+				mism++
+			}
+		}
+	}
+	c.MeanAbsoluteRGBA = sum / float64(total)
+	c.RMSE = math.Sqrt(sq / float64(total))
+	c.MismatchedPixels = mism
+	c.MismatchRatio = float64(mism) / float64((x1-x0)*(y1-y0))
+	return c, nil
+}
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // frameContract separates the renderer's canonical raw-frame clock from the
@@ -484,6 +560,7 @@ func main() {
 		rep.GPU = render(ctx, true, filepath.Join(*output, "gpu"), ff, inputSpec, id, p)
 	}
 	rep.ScreenshotComparisons = map[string]imageComparison{}
+	rep.StaticRegionComparisons = map[string]regionComparison{}
 	for _, name := range []string{"start", "mid", "end"} {
 		if a, ok := rep.CPU.Screenshots[name]; ok {
 			if b, ok := rep.GPU.Screenshots[name]; ok {
@@ -491,6 +568,31 @@ func main() {
 					rep.ScreenshotComparisons[name] = c
 				}
 			}
+		}
+	}
+	// Compare static compositor regions independently. Coordinates come from
+	// the same canonical scene payload sent to the GPU, then scale to the
+	// comparison output. This is evidence only; it does not relax Pass.
+	if !*cpuOnly {
+		scene := video.CanonicalMusicScene(inputSpec, 0, 0)
+		scaleRect := func(r video.SceneRect) imageBounds {
+			outputWidth := int(math.Round(float64(p.Height) * 16.0 / 9.0))
+			sx, sy := float64(outputWidth)/1280.0, float64(p.Height)/720.0
+			return imageBounds{MinX: int(float64(r.X) * sx), MinY: int(float64(r.Y) * sy), MaxX: int(float64(r.X+r.W) * sx), MaxY: int(float64(r.Y+r.H) * sy)}
+		}
+		regions := map[string]video.SceneRect{"artwork": scene.Layout.Artwork, "title": scene.Layout.Title, "artist": scene.Layout.Artist, "album": scene.Layout.Album}
+		for name, rect := range regions {
+			rc := regionComparison{Region: scaleRect(rect), Samples: map[string]imageComparison{}}
+			for _, point := range []string{"start", "mid", "end"} {
+				if a, ok := rep.CPU.Screenshots[point]; ok {
+					if b, ok := rep.GPU.Screenshots[point]; ok {
+						if c, e := compareImageRegion(a, b, rc.Region); e == nil {
+							rc.Samples[point] = c
+						}
+					}
+				}
+			}
+			rep.StaticRegionComparisons[name] = rc
 		}
 	}
 	if !*cpuOnly {
