@@ -1030,6 +1030,7 @@ mod tests {
                 peak_q15: 456,
             },
             artwork: None,
+            base_texture: None,
             glyph_atlas: None,
             text_overlay: None,
             layout: Default::default(),
@@ -1058,6 +1059,7 @@ mod tests {
                 peak_q15: 0,
             },
             artwork: None,
+            base_texture: None,
             glyph_atlas: Some(GlyphAtlasMetadata {
                 texture_id: "atlas".into(),
                 font_family: "sans".into(),

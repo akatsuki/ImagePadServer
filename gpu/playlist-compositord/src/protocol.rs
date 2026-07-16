@@ -84,6 +84,7 @@ mod tests {
                     peak_q15: 2,
                 },
                 artwork: None,
+                base_texture: None,
                 glyph_atlas: None,
                 text_overlay: None,
                 layout: Default::default(),

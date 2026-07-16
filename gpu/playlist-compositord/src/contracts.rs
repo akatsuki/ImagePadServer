@@ -602,6 +602,7 @@ mod tests {
             glyph_atlas_receipt: None,
             text_overlay_receipt: None,
             artwork_receipt: None,
+            base_texture_receipt: None,
             glyph_diagnostics: None,
         };
         assert!(good.validate().is_ok());
