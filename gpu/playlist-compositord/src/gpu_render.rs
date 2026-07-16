@@ -1,6 +1,6 @@
 use crate::adapter;
 use crate::contracts::{
-    ColorSpace, GlyphAtlasReceipt, GlyphInstanceDiagnostic, GlyphRenderDiagnostics, GpuFrame, MusicScenePayload, Ownership, PixelFormat,
+    ColorSpace, GlyphAtlasReceipt, GlyphInstanceDiagnostic, GlyphRenderDiagnostics, GpuFrame, MusicScenePayload, Ownership, PixelFormat, TextOverlayReceipt,
     CONTRACT_VERSION, ROW_ALIGNMENT,
 };
 use sha2::{Digest, Sha256};
@@ -692,6 +692,10 @@ impl Renderer {
                 format: "Rgba8".into(),
             }
         });
+        let text_overlay_receipt = scene.and_then(|s| s.text_overlay.as_ref()).map(|overlay| {
+            let mut h = Sha256::new(); h.update(&overlay.payload);
+            TextOverlayReceipt { sha256: format!("{:x}", h.finalize()), width: overlay.width, height: overlay.height, row_stride: overlay.row_stride, format: format!("{:?}", overlay.format), color_space: format!("{:?}", overlay.color_space), premultiplied: overlay.premultiplied, renderer_id: overlay.renderer_id.clone(), renderer_version: overlay.renderer_version.clone() }
+        });
         let fallback = [255u8, 255, 255, 255];
         let fallback_texture = || {
             let texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -867,6 +871,7 @@ impl Renderer {
             ownership: Ownership::OwnedByTransport,
             payload: data,
             glyph_atlas_receipt,
+            text_overlay_receipt,
             glyph_diagnostics: Some(glyph_diagnostics),
         })
     }

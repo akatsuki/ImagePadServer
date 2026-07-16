@@ -277,6 +277,8 @@ pub struct GpuFrame {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub glyph_atlas_receipt: Option<GlyphAtlasReceipt>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_overlay_receipt: Option<TextOverlayReceipt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub glyph_diagnostics: Option<GlyphRenderDiagnostics>,
 }
 
@@ -308,6 +310,19 @@ pub struct GlyphAtlasReceipt {
     pub glyph_count: u32,
     pub text_run_count: u32,
     pub format: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TextOverlayReceipt {
+    pub sha256: String,
+    pub width: u32,
+    pub height: u32,
+    pub row_stride: u32,
+    pub format: String,
+    pub color_space: String,
+    pub premultiplied: bool,
+    pub renderer_id: String,
+    pub renderer_version: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -550,6 +565,7 @@ mod tests {
             ownership: Ownership::OwnedByTransport,
             payload: vec![0; 512],
             glyph_atlas_receipt: None,
+            text_overlay_receipt: None,
             glyph_diagnostics: None,
         };
         assert!(good.validate().is_ok());

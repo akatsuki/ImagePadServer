@@ -307,19 +307,20 @@ const (
 )
 
 type GpuFrame struct {
-	Schema            uint16                  `json:"schema"`
-	Sequence          uint64                  `json:"sequence"`
-	PTSNs             int64                   `json:"pts_ns"`
-	Width             uint32                  `json:"width"`
-	Height            uint32                  `json:"height"`
-	RowStride         uint32                  `json:"row_stride"`
-	Format            PixelFormat             `json:"format"`
-	ColorSpace        ColorSpace              `json:"color_space"`
-	Alpha             bool                    `json:"alpha"`
-	Ownership         string                  `json:"ownership"`
-	Payload           []byte                  `json:"payload"`
-	GlyphAtlasReceipt *GlyphAtlasReceipt      `json:"glyph_atlas_receipt,omitempty"`
-	GlyphDiagnostics  *GlyphRenderDiagnostics `json:"glyph_diagnostics,omitempty"`
+	Schema             uint16                  `json:"schema"`
+	Sequence           uint64                  `json:"sequence"`
+	PTSNs              int64                   `json:"pts_ns"`
+	Width              uint32                  `json:"width"`
+	Height             uint32                  `json:"height"`
+	RowStride          uint32                  `json:"row_stride"`
+	Format             PixelFormat             `json:"format"`
+	ColorSpace         ColorSpace              `json:"color_space"`
+	Alpha              bool                    `json:"alpha"`
+	Ownership          string                  `json:"ownership"`
+	Payload            []byte                  `json:"payload"`
+	GlyphAtlasReceipt  *GlyphAtlasReceipt      `json:"glyph_atlas_receipt,omitempty"`
+	TextOverlayReceipt *TextOverlayReceipt     `json:"text_overlay_receipt,omitempty"`
+	GlyphDiagnostics   *GlyphRenderDiagnostics `json:"glyph_diagnostics,omitempty"`
 }
 
 // GlyphRenderDiagnostics is bounded, read-only evidence of the instance data
@@ -367,6 +368,18 @@ type GlyphAtlasReceipt struct {
 	GlyphCount   uint32 `json:"glyph_count"`
 	TextRunCount uint32 `json:"text_run_count"`
 	Format       string `json:"format"`
+}
+
+type TextOverlayReceipt struct {
+	SHA256          string `json:"sha256"`
+	Width           uint32 `json:"width"`
+	Height          uint32 `json:"height"`
+	RowStride       uint32 `json:"row_stride"`
+	Format          string `json:"format"`
+	ColorSpace      string `json:"color_space"`
+	Premultiplied   bool   `json:"premultiplied"`
+	RendererID      string `json:"renderer_id"`
+	RendererVersion string `json:"renderer_version"`
 }
 
 func (s SceneSnapshot) Validate() error {

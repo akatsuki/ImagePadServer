@@ -26,6 +26,18 @@ func validateGlyphAtlasReceipt(atlas *GlyphAtlasMetadata, receipt *GlyphAtlasRec
 	return nil
 }
 
+func validateTextOverlayReceipt(overlay *TextOverlayMetadata, receipt *TextOverlayReceipt) error {
+	if overlay == nil || receipt == nil {
+		return errors.New("sidecar text overlay receipt missing")
+	}
+	sum := sha256.Sum256(overlay.Payload)
+	want := fmt.Sprintf("%x", sum[:])
+	if receipt.SHA256 != want || receipt.Width != overlay.Width || receipt.Height != overlay.Height || receipt.RowStride != overlay.RowStride || receipt.Format == "" || receipt.ColorSpace == "" || receipt.RendererID != overlay.RendererID || receipt.RendererVersion != overlay.RendererVersion {
+		return fmt.Errorf("sidecar text overlay receipt mismatch")
+	}
+	return nil
+}
+
 const sidecarStderrLimit = 32 * 1024
 
 type boundedBuffer struct {
@@ -215,6 +227,11 @@ func (p *SidecarProcess) RenderScene(ctx context.Context, width, height uint32, 
 		}
 		if scene != nil && scene.GlyphAtlas != nil {
 			if err := validateGlyphAtlasReceipt(scene.GlyphAtlas, resp.Frame.GlyphAtlasReceipt); err != nil {
+				return GpuFrame{}, err
+			}
+		}
+		if scene != nil && scene.TextOverlay != nil {
+			if err := validateTextOverlayReceipt(scene.TextOverlay, resp.Frame.TextOverlayReceipt); err != nil {
 				return GpuFrame{}, err
 			}
 		}
