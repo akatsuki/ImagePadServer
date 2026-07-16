@@ -42,6 +42,7 @@ func CompareSyntheticGlyph(atlas *GlyphAtlasMetadata, manifest GlyphInstanceMani
 	if sh < 1 {
 		sh = 1
 	}
+	cpuScreenMask := make(map[int]struct{})
 	for i := range atlas.Glyphs {
 		if atlas.Glyphs[i].ID == g.ID {
 			a := atlas.Glyphs[i]
@@ -55,7 +56,7 @@ func CompareSyntheticGlyph(atlas *GlyphAtlasMetadata, manifest GlyphInstanceMani
 					}
 					if x := sx0 + int(float32(x)*float32(sw)/float32(a.Width)); x >= sx0 && x < sx0+sw {
 						if y := sy0 + int(float32(y)*float32(sh)/float32(a.Height)); y >= sy0 && y < sy0+sh {
-							e.CPUScreenCoverage++
+							cpuScreenMask[y*int(width)+x] = struct{}{}
 						}
 					}
 				}
@@ -64,6 +65,8 @@ func CompareSyntheticGlyph(atlas *GlyphAtlasMetadata, manifest GlyphInstanceMani
 			break
 		}
 	}
+	e.CPUScreenCoverage = len(cpuScreenMask)
+	gpuScreenMask := make(map[int]struct{})
 	if len(frame.Payload) == 0 {
 		return e
 	}
@@ -92,9 +95,7 @@ func CompareSyntheticGlyph(atlas *GlyphAtlasMetadata, manifest GlyphInstanceMani
 					maxY = int(y)
 				}
 			}
-			if int(x) >= sx0 && int(x) < sx0+sw && int(y) >= sy0 && int(y) < sy0+sh && v > 8 {
-				e.GPUScreenCoverage++
-			}
+			if int(x) >= sx0 && int(x) < sx0+sw && int(y) >= sy0 && int(y) < sy0+sh && v > 8 { gpuScreenMask[int(y)*int(width)+int(x)] = struct{}{} }
 		}
 	}
 	h := sha256.Sum256(raw)
@@ -102,9 +103,10 @@ func CompareSyntheticGlyph(atlas *GlyphAtlasMetadata, manifest GlyphInstanceMani
 	if maxX >= 0 {
 		e.GPUVisibleBounds = [4]int{minX, minY, maxX + 1, maxY + 1}
 	}
-	if e.CPUScreenCoverage+e.GPUScreenCoverage > 0 {
-		e.ScreenIoU = float64(minIntGlyph(e.CPUScreenCoverage, e.GPUScreenCoverage)) / float64(maxIntGlyph(e.CPUScreenCoverage, e.GPUScreenCoverage))
-	}
+	e.GPUScreenCoverage = len(gpuScreenMask)
+	inter := 0; for p := range cpuScreenMask { if _, ok := gpuScreenMask[p]; ok { inter++ } }
+	union := len(cpuScreenMask)+len(gpuScreenMask)-inter
+	if union > 0 { e.ScreenIoU = float64(inter)/float64(union) }
 	return e
 }
 
