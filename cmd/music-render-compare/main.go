@@ -67,6 +67,21 @@ type imageComparison struct {
 	MismatchRatio    float64 `json:"mismatchRatio"`
 }
 
+// glyphMaskComparison compares a luminance-derived foreground mask in a text
+// region. It is diagnostic-only: screenshots are opaque after encoding, so
+// this intentionally measures the rendered glyph coverage rather than atlas
+// transport. The threshold is recorded to keep reports reproducible.
+type glyphMaskComparison struct {
+	Threshold       uint8   `json:"threshold"`
+	CPUVisible      int     `json:"cpuVisible"`
+	GPUVisible      int     `json:"gpuVisible"`
+	Intersection    int     `json:"intersection"`
+	Union           int     `json:"union"`
+	IoU             float64 `json:"iou"`
+	MeanAbsoluteErr float64 `json:"meanAbsoluteErr"`
+	RMSE            float64 `json:"rmse"`
+}
+
 // regionComparison is intentionally diagnostic-only. It lets the parity gate
 // identify which static layer diverges without changing the aggregate gate.
 type regionComparison struct {
@@ -84,21 +99,22 @@ type sidecarProvenance struct {
 	Error       string             `json:"error,omitempty"`
 }
 type report struct {
-	Input                   string                      `json:"input"`
-	InputSHA256             string                      `json:"inputSha256,omitempty"`
-	GeneratedAt             time.Time                   `json:"generatedAt"`
-	FFmpeg                  string                      `json:"ffmpeg,omitempty"`
-	GPUAdapter              string                      `json:"gpuAdapter,omitempty"`
-	GPUFingerprint          runtimeFingerprint          `json:"gpuFingerprint"`
-	GPUSidecar              sidecarProvenance           `json:"gpuSidecar"`
-	CPUOnly                 bool                        `json:"cpuOnly,omitempty"`
-	CPU                     renderResult                `json:"cpu"`
-	GPU                     renderResult                `json:"gpu"`
-	FrameContract           frameContract               `json:"frameContract"`
-	ScreenshotComparisons   map[string]imageComparison  `json:"screenshotComparisons,omitempty"`
-	StaticRegionComparisons map[string]regionComparison `json:"staticRegionComparisons,omitempty"`
-	ComparisonGate          comparisonGate              `json:"comparisonGate"`
-	SceneEvidence           sceneEvidence               `json:"sceneEvidence,omitempty"`
+	Input                   string                                    `json:"input"`
+	InputSHA256             string                                    `json:"inputSha256,omitempty"`
+	GeneratedAt             time.Time                                 `json:"generatedAt"`
+	FFmpeg                  string                                    `json:"ffmpeg,omitempty"`
+	GPUAdapter              string                                    `json:"gpuAdapter,omitempty"`
+	GPUFingerprint          runtimeFingerprint                        `json:"gpuFingerprint"`
+	GPUSidecar              sidecarProvenance                         `json:"gpuSidecar"`
+	CPUOnly                 bool                                      `json:"cpuOnly,omitempty"`
+	CPU                     renderResult                              `json:"cpu"`
+	GPU                     renderResult                              `json:"gpu"`
+	FrameContract           frameContract                             `json:"frameContract"`
+	ScreenshotComparisons   map[string]imageComparison                `json:"screenshotComparisons,omitempty"`
+	StaticRegionComparisons map[string]regionComparison               `json:"staticRegionComparisons,omitempty"`
+	GlyphMaskComparisons    map[string]map[string]glyphMaskComparison `json:"glyphMaskComparisons,omitempty"`
+	ComparisonGate          comparisonGate                            `json:"comparisonGate"`
+	SceneEvidence           sceneEvidence                             `json:"sceneEvidence,omitempty"`
 }
 
 // sceneEvidence records the exact static payload supplied to both renderers.
@@ -205,6 +221,72 @@ func compareImageRegion(aPath, bPath string, region imageBounds) (imageCompariso
 	c.MismatchedPixels = mism
 	c.MismatchRatio = float64(mism) / float64((x1-x0)*(y1-y0))
 	return c, nil
+}
+
+func compareGlyphMaskRegion(aPath, bPath string, region imageBounds) (glyphMaskComparison, error) {
+	af, err := os.Open(aPath)
+	if err != nil {
+		return glyphMaskComparison{}, err
+	}
+	defer af.Close()
+	bf, err := os.Open(bPath)
+	if err != nil {
+		return glyphMaskComparison{}, err
+	}
+	defer bf.Close()
+	a, _, err := image.Decode(af)
+	if err != nil {
+		return glyphMaskComparison{}, err
+	}
+	b, _, err := image.Decode(bf)
+	if err != nil {
+		return glyphMaskComparison{}, err
+	}
+	ab, bb := a.Bounds(), b.Bounds()
+	x0, y0 := maxInt(region.MinX, 0), maxInt(region.MinY, 0)
+	x1, y1 := minInt(region.MaxX, ab.Dx()), minInt(region.MaxY, ab.Dy())
+	if x1 <= x0 || y1 <= y0 || x1 > bb.Dx() || y1 > bb.Dy() {
+		return glyphMaskComparison{}, fmt.Errorf("invalid glyph region %+v", region)
+	}
+	const threshold uint8 = 180
+	r := glyphMaskComparison{Threshold: threshold}
+	var sum, sq float64
+	for y := y0; y < y1; y++ {
+		for x := x0; x < x1; x++ {
+			ar, ag, abv, _ := a.At(x+ab.Min.X, y+ab.Min.Y).RGBA()
+			br, bg, bbv, _ := b.At(x+bb.Min.X, y+bb.Min.Y).RGBA()
+			// sRGB luminance, normalized to 8-bit. Text foreground is bright in
+			// the canonical scene; using luminance avoids RGB-channel artifacts.
+			al := uint8((299*(ar/257) + 587*(ag/257) + 114*(abv/257)) / 1000)
+			bl := uint8((299*(br/257) + 587*(bg/257) + 114*(bbv/257)) / 1000)
+			am, bm := al >= threshold, bl >= threshold
+			if am {
+				r.CPUVisible++
+			}
+			if bm {
+				r.GPUVisible++
+			}
+			if am && bm {
+				r.Intersection++
+			}
+			if am || bm {
+				r.Union++
+			}
+			d := float64(al) - float64(bl)
+			if d < 0 {
+				d = -d
+			}
+			sum += d
+			sq += d * d
+		}
+	}
+	n := float64((x1 - x0) * (y1 - y0))
+	r.MeanAbsoluteErr = sum / n
+	r.RMSE = math.Sqrt(sq / n)
+	if r.Union > 0 {
+		r.IoU = float64(r.Intersection) / float64(r.Union)
+	}
+	return r, nil
 }
 func maxInt(a, b int) int {
 	if a > b {
@@ -683,6 +765,7 @@ func main() {
 	}
 	rep.ScreenshotComparisons = map[string]imageComparison{}
 	rep.StaticRegionComparisons = map[string]regionComparison{}
+	rep.GlyphMaskComparisons = map[string]map[string]glyphMaskComparison{}
 	for _, name := range []string{"start", "mid", "end"} {
 		if a, ok := rep.CPU.Screenshots[name]; ok {
 			if b, ok := rep.GPU.Screenshots[name]; ok {
@@ -704,11 +787,19 @@ func main() {
 		regions := map[string]video.SceneRect{"artwork": scene.Layout.Artwork, "title": scene.Layout.Title, "artist": scene.Layout.Artist, "album": scene.Layout.Album}
 		for name, rect := range regions {
 			rc := regionComparison{Region: scaleRect(rect), Samples: map[string]imageComparison{}}
+			if name == "title" || name == "artist" || name == "album" {
+				rep.GlyphMaskComparisons[name] = map[string]glyphMaskComparison{}
+			}
 			for _, point := range []string{"start", "mid", "end"} {
 				if a, ok := rep.CPU.Screenshots[point]; ok {
 					if b, ok := rep.GPU.Screenshots[point]; ok {
 						if c, e := compareImageRegion(a, b, rc.Region); e == nil {
 							rc.Samples[point] = c
+						}
+						if _, ok := rep.GlyphMaskComparisons[name]; ok {
+							if gm, e := compareGlyphMaskRegion(a, b, rc.Region); e == nil {
+								rep.GlyphMaskComparisons[name][point] = gm
+							}
 						}
 					}
 				}

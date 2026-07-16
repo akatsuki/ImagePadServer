@@ -17,9 +17,13 @@ import (
 func TestGlyphAtlasEvidenceUsesPayloadAndStride(t *testing.T) {
 	atlas := &video.GlyphAtlasMetadata{Width: 2, Height: 1, RowStride: 8, Payload: []byte{0, 0, 0, 255, 0, 0, 0, 0}, Glyphs: []video.GlyphEntry{{ID: "x"}}, TextRuns: []video.TextRun{{Text: "x"}}, AssetHash: "asset"}
 	e, ok := glyphAtlasEvidence(atlas)
-	if !ok || e.GlyphCoveragePixels != 1 || e.GlyphWidth != 2 || e.GlyphRowStride != 8 || e.GlyphCount != 1 || e.TextRunCount != 1 { t.Fatalf("unexpected atlas evidence: %+v", e) }
+	if !ok || e.GlyphCoveragePixels != 1 || e.GlyphWidth != 2 || e.GlyphRowStride != 8 || e.GlyphCount != 1 || e.TextRunCount != 1 {
+		t.Fatalf("unexpected atlas evidence: %+v", e)
+	}
 	want := sha256.Sum256(atlas.Payload)
-	if e.GlyphPayloadHash != fmt.Sprintf("%x", want[:]) { t.Fatalf("payload hash mismatch: %s", e.GlyphPayloadHash) }
+	if e.GlyphPayloadHash != fmt.Sprintf("%x", want[:]) {
+		t.Fatalf("payload hash mismatch: %s", e.GlyphPayloadHash)
+	}
 }
 
 func TestSHA256FileMatchesBytes(t *testing.T) {
@@ -97,6 +101,18 @@ func TestCompareImagesReportsDifference(t *testing.T) {
 	}
 	if !c.SizeMatch || c.MismatchedPixels != 1 || c.MismatchRatio <= 0 || c.RMSE <= 0 {
 		t.Fatalf("comparison = %+v", c)
+	}
+}
+
+func TestCompareGlyphMaskRegionReportsCoverage(t *testing.T) {
+	a := writeTestPNG(t, "glyph-a.png", color.RGBA{0, 0, 0, 255}, color.RGBA{255, 255, 255, 255})
+	b := writeTestPNG(t, "glyph-b.png", color.RGBA{0, 0, 0, 255}, color.RGBA{255, 255, 255, 255})
+	c, err := compareGlyphMaskRegion(a, b, imageBounds{MinX: 0, MinY: 0, MaxX: 4, MaxY: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.CPUVisible != 1 || c.GPUVisible != 1 || c.Intersection != 1 || c.Union != 1 || c.IoU != 1 || c.MeanAbsoluteErr != 0 {
+		t.Fatalf("glyph mask = %+v", c)
 	}
 }
 
