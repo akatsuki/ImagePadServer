@@ -9,7 +9,7 @@ import (
 
 func TestShowwavesTextureGPUReadback(t *testing.T) {
 	exe := os.Getenv("IMAGEPAD_PLAYLIST_COMPOSITORD")
-	fixture := filepath.Join(".tmp", "music-fixtures", "embedded-cover-latin.wav")
+	fixture := filepath.Join("..", "..", ".tmp", "music-fixtures", "embedded-cover-latin.wav")
 	if exe == "" {
 		t.Skip("GPU sidecar not configured")
 	}
@@ -39,7 +39,7 @@ func TestShowwavesTextureGPUReadback(t *testing.T) {
 	}
 	scene := MusicScenePayload{
 		Schema:          MusicSceneSchema,
-		Feature:         AudioFeatureFrame{Schema: GPUContractVersion, SampleRateHz: 48000},
+		Feature:         AudioFeatureFrame{Schema: GPUContractVersion, SampleRateHz: 48000, SpectrumQ16: make([]uint16, 24)},
 		WaveformTexture: &BaseTextureMetadata{TextureID: "wave-test", Width: waveW, Height: waveH, RowStride: uint32(stride), Format: PixelRGBA8, ColorSpace: ColorSRGB, Payload: payload},
 	}
 	frame, err := ProbeGPUSceneWaveform(context.Background(), exe, waveW, waveH, &scene)
