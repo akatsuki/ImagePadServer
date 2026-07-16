@@ -163,6 +163,32 @@ func overlayProbeRegions(layout video.MusicSceneLayout) []struct {
 	}{{"title", layout.Title}, {"artist", layout.Artist}, {"album", layout.Album}, {"time", layout.Time}}
 }
 
+// overlayProbeEvidence is an immutable adapter result; keeping it separate
+// from sceneEvidence allows multiframe probes without mutating frame0 state.
+type overlayProbeEvidence struct {
+	CPUHash    string
+	GPUReceipt *video.TextOverlayReceipt
+	Parity     *video.OverlayParityMetric
+	Regions    map[string]*video.OverlayParityMetric
+}
+
+func (e overlayProbeEvidence) apply(dst *sceneEvidence) {
+	if e.CPUHash != "" {
+		dst.TextOverlayCPUHash = e.CPUHash
+	}
+	if e.GPUReceipt != nil {
+		dst.TextOverlayGPUReceipt = e.GPUReceipt
+		dst.TextOverlaySHAEqual = e.GPUReceipt.SHA256 == e.CPUHash
+		dst.TextOverlayRenderer = e.GPUReceipt.RendererID + "/" + e.GPUReceipt.RendererVersion
+	}
+	if e.Parity != nil {
+		dst.TextOverlayParity = e.Parity
+	}
+	if e.Regions != nil {
+		dst.TextOverlayParityRegions = e.Regions
+	}
+}
+
 // glyphAtlasEvidence is deliberately derived from the exact bytes sent to
 // the sidecar.  It catches stride/format/payload drift without making the
 // comparison tool depend on a renderer implementation.

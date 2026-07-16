@@ -21,6 +21,15 @@ func TestOverlayProbeRegionsOrder(t *testing.T) {
 	}
 }
 
+func TestOverlayProbeEvidenceApplyJSONCompatibility(t *testing.T) {
+	d := sceneEvidence{}
+	e := overlayProbeEvidence{CPUHash: "abc", GPUReceipt: &video.TextOverlayReceipt{SHA256: "abc", RendererID: "r", RendererVersion: "1"}}
+	e.apply(&d)
+	if !d.TextOverlaySHAEqual || d.TextOverlayRenderer != "r/1" {
+		t.Fatalf("evidence=%+v", d)
+	}
+}
+
 func TestGlyphAtlasEvidenceUsesPayloadAndStride(t *testing.T) {
 	atlas := &video.GlyphAtlasMetadata{Width: 2, Height: 1, RowStride: 8, Payload: []byte{0, 0, 0, 255, 0, 0, 0, 0}, Glyphs: []video.GlyphEntry{{ID: "x"}}, TextRuns: []video.TextRun{{Text: "x"}}, AssetHash: "asset"}
 	e, ok := glyphAtlasEvidence(atlas)
