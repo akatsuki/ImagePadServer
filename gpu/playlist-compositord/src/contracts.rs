@@ -52,6 +52,8 @@ pub struct MusicScenePayload {
     #[serde(default)]
     pub artwork: Option<ArtworkMetadata>,
     #[serde(default)]
+    pub base_texture: Option<BaseTextureMetadata>,
+    #[serde(default)]
     pub glyph_atlas: Option<GlyphAtlasMetadata>,
     #[serde(default)]
     pub text_overlay: Option<TextOverlayMetadata>,
@@ -142,6 +144,20 @@ pub struct ArtworkMetadata {
     pub format: PixelFormat,
     pub color_space: ColorSpace,
     pub alpha: bool,
+    #[serde(default)]
+    #[serde(with = "base64_bytes")]
+    pub payload: Vec<u8>,
+    #[serde(default)]
+    pub asset_hash: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BaseTextureMetadata {
+    pub texture_id: String,
+    pub width: u32,
+    pub height: u32,
+    pub row_stride: u32,
+    pub format: PixelFormat,
+    pub color_space: ColorSpace,
     #[serde(default)]
     #[serde(with = "base64_bytes")]
     pub payload: Vec<u8>,
@@ -281,6 +297,8 @@ pub struct GpuFrame {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artwork_receipt: Option<ArtworkReceipt>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_texture_receipt: Option<BaseTextureReceipt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub glyph_diagnostics: Option<GlyphRenderDiagnostics>,
 }
 
@@ -328,6 +346,8 @@ pub struct TextOverlayReceipt {
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ArtworkReceipt { pub sha256:String, pub source_width:u32, pub source_height:u32, pub output_width:u32, pub output_height:u32, pub crop_mode:String, pub aspect_mode:String }
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BaseTextureReceipt { pub sha256:String, pub width:u32, pub height:u32, pub row_stride:u32, pub format:String, pub color_space:String }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContractError {

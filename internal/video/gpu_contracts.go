@@ -356,6 +356,7 @@ type GpuFrame struct {
 	GlyphAtlasReceipt  *GlyphAtlasReceipt      `json:"glyph_atlas_receipt,omitempty"`
 	TextOverlayReceipt *TextOverlayReceipt     `json:"text_overlay_receipt,omitempty"`
 	ArtworkReceipt     *ArtworkReceipt         `json:"artwork_receipt,omitempty"`
+	BaseTextureReceipt *BaseTextureReceipt     `json:"base_texture_receipt,omitempty"`
 	GlyphDiagnostics   *GlyphRenderDiagnostics `json:"glyph_diagnostics,omitempty"`
 }
 
@@ -425,6 +426,14 @@ type ArtworkReceipt struct {
 	OutputHeight uint32 `json:"output_height"`
 	CropMode     string `json:"crop_mode"`
 	AspectMode   string `json:"aspect_mode"`
+}
+type BaseTextureReceipt struct {
+	SHA256     string `json:"sha256"`
+	Width      uint32 `json:"width"`
+	Height     uint32 `json:"height"`
+	RowStride  uint32 `json:"row_stride"`
+	Format     string `json:"format"`
+	ColorSpace string `json:"color_space"`
 }
 
 func (s SceneSnapshot) Validate() error {

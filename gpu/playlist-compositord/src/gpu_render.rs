@@ -1,6 +1,6 @@
 use crate::adapter;
 use crate::contracts::{
-    ColorSpace, GlyphAtlasReceipt, GlyphInstanceDiagnostic, GlyphRenderDiagnostics, GpuFrame, MusicScenePayload, Ownership, PixelFormat, TextOverlayReceipt, ArtworkReceipt,
+    BaseTextureReceipt, ColorSpace, GlyphAtlasReceipt, GlyphInstanceDiagnostic, GlyphRenderDiagnostics, GpuFrame, MusicScenePayload, Ownership, PixelFormat, TextOverlayReceipt, ArtworkReceipt,
     CONTRACT_VERSION, ROW_ALIGNMENT,
 };
 use sha2::{Digest, Sha256};
@@ -783,6 +783,7 @@ impl Renderer {
             TextOverlayReceipt { sha256: format!("{:x}", h.finalize()), width: overlay.width, height: overlay.height, row_stride: overlay.row_stride, format: format!("{:?}", overlay.format), color_space: format!("{:?}", overlay.color_space), premultiplied: overlay.premultiplied, renderer_id: overlay.renderer_id.clone(), renderer_version: overlay.renderer_version.clone() }
         });
         let artwork_receipt = scene.and_then(|s| s.artwork.as_ref()).map(|a| { let mut h=Sha256::new(); h.update(&a.payload); ArtworkReceipt { sha256:format!("{:x}",h.finalize()), source_width:a.width, source_height:a.height, output_width:width, output_height:height, crop_mode:"center-crop".into(), aspect_mode:"cover".into() } });
+        let base_texture_receipt = scene.and_then(|s| s.base_texture.as_ref()).map(|b| { let mut h=Sha256::new(); h.update(&b.payload); BaseTextureReceipt { sha256:format!("{:x}",h.finalize()), width:b.width, height:b.height, row_stride:b.row_stride, format:format!("{:?}",b.format), color_space:format!("{:?}",b.color_space) } });
         let fallback = [255u8, 255, 255, 255];
         let fallback_texture = || {
             let texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -964,6 +965,7 @@ impl Renderer {
             glyph_atlas_receipt,
             text_overlay_receipt,
             artwork_receipt,
+            base_texture_receipt,
             glyph_diagnostics: Some(glyph_diagnostics),
         })
     }
