@@ -534,7 +534,12 @@ func RunAudioVisualizerHLS(ctx context.Context, outDir, ffmpeg string, input Aud
 // tests and migration comparisons. It must not be used by production routes.
 func RunAudioVisualizerHLSCPUReference(ctx context.Context, outDir, ffmpeg string, input AudioRenderInput, id string, preset QualityPreset) error {
 	buildArgs := func(assPath, fontDir string, mode *ForegroundMode, encoder VideoEncoderProfile) []string {
-		return formatVisualizerOutputArgs(audioVisualizerFFmpegArgsWithEncoder(input.SourcePath, assPath, fontDir, id, preset, mode, encoder, audioLoudnormFilter(input.Kind)), outDir)
+		args := audioVisualizerFFmpegArgsWithEncoder(input.SourcePath, assPath, fontDir, id, preset, mode, encoder, audioLoudnormFilter(input.Kind))
+		// Keep the CPU reference on the same canonical 30 Hz frame clock as
+		// the GPU route; this prevents source-duration rounding from adding a
+		// mux tail frame.
+		args = append(args, "-frames:v", strconv.Itoa(canonicalMusicVideoFrameCount(input.Analysis)))
+		return formatVisualizerOutputArgs(args, outDir)
 	}
 	return runAudioVisualizerEncode(ctx, outDir, ffmpeg, input, id, preset, EncoderStandard, buildArgs, func() { removeHLSForID(outDir, id) }, nil)
 }
