@@ -141,7 +141,6 @@ type sceneEvidence struct {
 	TextOverlayAlphaCoverage   int                           `json:"textOverlayAlphaCoverage,omitempty"`
 	TextOverlayRegionCrop      imageBounds                   `json:"textOverlayRegionCrop,omitempty"`
 	TextOverlayRenderer        string                        `json:"textOverlayRenderer,omitempty"`
-	TextOverlayCompositeSHA    string                        `json:"textOverlayCompositeSha,omitempty"`
 	CPUInstanceManifest        video.GlyphInstanceManifest   `json:"cpuInstanceManifest,omitempty"`
 	GPUInstanceParity          video.GlyphInstanceParity     `json:"gpuInstanceParity,omitempty"`
 	Title                      string                        `json:"title,omitempty"`
@@ -773,12 +772,6 @@ func main() {
 						rep.SceneEvidence.TextOverlayRenderer = receipt.RendererID + "/" + receipt.RendererVersion
 					}
 				}
-				cctx, ccancel := context.WithTimeout(ctx, 3*time.Second)
-				if cf, ce := video.ProbeGPUSceneTextOverlayComposite(cctx, executable, uint32(math.Round(float64(p.Height)*16.0/9.0)), uint32(p.Height), &scene); ce == nil {
-					h := sha256.Sum256(cf.Payload)
-					rep.SceneEvidence.TextOverlayCompositeSHA = fmt.Sprintf("%x", h[:])
-				}
-				ccancel()
 			}
 			probeWidth := uint32(math.Round(float64(p.Height) * 16.0 / 9.0))
 			cpuManifest := video.ExpandMusicGlyphManifest(&scene, probeWidth, uint32(p.Height))
