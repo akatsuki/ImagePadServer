@@ -27,7 +27,7 @@ func TestGPUMusicPreRenderFFmpegSmoke(t *testing.T) {
 		t.Fatalf("GPU render output invalid: %s %v", out, err)
 	}
 	if ffprobe := os.Getenv("IMAGEPAD_FFPROBE"); ffprobe != "" {
-		probe := exec.Command(ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name,pix_fmt,nb_frames,duration", "-of", "default=nw=1", out)
+		probe := exec.Command(ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name,pix_fmt,nb_frames,duration,color_range,color_space,color_transfer,color_primaries", "-of", "default=nw=1", out)
 		data, err := probe.Output()
 		if err != nil {
 			t.Fatal(err)
@@ -35,6 +35,9 @@ func TestGPUMusicPreRenderFFmpegSmoke(t *testing.T) {
 		text := string(data)
 		if text == "" || !strings.Contains(text, "codec_name=") || !strings.Contains(text, "pix_fmt=") {
 			t.Fatalf("ffprobe returned incomplete video stream: %s", text)
+		}
+		if err := ValidateGPUVideoColorMetadata(text); err != nil {
+			t.Fatal(err)
 		}
 	}
 }
