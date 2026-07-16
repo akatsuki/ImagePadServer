@@ -1,0 +1,98 @@
+{
+  "input": "C:\\Users\\masah\\OneDrive\\ドキュメント\\GitHub\\ImagePadServer\\.tmp\\music-fixtures\\embedded-cover-latin.wav",
+  "inputSha256": "bd4f7535e541bf233a09d032cb0398319895201ebd4630f4ad1f6c9aafa7a64d",
+  "generatedAt": "2026-07-16T14:45:01.689955+09:00",
+  "ffmpeg": "ffmpeg version 8.1.1-essentials_build-www.gyan.dev Copyright (c) 2000-2026 the FFmpeg developers\r",
+  "gpuAdapter": "unknown (set IMAGEPAD_GPU_ADAPTER to record explicit adapter)",
+  "cpuOnly": true,
+  "cpu": {
+    "output": ".tmp\\music-goldens\\embedded-cover-latin\\cpu\\current-compare.m3u8",
+    "wallSeconds": 1.0149197,
+    "probe": {
+      "duration": 5.1,
+      "frames": 153,
+      "pixFmt": "yuv420p",
+      "firstPts": 1.5,
+      "lastPts": 6.566667
+    },
+    "screenshots": {
+      "end": ".tmp\\music-goldens\\embedded-cover-latin\\cpu\\end.png",
+      "mid": ".tmp\\music-goldens\\embedded-cover-latin\\cpu\\mid.png",
+      "start": ".tmp\\music-goldens\\embedded-cover-latin\\cpu\\start.png"
+    },
+    "screenshotSha256": {
+      "end": "ab8a3e6405d2a746418b27a8de984fc15eef3968494e26f9a2780966312c3062",
+      "mid": "a260b9a9c5bd855f07042e72cb031ae100f3ae9e6fd6ea2c80db0bcfb5565308",
+      "start": "58da77e462843f368f058587cd62e54c42f2f86a3d6b2956ffaccb4745d48f96"
+    },
+    "screenshotMetrics": {
+      "end": {
+        "width": 640,
+        "height": 360,
+        "averageRgba": [
+          129.85129340277777,
+          45.14726128472222,
+          54.66678819444444,
+          255
+        ],
+        "nonBackgroundPixels": 190811,
+        "nonBackgroundBounds": {
+          "minX": 0,
+          "minY": 16,
+          "maxX": 639,
+          "maxY": 359
+        }
+      },
+      "mid": {
+        "width": 640,
+        "height": 360,
+        "averageRgba": [
+          129.78855902777778,
+          45.126553819444446,
+          54.986957465277776,
+          255
+        ],
+        "nonBackgroundPixels": 188184,
+        "nonBackgroundBounds": {
+          "minX": 0,
+          "minY": 16,
+          "maxX": 639,
+          "maxY": 359
+        }
+      },
+      "start": {
+        "width": 640,
+        "height": 360,
+        "averageRgba": [
+          129.83296006944445,
+          44.510646701388886,
+          54.34302951388889,
+          255
+        ],
+        "nonBackgroundPixels": 187285,
+        "nonBackgroundBounds": {
+          "minX": 0,
+          "minY": 16,
+          "maxX": 639,
+          "maxY": 359
+        }
+      }
+    }
+  },
+  "gpu": {
+    "wallSeconds": 0,
+    "probe": {
+      "duration": 0,
+      "frames": 0,
+      "firstPts": 0,
+      "lastPts": 0
+    }
+  },
+  "comparisonGate": {
+    "durationDeltaSeconds": 0,
+    "frameDelta": 0,
+    "durationMatch": false,
+    "frameCountMatch": false,
+    "pass": false
+  }
+}

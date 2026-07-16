@@ -1,0 +1,93 @@
+{
+  "input": "C:\\Users\\masah\\OneDrive\\ドキュメント\\GitHub\\ImagePadServer\\.tmp\\music-fixtures\\quiet-envelope.wav",
+  "inputSha256": "51fe6b7a8a7afa75d6e595213d14a7e775c4516ac370b1b85763b1cd063e61ff",
+  "generatedAt": "2026-07-16T14:42:31.7262517+09:00",
+  "ffmpeg": "ffmpeg version 8.1.1-essentials_build-www.gyan.dev Copyright (c) 2000-2026 the FFmpeg developers\r",
+  "gpuAdapter": "unknown (set IMAGEPAD_GPU_ADAPTER to record explicit adapter)",
+  "cpuOnly": true,
+  "cpu": {
+    "output": ".tmp\\music-goldens\\quiet-envelope\\cpu\\current-compare.m3u8",
+    "wallSeconds": 0.9862964,
+    "probe": {
+      "duration": 5.1,
+      "frames": 153,
+      "pixFmt": "yuv420p",
+      "firstPts": 1.5,
+      "lastPts": 6.566667
+    },
+    "screenshots": {
+      "end": ".tmp\\music-goldens\\quiet-envelope\\cpu\\end.png",
+      "mid": ".tmp\\music-goldens\\quiet-envelope\\cpu\\mid.png",
+      "start": ".tmp\\music-goldens\\quiet-envelope\\cpu\\start.png"
+    },
+    "screenshotMetrics": {
+      "end": {
+        "width": 640,
+        "height": 360,
+        "averageRgba": [
+          129.7981640625,
+          45.13334635416667,
+          54.50881076388889,
+          255
+        ],
+        "nonBackgroundPixels": 191265,
+        "nonBackgroundBounds": {
+          "minX": 0,
+          "minY": 16,
+          "maxX": 639,
+          "maxY": 359
+        }
+      },
+      "mid": {
+        "width": 640,
+        "height": 360,
+        "averageRgba": [
+          129.6583029513889,
+          45.154596354166664,
+          54.9571875,
+          255
+        ],
+        "nonBackgroundPixels": 188648,
+        "nonBackgroundBounds": {
+          "minX": 0,
+          "minY": 16,
+          "maxX": 639,
+          "maxY": 359
+        }
+      },
+      "start": {
+        "width": 640,
+        "height": 360,
+        "averageRgba": [
+          129.67576822916666,
+          44.53665798611111,
+          54.35756510416667,
+          255
+        ],
+        "nonBackgroundPixels": 187648,
+        "nonBackgroundBounds": {
+          "minX": 0,
+          "minY": 16,
+          "maxX": 639,
+          "maxY": 359
+        }
+      }
+    }
+  },
+  "gpu": {
+    "wallSeconds": 0,
+    "probe": {
+      "duration": 0,
+      "frames": 0,
+      "firstPts": 0,
+      "lastPts": 0
+    }
+  },
+  "comparisonGate": {
+    "durationDeltaSeconds": 0,
+    "frameDelta": 0,
+    "durationMatch": false,
+    "frameCountMatch": false,
+    "pass": false
+  }
+}
