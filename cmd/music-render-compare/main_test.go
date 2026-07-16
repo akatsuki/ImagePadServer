@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -9,6 +11,21 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestSHA256FileMatchesBytes(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "frame.png")
+	want := sha256.Sum256([]byte("frame-fixture"))
+	if err := os.WriteFile(p, []byte("frame-fixture"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := sha256File(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != fmt.Sprintf("%x", want) {
+		t.Fatalf("sha256 = %q, want %x", got, want)
+	}
+}
 
 func writeTestPNG(t *testing.T, name string, fill, mark color.RGBA) string {
 	t.Helper()

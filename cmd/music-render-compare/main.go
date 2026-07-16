@@ -39,6 +39,7 @@ type renderResult struct {
 	WallSeconds       float64                 `json:"wallSeconds"`
 	Probe             probeResult             `json:"probe"`
 	Screenshots       map[string]string       `json:"screenshots,omitempty"`
+	ScreenshotSHA256  map[string]string       `json:"screenshotSha256,omitempty"`
 	ScreenshotMetrics map[string]imageMetrics `json:"screenshotMetrics,omitempty"`
 }
 type imageBounds struct {
@@ -335,8 +336,12 @@ func render(ctx context.Context, gpu bool, out, ffmpeg string, input video.Audio
 	r.Output = matches[0]
 	r.Probe, _ = probe(ctx, r.Output)
 	r.Screenshots = extractScreenshots(ctx, ffmpeg, r.Output, out, r.Probe.Duration)
+	r.ScreenshotSHA256 = map[string]string{}
 	r.ScreenshotMetrics = map[string]imageMetrics{}
 	for name, path := range r.Screenshots {
+		if hash, e := sha256File(path); e == nil {
+			r.ScreenshotSHA256[name] = hash
+		}
 		if m, e := loadImageMetrics(path); e == nil {
 			r.ScreenshotMetrics[name] = m
 		}
@@ -454,6 +459,20 @@ func writeMarkdown(dir string, r report) {
 	for _, name := range []string{"start", "mid", "end"} {
 		if c, ok := r.ScreenshotComparisons[name]; ok {
 			fmt.Fprintf(&b, "| %s | %t | %.3f | %.3f | %.3f |\n", name, c.SizeMatch, c.MeanAbsoluteRGBA, c.RMSE, c.MismatchRatio)
+		}
+	}
+	b.WriteString("\n## Screenshot SHA-256\n\n| Mode | Point | SHA-256 |\n|---|---|---|\n")
+	for _, mode := range []struct {
+		name string
+		res  renderResult
+	}{
+		{name: "CPU", res: r.CPU},
+		{name: "GPU", res: r.GPU},
+	} {
+		for _, point := range []string{"start", "mid", "end"} {
+			if hash, ok := mode.res.ScreenshotSHA256[point]; ok {
+				fmt.Fprintf(&b, "| %s | %s | `%s` |\n", mode.name, point, hash)
+			}
 		}
 	}
 	_ = os.WriteFile(filepath.Join(dir, "report.md"), []byte(b.String()), 0644)
