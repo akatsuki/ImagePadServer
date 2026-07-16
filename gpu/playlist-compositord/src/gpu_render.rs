@@ -34,6 +34,8 @@ struct GlyphInstance { screen: vec4<f32>, atlas: vec4<f32>, color: vec4<f32> }
 @group(0) @binding(7) var<storage, read> dynamics_samples: array<u32>;
 @group(0) @binding(8) var overlay_tex: texture_2d<f32>;
 @group(0) @binding(9) var overlay_sampler: sampler;
+@group(0) @binding(10) var base_tex: texture_2d<f32>;
+@group(0) @binding(11) var base_sampler: sampler;
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   if (id.x >= params.width || id.y >= params.height) { return; }
@@ -86,6 +88,14 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let c = params.palette[2];
     let rr=min(c.x,255u); let gg=min(c.y,255u);
     let bb=min(c.z,255u); let aa=min(c.w,255u);
+    pixels[i]=rr|(gg<<8u)|(bb<<16u)|(aa<<24u); return;
+  }
+  if (params.sequence == 0xfffffffau) {
+    let d = vec2<f32>(textureDimensions(base_tex));
+    let uv = (vec2<f32>(f32(id.x), f32(id.y)) + vec2<f32>(0.5)) / d;
+    let c = textureLoad(base_tex, vec2<i32>(id.xy), 0);
+    let rr=u32(clamp(c.r*255.0,0.0,255.0)); let gg=u32(clamp(c.g*255.0,0.0,255.0));
+    let bb=u32(clamp(c.b*255.0,0.0,255.0)); let aa=u32(clamp(c.a*255.0,0.0,255.0));
     pixels[i]=rr|(gg<<8u)|(bb<<16u)|(aa<<24u); return;
   }
   var r: u32;
@@ -554,6 +564,13 @@ impl Renderer {
         Ok(texture)
     }
 
+    fn upload_base_texture(&self, base: &crate::contracts::BaseTextureMetadata) -> Result<wgpu::Texture, String> {
+        if base.payload.is_empty() || base.width == 0 || base.height == 0 { return Err("empty base texture payload".into()); }
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor { label: Some("music-base-texture"), size: wgpu::Extent3d { width: base.width, height: base.height, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba8Unorm, usage: wgpu::TextureUsages::COPY_DST|wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] });
+        self.queue.write_texture(wgpu::ImageCopyTexture { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All }, &base.payload, wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(NonZeroU32::new(base.row_stride).unwrap().into()), rows_per_image: Some(NonZeroU32::new(base.height).unwrap().into()) }, wgpu::Extent3d { width: base.width, height: base.height, depth_or_array_layers: 1 });
+        Ok(texture)
+    }
+
     fn upload_glyph_atlas(
         &self,
         atlas: &crate::contracts::GlyphAtlasMetadata,
@@ -692,6 +709,8 @@ impl Renderer {
                 },
                 wgpu::BindGroupLayoutEntry { binding: 8, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
                 wgpu::BindGroupLayoutEntry { binding: 9, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+                wgpu::BindGroupLayoutEntry { binding: 10, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 11, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering), count: None },
             ],
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -746,7 +765,7 @@ impl Renderer {
         if width == 0 || height == 0 {
             return Err("invalid render dimensions".into());
         }
-        let (artwork_texture, atlas_texture, overlay_texture) = if let Some(scene) = scene {
+        let (artwork_texture, atlas_texture, overlay_texture, base_texture) = if let Some(scene) = scene {
             scene.validate().map_err(|e| format!("scene: {e:?}"))?;
             let artwork = scene
                 .artwork
@@ -761,9 +780,10 @@ impl Renderer {
                 .map(|a| self.upload_glyph_atlas(a))
                 .transpose()?;
             let overlay = scene.text_overlay.as_ref().map(|o| self.upload_text_overlay(o)).transpose()?;
-            (artwork, atlas, overlay)
+            let base = scene.base_texture.as_ref().map(|b| { b.validate().map_err(|e| format!("base texture: {e:?}"))?; self.upload_base_texture(b) }).transpose()?;
+            (artwork, atlas, overlay, base)
         } else {
-            (None, None, None)
+            (None, None, None, None)
         };
         let glyph_atlas_receipt = scene.and_then(|s| s.glyph_atlas.as_ref()).map(|atlas| {
             let mut h = Sha256::new();
@@ -824,9 +844,11 @@ impl Renderer {
         let artwork_texture = artwork_texture.unwrap_or_else(fallback_texture);
         let atlas_texture = atlas_texture.unwrap_or_else(fallback_texture);
         let overlay_texture = overlay_texture.unwrap_or_else(|| fallback_texture());
+        let base_texture = base_texture.unwrap_or_else(|| fallback_texture());
         let artwork_view = artwork_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let atlas_view = atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let overlay_view = overlay_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let base_view = base_texture.create_view(&wgpu::TextureViewDescriptor::default());
         // Atlas coverage is CPU-rasterized RGBA8.  Linear filtering blends
         // neighbouring fixed cells and creates halos at glyph boundaries;
         // nearest sampling preserves the source coverage contract. Keep a
@@ -921,6 +943,8 @@ impl Renderer {
                 },
                 wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(&overlay_view) },
                 wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::Sampler(&atlas_sampler) },
+                wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::TextureView(&base_view) },
+                wgpu::BindGroupEntry { binding: 11, resource: wgpu::BindingResource::Sampler(&atlas_sampler) },
             ],
         });
         let mut enc = self

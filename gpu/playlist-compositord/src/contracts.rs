@@ -447,6 +447,17 @@ impl ArtworkMetadata {
     }
 }
 
+impl BaseTextureMetadata {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        if self.texture_id.is_empty() || self.width == 0 || self.height == 0 || self.width > MUSIC_MAX_ARTWORK_DIMENSION || self.height > MUSIC_MAX_ARTWORK_DIMENSION { return Err(ContractError::InvalidArtwork); }
+        let min_stride = self.width.checked_mul(4).ok_or(ContractError::InvalidArtwork)?;
+        if self.row_stride < min_stride || self.row_stride % ROW_ALIGNMENT != 0 { return Err(ContractError::InvalidArtwork); }
+        let size = self.row_stride as usize * self.height as usize;
+        if size > MUSIC_MAX_ARTWORK_BYTES || self.payload.len() != size { return Err(ContractError::InvalidArtwork); }
+        Ok(())
+    }
+}
+
 impl GlyphAtlasMetadata {
     pub fn validate(&self) -> Result<(), ContractError> {
         if self.texture_id.is_empty()
