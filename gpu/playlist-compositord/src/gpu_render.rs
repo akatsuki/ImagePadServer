@@ -38,6 +38,20 @@ struct GlyphInstance { screen: vec4<f32>, atlas: vec4<f32>, color: vec4<f32> }
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   if (id.x >= params.width || id.y >= params.height) { return; }
   let i = id.y * params.row_words + id.x;
+  // Diagnostic-only canonical text overlay readback. The reserved sequence
+  // samples the uploaded overlay texture directly; production sequences never
+  // enter this branch.
+  if (params.sequence == 0xfffffffeu) {
+    let dims = vec2<f32>(textureDimensions(overlay_tex));
+    let uv = (vec2<f32>(id.xy) + vec2<f32>(0.5, 0.5)) / max(dims, vec2<f32>(1.0));
+    let c = textureSampleLevel(overlay_tex, overlay_sampler, uv, 0.0);
+    let rr = u32(clamp(c.r * 255.0, 0.0, 255.0));
+    let gg = u32(clamp(c.g * 255.0, 0.0, 255.0));
+    let bb = u32(clamp(c.b * 255.0, 0.0, 255.0));
+    let aa = u32(clamp(c.a * 255.0, 0.0, 255.0));
+    pixels[i] = rr | (gg << 8u) | (bb << 16u) | (aa << 24u);
+    return;
+  }
   var r: u32;
   var g: u32;
   var b: u32;
@@ -145,7 +159,20 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
       let y_trend = f32(loud.y + loud.w) - trend * f32(loud.w);
       loudness = select(0.0, 1.0, abs(ry - y_env) < 1.5) + select(0.0, 0.65, abs(ry - y_trend) < 1.5);
       }
-    var glyph = 0.0;
+  var glyph = 0.0;
+    if (params.sequence == 0xfffffffeu) {
+      let od = vec2<f32>(textureDimensions(overlay_tex));
+      if (f32(id.x) < od.x && f32(id.y) < od.y) {
+        let ouv = (vec2<f32>(f32(id.x), f32(id.y)) + vec2<f32>(0.5, 0.5)) / od;
+        let oc = textureSampleLevel(overlay_tex, overlay_sampler, ouv, 0.0);
+        let or = u32(clamp(oc.r * 255.0, 0.0, 255.0));
+        let og = u32(clamp(oc.g * 255.0, 0.0, 255.0));
+        let ob = u32(clamp(oc.b * 255.0, 0.0, 255.0));
+        let oa = u32(clamp(oc.a * 255.0, 0.0, 255.0));
+        pixels[i] = or | (og << 8u) | (ob << 16u) | (oa << 24u);
+        return;
+      }
+    }
     if ((params.scene_enabled & 4u) != 0u) {
       let pixel = vec2<f32>(f32(id.x), f32(id.y));
       for (var gi: u32 = 0u; gi < params.glyph_count; gi = gi + 1u) {
@@ -429,6 +456,12 @@ fn dynamics_sample_words(scene: Option<&MusicScenePayload>) -> Vec<u32> {
 }
 
 impl Renderer {
+    fn upload_text_overlay(&self, o: &crate::contracts::TextOverlayMetadata) -> Result<wgpu::Texture, String> {
+        if o.payload.is_empty() || o.width == 0 || o.height == 0 { return Err("empty text overlay payload".into()); }
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor { label: Some("text-overlay"), size: wgpu::Extent3d { width:o.width,height:o.height,depth_or_array_layers:1 }, mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Rgba8UnormSrgb,usage:wgpu::TextureUsages::COPY_DST|wgpu::TextureUsages::TEXTURE_BINDING,view_formats:&[] });
+        self.queue.write_texture(wgpu::ImageCopyTexture { texture:&texture,mip_level:0,origin:wgpu::Origin3d::ZERO,aspect:wgpu::TextureAspect::All }, &o.payload, wgpu::ImageDataLayout { offset:0,bytes_per_row:Some(NonZeroU32::new(o.row_stride).unwrap().into()),rows_per_image:Some(NonZeroU32::new(o.height).unwrap().into()) }, wgpu::Extent3d { width:o.width,height:o.height,depth_or_array_layers:1 });
+        Ok(texture)
+    }
     fn upload_artwork(
         &self,
         artwork: &crate::contracts::ArtworkMetadata,
@@ -665,7 +698,7 @@ impl Renderer {
         if width == 0 || height == 0 {
             return Err("invalid render dimensions".into());
         }
-        let (artwork_texture, atlas_texture) = if let Some(scene) = scene {
+        let (artwork_texture, atlas_texture, overlay_texture) = if let Some(scene) = scene {
             scene.validate().map_err(|e| format!("scene: {e:?}"))?;
             let artwork = scene
                 .artwork
@@ -679,9 +712,10 @@ impl Renderer {
                 .filter(|a| !a.payload.is_empty())
                 .map(|a| self.upload_glyph_atlas(a))
                 .transpose()?;
-            (artwork, atlas)
+            let overlay = scene.text_overlay.as_ref().map(|o| self.upload_text_overlay(o)).transpose()?;
+            (artwork, atlas, overlay)
         } else {
-            (None, None)
+            (None, None, None)
         };
         let glyph_atlas_receipt = scene.and_then(|s| s.glyph_atlas.as_ref()).map(|atlas| {
             let mut h = Sha256::new();
@@ -739,8 +773,10 @@ impl Renderer {
         };
         let artwork_texture = artwork_texture.unwrap_or_else(fallback_texture);
         let atlas_texture = atlas_texture.unwrap_or_else(fallback_texture);
+        let overlay_texture = overlay_texture.unwrap_or_else(|| fallback_texture());
         let artwork_view = artwork_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let atlas_view = atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let overlay_view = overlay_texture.create_view(&wgpu::TextureViewDescriptor::default());
         // Atlas coverage is CPU-rasterized RGBA8.  Linear filtering blends
         // neighbouring fixed cells and creates halos at glyph boundaries;
         // nearest sampling preserves the source coverage contract. Keep a
@@ -833,7 +869,7 @@ impl Renderer {
                     binding: 7,
                     resource: dynamics_buffer.as_entire_binding(),
                 },
-                wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(&atlas_view) },
+                wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(&overlay_view) },
                 wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::Sampler(&atlas_sampler) },
             ],
         });
