@@ -137,6 +137,10 @@ type sceneEvidence struct {
 	SyntheticGlyph             *video.GlyphSyntheticEvidence `json:"syntheticGlyph,omitempty"`
 	TextOverlayCPUHash         string                        `json:"textOverlayCpuHash,omitempty"`
 	TextOverlayGPUReceipt      *video.TextOverlayReceipt     `json:"textOverlayGpuReceipt,omitempty"`
+	TextOverlaySHAEqual        bool                          `json:"textOverlayShaEqual,omitempty"`
+	TextOverlayAlphaCoverage   int                           `json:"textOverlayAlphaCoverage,omitempty"`
+	TextOverlayRegionCrop      imageBounds                   `json:"textOverlayRegionCrop,omitempty"`
+	TextOverlayRenderer        string                        `json:"textOverlayRenderer,omitempty"`
 	CPUInstanceManifest        video.GlyphInstanceManifest   `json:"cpuInstanceManifest,omitempty"`
 	GPUInstanceParity          video.GlyphInstanceParity     `json:"gpuInstanceParity,omitempty"`
 	Title                      string                        `json:"title,omitempty"`
@@ -738,6 +742,12 @@ func main() {
 	}
 	if scene.TextOverlay != nil {
 		rep.SceneEvidence.TextOverlayCPUHash = scene.TextOverlay.AssetHash
+		rep.SceneEvidence.TextOverlayRegionCrop = imageBounds{MaxX: int(scene.TextOverlay.Width), MaxY: int(scene.TextOverlay.Height)}
+		for i := 3; i < len(scene.TextOverlay.Payload); i += 4 {
+			if scene.TextOverlay.Payload[i] > 0 {
+				rep.SceneEvidence.TextOverlayAlphaCoverage++
+			}
+		}
 	}
 	if glyphEvidence, ok := glyphAtlasEvidence(scene.GlyphAtlas); ok {
 		rep.SceneEvidence.GlyphHash = glyphEvidence.GlyphHash
@@ -757,6 +767,10 @@ func main() {
 				ocancel()
 				if oe == nil {
 					rep.SceneEvidence.TextOverlayGPUReceipt = receipt
+					if receipt != nil {
+						rep.SceneEvidence.TextOverlaySHAEqual = receipt.SHA256 == rep.SceneEvidence.TextOverlayCPUHash
+						rep.SceneEvidence.TextOverlayRenderer = receipt.RendererID + "/" + receipt.RendererVersion
+					}
 				}
 			}
 			probeWidth := uint32(math.Round(float64(p.Height) * 16.0 / 9.0))
