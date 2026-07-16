@@ -68,6 +68,7 @@ type report struct {
 	GeneratedAt           time.Time                  `json:"generatedAt"`
 	FFmpeg                string                     `json:"ffmpeg,omitempty"`
 	GPUAdapter            string                     `json:"gpuAdapter,omitempty"`
+	GPUFingerprint        runtimeFingerprint         `json:"gpuFingerprint"`
 	CPUOnly               bool                       `json:"cpuOnly,omitempty"`
 	CPU                   renderResult               `json:"cpu"`
 	GPU                   renderResult               `json:"gpu"`
@@ -81,6 +82,34 @@ type comparisonGate struct {
 	DurationMatch        bool    `json:"durationMatch"`
 	FrameCountMatch      bool    `json:"frameCountMatch"`
 	Pass                 bool    `json:"pass"`
+	FingerprintRecorded  bool    `json:"fingerprintRecorded"`
+}
+
+type runtimeFingerprint struct {
+	Adapter   string `json:"adapter"`
+	Backend   string `json:"backend"`
+	Toolchain string `json:"toolchain"`
+}
+
+func runtimeFingerprintFromEnv() runtimeFingerprint {
+	return runtimeFingerprint{
+		Adapter:   strings.TrimSpace(firstNonEmpty(os.Getenv("IMAGEPAD_GPU_ADAPTER"), os.Getenv("WGPU_ADAPTER_NAME"))),
+		Backend:   strings.TrimSpace(firstNonEmpty(os.Getenv("IMAGEPAD_GPU_BACKEND"), os.Getenv("WGPU_BACKEND"))),
+		Toolchain: strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_TOOLCHAIN")),
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func (f runtimeFingerprint) Complete() bool {
+	return f.Adapter != "" && f.Backend != "" && f.Toolchain != ""
 }
 
 func loadImageMetrics(path string) (imageMetrics, error) {
@@ -407,14 +436,12 @@ func main() {
 	id := "compare"
 	ctx := context.Background()
 	inputHash, _ := sha256File(*input)
-	adapter := os.Getenv("IMAGEPAD_GPU_ADAPTER")
+	fingerprint := runtimeFingerprintFromEnv()
+	adapter := fingerprint.Adapter
 	if adapter == "" {
-		adapter = os.Getenv("WGPU_ADAPTER_NAME")
+		adapter = "unknown (set GPU fingerprint environment variables to record explicit runtime)"
 	}
-	if adapter == "" {
-		adapter = "unknown (set IMAGEPAD_GPU_ADAPTER to record explicit adapter)"
-	}
-	rep := report{Input: *input, InputSHA256: inputHash, GeneratedAt: time.Now(), FFmpeg: ffmpegVersion(ctx, ff), GPUAdapter: adapter, CPUOnly: *cpuOnly}
+	rep := report{Input: *input, InputSHA256: inputHash, GeneratedAt: time.Now(), FFmpeg: ffmpegVersion(ctx, ff), GPUAdapter: adapter, GPUFingerprint: fingerprint, CPUOnly: *cpuOnly}
 	rep.CPU = render(ctx, false, filepath.Join(*output, "cpu"), ff, inputSpec, id, p)
 	if !*cpuOnly {
 		rep.GPU = render(ctx, true, filepath.Join(*output, "gpu"), ff, inputSpec, id, p)
@@ -438,7 +465,8 @@ func main() {
 	if !*cpuOnly {
 		rep.ComparisonGate.DurationMatch = rep.ComparisonGate.DurationDeltaSeconds <= 0.05
 		rep.ComparisonGate.FrameCountMatch = rep.ComparisonGate.FrameDelta == 0
-		rep.ComparisonGate.Pass = rep.ComparisonGate.DurationMatch && rep.ComparisonGate.FrameCountMatch
+		rep.ComparisonGate.FingerprintRecorded = rep.GPUFingerprint.Complete()
+		rep.ComparisonGate.Pass = rep.ComparisonGate.DurationMatch && rep.ComparisonGate.FrameCountMatch && rep.ComparisonGate.FingerprintRecorded
 	}
 	b, _ := json.MarshalIndent(rep, "", "  ")
 	_ = os.WriteFile(filepath.Join(*output, "report.json"), append(b, '\n'), 0644)

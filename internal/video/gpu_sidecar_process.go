@@ -59,6 +59,18 @@ type SidecarDiagnostics struct {
 	FinishedAt time.Time
 	ExitError  error
 	Stderr     string
+	Adapter    string
+	Backend    string
+	Toolchain  string
+}
+
+// SidecarFingerprint identifies the runtime selected by the sidecar. Empty
+// values are intentionally preserved so callers can distinguish an
+// unreported fingerprint from an explicitly reported one.
+type SidecarFingerprint struct {
+	Adapter   string `json:"adapter,omitempty"`
+	Backend   string `json:"backend,omitempty"`
+	Toolchain string `json:"toolchain,omitempty"`
 }
 
 type sidecarRequest struct {
@@ -67,12 +79,15 @@ type sidecarRequest struct {
 	Session string `json:"session,omitempty"`
 }
 type sidecarResponse struct {
-	Type    string    `json:"type"`
-	Version uint16    `json:"version,omitempty"`
-	Ready   bool      `json:"ready,omitempty"`
-	Code    string    `json:"code,omitempty"`
-	Message string    `json:"message,omitempty"`
-	Frame   *GpuFrame `json:"frame,omitempty"`
+	Type      string    `json:"type"`
+	Version   uint16    `json:"version,omitempty"`
+	Ready     bool      `json:"ready,omitempty"`
+	Code      string    `json:"code,omitempty"`
+	Message   string    `json:"message,omitempty"`
+	Frame     *GpuFrame `json:"frame,omitempty"`
+	Adapter   string    `json:"adapter,omitempty"`
+	Backend   string    `json:"backend,omitempty"`
+	Toolchain string    `json:"toolchain,omitempty"`
 }
 
 // Render requests one GPU-produced frame. The response is validated before it
@@ -140,16 +155,17 @@ func (p *SidecarProcess) RenderScene(ctx context.Context, width, height uint32, 
 // Frame bytes intentionally stay on GPUFrameTransport until the native mapping
 // backend is available.
 type SidecarProcess struct {
-	cmd        *exec.Cmd
-	in         io.WriteCloser
-	out        *bufio.Reader
-	mu         sync.Mutex
-	wait       chan error
-	stderr     *boundedBuffer
-	startedAt  time.Time
-	finishedAt time.Time
-	exitError  error
-	closed     bool
+	cmd         *exec.Cmd
+	in          io.WriteCloser
+	out         *bufio.Reader
+	mu          sync.Mutex
+	wait        chan error
+	stderr      *boundedBuffer
+	startedAt   time.Time
+	finishedAt  time.Time
+	exitError   error
+	closed      bool
+	fingerprint SidecarFingerprint
 }
 
 func StartSidecar(ctx context.Context, executable, session string) (*SidecarProcess, error) {
@@ -189,6 +205,7 @@ func (p *SidecarProcess) Diagnostics() SidecarDiagnostics {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	d := SidecarDiagnostics{StartedAt: p.startedAt, FinishedAt: p.finishedAt, ExitError: p.exitError}
+	d.Adapter, d.Backend, d.Toolchain = p.fingerprint.Adapter, p.fingerprint.Backend, p.fingerprint.Toolchain
 	if p.cmd != nil {
 		d.Executable, d.Args = p.cmd.Path, append([]string(nil), p.cmd.Args[1:]...)
 	}
@@ -230,6 +247,15 @@ func (p *SidecarProcess) rpc(ctx context.Context, req sidecarRequest) error {
 		}
 		if r.Type == "error" {
 			return fmt.Errorf("sidecar %s: %s", r.Code, r.Message)
+		}
+		if r.Adapter != "" {
+			p.fingerprint.Adapter = r.Adapter
+		}
+		if r.Backend != "" {
+			p.fingerprint.Backend = r.Backend
+		}
+		if r.Toolchain != "" {
+			p.fingerprint.Toolchain = r.Toolchain
 		}
 		return nil
 	}

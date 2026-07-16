@@ -226,6 +226,9 @@ func runVideoEncodeWithFallback(ctx context.Context, selected VideoEncoderProfil
 		return hardwareErr
 	}
 	if ctx.Err() != nil || errors.Is(hardwareErr, context.Canceled) || errors.Is(hardwareErr, context.DeadlineExceeded) {
+		if cleanup != nil {
+			cleanup()
+		}
 		return hardwareErr
 	}
 	if cleanup != nil {

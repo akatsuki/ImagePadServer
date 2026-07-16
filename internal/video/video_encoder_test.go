@@ -188,6 +188,41 @@ func TestRunVideoEncodeDoesNotFallbackAfterCancellation(t *testing.T) {
 	}
 }
 
+func TestRunVideoEncodeCancellationCleansPartialOutput(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cleaned := 0
+	err := runVideoEncodeWithFallback(ctx, NewVideoEncoderProfile("h264_nvenc", EncoderStandard), func() { cleaned++ }, func(VideoEncoderProfile) error {
+		cancel()
+		return context.Canceled
+	})
+	if !errors.Is(err, context.Canceled) || cleaned != 1 {
+		t.Fatalf("err=%v cleaned=%d, want cancellation and one cleanup", err, cleaned)
+	}
+}
+
+func TestRunVideoEncodeErrorPrecedencePreservesEncodeFailure(t *testing.T) {
+	want := errors.New("encoder failed")
+	cleaned := 0
+	err := runVideoEncodeWithFallback(context.Background(), NewVideoEncoderProfile("h264_nvenc", EncoderStandard), func() { cleaned++ }, func(VideoEncoderProfile) error { return want })
+	if !errors.Is(err, want) || cleaned != 1 {
+		t.Fatalf("err=%v cleaned=%d, want original error and cleanup", err, cleaned)
+	}
+}
+
+func TestRunVideoEncodeCleanupRunsOnceAfterGPUFailureAndCPUSuccess(t *testing.T) {
+	cleaned := 0
+	err := runVideoEncodeWithFallback(context.Background(), NewVideoEncoderProfile("h264_nvenc", EncoderStandard), func() { cleaned++ }, func(profile VideoEncoderProfile) error {
+		if profile.Hardware {
+			return errors.New("gpu unavailable")
+		}
+		return nil
+	})
+	if err != nil || cleaned != 1 {
+		t.Fatalf("err=%v cleaned=%d, want successful fallback and one cleanup", err, cleaned)
+	}
+}
+
 func TestVisualizerAndSoundCloudArgsUseInjectedEncoder(t *testing.T) {
 	preset := QualityPreset{Height: 720, VideoBitrate: "2500k", MaxRate: "3000k", BufferSize: "5000k", AudioBitrate: "128k", CRF: 27}
 	encoder := NewVideoEncoderProfile("h264_nvenc", EncoderStandard)

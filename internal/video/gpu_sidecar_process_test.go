@@ -26,9 +26,9 @@ func TestSidecarHelper(t *testing.T) {
 		typ, _ := req["type"].(string)
 		switch typ {
 		case "hello":
-			_ = enc.Encode(map[string]any{"type": "hello_ack", "version": 1, "session": req["session"]})
+			_ = enc.Encode(map[string]any{"type": "hello_ack", "version": 1, "session": req["session"], "adapter": "fixture-adapter", "backend": "vulkan", "toolchain": "wgpu-fixture-1"})
 		case "health":
-			_ = enc.Encode(map[string]any{"type": "health", "ready": true, "protocol": 1})
+			_ = enc.Encode(map[string]any{"type": "health", "ready": true, "protocol": 1, "adapter": "fixture-adapter", "backend": "vulkan", "toolchain": "wgpu-fixture-1"})
 		case "render":
 			if os.Getenv("IMAGEPAD_SIDECAR_DIE_ON_RENDER") == "1" {
 				return
@@ -113,5 +113,43 @@ func TestSidecarProcessHelloHealthShutdown(t *testing.T) {
 	}
 	if err := p.Health(ctx); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSidecarDiagnosticsIncludesRuntimeFingerprint(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=TestSidecarHelper")
+	cmd.Env = append(os.Environ(), "IMAGEPAD_SIDECAR_HELPER=1")
+	p, err := startSidecarCommand(context.Background(), cmd, "fingerprint-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := p.Hello(ctx, "fingerprint-session"); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Health(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_ = p.Close()
+	d := p.Diagnostics()
+	if d.Adapter != "fixture-adapter" || d.Backend != "vulkan" || d.Toolchain != "wgpu-fixture-1" {
+		t.Fatalf("fingerprint=%+v", d)
+	}
+}
+
+func TestSidecarCloseIsBoundedAfterContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := exec.Command(os.Args[0], "-test.run=TestSidecarHelper")
+	cmd.Env = append(os.Environ(), "IMAGEPAD_SIDECAR_HELPER=1")
+	p, err := startSidecarCommand(ctx, cmd, "cancel-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	started := time.Now()
+	_ = p.Close()
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("close exceeded bounded cleanup: %s", elapsed)
 	}
 }
