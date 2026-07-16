@@ -107,3 +107,11 @@ func drawSpectrumFixedFade(canvas *image.RGBA, spectrum [24]float64, mode Foregr
 		}
 	}
 }
+
+// RenderSpectrumMaskCPU renders only the canonical spectrum layer for parity
+// probes. It deliberately uses the production fixed-fade implementation.
+func RenderSpectrumMaskCPU(width, height int, spectrum [24]float64, mode ForegroundMode, layout VisualizerLayout) *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	drawSpectrumFixedFade(img, spectrum, mode, layout)
+	return img
+}
