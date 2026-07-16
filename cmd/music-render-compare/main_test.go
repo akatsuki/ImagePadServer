@@ -14,6 +14,13 @@ import (
 	"imagepadserver/internal/video"
 )
 
+func TestOverlayProbeRegionsOrder(t *testing.T) {
+	r := overlayProbeRegions(video.MusicSceneLayout{})
+	if len(r) != 4 || r[0].Name != "title" || r[3].Name != "time" {
+		t.Fatalf("regions=%v", r)
+	}
+}
+
 func TestGlyphAtlasEvidenceUsesPayloadAndStride(t *testing.T) {
 	atlas := &video.GlyphAtlasMetadata{Width: 2, Height: 1, RowStride: 8, Payload: []byte{0, 0, 0, 255, 0, 0, 0, 0}, Glyphs: []video.GlyphEntry{{ID: "x"}}, TextRuns: []video.TextRun{{Text: "x"}}, AssetHash: "asset"}
 	e, ok := glyphAtlasEvidence(atlas)

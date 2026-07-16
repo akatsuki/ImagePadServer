@@ -153,6 +153,16 @@ type sceneEvidence struct {
 	Album                      string                                `json:"album,omitempty"`
 }
 
+func overlayProbeRegions(layout video.MusicSceneLayout) []struct {
+	Name string
+	Rect video.SceneRect
+} {
+	return []struct {
+		Name string
+		Rect video.SceneRect
+	}{{"title", layout.Title}, {"artist", layout.Artist}, {"album", layout.Album}, {"time", layout.Time}}
+}
+
 // glyphAtlasEvidence is deliberately derived from the exact bytes sent to
 // the sidecar.  It catches stride/format/payload drift without making the
 // comparison tool depend on a renderer implementation.
