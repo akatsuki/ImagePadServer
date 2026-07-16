@@ -1195,6 +1195,12 @@ mod tests {
     }
 
     #[test]
+    fn shader_declares_spectrum_only_probe() {
+        assert!(SHADER.contains("params.sequence == 0xfffffffbu"));
+        assert!(SHADER.contains("clamp(bars * 255.0"));
+    }
+
+    #[test]
     fn shader_declares_flat_background_diagnostic_branch() {
         assert!(SHADER.contains("params.sequence == 0xfffffffcu"));
         assert!(SHADER.contains("let c = params.palette[2]"));
