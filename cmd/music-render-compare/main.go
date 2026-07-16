@@ -145,6 +145,9 @@ type sceneEvidence struct {
 	FlatBackgroundCPUHash      string                                           `json:"flatBackgroundCpuHash,omitempty"`
 	FlatBackgroundGPUHash      string                                           `json:"flatBackgroundGpuHash,omitempty"`
 	FlatBackgroundParity       *video.OverlayParityMetric                       `json:"flatBackgroundParity,omitempty"`
+	BaseTextureCPUHash         string                                           `json:"baseTextureCpuHash,omitempty"`
+	BaseTextureGPUHash         string                                           `json:"baseTextureGpuHash,omitempty"`
+	BaseTextureParity          *video.OverlayParityMetric                       `json:"baseTextureParity,omitempty"`
 	TextOverlaySHAEqual        bool                                             `json:"textOverlayShaEqual,omitempty"`
 	TextOverlayAlphaCoverage   int                                              `json:"textOverlayAlphaCoverage,omitempty"`
 	TextOverlayRegionCrop      imageBounds                                      `json:"textOverlayRegionCrop,omitempty"`
@@ -847,7 +850,30 @@ func main() {
 	rep.FrameContract.ExpectedFrames = int64(math.Max(1, math.Ceil(analysis.Duration*30)))
 	rep.FrameContract.SharedMuxPolicy = "raw:30fps,cfr,frames:v;hls:passthrough,video-copy"
 	scene := video.CanonicalMusicScene(inputSpec, 0, 0)
+	if scene.Artwork != nil {
+		aw, ah := int(scene.Artwork.Width), int(scene.Artwork.Height)
+		src := image.NewRGBA(image.Rect(0, 0, aw, ah))
+		for y := 0; y < ah; y++ {
+			for x := 0; x < aw; x++ {
+				off := y*int(scene.Artwork.RowStride) + x*4
+				if off+3 < len(scene.Artwork.Payload) {
+					src.SetRGBA(x, y, color.RGBA{scene.Artwork.Payload[off], scene.Artwork.Payload[off+1], scene.Artwork.Payload[off+2], scene.Artwork.Payload[off+3]})
+				}
+			}
+		}
+		if layout, le := video.LayoutForSize(int(math.Round(float64(p.Height)*16.0/9.0)), p.Height); le == nil {
+			if base, _, be := video.RenderVisualizerBaseCPU(ctx, ff, *artwork, src, layout); be == nil {
+				if bm, me := video.NewBaseTextureMetadata("compare-base", base, video.ColorSRGB); me == nil {
+					scene.BaseTexture = &bm
+					rep.SceneEvidence.BaseTextureCPUHash = bm.AssetHash
+				}
+			}
+		}
+	}
 	rep.SceneEvidence = sceneEvidence{Fingerprint: scene.Fingerprint, Title: inputSpec.Metadata.Title, Artist: inputSpec.Metadata.Artist, Album: inputSpec.Metadata.Album}
+	if scene.BaseTexture != nil {
+		rep.SceneEvidence.BaseTextureCPUHash = scene.BaseTexture.AssetHash
+	}
 	if scene.Artwork != nil {
 		rep.SceneEvidence.ArtworkHash = scene.Artwork.AssetHash
 	}
@@ -1021,6 +1047,29 @@ func main() {
 			rep.SceneEvidence.FlatBackgroundGPUHash = fmt.Sprintf("%x", gg[:])
 			m := video.CompareOverlayParityCPUImageGPUImage(cpu, gpu, cpu.Bounds())
 			rep.SceneEvidence.FlatBackgroundParity = &m
+		}
+		bcancel()
+	}
+	if !*cpuOnly && scene.BaseTexture != nil {
+		bctx, bcancel := context.WithTimeout(ctx, 5*time.Second)
+		if bf, be := video.ProbeGPUSceneBaseTexture(bctx, strings.TrimSpace(os.Getenv("IMAGEPAD_PLAYLIST_COMPOSITORD")), scene.BaseTexture.Width, scene.BaseTexture.Height, &scene); be == nil {
+			gpu := image.NewRGBA(image.Rect(0, 0, int(bf.Width), int(bf.Height)))
+			for y := 0; y < int(bf.Height); y++ {
+				for x := 0; x < int(bf.Width); x++ {
+					off := y*int(bf.RowStride) + x*4
+					if off+3 < len(bf.Payload) {
+						gpu.SetRGBA(x, y, color.RGBA{bf.Payload[off], bf.Payload[off+1], bf.Payload[off+2], bf.Payload[off+3]})
+					}
+				}
+			}
+			gh := sha256.Sum256(gpu.Pix)
+			rep.SceneEvidence.BaseTextureGPUHash = fmt.Sprintf("%x", gh[:])
+			cpu := image.NewRGBA(image.Rect(0, 0, int(scene.BaseTexture.Width), int(scene.BaseTexture.Height)))
+			for y := 0; y < int(scene.BaseTexture.Height); y++ {
+				copy(cpu.Pix[y*cpu.Stride:y*cpu.Stride+int(scene.BaseTexture.Width)*4], scene.BaseTexture.Payload[y*int(scene.BaseTexture.RowStride):y*int(scene.BaseTexture.RowStride)+int(scene.BaseTexture.Width)*4])
+			}
+			m := video.CompareOverlayParityCPUImageGPUImage(cpu, gpu, cpu.Bounds())
+			rep.SceneEvidence.BaseTextureParity = &m
 		}
 		bcancel()
 	}

@@ -657,6 +657,28 @@ func PrepareVisualizerBase(ctx context.Context, ffmpeg, artworkPath string, fall
 	return prepareVisualizerBase(ctx, ffmpeg, artworkPath, fallback, nil, layout, outPath)
 }
 
+// RenderVisualizerBaseCPU returns the exact immutable base image used by the
+// CPU reference renderer. It is intended for the shared base-texture parity
+// path and keeps the FFmpeg blur/compositing policy in one place.
+func RenderVisualizerBaseCPU(ctx context.Context, ffmpeg, artworkPath string, fallback *image.RGBA, layout VisualizerLayout) (*image.RGBA, ForegroundMode, error) {
+	tmp, err := os.CreateTemp("", "imagepad-base-*.png")
+	if err != nil {
+		return nil, ForegroundMode{}, err
+	}
+	path := tmp.Name()
+	_ = tmp.Close()
+	defer os.Remove(path)
+	mode, err := PrepareVisualizerBase(ctx, ffmpeg, artworkPath, fallback, layout, path)
+	if err != nil {
+		return nil, ForegroundMode{}, err
+	}
+	img, err := loadPNG(path)
+	if err != nil {
+		return nil, ForegroundMode{}, err
+	}
+	return toRGBA(img), mode, nil
+}
+
 func prepareVisualizerBase(ctx context.Context, ffmpeg, artworkPath string, fallback *image.RGBA, fallbackRenderer func(color.RGBA) (*image.RGBA, error), layout VisualizerLayout, outPath string) (ForegroundMode, error) {
 	// Derive canvas dimensions from the layout.
 	canvasW := int(math.Round(float64(layout.Artwork.W) * 1280.0 / 288.0))
