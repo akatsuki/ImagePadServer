@@ -121,24 +121,25 @@ type report struct {
 // It makes an empty compare fixture distinguishable from a real metadata/
 // artwork parity run without embedding the potentially large raster twice.
 type sceneEvidence struct {
-	Fingerprint                string                      `json:"fingerprint,omitempty"`
-	ArtworkHash                string                      `json:"artworkHash,omitempty"`
-	GlyphHash                  string                      `json:"glyphHash,omitempty"`
-	GlyphPayloadHash           string                      `json:"glyphPayloadHash,omitempty"`
-	GlyphWidth                 uint32                      `json:"glyphWidth,omitempty"`
-	GlyphHeight                uint32                      `json:"glyphHeight,omitempty"`
-	GlyphRowStride             uint32                      `json:"glyphRowStride,omitempty"`
-	GlyphCount                 int                         `json:"glyphCount,omitempty"`
-	TextRunCount               int                         `json:"textRunCount,omitempty"`
-	GlyphCoveragePixels        int                         `json:"glyphCoveragePixels,omitempty"`
-	GPUInstanceCount           int                         `json:"gpuInstanceCount,omitempty"`
-	GPUInstanceSample          any                         `json:"gpuInstanceSample,omitempty"`
-	GPUInstanceDiagnosticError string                      `json:"gpuInstanceDiagnosticError,omitempty"`
-	CPUInstanceManifest        video.GlyphInstanceManifest `json:"cpuInstanceManifest,omitempty"`
-	GPUInstanceParity          video.GlyphInstanceParity   `json:"gpuInstanceParity,omitempty"`
-	Title                      string                      `json:"title,omitempty"`
-	Artist                     string                      `json:"artist,omitempty"`
-	Album                      string                      `json:"album,omitempty"`
+	Fingerprint                string                        `json:"fingerprint,omitempty"`
+	ArtworkHash                string                        `json:"artworkHash,omitempty"`
+	GlyphHash                  string                        `json:"glyphHash,omitempty"`
+	GlyphPayloadHash           string                        `json:"glyphPayloadHash,omitempty"`
+	GlyphWidth                 uint32                        `json:"glyphWidth,omitempty"`
+	GlyphHeight                uint32                        `json:"glyphHeight,omitempty"`
+	GlyphRowStride             uint32                        `json:"glyphRowStride,omitempty"`
+	GlyphCount                 int                           `json:"glyphCount,omitempty"`
+	TextRunCount               int                           `json:"textRunCount,omitempty"`
+	GlyphCoveragePixels        int                           `json:"glyphCoveragePixels,omitempty"`
+	GPUInstanceCount           int                           `json:"gpuInstanceCount,omitempty"`
+	GPUInstanceSample          any                           `json:"gpuInstanceSample,omitempty"`
+	GPUInstanceDiagnosticError string                        `json:"gpuInstanceDiagnosticError,omitempty"`
+	SyntheticGlyph             *video.GlyphSyntheticEvidence `json:"syntheticGlyph,omitempty"`
+	CPUInstanceManifest        video.GlyphInstanceManifest   `json:"cpuInstanceManifest,omitempty"`
+	GPUInstanceParity          video.GlyphInstanceParity     `json:"gpuInstanceParity,omitempty"`
+	Title                      string                        `json:"title,omitempty"`
+	Artist                     string                        `json:"artist,omitempty"`
+	Album                      string                        `json:"album,omitempty"`
 }
 
 // glyphAtlasEvidence is deliberately derived from the exact bytes sent to
@@ -758,6 +759,15 @@ func main() {
 					rep.SceneEvidence.GPUInstanceSample = gd.Instances[0]
 				}
 			} else if e != nil {
+				rep.SceneEvidence.GPUInstanceDiagnosticError = e.Error()
+			}
+			synCtx, cancelSyn := context.WithTimeout(ctx, 3*time.Second)
+			syn, e := video.ProbeGPUSceneGlyphOnly(synCtx, executable, "compare-glyph-only", probeWidth, uint32(p.Height), &scene)
+			cancelSyn()
+			if e == nil {
+				ev := video.CompareSyntheticGlyph(scene.GlyphAtlas, cpuManifest, syn, probeWidth, uint32(p.Height))
+				rep.SceneEvidence.SyntheticGlyph = &ev
+			} else if rep.SceneEvidence.GPUInstanceDiagnosticError == "" {
 				rep.SceneEvidence.GPUInstanceDiagnosticError = e.Error()
 			}
 		}
