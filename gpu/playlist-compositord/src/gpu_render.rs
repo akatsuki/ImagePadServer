@@ -174,21 +174,32 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
       sy >= f32(spectrum_rect.y) && sy < f32(spectrum_rect.y + spectrum_rect.w);
     let spectrum_u = clamp((sx - f32(spectrum_rect.x)) / max(1.0, f32(spectrum_rect.z - 1)), 0.0, 1.0);
     var level = 0.0;
+    var band_index: u32 = 0u;
     for (var band: u32 = 0u; band < 24u; band = band + 1u) {
       let left = f32(band) / 24.0;
       let right = f32(band + 1u) / 24.0;
       if (spectrum_u >= left && spectrum_u < right) {
+        band_index = band;
         level = f32(params.spectrum[band / 4u][band % 4u]) / 65535.0;
       }
     }
-    let spectrum_v = clamp((sy - f32(spectrum_rect.y)) / max(1.0, f32(spectrum_rect.w)), 0.0, 1.0);
-    // Keep a small gap between bands like the CPU renderer.  The previous
-    // full-width fill made the GPU result a single solid block and erased the
-    // high-frequency structure visible in the reference render.
-    let band_pos = spectrum_u * 24.0;
-    let band_gap = fract(band_pos);
-    let bars = select(0.0, 0.7 + level * 0.3,
-      in_spectrum && band_gap > 0.10 && band_gap < 0.90 && spectrum_v > (1.0 - level));
+    // Match drawSpectrumFixedFade: canonical bar width/gap, first-bar inset,
+    // minimum height, and a fixed bottom alpha fade.
+    let scale = f32(params.width) / 1280.0;
+    let bar_w = max(1.0, round(18.0 * scale));
+    let bar_gap = max(1.0, round(13.0 * scale));
+    let first_bar_x = f32(spectrum_rect.x) + round(11.0 * scale);
+    let bar_bottom = f32(spectrum_rect.y + spectrum_rect.w);
+    let max_bar_h = f32(spectrum_rect.w) - round(16.0 * scale);
+    let min_bar_h = max(1.0, round(4.0 * scale));
+    let bar_h = min_bar_h + level * max(0.0, max_bar_h - min_bar_h);
+    let bar_x = first_bar_x + f32(band_index) * (bar_w + bar_gap);
+    let bar_y = bar_bottom - bar_h;
+    let fade_px = max(1.0, round(10.0 * scale));
+    let bottom_dist = bar_bottom - 1.0 - sy;
+    let fade = select(0.0, min(1.0, bottom_dist / max(1.0, fade_px - 1.0)), bottom_dist < fade_px);
+    let bars = select(0.0, 0.82 * (select(1.0, fade, bottom_dist < fade_px)),
+      in_spectrum && sx >= bar_x && sx < bar_x + bar_w && sy >= bar_y && sy < bar_bottom);
     // The CPU scene also carries a fine waveform over the bars.  The canonical
     // payload has bounded spectrum samples rather than a second texture, so
     // use the interpolated band energy as a deterministic proxy centered in
@@ -196,7 +207,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     // second per-frame readback path.
     let wave_y = f32(spectrum_rect.y) + f32(spectrum_rect.w) * (0.70 - level * 0.42);
     let wave = select(0.0, 1.0,
-      in_spectrum && band_gap > 0.04 && band_gap < 0.96 && abs(sy - wave_y) < 1.0);
+      in_spectrum && abs(sy - wave_y) < 1.0);
     // Progress rail and thumb use the canonical progress rectangle.
     let progress = f32(params.dynamics[0].z) / 65535.0;
     let rail = params.rects[6];
