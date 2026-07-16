@@ -246,7 +246,9 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
       let trend = f32(dynamics_samples[1000u + sample_index]) / 65535.0;
       let y_env = f32(loud.y + loud.w) - envelope * f32(loud.w);
       let y_trend = f32(loud.y + loud.w) - trend * f32(loud.w);
-      loudness = select(0.0, 1.0, abs(ry - y_env) < 1.5) + select(0.0, 0.65, abs(ry - y_trend) < 1.5);
+      // The CPU reference's drawLoudness layer is the envelope plus guides;
+      // trend data remains available in the contract for future opt-in use.
+      loudness = select(0.0, 1.0, abs(ry - y_env) < 1.5);
       // CPU loudness draws four fixed guide lines in the same rect. Their
       // quantized positions are carried in the uniform contract so the GPU
       // does not have to infer them from the envelope.
