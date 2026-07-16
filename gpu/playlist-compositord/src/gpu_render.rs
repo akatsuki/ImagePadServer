@@ -57,6 +57,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     // changing the bind group contract. The soft edge is a rounded-tile
     // approximation suitable for the compute renderer.
     var artwork = 0.0;
+    var artwork_color = background;
+    var artwork_alpha = 0.0;
     if ((params.scene_enabled & 2u) != 0u) {
       let artwork_rect = params.rects[0];
       let tile_min = vec2<f32>(f32(artwork_rect.x) / f32(params.width), f32(artwork_rect.y) / f32(params.height));
@@ -68,7 +70,10 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         artwork = textureSampleLevel(artwork_tex, artwork_sampler, uv, 0.0).a * alpha;
         // Feed a restrained artwork luminance into the background layer; this
         // provides a stable palette/blur approximation without extra passes.
-        let cover = textureSampleLevel(artwork_tex, artwork_sampler, uv, 0.0).rgb;
+        let cover_sample = textureSampleLevel(artwork_tex, artwork_sampler, uv, 0.0);
+        let cover = cover_sample.rgb;
+        artwork_color = cover;
+        artwork_alpha = cover_sample.a * alpha;
         let luminance = dot(cover, vec3<f32>(0.2126, 0.7152, 0.0722));
         glow = glow + luminance * 0.08 * alpha;
       }
@@ -135,7 +140,11 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
       }
       glyph = glyph * 0.85;
     }
-    let mixc = background * 0.75 + primary * (glow + glyph + artwork * 0.35) + accent * (bars * 0.75 + wave * 0.35 + thumb + loudness);
+    var mixc = background * 0.75 + primary * (glow + glyph + artwork * 0.35) + accent * (bars * 0.75 + wave * 0.35 + thumb + loudness);
+    // Composite the actual artwork payload into the tile. Previously only its
+    // alpha/luminance affected the background, leaving the GPU tile unlike the
+    // CPU reference even when the same artwork bytes were present.
+    mixc = mix(mixc, artwork_color, artwork_alpha * 0.9);
     let fade = clamp(f32(params.dynamics[0].w) / 65535.0, 0.0, 1.0);
     r = u32(clamp(mixc.r * 255.0 * fade, 0.0, 255.0));
     g = u32(clamp(mixc.g * 255.0 * fade, 0.0, 255.0));
