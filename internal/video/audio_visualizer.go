@@ -674,6 +674,13 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 	for i := 0; i < frames; i++ {
 		ptsNS := int64(float64(i) * float64(time.Second) / 30)
 		scene := CanonicalMusicScene(input, uint64(i), ptsNS)
+		// The CPU base builder is also the source of truth for foreground
+		// colors. Keep GPU dynamic layers on that same palette; the generic
+		// feature palette is only a fallback for diagnostic scenes.
+		if gpuMode.PrimaryColor.A != 0 || gpuMode.AccentColor.A != 0 {
+			scene.Palette.Primary = [4]uint8{gpuMode.PrimaryColor.R, gpuMode.PrimaryColor.G, gpuMode.PrimaryColor.B, gpuMode.PrimaryColor.A}
+			scene.Palette.Accent = [4]uint8{gpuMode.AccentColor.R, gpuMode.AccentColor.G, gpuMode.AccentColor.B, gpuMode.AccentColor.A}
+		}
 		if baseTexture != nil {
 			scene.BaseTexture = baseTexture
 		}
