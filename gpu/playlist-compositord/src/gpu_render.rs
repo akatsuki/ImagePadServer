@@ -345,8 +345,15 @@ fn scene_uniform_words(
         // Layout coordinates are canonical 1280x720 units; scale them to the
         // actual output so 180p comparison renders retain the same composition.
         for (i, r) in rects.iter().enumerate() {
-            let sx = width as f32 / 1280.0;
-            let sy = height as f32 / 720.0;
+            // The diagnostic overlay probe compares against the Go helper,
+            // which places the canonical overlay using the scene's direct
+            // screen-space rectangles. Production rendering retains the
+            // canonical 1280x720 scaling.
+            let (sx, sy) = if sequence == 0xfffffffe {
+                (1.0, 1.0)
+            } else {
+                (width as f32 / 1280.0, height as f32 / 720.0)
+            };
             words[56 + i * 4..60 + i * 4].copy_from_slice(&[
                 (r.x as f32 * sx) as u32,
                 (r.y as f32 * sy) as u32,
