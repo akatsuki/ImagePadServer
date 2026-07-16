@@ -177,7 +177,9 @@ func musicSceneDynamics(features AudioFeatures, current, duration, ratio float64
 	if duration > 0 && duration-current < radioEdgeFadeSeconds {
 		alphaOut = float32(sceneClamp01((duration - current) / radioEdgeFadeSeconds))
 	}
-	return MusicSceneDynamics{CurrentSeconds: current, DurationSeconds: duration, ProgressRatio: ratio, EdgeFadeAlpha: alphaIn, EndFadeAlpha: alphaOut, LoudnessEnvelope: env, LoudnessTrend: trendQ, LoudnessGuides: [4]uint16{toQ(.25), toQ(.5), toQ(.75), toQ(1)}}
+	// Guide values encode bottom-relative positions matching drawLoudness's
+	// fixed offsets (6/80, 28/80, 50/80, 72/80).
+	return MusicSceneDynamics{CurrentSeconds: current, DurationSeconds: duration, ProgressRatio: ratio, EdgeFadeAlpha: alphaIn, EndFadeAlpha: alphaOut, LoudnessEnvelope: env, LoudnessTrend: trendQ, LoudnessGuides: [4]uint16{toQ(1 - 6.0/80.0), toQ(1 - 28.0/80.0), toQ(1 - 50.0/80.0), toQ(1 - 72.0/80.0)}}
 }
 
 func musicSceneFingerprint(scene MusicScenePayload) string {
