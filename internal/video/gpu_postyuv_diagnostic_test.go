@@ -3,6 +3,7 @@ package video
 import (
 	"bytes"
 	"context"
+	"path/filepath"
 	"testing"
 )
 
@@ -25,6 +26,19 @@ func TestWriteSpectrumRawFrameRejectsAndCancels(t *testing.T) {
 	cancel()
 	if err := writeSpectrumRawFrame(ctx, ioDiscard{}, make([]byte, 16), 2, 2); err != context.Canceled {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestWriteSpectrumRawFramesCapsAndHashes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "spectrum.rgba")
+	frames := [][]byte{bytes.Repeat([]byte{1}, 16), bytes.Repeat([]byte{2}, 16), bytes.Repeat([]byte{3}, 16)}
+	r, err := writeSpectrumRawFrames(context.Background(), path, frames, 2, 2, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Frames != 2 || r.SHA256 == "" {
+		t.Fatalf("receipt=%+v", r)
 	}
 }
 

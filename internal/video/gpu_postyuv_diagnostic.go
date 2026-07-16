@@ -2,10 +2,34 @@ package video
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"os"
 )
+
+type gpuPostYUVRawReceipt struct {
+	Frames int
+	SHA256 string
+}
+
+func writeSpectrumRawFrames(ctx context.Context, path string, frames [][]byte, width, height, maxFrames int) (gpuPostYUVRawReceipt, error) {
+	if maxFrames <= 0 || maxFrames > len(frames) {
+		maxFrames = len(frames)
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return gpuPostYUVRawReceipt{}, err
+	}
+	defer f.Close()
+	h := sha256.New()
+	for i := 0; i < maxFrames; i++ {
+		if err := writeSpectrumRawFrame(ctx, io.MultiWriter(f, h), frames[i], width, height); err != nil {
+			return gpuPostYUVRawReceipt{}, err
+		}
+	}
+	return gpuPostYUVRawReceipt{Frames: maxFrames, SHA256: fmt.Sprintf("%x", h.Sum(nil))}, nil
+}
 
 // gpuPostYUVArtifacts owns all temporary files in the strict post-YUV
 // spectrum experiment. Cleanup is idempotent and safe on partial passes.
