@@ -747,6 +747,7 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 	frames := frameCount
 	postYUV := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_SPECTRUM_POST_YUV")) == "1"
 	var postYUVSpectrum [][]byte
+	postArtifacts := gpuPostYUVArtifacts{}
 	postYUVMax := 3
 	if postYUV && frames < postYUVMax {
 		postYUVMax = frames
@@ -844,9 +845,9 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 		}
 	}
 	if postYUV && len(postYUVSpectrum) > 0 {
-		art := gpuPostYUVArtifacts{spectrumRaw: filepath.Join(outDir, ".spectrum-post-yuv-"+id+".rgba")}
-		defer art.cleanup()
-		if _, err := writeSpectrumRawFrames(ctx, art.spectrumRaw, postYUVSpectrum, waveW, waveH, postYUVMax); err != nil {
+		postArtifacts.spectrumRaw = filepath.Join(outDir, ".spectrum-post-yuv-"+id+".rgba")
+		defer postArtifacts.cleanup()
+		if _, err := writeSpectrumRawFrames(ctx, postArtifacts.spectrumRaw, postYUVSpectrum, waveW, waveH, postYUVMax); err != nil {
 			_ = cmd.Process.Kill()
 			return fmt.Errorf("post-yuv spectrum raw: %w", err)
 		}
@@ -858,6 +859,19 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 	_ = in.Close()
 	if err := cmd.Wait(); err != nil {
 		return fmt.Errorf("GPU HLS encode: %w: %s", err, trimOutput(stderr.Bytes()))
+	}
+	if postYUV && postArtifacts.spectrumRaw != "" {
+		postArtifacts.overlayTS = filepath.Join(outDir, ".spectrum-overlay-"+id+".ts")
+		overlayArgs := []string{"-hide_banner", "-loglevel", "error", "-y", "-i", tmpPath, "-f", "rawvideo", "-pix_fmt", "rgba", "-s", fmt.Sprintf("%dx%d", waveW, waveH), "-r", "30", "-i", postArtifacts.spectrumRaw, "-filter_complex", fmt.Sprintf("[0:v][1:v]overlay=%d:%d:format=auto[v]", gpuLayout.Spectrum.X, gpuLayout.Spectrum.Y), "-map", "[v]", "-frames:v", strconv.Itoa(postYUVMax), "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv", "-f", "mpegts", postArtifacts.overlayTS}
+		overlayCmd := exec.CommandContext(ctx, ffmpeg, overlayArgs...)
+		hideWindow(overlayCmd)
+		var overlayErr bytes.Buffer
+		overlayCmd.Stderr = &overlayErr
+		if err := overlayCmd.Run(); err != nil {
+			return fmt.Errorf("GPU post-YUV spectrum overlay: %w: %s", err, trimOutput(overlayErr.Bytes()))
+		}
+		tmpPath = postArtifacts.overlayTS
+		frameCount = postYUVMax
 	}
 	// Mux audio in a separate pass. Keeping audio away from the raw-video
 	// encoder prevents FFmpeg's audio EOF from truncating the final video GOP.
