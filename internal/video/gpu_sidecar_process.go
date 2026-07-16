@@ -192,10 +192,29 @@ func ProbeGPUSceneArtworkComposite(ctx context.Context, executable string, width
 // It is diagnostic-only and never changes the production scene route.
 func ProbeGPUSceneFlatBackground(ctx context.Context, executable string, width, height uint32, scene *MusicScenePayload) (GpuFrame, error) {
 	p, err := StartSidecar(ctx, executable, "compare-flat-background")
-	if err != nil { return GpuFrame{}, err }
+	if err != nil {
+		return GpuFrame{}, err
+	}
 	defer p.Close()
-	if err := p.Hello(ctx, "compare-flat-background"); err != nil { return GpuFrame{}, err }
+	if err := p.Hello(ctx, "compare-flat-background"); err != nil {
+		return GpuFrame{}, err
+	}
 	return p.RenderScene(ctx, width, height, 0xfffffffc, 0, scene)
+}
+
+// ProbeGPUSceneBaseTexture renders the uploaded immutable CPU compositor base
+// through the reserved diagnostic branch. It is evidence-only; production
+// frames continue to use the normal scene sequence.
+func ProbeGPUSceneBaseTexture(ctx context.Context, executable string, width, height uint32, scene *MusicScenePayload) (GpuFrame, error) {
+	p, err := StartSidecar(ctx, executable, "compare-base-texture")
+	if err != nil {
+		return GpuFrame{}, err
+	}
+	defer p.Close()
+	if err := p.Hello(ctx, "compare-base-texture"); err != nil {
+		return GpuFrame{}, err
+	}
+	return p.RenderScene(ctx, width, height, 0xfffffffa, 0, scene)
 }
 
 // ProbeGPUSceneTextOverlay is an opt-in compare diagnostic. It returns only
