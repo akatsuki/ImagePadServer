@@ -505,6 +505,14 @@ func drawProgress(canvas *image.RGBA, mode ForegroundMode, layout VisualizerLayo
 	drawCircle(canvas, markerX, markerCenterY, markerRadius, markerColor)
 }
 
+// RenderProgressMaskCPU renders only the canonical progress layer for parity
+// probes, using the production rail/thumb implementation.
+func RenderProgressMaskCPU(width, height int, mode ForegroundMode, layout VisualizerLayout, currentSeconds, duration float64) *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	drawProgress(img, mode, layout, currentSeconds, duration)
+	return img
+}
+
 // drawCircle draws a filled circle centred at (cx, cy) with the given radius.
 func drawCircle(canvas *image.RGBA, cx, cy, radius int, c color.RGBA) {
 	for dy := -radius; dy <= radius; dy++ {
