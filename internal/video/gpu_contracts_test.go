@@ -27,6 +27,18 @@ func TestTextOverlayMetadataRoundTripAndValidation(t *testing.T) {
 	if err := got.Validate(); err == nil {
 		t.Fatal("expected malformed asset hash rejection")
 	}
+	screen := o
+	screen.Kind = "screen_rgba"
+	screen.ScreenRect = SceneRect{W: 1, H: 1}
+	screen.AlphaMode = "premultiplied"
+	screen.PixelOrigin = "top_left"
+	if err := screen.Validate(); err != nil {
+		t.Fatalf("screen payload rejected: %v", err)
+	}
+	screen.PixelOrigin = "bottom_left"
+	if err := screen.Validate(); err == nil {
+		t.Fatal("invalid screen payload semantics accepted")
+	}
 }
 
 func TestGPUContractFrameValidation(t *testing.T) {

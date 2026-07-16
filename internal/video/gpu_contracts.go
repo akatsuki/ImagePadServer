@@ -70,6 +70,10 @@ func (b BaseTextureMetadata) Validate() error {
 // TextOverlayMetadata is an optional, bounded description of the canonical
 // metadata overlay. It is transport-only until a renderer explicitly opts in.
 type TextOverlayMetadata struct {
+	// Kind is "atlas" for the legacy diagnostic payload and "screen_rgba"
+	// for a full-frame, top-left-origin payload suitable for production
+	// source-over composition. Empty keeps legacy JSON compatible.
+	Kind            string      `json:"kind,omitempty"`
 	Title           string      `json:"title,omitempty"`
 	Artist          string      `json:"artist,omitempty"`
 	Album           string      `json:"album,omitempty"`
@@ -88,6 +92,9 @@ type TextOverlayMetadata struct {
 	AssetHash       string      `json:"asset_hash,omitempty"`
 	RendererID      string      `json:"renderer_id,omitempty"`
 	RendererVersion string      `json:"renderer_version,omitempty"`
+	ScreenRect      SceneRect   `json:"screen_rect,omitempty"`
+	AlphaMode       string      `json:"alpha_mode,omitempty"`
+	PixelOrigin     string      `json:"pixel_origin,omitempty"`
 }
 
 type SceneRect struct {
@@ -237,6 +244,17 @@ func (o TextOverlayMetadata) Validate() error {
 	}
 	if o.ColorSpace != ColorSRGB && o.ColorSpace != ColorLinear {
 		return errors.New("invalid text overlay color space")
+	}
+	if o.Kind != "" && o.Kind != "atlas" && o.Kind != "screen_rgba" {
+		return errors.New("invalid text overlay kind")
+	}
+	if o.Kind == "screen_rgba" {
+		if o.AlphaMode != "premultiplied" || o.PixelOrigin != "top_left" {
+			return errors.New("invalid screen text overlay semantics")
+		}
+		if o.ScreenRect.W != int(o.Width) || o.ScreenRect.H != int(o.Height) {
+			return errors.New("screen text overlay rect must cover payload")
+		}
 	}
 	return nil
 }

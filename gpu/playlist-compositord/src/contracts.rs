@@ -69,6 +69,8 @@ pub struct MusicScenePayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TextOverlayMetadata {
+    #[serde(default)]
+    pub kind: String,
     pub title: String,
     pub artist: String,
     pub album: String,
@@ -88,6 +90,12 @@ pub struct TextOverlayMetadata {
     pub asset_hash: String,
     pub renderer_id: String,
     pub renderer_version: String,
+    #[serde(default)]
+    pub screen_rect: SceneRect,
+    #[serde(default)]
+    pub alpha_mode: String,
+    #[serde(default)]
+    pub pixel_origin: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -416,6 +424,17 @@ impl TextOverlayMetadata {
             || self.asset_hash.len() != 64 || !self.asset_hash.bytes().all(|b| b.is_ascii_hexdigit())
             || self.renderer_id.is_empty() || self.renderer_version.is_empty()
         { return Err(ContractError::InvalidScene); }
+        if !self.kind.is_empty() && self.kind != "atlas" && self.kind != "screen_rgba" {
+            return Err(ContractError::InvalidScene);
+        }
+        if self.kind == "screen_rgba"
+            && (self.alpha_mode != "premultiplied"
+                || self.pixel_origin != "top_left"
+                || self.screen_rect.w != self.width as i32
+                || self.screen_rect.h != self.height as i32)
+        {
+            return Err(ContractError::InvalidScene);
+        }
         Ok(())
     }
 }
@@ -576,7 +595,7 @@ mod tests {
     use super::*;
     #[test]
     fn text_overlay_roundtrip_and_rejects_bad_provenance() {
-        let overlay = TextOverlayMetadata { title: "T".into(), artist: String::new(), album: String::new(), font_family: "sans".into(), font_weight: 400, size_px: 16.0, rgba: [255,255,255,255], opacity: 1.0, width: 1, height: 1, row_stride: 256, format: PixelFormat::Rgba8, color_space: ColorSpace::Srgb, premultiplied: true, payload: vec![0;256], asset_hash: "a".repeat(64), renderer_id: "cpu-ass".into(), renderer_version: "1".into() };
+        let overlay = TextOverlayMetadata { kind: "atlas".into(), title: "T".into(), artist: String::new(), album: String::new(), font_family: "sans".into(), font_weight: 400, size_px: 16.0, rgba: [255,255,255,255], opacity: 1.0, width: 1, height: 1, row_stride: 256, format: PixelFormat::Rgba8, color_space: ColorSpace::Srgb, premultiplied: true, payload: vec![0;256], asset_hash: "a".repeat(64), renderer_id: "cpu-ass".into(), renderer_version: "1".into(), screen_rect: SceneRect::default(), alpha_mode: String::new(), pixel_origin: String::new() };
         assert!(overlay.validate().is_ok());
         let encoded = serde_json::to_string(&overlay).unwrap();
         let decoded: TextOverlayMetadata = serde_json::from_str(&encoded).unwrap();
