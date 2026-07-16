@@ -88,3 +88,25 @@ func TestMusicScenePayloadRejectsOversizedData(t *testing.T) {
 		t.Fatal("expected oversized feature rejection")
 	}
 }
+
+func TestBaseTextureMetadataValidationAndRoundTrip(t *testing.T) {
+	b := BaseTextureMetadata{TextureID: "base", Width: 2, Height: 2, RowStride: 256, Format: PixelRGBA8, ColorSpace: ColorSRGB, Payload: make([]byte, 512)}
+	if err := b.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got BaseTextureMetadata
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(b, got) {
+		t.Fatalf("roundtrip mismatch: %#v != %#v", b, got)
+	}
+	got.Payload = got.Payload[:1]
+	if got.Validate() == nil {
+		t.Fatal("short base texture payload accepted")
+	}
+}

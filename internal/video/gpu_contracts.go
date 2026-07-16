@@ -29,12 +29,42 @@ type MusicScenePayload struct {
 	Schema      uint16               `json:"schema"`
 	Feature     AudioFeatureFrame    `json:"feature"`
 	Artwork     *ArtworkMetadata     `json:"artwork,omitempty"`
+	BaseTexture *BaseTextureMetadata `json:"base_texture,omitempty"`
 	GlyphAtlas  *GlyphAtlasMetadata  `json:"glyph_atlas,omitempty"`
 	TextOverlay *TextOverlayMetadata `json:"text_overlay,omitempty"`
 	Layout      MusicSceneLayout     `json:"layout"`
 	Dynamics    MusicSceneDynamics   `json:"dynamics"`
 	Palette     MusicScenePalette    `json:"palette"`
 	Fingerprint string               `json:"fingerprint,omitempty"`
+}
+
+// BaseTextureMetadata is the immutable CPU compositor output shared with the
+// GPU route. It is uploaded once per render job and reused by every frame.
+type BaseTextureMetadata struct {
+	TextureID  string      `json:"texture_id"`
+	Width      uint32      `json:"width"`
+	Height     uint32      `json:"height"`
+	RowStride  uint32      `json:"row_stride"`
+	Format     PixelFormat `json:"format"`
+	ColorSpace ColorSpace  `json:"color_space"`
+	Payload    []byte      `json:"payload,omitempty"`
+	AssetHash  string      `json:"asset_hash,omitempty"`
+}
+
+func (b BaseTextureMetadata) Validate() error {
+	if b.Width == 0 || b.Height == 0 || b.Width > GPUMaxDimension || b.Height > GPUMaxDimension {
+		return errors.New("invalid base texture dimensions")
+	}
+	if b.RowStride < b.Width*4 || b.RowStride%4 != 0 {
+		return errors.New("invalid base texture stride")
+	}
+	if b.Format != PixelRGBA8 || b.ColorSpace == "" {
+		return errors.New("invalid base texture format")
+	}
+	if uint64(b.RowStride)*uint64(b.Height) > GPUMaxPayload || len(b.Payload) != int(b.RowStride*b.Height) {
+		return errors.New("invalid base texture payload")
+	}
+	return nil
 }
 
 // TextOverlayMetadata is an optional, bounded description of the canonical
@@ -166,6 +196,11 @@ func (s MusicScenePayload) Validate() error {
 	if s.Artwork != nil {
 		if err := s.Artwork.Validate(); err != nil {
 			return fmt.Errorf("scene artwork: %w", err)
+		}
+	}
+	if s.BaseTexture != nil {
+		if err := s.BaseTexture.Validate(); err != nil {
+			return fmt.Errorf("scene base texture: %w", err)
 		}
 	}
 	if s.GlyphAtlas != nil {
