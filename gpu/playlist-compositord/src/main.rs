@@ -21,10 +21,13 @@ fn response_for(request: Request, renderer: &mut Option<gpu_render::Renderer>) -
             false,
         ),
         Request::Hello { session, .. } => match gpu_render::Renderer::new() {
-            Err(_) => (
+            Err(error) => (
                 Response::Error {
                     code: "gpu_renderer_unavailable".into(),
-                    message: "no hardware GPU adapter".into(),
+                    // Preserve the adapter/backend diagnostic so the owner can
+                    // distinguish missing hardware from backend initialization
+                    // or requested-adapter failures in the acceptance report.
+                    message: error,
                 },
                 false,
             ),
