@@ -279,6 +279,8 @@ pub struct GpuFrame {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text_overlay_receipt: Option<TextOverlayReceipt>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artwork_receipt: Option<ArtworkReceipt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub glyph_diagnostics: Option<GlyphRenderDiagnostics>,
 }
 
@@ -324,6 +326,8 @@ pub struct TextOverlayReceipt {
     pub renderer_id: String,
     pub renderer_version: String,
 }
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ArtworkReceipt { pub sha256:String, pub source_width:u32, pub source_height:u32, pub output_width:u32, pub output_height:u32, pub crop_mode:String, pub aspect_mode:String }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContractError {
@@ -566,6 +570,7 @@ mod tests {
             payload: vec![0; 512],
             glyph_atlas_receipt: None,
             text_overlay_receipt: None,
+            artwork_receipt: None,
             glyph_diagnostics: None,
         };
         assert!(good.validate().is_ok());

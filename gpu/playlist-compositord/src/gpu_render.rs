@@ -931,6 +931,7 @@ impl Renderer {
             payload: data,
             glyph_atlas_receipt,
             text_overlay_receipt,
+            artwork_receipt: None,
             glyph_diagnostics: Some(glyph_diagnostics),
         })
     }
