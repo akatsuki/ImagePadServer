@@ -887,9 +887,9 @@ func main() {
 			}
 		}
 	}
-	if scene.BaseTexture != nil {
-		inputSpec.BaseTexture = scene.BaseTexture
-	}
+	// Let the production GPU route build the canonical base itself. The
+	// diagnostic scene retains the CPU raster for hash/probe evidence, but
+	// injecting it here would bypass the production palette/base contract.
 	var spectrumQ16 [24]uint16
 	copy(spectrumQ16[:], scene.Feature.SpectrumQ16)
 	var spectrumPoints [3][24]uint16

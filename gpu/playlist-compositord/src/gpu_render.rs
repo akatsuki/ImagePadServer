@@ -357,6 +357,21 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
       glow = 0.0;
     }
     var mixc = blurred_bg + primary * (glow + glyph + artwork * 0.35) + accent * (bars * 0.75 + wave * 0.35 + rail_track * 0.35 + thumb + loudness);
+    if (has_base) {
+      // The CPU renderer composites each dynamic layer with Porter-Duff
+      // source-over in this order. The legacy expression above is retained
+      // for diagnostic/no-base scenes, but would add RGB values and ignore
+      // the layer alpha on the production base path.
+      mixc = mix(blurred_bg, accent, clamp(bars, 0.0, 1.0));
+      mixc = mix(mixc, primary, clamp(wave * 0.55, 0.0, 1.0));
+      mixc = mix(mixc, primary, clamp(glyph, 0.0, 1.0));
+      mixc = mix(mixc, accent, clamp(loudness * 0.80, 0.0, 1.0));
+      // The CPU reference's final progress pass is emitted as an opaque
+      // foreground by the FFmpeg graph (the alpha is already represented in
+      // the graph's colour). Keep the rail/marker at full source-over alpha.
+      mixc = mix(mixc, accent, clamp(rail_track, 0.0, 1.0));
+      mixc = mix(mixc, accent, clamp(thumb, 0.0, 1.0));
+    }
     let overlay_alpha = overlay.a;
     if (!has_base) { mixc = mix(mixc, overlay.rgb, overlay_alpha); }
     // Composite the actual artwork payload into the tile. Previously only its
