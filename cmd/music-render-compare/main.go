@@ -115,6 +115,8 @@ type sceneEvidence struct {
 	GlyphCount          int    `json:"glyphCount,omitempty"`
 	TextRunCount        int    `json:"textRunCount,omitempty"`
 	GlyphCoveragePixels int    `json:"glyphCoveragePixels,omitempty"`
+	GPUInstanceCount    int    `json:"gpuInstanceCount,omitempty"`
+	GPUInstanceSample   any    `json:"gpuInstanceSample,omitempty"`
 	Title               string `json:"title,omitempty"`
 	Artist              string `json:"artist,omitempty"`
 	Album               string `json:"album,omitempty"`
@@ -655,6 +657,15 @@ func main() {
 		rep.SceneEvidence.GlyphCount = glyphEvidence.GlyphCount
 		rep.SceneEvidence.TextRunCount = glyphEvidence.TextRunCount
 		rep.SceneEvidence.GlyphCoveragePixels = glyphEvidence.GlyphCoveragePixels
+	}
+	if !*cpuOnly {
+		if executable := strings.TrimSpace(os.Getenv("IMAGEPAD_PLAYLIST_COMPOSITORD")); executable != "" {
+			probeWidth := uint32(math.Round(float64(p.Height) * 16.0 / 9.0))
+			if gd, e := video.ProbeGPUSceneGlyphDiagnostics(ctx, executable, "compare-glyph-diagnostics", probeWidth, uint32(p.Height), &scene); e == nil && gd != nil {
+				rep.SceneEvidence.GPUInstanceCount = gd.Count
+				if len(gd.Instances) > 0 { rep.SceneEvidence.GPUInstanceSample = gd.Instances[0] }
+			}
+		}
 	}
 	rep.CPU = render(ctx, false, filepath.Join(*output, "cpu"), ff, inputSpec, id, p)
 	if !*cpuOnly {
