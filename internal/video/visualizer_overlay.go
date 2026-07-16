@@ -33,10 +33,28 @@ func RenderASSOverlayRGBA(ctx context.Context, ffmpeg, assPath, fontDir string, 
 	if uint64(len(out)) != uint64(rowBytes)*uint64(height) {
 		return nil, 0, fmt.Errorf("unexpected ASS overlay bytes: got %d want %d", len(out), uint64(rowBytes)*uint64(height))
 	}
-	// libass emits straight-alpha RGBA. Convert once at the transport boundary
-	// so the GPU can use the contract's premultiplied source-over equation.
+	// Some FFmpeg/libass builds flatten the transparent lavfi input to opaque
+	// black. Detect that form and recover coverage from the white text raster;
+	// otherwise use the straight-alpha channel emitted by libass.
+	allOpaque := true
+	for i := 3; i < len(out); i += 4 {
+		if out[i] != 255 {
+			allOpaque = false
+			break
+		}
+	}
 	for i := 0; i+3 < len(out); i += 4 {
 		a := uint32(out[i+3])
+		if allOpaque {
+			a = uint32(out[i])
+			if uint32(out[i+1]) > a {
+				a = uint32(out[i+1])
+			}
+			if uint32(out[i+2]) > a {
+				a = uint32(out[i+2])
+			}
+			out[i+3] = byte(a)
+		}
 		out[i] = byte((uint32(out[i])*a + 127) / 255)
 		out[i+1] = byte((uint32(out[i+1])*a + 127) / 255)
 		out[i+2] = byte((uint32(out[i+2])*a + 127) / 255)
@@ -109,6 +127,11 @@ func RenderCanonicalASSOverlay(ctx context.Context, ffmpeg string, metadata Audi
 	overlay.Title = metadata.Title
 	overlay.Artist = metadata.Artist
 	overlay.Album = metadata.Album
+	overlay.FontFamily = "Noto Sans JP"
+	overlay.FontWeight = 400
+	overlay.SizePx = float32(width)
+	overlay.RGBA = [4]uint8{255, 255, 255, 255}
+	overlay.Opacity = 1
 	return overlay, nil
 }
 

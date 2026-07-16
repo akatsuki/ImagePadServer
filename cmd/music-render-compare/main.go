@@ -893,6 +893,7 @@ func main() {
 		rep.SceneEvidence.ArtworkHash = scene.Artwork.AssetHash
 	}
 	if scene.TextOverlay != nil {
+		inputSpec.TextOverlay = scene.TextOverlay
 		rep.SceneEvidence.TextOverlayCPUHash = scene.TextOverlay.AssetHash
 		rep.SceneEvidence.TextOverlayRegionCrop = imageBounds{MaxX: int(scene.TextOverlay.Width), MaxY: int(scene.TextOverlay.Height)}
 		for i := 3; i < len(scene.TextOverlay.Payload); i += 4 {

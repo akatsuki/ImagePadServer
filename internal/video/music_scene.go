@@ -68,7 +68,11 @@ func CanonicalMusicScene(input AudioRenderInput, frameIndex uint64, ptsNS int64)
 		scene.Artwork = &a
 	}
 	scene.GlyphAtlas = normalizeGlyphs(input.Metadata, layout, palette.Primary, current, duration)
-	scene.TextOverlay = RenderCanonicalTextOverlay(input.Metadata, layout, 1280, 720)
+	if input.TextOverlay != nil {
+		scene.TextOverlay = input.TextOverlay
+	} else {
+		scene.TextOverlay = RenderCanonicalTextOverlay(input.Metadata, layout, 1280, 720)
+	}
 	scene.Fingerprint = musicSceneFingerprint(scene)
 	return scene
 }

@@ -95,5 +95,6 @@ type AudioRenderInput struct {
 	Metadata    AudioMetadata
 	ArtworkPath string
 	BaseTexture *BaseTextureMetadata
+	TextOverlay *TextOverlayMetadata
 	Analysis    AudioAnalysis
 }
