@@ -64,7 +64,20 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
       let tile_min = vec2<f32>(f32(artwork_rect.x) / f32(params.width), f32(artwork_rect.y) / f32(params.height));
       let tile_max = vec2<f32>(f32(artwork_rect.x + artwork_rect.z) / f32(params.width), f32(artwork_rect.y + artwork_rect.w) / f32(params.height));
       if (fx >= tile_min.x && fx < tile_max.x && fy >= tile_min.y && fy < tile_max.y) {
-        let uv = (vec2<f32>(fx, fy) - tile_min) / (tile_max - tile_min);
+        // Match the CPU `scaleCover` policy instead of stretching artwork:
+        // crop the longer source axis around its centre while preserving the
+        // source aspect ratio inside the canonical artwork rect.
+        let tile_uv = (vec2<f32>(fx, fy) - tile_min) / (tile_max - tile_min);
+        let tex_size = vec2<f32>(textureDimensions(artwork_tex));
+        let tile_aspect = (tile_max.x - tile_min.x) / max(0.0001, tile_max.y - tile_min.y);
+        let source_aspect = tex_size.x / max(1.0, tex_size.y);
+        var uv = tile_uv;
+        if (source_aspect > tile_aspect) {
+          uv.x = (tile_uv.x - 0.5) * tile_aspect / source_aspect + 0.5;
+        } else {
+          uv.y = (tile_uv.y - 0.5) * source_aspect / tile_aspect + 0.5;
+        }
+        uv = clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0));
         let edge = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
         let alpha = smoothstep(0.0, 0.025, edge);
         artwork = textureSampleLevel(artwork_tex, artwork_sampler, uv, 0.0).a * alpha;
