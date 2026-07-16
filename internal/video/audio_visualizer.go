@@ -703,6 +703,7 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 	defer os.Remove(tmpPath)
 	assFilter := "ass" + "=filename='" + escapeFilterPath(assPath) + "':fontsdir='" + escapeFilterPath(fontDir) + "'"
 	useWaveFilter := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_WAVE_FILTER")) == "1"
+	useSpectrumCanonical := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_SPECTRUM_CANONICAL")) == "1"
 	args := []string{"-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-s", fmt.Sprintf("%dx%d", width, height), "-r", "30", "-i", "pipe:0"}
 	if useWaveFilter {
 		args = append(args, "-i", input.SourcePath, "-filter_complex", fmt.Sprintf("[1:a]%s=s=%dx%d:rate=30:mode=line:colors=%s[wave];[0:v][wave]overlay=%d:%d[v0];[v0]%s[v]", "show"+"waves", waveW, waveH, waveColor, gpuLayout.Spectrum.X, gpuLayout.Spectrum.Y, assFilter), "-map", "[v]")
@@ -797,6 +798,19 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 		}
 		waveMeta := BaseTextureMetadata{TextureID: fmt.Sprintf("wave-%s-%d", id, i), Width: uint32(waveW), Height: uint32(waveH), RowStride: uint32(waveStride), Format: PixelRGBA8, ColorSpace: ColorSRGB, Payload: wavePayload}
 		scene.WaveformTexture = &waveMeta
+		if useSpectrumCanonical {
+			frameIndex := i
+			if frameIndex >= len(input.Analysis.Frames) {
+				frameIndex = len(input.Analysis.Frames) - 1
+			}
+			composite := RenderSpectrumCompositeTextureCPU(width, height, input.Analysis.Frames[frameIndex].Spectrum24, wave, waveW, waveH, gpuMode, gpuLayout)
+			meta, metaErr := NewBaseTextureMetadata(fmt.Sprintf("spectrum-%s-%d", id, i), composite, ColorSRGB)
+			if metaErr != nil {
+				_ = cmd.Process.Kill()
+				return fmt.Errorf("spectrum texture metadata: %w", metaErr)
+			}
+			scene.SpectrumTexture = &meta
+		}
 		if useWaveFilter {
 			scene.WaveformTexture = nil
 		}

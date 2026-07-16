@@ -255,8 +255,9 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
       if (eff_fade == 1.0) { bar_alpha = 0.0; }
       else { bar_alpha = round(209.0 * bottom_dist / (eff_fade - 1.0)); }
     }
-    let bars = select(0.0, bar_alpha / 255.0,
+    var bars = select(0.0, bar_alpha / 255.0,
       sx >= bar_x && sx < bar_x + bar_w && sy >= bar_y && sy < bar_bottom);
+    if ((params.scene_enabled & 128u) != 0u) { bars = 0.0; }
     if (params.sequence == 0xfffffffbu) {
       let v = u32(clamp(bars * 255.0, 0.0, 255.0));
       pixels[i] = v | (v << 8u) | (v << 16u) | (255u << 24u);
@@ -272,7 +273,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
       in_spectrum && abs(sy - wave_y) < 1.0);
     // A canonical waveform texture is authoritative. Do not add the
     // analytic proxy on top of it or the line is rendered twice.
-    if ((params.scene_enabled & 32u) != 0u) { wave = 0.0; }
+    if ((params.scene_enabled & 32u) != 0u || (params.scene_enabled & 128u) != 0u) { wave = 0.0; }
     // Progress rail and thumb use the canonical progress rectangle.
     let progress = f32(params.dynamics[0].z) / 65535.0;
     let rail = params.rects[6];
@@ -479,6 +480,16 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         let wy = min(wd.y - 1u, u32(id.y) - u32(wr.y));
         let wc = textureLoad(waveform_tex, vec2<i32>(i32(wx), i32(wy)), 0);
         mixc = mix(mixc, wc.rgb, wc.a);
+      }
+    }
+    if ((params.scene_enabled & 128u) != 0u) {
+      let sr = params.rects[4];
+      let sd = textureDimensions(spectrum_tex);
+      if (id.x >= u32(sr.x) && id.x < u32(sr.x + sr.z) && id.y >= u32(sr.y) && id.y < u32(sr.y + sr.w)) {
+        let sx2 = min(sd.x - 1u, id.x - u32(sr.x));
+        let sy2 = min(sd.y - 1u, id.y - u32(sr.y));
+        let sc = textureLoad(spectrum_tex, vec2<i32>(i32(sx2), i32(sy2)), 0);
+        mixc = mix(mixc, sc.rgb, sc.a);
       }
     }
     // Canonical CPU loudness raster. The payload is full-frame RGBA, while

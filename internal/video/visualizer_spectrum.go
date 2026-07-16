@@ -2,8 +2,31 @@ package video
 
 import (
 	"image"
+	"image/color"
 	"math"
 )
+
+// RenderSpectrumCompositeTextureCPU returns the canonical bars+showwaves
+// raster cropped to the spectrum rectangle. It is used only by the optional
+// GPU parity experiment.
+func RenderSpectrumCompositeTextureCPU(width, height int, spectrum [24]float64, wave []byte, waveW, waveH int, mode ForegroundMode, layout VisualizerLayout) *image.RGBA {
+	full := image.NewRGBA(image.Rect(0, 0, width, height))
+	drawSpectrumFixedFade(full, spectrum, mode, layout)
+	for y := 0; y < waveH; y++ {
+		for x := 0; x < waveW; x++ {
+			i := (y*waveW + x) * 4
+			if i+3 >= len(wave) {
+				continue
+			}
+			blendPixel(full, layout.Spectrum.X+x, layout.Spectrum.Y+y, color.RGBA{wave[i], wave[i+1], wave[i+2], wave[i+3]})
+		}
+	}
+	out := image.NewRGBA(image.Rect(0, 0, waveW, waveH))
+	for y := 0; y < waveH; y++ {
+		copy(out.Pix[y*out.Stride:y*out.Stride+waveW*4], full.Pix[(layout.Spectrum.Y+y)*full.Stride+layout.Spectrum.X*4:(layout.Spectrum.Y+y)*full.Stride+layout.Spectrum.X*4+waveW*4])
+	}
+	return out
+}
 
 // ---------------------------------------------------------------------------
 // SpectrumFadeHeight
