@@ -61,7 +61,7 @@ func CanonicalMusicScene(input AudioRenderInput, frameIndex uint64, ptsNS int64)
 		a := fallbackArtwork(input.Analysis.Features)
 		scene.Artwork = &a
 	}
-	scene.GlyphAtlas = normalizeGlyphs(input.Metadata, layout, palette.Primary)
+	scene.GlyphAtlas = normalizeGlyphs(input.Metadata, layout, palette.Primary, current, duration)
 	scene.Fingerprint = musicSceneFingerprint(scene)
 	return scene
 }
@@ -208,15 +208,17 @@ func normalizeArtwork(path string) (ArtworkMetadata, bool) {
 	return ArtworkMetadata{TextureID: "artwork-" + hex.EncodeToString(sum[:8]), Width: uint32(w), Height: uint32(h), RowStride: uint32(stride), Format: PixelRGBA8, ColorSpace: ColorSRGB, Alpha: true, Payload: payload, AssetHash: hex.EncodeToString(sum[:])}, true
 }
 
-func normalizeGlyphs(meta AudioMetadata, layout VisualizerLayout, primary [4]uint8) *GlyphAtlasMetadata {
+func normalizeGlyphs(meta AudioMetadata, layout VisualizerLayout, primary [4]uint8, current, duration float64) *GlyphAtlasMetadata {
 	fields := []struct {
-		text string
-		rect Rect
-		size float32
+		text   string
+		rect   Rect
+		size   float32
+		center bool
 	}{
-		{strings.TrimSpace(meta.Title), layout.Title, 48},
-		{strings.TrimSpace(meta.Artist), layout.Artist, 28},
-		{strings.TrimSpace(meta.Album), layout.Album, 24},
+		{strings.TrimSpace(meta.Title), layout.Title, 48, false},
+		{strings.TrimSpace(meta.Artist), layout.Artist, 28, false},
+		{strings.TrimSpace(meta.Album), layout.Album, 24, false},
+		{FormatMediaTime(int(math.Max(0, math.Floor(current)))) + " / " + FormatMediaTime(int(math.Max(0, math.Floor(duration)))), layout.Time, 22, true},
 	}
 	var all []rune
 	for _, f := range fields {
@@ -267,7 +269,17 @@ func normalizeGlyphs(meta AudioMetadata, layout VisualizerLayout, primary [4]uin
 		if f.text == "" {
 			continue
 		}
-		runs = append(runs, TextRun{Text: f.text, X: float32(f.rect.X), Y: float32(f.rect.Y), SizePx: f.size, RGBA: primary, Opacity: 1})
+		x := float32(f.rect.X)
+		if f.center {
+			// The GPU atlas uses a bounded monospace advance. Center the time
+			// label in the same canonical rect as ASS alignment 5.
+			approxWidth := float32(len([]rune(f.text))) * f.size * 0.6
+			x += (float32(f.rect.W) - approxWidth) / 2
+		}
+		// TextRun coordinates are top-left screen bounds; CPU ASS positions
+		// title/artist/album at the vertical center of each rect.
+		y := float32(f.rect.Y) + (float32(f.rect.H)-f.size)/2
+		runs = append(runs, TextRun{Text: f.text, X: x, Y: y, SizePx: f.size, RGBA: primary, Opacity: 1})
 	}
 	return &GlyphAtlasMetadata{TextureID: "glyphs-" + hex.EncodeToString(sum[:8]), FontFamily: "canonical-sans", FontWeight: 500, FallbackOrder: []string{"Noto Sans CJK JP", "Segoe UI", "sans-serif"}, Width: uint32(w), Height: uint32(h), RowStride: uint32(stride), GlyphCount: uint32(len(glyphs)), MissingGlyphID: "?", Payload: payload, AssetHash: hex.EncodeToString(sum[:]), Glyphs: glyphs, TextRuns: runs}
 }
