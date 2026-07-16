@@ -215,6 +215,19 @@ pub struct GpuFrame {
     pub ownership: Ownership,
     #[serde(with = "base64_bytes")]
     pub payload: Vec<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glyph_atlas_receipt: Option<GlyphAtlasReceipt>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GlyphAtlasReceipt {
+    pub sha256: String,
+    pub width: u32,
+    pub height: u32,
+    pub row_stride: u32,
+    pub glyph_count: u32,
+    pub text_run_count: u32,
+    pub format: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -402,6 +415,7 @@ mod tests {
             alpha: true,
             ownership: Ownership::OwnedByTransport,
             payload: vec![0; 512],
+            glyph_atlas_receipt: None,
         };
         assert!(good.validate().is_ok());
         let mut bad = good.clone();

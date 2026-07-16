@@ -1,11 +1,12 @@
 use crate::adapter;
 use crate::contracts::{
-    ColorSpace, GpuFrame, MusicScenePayload, Ownership, PixelFormat, CONTRACT_VERSION,
+    ColorSpace, GpuFrame, GlyphAtlasReceipt, MusicScenePayload, Ownership, PixelFormat, CONTRACT_VERSION,
     ROW_ALIGNMENT,
 };
 use std::sync::mpsc::channel;
 use std::num::NonZeroU32;
 use wgpu::util::DeviceExt;
+use sha2::{Digest, Sha256};
 
 const SHADER: &str = r#"
 struct Params {
@@ -462,6 +463,13 @@ impl Renderer {
                 .map(|a| self.upload_glyph_atlas(a)).transpose()?;
             (artwork, atlas)
         } else { (None, None) };
+        let glyph_atlas_receipt = scene.and_then(|s| s.glyph_atlas.as_ref()).map(|atlas| {
+            let mut h = Sha256::new();
+            h.update(&atlas.payload);
+            GlyphAtlasReceipt { sha256: format!("{:x}", h.finalize()), width: atlas.width,
+                height: atlas.height, row_stride: atlas.row_stride, glyph_count: atlas.glyph_count,
+                text_run_count: atlas.text_runs.len() as u32, format: "Rgba8".into() }
+        });
         let fallback = [255u8, 255, 255, 255];
         let fallback_texture = || {
             let texture = self.device.create_texture(&wgpu::TextureDescriptor { label: Some("fallback-atlas"), size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba8UnormSrgb, usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] });
@@ -557,6 +565,7 @@ impl Renderer {
             alpha: true,
             ownership: Ownership::OwnedByTransport,
             payload: data,
+            glyph_atlas_receipt,
         })
     }
 }

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,16 @@ import (
 	"sync"
 	"time"
 )
+
+func validateGlyphAtlasReceipt(atlas *GlyphAtlasMetadata, receipt *GlyphAtlasReceipt) error {
+	if receipt == nil { return errors.New("sidecar glyph atlas receipt missing") }
+	sum := sha256.Sum256(atlas.Payload)
+	want := fmt.Sprintf("%x", sum[:])
+	if receipt.SHA256 != want || receipt.Width != atlas.Width || receipt.Height != atlas.Height || receipt.RowStride != atlas.RowStride || receipt.GlyphCount != uint32(len(atlas.Glyphs)) || receipt.TextRunCount != uint32(len(atlas.TextRuns)) || receipt.Format != string(PixelRGBA8) {
+		return fmt.Errorf("sidecar glyph atlas receipt mismatch: got=%+v want_sha256=%s", *receipt, want)
+	}
+	return nil
+}
 
 const sidecarStderrLimit = 32 * 1024
 
@@ -62,6 +73,7 @@ type SidecarDiagnostics struct {
 	Adapter    string
 	Backend    string
 	Toolchain  string
+	GlyphAtlasReceipt *GlyphAtlasReceipt
 }
 
 // SidecarFingerprint identifies the runtime selected by the sidecar. Empty
@@ -164,6 +176,10 @@ func (p *SidecarProcess) RenderScene(ctx context.Context, width, height uint32, 
 		if err := resp.Frame.Validate(); err != nil {
 			return GpuFrame{}, err
 		}
+		if scene != nil && scene.GlyphAtlas != nil {
+			if err := validateGlyphAtlasReceipt(scene.GlyphAtlas, resp.Frame.GlyphAtlasReceipt); err != nil { return GpuFrame{}, err }
+		}
+		p.glyphReceipt = resp.Frame.GlyphAtlasReceipt
 		return *resp.Frame, nil
 	}
 }
@@ -183,6 +199,7 @@ type SidecarProcess struct {
 	exitError   error
 	closed      bool
 	fingerprint SidecarFingerprint
+	glyphReceipt *GlyphAtlasReceipt
 }
 
 func StartSidecar(ctx context.Context, executable, session string) (*SidecarProcess, error) {
@@ -223,6 +240,7 @@ func (p *SidecarProcess) Diagnostics() SidecarDiagnostics {
 	defer p.mu.Unlock()
 	d := SidecarDiagnostics{StartedAt: p.startedAt, FinishedAt: p.finishedAt, ExitError: p.exitError}
 	d.Adapter, d.Backend, d.Toolchain = p.fingerprint.Adapter, p.fingerprint.Backend, p.fingerprint.Toolchain
+	d.GlyphAtlasReceipt = p.glyphReceipt
 	if p.cmd != nil {
 		d.Executable, d.Args = p.cmd.Path, append([]string(nil), p.cmd.Args[1:]...)
 	}

@@ -259,6 +259,17 @@ type GpuFrame struct {
 	Alpha      bool        `json:"alpha"`
 	Ownership  string      `json:"ownership"`
 	Payload    []byte      `json:"payload"`
+	GlyphAtlasReceipt *GlyphAtlasReceipt `json:"glyph_atlas_receipt,omitempty"`
+}
+
+type GlyphAtlasReceipt struct {
+	SHA256 string `json:"sha256"`
+	Width uint32 `json:"width"`
+	Height uint32 `json:"height"`
+	RowStride uint32 `json:"row_stride"`
+	GlyphCount uint32 `json:"glyph_count"`
+	TextRunCount uint32 `json:"text_run_count"`
+	Format string `json:"format"`
 }
 
 func (s SceneSnapshot) Validate() error {
