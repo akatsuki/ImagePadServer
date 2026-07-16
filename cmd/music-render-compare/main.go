@@ -761,10 +761,12 @@ func main() {
 			} else if e != nil {
 				rep.SceneEvidence.GPUInstanceDiagnosticError = e.Error()
 			}
-			if sf, e := video.ProbeGPUSceneGlyphOnly(diagCtx, executable, "compare-glyph-only", probeWidth, uint32(p.Height), &scene); e == nil {
+			synthCtx, cancelSynth := context.WithTimeout(ctx, 3*time.Second)
+			if sf, e := video.ProbeGPUSceneGlyphOnly(synthCtx, executable, "compare-glyph-only", probeWidth, uint32(p.Height), &scene); e == nil {
 				ev := video.CompareSyntheticGlyph(scene.GlyphAtlas, cpuManifest, sf, probeWidth, uint32(p.Height))
 				rep.SceneEvidence.SyntheticGlyph = &ev
 			}
+			cancelSynth()
 			synCtx, cancelSyn := context.WithTimeout(ctx, 3*time.Second)
 			syn, e := video.ProbeGPUSceneGlyphOnly(synCtx, executable, "compare-glyph-only", probeWidth, uint32(p.Height), &scene)
 			cancelSyn()
