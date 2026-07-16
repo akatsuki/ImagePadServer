@@ -53,10 +53,10 @@ func CompareSyntheticGlyph(atlas *GlyphAtlasMetadata, manifest GlyphInstanceMani
 					off := int(y*atlas.RowStride + (a.X+x)*4 + 3)
 					if off < len(atlas.Payload) && atlas.Payload[off] > 0 {
 						e.CPUAlphaCoverage++
-					}
-					if x := sx0 + int(float32(x)*float32(sw)/float32(a.Width)); x >= sx0 && x < sx0+sw {
-						if y := sy0 + int(float32(y)*float32(sh)/float32(a.Height)); y >= sy0 && y < sy0+sh {
-							cpuScreenMask[y*int(width)+x] = struct{}{}
+						if x := sx0 + int(float32(x)*float32(sw)/float32(a.Width)); x >= sx0 && x < sx0+sw {
+							if y := sy0 + int(float32(y)*float32(sh)/float32(a.Height)); y >= sy0 && y < sy0+sh {
+								cpuScreenMask[y*int(width)+x] = struct{}{}
+							}
 						}
 					}
 				}
