@@ -30,6 +30,10 @@ func TestSidecarHelper(t *testing.T) {
 		case "health":
 			_ = enc.Encode(map[string]any{"type": "health", "ready": true, "protocol": 1, "adapter": "fixture-adapter", "backend": "vulkan", "toolchain": "wgpu-fixture-1"})
 		case "render":
+			if os.Getenv("IMAGEPAD_SIDECAR_MALFORMED_FRAME") == "1" {
+				_ = enc.Encode(map[string]any{"type": "frame", "frame": map[string]any{"width": 0, "height": 0, "stride": 0, "format": "rgba8", "data": "!!!"}})
+				continue
+			}
 			if os.Getenv("IMAGEPAD_SIDECAR_DIE_ON_RENDER") == "1" {
 				return
 			}
