@@ -248,47 +248,66 @@ const (
 )
 
 type GpuFrame struct {
-	Schema     uint16      `json:"schema"`
-	Sequence   uint64      `json:"sequence"`
-	PTSNs      int64       `json:"pts_ns"`
-	Width      uint32      `json:"width"`
-	Height     uint32      `json:"height"`
-	RowStride  uint32      `json:"row_stride"`
-	Format     PixelFormat `json:"format"`
-	ColorSpace ColorSpace  `json:"color_space"`
-	Alpha      bool        `json:"alpha"`
-	Ownership  string      `json:"ownership"`
-	Payload    []byte      `json:"payload"`
-	GlyphAtlasReceipt *GlyphAtlasReceipt `json:"glyph_atlas_receipt,omitempty"`
-	GlyphDiagnostics *GlyphRenderDiagnostics `json:"glyph_diagnostics,omitempty"`
+	Schema            uint16                  `json:"schema"`
+	Sequence          uint64                  `json:"sequence"`
+	PTSNs             int64                   `json:"pts_ns"`
+	Width             uint32                  `json:"width"`
+	Height            uint32                  `json:"height"`
+	RowStride         uint32                  `json:"row_stride"`
+	Format            PixelFormat             `json:"format"`
+	ColorSpace        ColorSpace              `json:"color_space"`
+	Alpha             bool                    `json:"alpha"`
+	Ownership         string                  `json:"ownership"`
+	Payload           []byte                  `json:"payload"`
+	GlyphAtlasReceipt *GlyphAtlasReceipt      `json:"glyph_atlas_receipt,omitempty"`
+	GlyphDiagnostics  *GlyphRenderDiagnostics `json:"glyph_diagnostics,omitempty"`
 }
 
 // GlyphRenderDiagnostics is bounded, read-only evidence of the instance data
 // actually constructed by the GPU sidecar. It is not part of the production
 // rendering decision and exists solely to diagnose CPU/GPU text parity.
 type GlyphRenderDiagnostics struct {
-	Count int `json:"count"`
+	Count     int                       `json:"count"`
 	Instances []GlyphInstanceDiagnostic `json:"instances,omitempty"`
 }
 type GlyphInstanceDiagnostic struct {
-	ID string `json:"id"`
-	Screen [4]float32 `json:"screen"`
-	Atlas [4]float32 `json:"atlas"`
-	Color [4]float32 `json:"color"`
-	Scale float32 `json:"scale"`
-	Baseline float32 `json:"baseline"`
-	InkTop float32 `json:"ink_top"`
+	ID          string     `json:"id"`
+	Screen      [4]float32 `json:"screen"`
+	Atlas       [4]float32 `json:"atlas"`
+	Color       [4]float32 `json:"color"`
+	Scale       float32    `json:"scale"`
+	Baseline    float32    `json:"baseline"`
+	InkTop      float32    `json:"ink_top"`
 	CellPadding [4]float32 `json:"cell_padding"`
 }
 
+// GlyphInstanceManifest is the deterministic CPU expansion of text_runs.
+// It intentionally mirrors the sidecar diagnostic schema so parity tooling can
+// compare geometry without changing the production render path.
+type GlyphInstanceManifest struct {
+	Count     int                       `json:"count"`
+	Instances []GlyphInstanceDiagnostic `json:"instances,omitempty"`
+	SHA256    string                    `json:"sha256,omitempty"`
+}
+
+type GlyphInstanceParity struct {
+	CPUCount       int    `json:"cpuCount"`
+	GPUCount       int    `json:"gpuCount"`
+	Matched        int    `json:"matched"`
+	Mismatches     int    `json:"mismatches"`
+	CPUManifestSHA string `json:"cpuManifestSha,omitempty"`
+	GPUManifestSHA string `json:"gpuManifestSha,omitempty"`
+	FirstMismatch  string `json:"firstMismatch,omitempty"`
+}
+
 type GlyphAtlasReceipt struct {
-	SHA256 string `json:"sha256"`
-	Width uint32 `json:"width"`
-	Height uint32 `json:"height"`
-	RowStride uint32 `json:"row_stride"`
-	GlyphCount uint32 `json:"glyph_count"`
+	SHA256       string `json:"sha256"`
+	Width        uint32 `json:"width"`
+	Height       uint32 `json:"height"`
+	RowStride    uint32 `json:"row_stride"`
+	GlyphCount   uint32 `json:"glyph_count"`
 	TextRunCount uint32 `json:"text_run_count"`
-	Format string `json:"format"`
+	Format       string `json:"format"`
 }
 
 func (s SceneSnapshot) Validate() error {

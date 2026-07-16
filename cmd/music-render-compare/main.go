@@ -105,21 +105,23 @@ type report struct {
 // It makes an empty compare fixture distinguishable from a real metadata/
 // artwork parity run without embedding the potentially large raster twice.
 type sceneEvidence struct {
-	Fingerprint         string `json:"fingerprint,omitempty"`
-	ArtworkHash         string `json:"artworkHash,omitempty"`
-	GlyphHash           string `json:"glyphHash,omitempty"`
-	GlyphPayloadHash    string `json:"glyphPayloadHash,omitempty"`
-	GlyphWidth          uint32 `json:"glyphWidth,omitempty"`
-	GlyphHeight         uint32 `json:"glyphHeight,omitempty"`
-	GlyphRowStride      uint32 `json:"glyphRowStride,omitempty"`
-	GlyphCount          int    `json:"glyphCount,omitempty"`
-	TextRunCount        int    `json:"textRunCount,omitempty"`
-	GlyphCoveragePixels int    `json:"glyphCoveragePixels,omitempty"`
-	GPUInstanceCount    int    `json:"gpuInstanceCount,omitempty"`
-	GPUInstanceSample   any    `json:"gpuInstanceSample,omitempty"`
-	Title               string `json:"title,omitempty"`
-	Artist              string `json:"artist,omitempty"`
-	Album               string `json:"album,omitempty"`
+	Fingerprint         string                      `json:"fingerprint,omitempty"`
+	ArtworkHash         string                      `json:"artworkHash,omitempty"`
+	GlyphHash           string                      `json:"glyphHash,omitempty"`
+	GlyphPayloadHash    string                      `json:"glyphPayloadHash,omitempty"`
+	GlyphWidth          uint32                      `json:"glyphWidth,omitempty"`
+	GlyphHeight         uint32                      `json:"glyphHeight,omitempty"`
+	GlyphRowStride      uint32                      `json:"glyphRowStride,omitempty"`
+	GlyphCount          int                         `json:"glyphCount,omitempty"`
+	TextRunCount        int                         `json:"textRunCount,omitempty"`
+	GlyphCoveragePixels int                         `json:"glyphCoveragePixels,omitempty"`
+	GPUInstanceCount    int                         `json:"gpuInstanceCount,omitempty"`
+	GPUInstanceSample   any                         `json:"gpuInstanceSample,omitempty"`
+	CPUInstanceManifest video.GlyphInstanceManifest `json:"cpuInstanceManifest,omitempty"`
+	GPUInstanceParity   video.GlyphInstanceParity   `json:"gpuInstanceParity,omitempty"`
+	Title               string                      `json:"title,omitempty"`
+	Artist              string                      `json:"artist,omitempty"`
+	Album               string                      `json:"album,omitempty"`
 }
 
 // glyphAtlasEvidence is deliberately derived from the exact bytes sent to
@@ -661,11 +663,19 @@ func main() {
 	if !*cpuOnly {
 		if executable := strings.TrimSpace(os.Getenv("IMAGEPAD_PLAYLIST_COMPOSITORD")); executable != "" {
 			probeWidth := uint32(math.Round(float64(p.Height) * 16.0 / 9.0))
+			cpuManifest := video.ExpandMusicGlyphManifest(&scene, probeWidth, uint32(p.Height))
+			rep.SceneEvidence.CPUInstanceManifest = cpuManifest
 			if gd, e := video.ProbeGPUSceneGlyphDiagnostics(ctx, executable, "compare-glyph-diagnostics", probeWidth, uint32(p.Height), &scene); e == nil && gd != nil {
 				rep.SceneEvidence.GPUInstanceCount = gd.Count
-				if len(gd.Instances) > 0 { rep.SceneEvidence.GPUInstanceSample = gd.Instances[0] }
+				rep.SceneEvidence.GPUInstanceParity = video.CompareMusicGlyphManifest(cpuManifest, gd)
+				if len(gd.Instances) > 0 {
+					rep.SceneEvidence.GPUInstanceSample = gd.Instances[0]
+				}
 			}
 		}
+	}
+	if *cpuOnly {
+		rep.SceneEvidence.CPUInstanceManifest = video.ExpandMusicGlyphManifest(&scene, uint32(math.Round(float64(p.Height)*16.0/9.0)), uint32(p.Height))
 	}
 	rep.CPU = render(ctx, false, filepath.Join(*output, "cpu"), ff, inputSpec, id, p)
 	if !*cpuOnly {
