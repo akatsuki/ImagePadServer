@@ -217,6 +217,20 @@ func ProbeGPUSceneBaseTexture(ctx context.Context, executable string, width, hei
 	return p.RenderScene(ctx, width, height, 0xfffffffa, 0, scene)
 }
 
+// ProbeGPUSceneSpectrum renders only the CPU-shaped spectrum bar mask. It is
+// evidence-only and uses the reserved sequence 0xfffffffb.
+func ProbeGPUSceneSpectrum(ctx context.Context, executable string, width, height uint32, scene *MusicScenePayload) (GpuFrame, error) {
+	p, err := StartSidecar(ctx, executable, "compare-spectrum")
+	if err != nil {
+		return GpuFrame{}, err
+	}
+	defer p.Close()
+	if err := p.Hello(ctx, "compare-spectrum"); err != nil {
+		return GpuFrame{}, err
+	}
+	return p.RenderScene(ctx, width, height, 0xfffffffb, 0, scene)
+}
+
 // ProbeGPUSceneTextOverlay is an opt-in compare diagnostic. It returns only
 // transport receipt evidence and does not alter production shader output.
 func ProbeGPUSceneTextOverlay(ctx context.Context, executable, session string, width, height uint32, scene *MusicScenePayload) (*TextOverlayReceipt, error) {
