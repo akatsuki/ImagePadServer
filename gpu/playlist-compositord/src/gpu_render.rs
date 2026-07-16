@@ -247,6 +247,11 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         let guide_y = f32(loud.y + loud.w) - guide * f32(loud.w);
         loudness = loudness + select(0.0, 0.55, abs(ry - guide_y) < 0.75);
       }
+      if (params.sequence == 0xfffffff8u) {
+        let v = u32(clamp(loudness, 0.0, 1.0) * 255.0);
+        pixels[i] = v | (v << 8u) | (v << 16u) | (255u << 24u);
+        return;
+      }
       }
   var glyph = 0.0;
     if (params.sequence == 0xfffffffeu) {
