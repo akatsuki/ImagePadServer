@@ -151,6 +151,16 @@ func ProbeGPUSceneGlyphOnly(ctx context.Context, executable, session string, wid
 	return p.RenderScene(ctx, width, height, ^uint64(0), 0, scene)
 }
 
+// ProbeGPUSceneTextOverlayComposite renders only the uploaded canonical text
+// overlay through the diagnostic shader branch.
+func ProbeGPUSceneTextOverlayComposite(ctx context.Context, executable string, width, height uint32, scene *MusicScenePayload) (GpuFrame, error) {
+	p, err := StartSidecar(ctx, executable, "compare-text-overlay-composite")
+	if err != nil { return GpuFrame{}, err }
+	defer p.Close()
+	if err := p.Hello(ctx, "compare-text-overlay-composite"); err != nil { return GpuFrame{}, err }
+	return p.RenderScene(ctx, width, height, 0xfffffffe, 0, scene)
+}
+
 // ProbeGPUSceneTextOverlay is an opt-in compare diagnostic. It returns only
 // transport receipt evidence and does not alter production shader output.
 func ProbeGPUSceneTextOverlay(ctx context.Context, executable, session string, width, height uint32, scene *MusicScenePayload) (*TextOverlayReceipt, error) {
