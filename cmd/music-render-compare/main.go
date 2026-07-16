@@ -309,12 +309,16 @@ func extractScreenshots(ctx context.Context, ffmpeg, playlist, out string, durat
 	if duration <= 0 {
 		duration = 1
 	}
-	for name, at := range map[string]float64{"start": 0, "mid": duration / 2, "end": duration - 0.25} {
+	// Avoid exact segment boundaries: some HLS muxers expose no decodable
+	// frame at t=0 or during the final encoder drain interval.
+	for name, at := range map[string]float64{"start": math.Min(0.1, duration/4), "mid": duration / 2, "end": math.Max(0, duration - 0.5)} {
 		if at < 0 {
 			at = 0
 		}
 		path := filepath.Join(out, name+".png")
-		cmd := exec.CommandContext(ctx, ffmpeg, "-y", "-ss", fmt.Sprintf("%.3f", at), "-i", playlist, "-frames:v", "1", "-vf", "format=rgba", path)
+		// Seek after opening the HLS playlist. Input-side seeking can land before
+		// the first keyframe and produce a misleading black start/end artifact.
+		cmd := exec.CommandContext(ctx, ffmpeg, "-y", "-i", playlist, "-ss", fmt.Sprintf("%.3f", at), "-frames:v", "1", "-vf", "format=rgba", path)
 		if err := cmd.Run(); err == nil {
 			result[name] = path
 		}
