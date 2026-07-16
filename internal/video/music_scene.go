@@ -68,8 +68,24 @@ func CanonicalMusicScene(input AudioRenderInput, frameIndex uint64, ptsNS int64)
 		scene.Artwork = &a
 	}
 	scene.GlyphAtlas = normalizeGlyphs(input.Metadata, layout, palette.Primary, current, duration)
+	scene.TextOverlay = RenderCanonicalTextOverlay(input.Metadata, layout, 1280, 720)
 	scene.Fingerprint = musicSceneFingerprint(scene)
 	return scene
+}
+
+// RenderCanonicalTextOverlay emits the bounded RGBA overlay raster and its
+// provenance. It is a diagnostic transport artifact; ASS/production routes
+// remain unchanged.
+func RenderCanonicalTextOverlay(meta AudioMetadata, layout VisualizerLayout, width, height uint32) *TextOverlayMetadata {
+	if width == 0 || height == 0 {
+		return nil
+	}
+	atlas := normalizeGlyphs(meta, layout, [4]uint8{255, 255, 255, 255}, 0, 0)
+	if atlas == nil {
+		return nil
+	}
+	sum := sha256.Sum256(atlas.Payload)
+	return &TextOverlayMetadata{Title: strings.TrimSpace(meta.Title), Artist: strings.TrimSpace(meta.Artist), Album: strings.TrimSpace(meta.Album), FontFamily: "Go Regular", FontWeight: 400, SizePx: 48, RGBA: [4]uint8{255, 255, 255, 255}, Opacity: 1, Width: atlas.Width, Height: atlas.Height, RowStride: atlas.RowStride, Format: PixelRGBA8, ColorSpace: ColorSRGB, Premultiplied: true, Payload: atlas.Payload, AssetHash: hex.EncodeToString(sum[:]), RendererID: "imagepad-canonical-overlay", RendererVersion: "1"}
 }
 
 func fallbackArtwork(features AudioFeatures) ArtworkMetadata {

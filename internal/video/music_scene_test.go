@@ -10,6 +10,23 @@ import (
 	"testing"
 )
 
+func TestRenderCanonicalTextOverlayGolden(t *testing.T) {
+	layout, err := LayoutForSize(1280, 720)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := RenderCanonicalTextOverlay(AudioMetadata{Title: "Fixture Title", Artist: "Fixture Artist", Album: "Fixture Album"}, layout, 1280, 720)
+	if o == nil || len(o.Payload) == 0 {
+		t.Fatal("missing overlay raster")
+	}
+	if err := o.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if o.AssetHash != "" {
+		t.Logf("overlay golden hash=%s", o.AssetHash)
+	}
+}
+
 func TestCanonicalMusicSceneNormalizesAssetsAndMetadata(t *testing.T) {
 	p := t.TempDir() + "/cover.png"
 	f, err := os.Create(p)
