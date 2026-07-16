@@ -135,6 +135,8 @@ type sceneEvidence struct {
 	GPUInstanceSample          any                           `json:"gpuInstanceSample,omitempty"`
 	GPUInstanceDiagnosticError string                        `json:"gpuInstanceDiagnosticError,omitempty"`
 	SyntheticGlyph             *video.GlyphSyntheticEvidence `json:"syntheticGlyph,omitempty"`
+	TextOverlayCPUHash         string                        `json:"textOverlayCpuHash,omitempty"`
+	TextOverlayGPUReceipt      *video.TextOverlayReceipt     `json:"textOverlayGpuReceipt,omitempty"`
 	CPUInstanceManifest        video.GlyphInstanceManifest   `json:"cpuInstanceManifest,omitempty"`
 	GPUInstanceParity          video.GlyphInstanceParity     `json:"gpuInstanceParity,omitempty"`
 	Title                      string                        `json:"title,omitempty"`
@@ -734,6 +736,9 @@ func main() {
 	if scene.Artwork != nil {
 		rep.SceneEvidence.ArtworkHash = scene.Artwork.AssetHash
 	}
+	if scene.TextOverlay != nil {
+		rep.SceneEvidence.TextOverlayCPUHash = scene.TextOverlay.AssetHash
+	}
 	if glyphEvidence, ok := glyphAtlasEvidence(scene.GlyphAtlas); ok {
 		rep.SceneEvidence.GlyphHash = glyphEvidence.GlyphHash
 		rep.SceneEvidence.GlyphPayloadHash = glyphEvidence.GlyphPayloadHash
@@ -746,6 +751,14 @@ func main() {
 	}
 	if !*cpuOnly {
 		if executable := strings.TrimSpace(os.Getenv("IMAGEPAD_PLAYLIST_COMPOSITORD")); executable != "" {
+			if scene.TextOverlay != nil {
+				octx, ocancel := context.WithTimeout(ctx, 3*time.Second)
+				receipt, oe := video.ProbeGPUSceneTextOverlay(octx, executable, "compare-text-overlay", uint32(p.Height*16/9), uint32(p.Height), &scene)
+				ocancel()
+				if oe == nil {
+					rep.SceneEvidence.TextOverlayGPUReceipt = receipt
+				}
+			}
 			probeWidth := uint32(math.Round(float64(p.Height) * 16.0 / 9.0))
 			cpuManifest := video.ExpandMusicGlyphManifest(&scene, probeWidth, uint32(p.Height))
 			rep.SceneEvidence.CPUInstanceManifest = cpuManifest

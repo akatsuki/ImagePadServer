@@ -151,6 +151,24 @@ func ProbeGPUSceneGlyphOnly(ctx context.Context, executable, session string, wid
 	return p.RenderScene(ctx, width, height, ^uint64(0), 0, scene)
 }
 
+// ProbeGPUSceneTextOverlay is an opt-in compare diagnostic. It returns only
+// transport receipt evidence and does not alter production shader output.
+func ProbeGPUSceneTextOverlay(ctx context.Context, executable, session string, width, height uint32, scene *MusicScenePayload) (*TextOverlayReceipt, error) {
+	p, err := StartSidecar(ctx, executable, session)
+	if err != nil {
+		return nil, err
+	}
+	defer p.Close()
+	if err := p.Hello(ctx, session); err != nil {
+		return nil, err
+	}
+	frame, err := p.RenderScene(ctx, width, height, 0, 0, scene)
+	if err != nil {
+		return nil, err
+	}
+	return frame.TextOverlayReceipt, nil
+}
+
 type sidecarRequest struct {
 	Type    string `json:"type"`
 	Version uint16 `json:"version,omitempty"`
