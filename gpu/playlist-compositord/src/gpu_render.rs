@@ -320,7 +320,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     if ((params.scene_enabled & 16u) != 0u) {
       let td = textureDimensions(overlay_tex);
       if (id.x < td.x && id.y < td.y) {
-        let tc = textureLoad(overlay_tex, vec2<i32>(id), 0);
+      let tc = textureLoad(overlay_tex, vec2<i32>(id.xy), 0);
         mixc = mixc * (1.0 - tc.a) + tc.rgb;
       }
     }
