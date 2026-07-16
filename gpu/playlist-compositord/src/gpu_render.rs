@@ -280,9 +280,10 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
       blurred_bg = mix(background, (c0 + c1 + c2) / 3.0, 0.55);
     }
     if (has_base) {
-      let bd = vec2<f32>(textureDimensions(base_tex));
-      let buv = (vec2<f32>(f32(id.x), f32(id.y)) + vec2<f32>(0.5)) / bd;
-      blurred_bg = textureSampleLevel(base_tex, base_sampler, buv, 0.0).rgb;
+      // The CPU base was rasterized at the output dimensions. Use an exact
+      // texel load here; linear sampling would blur the already-composited
+      // artwork edges a second time.
+      blurred_bg = textureLoad(base_tex, vec2<i32>(id.xy), 0).rgb;
       artwork = 0.0;
       artwork_alpha = 0.0;
     }
