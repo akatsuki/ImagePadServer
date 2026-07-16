@@ -130,7 +130,10 @@ func fallbackArtwork(features AudioFeatures) ArtworkMetadata {
 func canonicalScenePalette(input AudioRenderInput) MusicScenePalette {
 	p := PaletteForFeatures(input.Analysis.Features)
 	primary := [4]uint8{255, 255, 255, 255}
-	accent := [4]uint8{p.End.R, p.End.G, p.End.B, 255}
+	// CPU music mode selects a white foreground for this artwork/readability
+	// mode. Keep the GPU accent identical so bars, loudness, and progress do
+	// not diverge merely by palette selection.
+	accent := primary
 	background := [4]uint8{p.Start.R, p.Start.G, p.Start.B, 255}
 	if a, ok := normalizeArtwork(input.ArtworkPath); ok && len(a.Payload) >= 4 {
 		var r, g, b, n uint64
