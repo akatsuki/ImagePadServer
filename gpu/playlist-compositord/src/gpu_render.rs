@@ -690,9 +690,10 @@ impl Renderer {
         let atlas_view = atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
         // Atlas coverage is CPU-rasterized RGBA8.  Linear filtering blends
         // neighbouring fixed cells and creates halos at glyph boundaries;
-        // nearest sampling preserves the source coverage contract. Artwork
-        // remains deterministic with the same clamp mode.
-        let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
+        // nearest sampling preserves the source coverage contract. Keep a
+        // separate linear sampler for artwork so cover/blur interpolation is
+        // not changed by the glyph fix.
+        let atlas_sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
             mag_filter: wgpu::FilterMode::Nearest,
             min_filter: wgpu::FilterMode::Nearest,
             mipmap_filter: wgpu::FilterMode::Nearest,
@@ -700,6 +701,9 @@ impl Renderer {
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             ..Default::default()
         });
+        let artwork_sampler = self
+            .device
+            .create_sampler(&wgpu::SamplerDescriptor::default());
         let mut glyph_words = glyph_instance_words(scene, width, height);
         if glyph_words.is_empty() {
             glyph_words.resize(12, 0);
@@ -758,7 +762,7 @@ impl Renderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
+                    resource: wgpu::BindingResource::Sampler(&atlas_sampler),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
@@ -770,7 +774,7 @@ impl Renderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 6,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
+                    resource: wgpu::BindingResource::Sampler(&artwork_sampler),
                 },
                 wgpu::BindGroupEntry {
                     binding: 7,
