@@ -437,6 +437,13 @@ func main() {
 	ctx := context.Background()
 	inputHash, _ := sha256File(*input)
 	fingerprint := runtimeFingerprintFromEnv()
+	if !*cpuOnly {
+		if executable := strings.TrimSpace(os.Getenv("IMAGEPAD_PLAYLIST_COMPOSITORD")); executable != "" {
+			if actual, probeErr := video.ProbeGPUFingerprint(ctx, executable, "compare-fingerprint"); probeErr == nil {
+				fingerprint = runtimeFingerprint{Adapter: actual.Adapter, Backend: actual.Backend, Toolchain: actual.Toolchain}
+			}
+		}
+	}
 	adapter := fingerprint.Adapter
 	if adapter == "" {
 		adapter = "unknown (set GPU fingerprint environment variables to record explicit runtime)"

@@ -73,6 +73,23 @@ type SidecarFingerprint struct {
 	Toolchain string `json:"toolchain,omitempty"`
 }
 
+// ProbeGPUFingerprint starts the configured sidecar, performs the protocol
+// hello handshake, and returns the fingerprint reported by the actual runtime.
+// It is intended for diagnostics/compare tooling; it does not render or alter
+// the production route.
+func ProbeGPUFingerprint(ctx context.Context, executable, session string) (SidecarFingerprint, error) {
+	p, err := StartSidecar(ctx, executable, session)
+	if err != nil {
+		return SidecarFingerprint{}, err
+	}
+	defer p.Close()
+	if err := p.Hello(ctx, session); err != nil {
+		return SidecarFingerprint{}, err
+	}
+	d := p.Diagnostics()
+	return SidecarFingerprint{Adapter: d.Adapter, Backend: d.Backend, Toolchain: d.Toolchain}, nil
+}
+
 type sidecarRequest struct {
 	Type    string `json:"type"`
 	Version uint16 `json:"version,omitempty"`
