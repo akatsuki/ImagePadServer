@@ -192,6 +192,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let rail = params.rects[6];
     let rx = f32(id.x); let ry = f32(id.y);
     let in_rail = rx >= f32(rail.x) && rx < f32(rail.x + rail.z) && ry >= f32(rail.y) && ry < f32(rail.y + rail.w);
+    let rail_track = select(0.0, 1.0, in_rail);
     let thumb_x = f32(rail.x) + f32(rail.z) * progress;
     let thumb = select(0.0, 1.0, distance(vec2<f32>(rx, ry), vec2<f32>(thumb_x, f32(rail.y) + f32(rail.w) * 0.5)) < max(2.0, f32(rail.w) * 0.8));
     // Loudness envelope/trend are bounded Q0.16 samples. Render them in the
@@ -287,7 +288,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
       artwork = 0.0;
       artwork_alpha = 0.0;
     }
-    var mixc = blurred_bg + primary * (glow + glyph + artwork * 0.35) + accent * (bars * 0.75 + wave * 0.35 + thumb + loudness);
+    var mixc = blurred_bg + primary * (glow + glyph + artwork * 0.35) + accent * (bars * 0.75 + wave * 0.35 + rail_track * 0.35 + thumb + loudness);
     let overlay_alpha = overlay.a;
     if (!has_base) { mixc = mix(mixc, overlay.rgb, overlay_alpha); }
     // Composite the actual artwork payload into the tile. Previously only its
