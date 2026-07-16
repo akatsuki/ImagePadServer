@@ -55,3 +55,14 @@ GPU loudness path omits the CPU guide lines and down-samples the envelope, and
 the spectrum path uses approximate bar geometry rather than the CPU fixed-fade
 layout. These are separate blockers and must receive region-level probes
 before full-frame approval.
+
+## First texture-only evidence
+
+Fixture: `embedded-cover-latin.wav`, 1280x720 render, 150 frames, NVIDIA
+GeForce RTX 5070 Ti / Vulkan. The updated comparison CLI generated the
+libass-backed screen payload and the sidecar read it back at start, middle,
+and end. For title, artist, album, and time crops the measured values were
+IoU `1.0`, MAE `0`, and RMSE `0` at every sampled point. This proves the
+screen-payload transport/raster path, but does not prove full-frame parity:
+the production screenshot still has large background, spectrum, loudness,
+and progress differences. The overall gate therefore remains NOT GO.
