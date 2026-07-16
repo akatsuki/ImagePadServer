@@ -189,6 +189,35 @@ func (e overlayProbeEvidence) apply(dst *sceneEvidence) {
 	}
 }
 
+func probeTextOverlayEvidence(ctx context.Context, executable, pointLabel string, scene video.MusicScenePayload, width, height uint32) overlayProbeEvidence {
+	e := overlayProbeEvidence{}
+	if scene.TextOverlay != nil {
+		e.CPUHash = scene.TextOverlay.AssetHash
+	}
+	rctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	if receipt, err := video.ProbeGPUSceneTextOverlay(rctx, executable, "compare-text-overlay-"+pointLabel, width, height, &scene); err == nil {
+		e.GPUReceipt = receipt
+	}
+	cctx, ccancel := context.WithTimeout(ctx, 3*time.Second)
+	defer ccancel()
+	if frame, err := video.ProbeGPUSceneTextOverlayComposite(cctx, executable, width, height, &scene); err == nil && scene.TextOverlay != nil {
+		gi := image.NewRGBA(image.Rect(0, 0, int(frame.Width), int(frame.Height)))
+		for y := 0; y < int(frame.Height); y++ {
+			for x := 0; x < int(frame.Width); x++ {
+				off := y*int(frame.RowStride) + x*4
+				if off+3 < len(frame.Payload) {
+					gi.SetRGBA(x, y, color.RGBA{frame.Payload[off], frame.Payload[off+1], frame.Payload[off+2], frame.Payload[off+3]})
+				}
+			}
+		}
+		ci := video.RenderTextOverlayScreenRGBA(scene.TextOverlay, frame.Width, frame.Height, scene.Layout.Title)
+		m := video.CompareOverlayParityCPUImageGPUImage(ci, gi, image.Rect(scene.Layout.Title.X, scene.Layout.Title.Y, scene.Layout.Title.X+scene.Layout.Title.W, scene.Layout.Title.Y+scene.Layout.Title.H))
+		e.Parity = &m
+	}
+	return e
+}
+
 // glyphAtlasEvidence is deliberately derived from the exact bytes sent to
 // the sidecar.  It catches stride/format/payload drift without making the
 // comparison tool depend on a renderer implementation.
