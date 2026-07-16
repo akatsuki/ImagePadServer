@@ -799,6 +799,9 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 		waveMeta := BaseTextureMetadata{TextureID: fmt.Sprintf("wave-%s-%d", id, i), Width: uint32(waveW), Height: uint32(waveH), RowStride: uint32(waveStride), Format: PixelRGBA8, ColorSpace: ColorSRGB, Payload: wavePayload}
 		scene.WaveformTexture = &waveMeta
 		if useSpectrumCanonical {
+			// The canonical layer already contains the showwaves raster; do not
+			// upload the source waveform as well or it would be composited twice.
+			scene.WaveformTexture = nil
 			frameIndex := i
 			if frameIndex >= len(input.Analysis.Frames) {
 				frameIndex = len(input.Analysis.Frames) - 1
