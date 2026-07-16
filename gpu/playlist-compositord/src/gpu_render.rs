@@ -248,14 +248,14 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
       let y_trend = f32(loud.y + loud.w) - trend * f32(loud.w);
       // The CPU reference's drawLoudness layer is the envelope plus guides;
       // trend data remains available in the contract for future opt-in use.
-      loudness = select(0.0, 1.0, abs(ry - y_env) < 1.5);
+      loudness = select(0.0, 1.0, abs(ry - y_env) < 1.0);
       // CPU loudness draws four fixed guide lines in the same rect. Their
       // quantized positions are carried in the uniform contract so the GPU
       // does not have to infer them from the envelope.
       for (var guide_index: u32 = 0u; guide_index < 4u; guide_index = guide_index + 1u) {
         let guide = f32(params.guides[guide_index]) / 65535.0;
         let guide_y = f32(loud.y + loud.w) - guide * f32(loud.w);
-        loudness = loudness + select(0.0, 0.55, abs(ry - guide_y) < 0.75);
+        loudness = loudness + select(0.0, 0.55, abs(ry - guide_y) < 0.5);
       }
       if (params.sequence == 0xfffffff8u) {
         let v = u32(clamp(loudness, 0.0, 1.0) * 255.0);
