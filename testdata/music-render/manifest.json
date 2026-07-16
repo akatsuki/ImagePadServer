@@ -1,0 +1,24 @@
+{
+  "schema": "imagepad.music-render-fixture/v1",
+  "canonical": {"width": 1280, "height": 720, "fps": 30},
+  "rects": {
+    "artwork": {"x":96,"y":152,"w":288,"h":288},
+    "title": {"x":432,"y":152,"w":752,"h":58},
+    "artist": {"x":432,"y":224,"w":752,"h":34},
+    "album": {"x":432,"y":264,"w":752,"h":30},
+    "spectrum": {"x":432,"y":320,"w":752,"h":168},
+    "loudness": {"x":64,"y":548,"w":1000,"h":80},
+    "progress": {"x":64,"y":650,"w":1000,"h":8},
+    "time": {"x":1088,"y":632,"w":128,"h":32}
+  },
+  "fixtures": [
+    {"id":"embedded-cover-latin","seed":1001,"duration_s":5.0,"metadata":{"title":"夜明けのDrive","artist":"Fixture Artist","album":"Parity Vol. 1"},"artwork":"embedded-cover.png","boundary_samples":[0,1.5,2.5,4.75]},
+    {"id":"no-artwork-fallback","seed":1002,"duration_s":5.0,"metadata":{"title":"Fallback","artist":"No Cover","album":"Synthetic"},"artwork":null,"boundary_samples":[0,2.5,4.75]},
+    {"id":"unicode-japanese-long-scroll","seed":1003,"duration_s":12.0,"metadata":{"title":"これは非常に長い日本語のタイトルです — GPU/CPU一致試験","artist":"日本語アーティスト名の長い例","album":"アルバム名"},"artwork":null,"boundary_samples":[0,3,6,11.75]},
+    {"id":"quiet-envelope","seed":1004,"duration_s":5.0,"metadata":{"title":"Quiet","artist":"Envelope","album":"Fixtures"},"artwork":null,"feature_profile":"quiet","boundary_samples":[0,2.5,4.75]},
+    {"id":"loud-envelope","seed":1005,"duration_s":5.0,"metadata":{"title":"Loud","artist":"Envelope","album":"Fixtures"},"artwork":null,"feature_profile":"loud","boundary_samples":[0,2.5,4.75]},
+    {"id":"fade-start-mid-end","seed":1006,"duration_s":8.0,"metadata":{"title":"Fade","artist":"Transition","album":"Fixtures"},"artwork":null,"boundary_samples":[0,0.7,4,7.3,7.99]},
+    {"id":"invalid-artwork","seed":1007,"duration_s":5.0,"metadata":{"title":"Invalid Artwork","artist":"Error Path","album":"Fixtures"},"artwork":"invalid-artwork.bin","boundary_samples":[0,2.5,4.75]},
+    {"id":"odd-dimensions-cancel","seed":1008,"duration_s":3.0,"metadata":{"title":"Cancel","artist":"Odd Dimensions","album":"Fixtures"},"artwork":null,"output":{"width":1279,"height":719},"cancel_at_s":1.2,"boundary_samples":[0,1.19,1.2]}
+  ]
+}
