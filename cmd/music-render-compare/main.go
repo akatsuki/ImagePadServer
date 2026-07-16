@@ -72,8 +72,21 @@ type report struct {
 	CPUOnly               bool                       `json:"cpuOnly,omitempty"`
 	CPU                   renderResult               `json:"cpu"`
 	GPU                   renderResult               `json:"gpu"`
+	FrameContract         frameContract              `json:"frameContract"`
 	ScreenshotComparisons map[string]imageComparison `json:"screenshotComparisons,omitempty"`
 	ComparisonGate        comparisonGate             `json:"comparisonGate"`
+}
+
+// frameContract separates the renderer's canonical raw-frame clock from the
+// number ffprobe observes after MPEG-TS/HLS muxing.  A muxer may expose a
+// short encoder-drain tail; that is evidence about packaging, not permission
+// to alter the GPU scene frame count.
+type frameContract struct {
+	ExpectedFrames    int64 `json:"expectedFrames"`
+	CPUObservedFrames int64 `json:"cpuObservedFrames"`
+	GPUObservedFrames int64 `json:"gpuObservedFrames"`
+	CPUMuxDelta       int64 `json:"cpuMuxDelta"`
+	GPUMuxDelta       int64 `json:"gpuMuxDelta"`
 }
 
 type comparisonGate struct {
@@ -449,6 +462,7 @@ func main() {
 		adapter = "unknown (set GPU fingerprint environment variables to record explicit runtime)"
 	}
 	rep := report{Input: *input, InputSHA256: inputHash, GeneratedAt: time.Now(), FFmpeg: ffmpegVersion(ctx, ff), GPUAdapter: adapter, GPUFingerprint: fingerprint, CPUOnly: *cpuOnly}
+	rep.FrameContract.ExpectedFrames = int64(math.Max(1, math.Ceil(analysis.Duration*30)))
 	rep.CPU = render(ctx, false, filepath.Join(*output, "cpu"), ff, inputSpec, id, p)
 	if !*cpuOnly {
 		rep.GPU = render(ctx, true, filepath.Join(*output, "gpu"), ff, inputSpec, id, p)
@@ -464,6 +478,10 @@ func main() {
 		}
 	}
 	if !*cpuOnly {
+		rep.FrameContract.CPUObservedFrames = rep.CPU.Probe.Frames
+		rep.FrameContract.GPUObservedFrames = rep.GPU.Probe.Frames
+		rep.FrameContract.CPUMuxDelta = rep.CPU.Probe.Frames - rep.FrameContract.ExpectedFrames
+		rep.FrameContract.GPUMuxDelta = rep.GPU.Probe.Frames - rep.FrameContract.ExpectedFrames
 		rep.ComparisonGate = comparisonGate{
 			DurationDeltaSeconds: math.Abs(rep.CPU.Probe.Duration - rep.GPU.Probe.Duration),
 			FrameDelta:           rep.CPU.Probe.Frames - rep.GPU.Probe.Frames,
@@ -471,7 +489,10 @@ func main() {
 	}
 	if !*cpuOnly {
 		rep.ComparisonGate.DurationMatch = rep.ComparisonGate.DurationDeltaSeconds <= 0.05
-		rep.ComparisonGate.FrameCountMatch = rep.ComparisonGate.FrameDelta == 0
+		// Strict gate: both observed streams must match the canonical clock.
+		// The separate frameContract fields make a mux tail diagnosable instead
+		// of hiding it as a CPU-vs-GPU delta.
+		rep.ComparisonGate.FrameCountMatch = rep.FrameContract.CPUMuxDelta == 0 && rep.FrameContract.GPUMuxDelta == 0
 		rep.ComparisonGate.FingerprintRecorded = rep.GPUFingerprint.Complete()
 		rep.ComparisonGate.Pass = rep.ComparisonGate.DurationMatch && rep.ComparisonGate.FrameCountMatch && rep.ComparisonGate.FingerprintRecorded
 	}
