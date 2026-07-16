@@ -142,6 +142,7 @@ type sceneEvidence struct {
 	TextOverlayRegionCrop      imageBounds                   `json:"textOverlayRegionCrop,omitempty"`
 	TextOverlayRenderer        string                        `json:"textOverlayRenderer,omitempty"`
 	TextOverlayCompositeSHA    string                        `json:"textOverlayCompositeSha,omitempty"`
+	TextOverlayCPUCompositeSHA string                        `json:"textOverlayCpuCompositeSha,omitempty"`
 	CPUInstanceManifest        video.GlyphInstanceManifest   `json:"cpuInstanceManifest,omitempty"`
 	GPUInstanceParity          video.GlyphInstanceParity     `json:"gpuInstanceParity,omitempty"`
 	Title                      string                        `json:"title,omitempty"`
@@ -777,6 +778,12 @@ func main() {
 				if cf, ce := video.ProbeGPUSceneTextOverlayComposite(cctx, executable, uint32(math.Round(float64(p.Height)*16.0/9.0)), uint32(p.Height), &scene); ce == nil {
 					h := sha256.Sum256(cf.Payload)
 					rep.SceneEvidence.TextOverlayCompositeSHA = fmt.Sprintf("%x", h[:])
+				}
+				if scene.TextOverlay != nil {
+					crop := scene.Layout.Title
+					cpuOverlay := video.RenderTextOverlayScreenRGBA(scene.TextOverlay, uint32(math.Round(float64(p.Height)*16.0/9.0)), uint32(p.Height), crop)
+					h := sha256.Sum256(cpuOverlay.Pix)
+					rep.SceneEvidence.TextOverlayCPUCompositeSHA = fmt.Sprintf("%x", h[:])
 				}
 				ccancel()
 			}
