@@ -222,7 +222,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
       }
     }
-    if ((params.scene_enabled & 4u) != 0u) {
+    if ((params.scene_enabled & 4u) != 0u && (params.scene_enabled & 16u) == 0u) {
       let pixel = vec2<f32>(f32(id.x), f32(id.y));
       for (var gi: u32 = 0u; gi < params.glyph_count; gi = gi + 1u) {
         // The reserved synthetic probe isolates the first manifest glyph so
@@ -295,6 +295,17 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     // alpha/luminance affected the background, leaving the GPU tile unlike the
     // CPU reference even when the same artwork bytes were present.
     mixc = mix(mixc, artwork_color, artwork_alpha * 0.9);
+    // A screen_rgba overlay is already premultiplied and uses target-space
+    // texels. Apply it last, after the dynamic scene layers, matching the
+    // CPU ASS ordering. The scene bit is only set for the new explicit
+    // contract kind; legacy atlas payloads remain on the diagnostic path.
+    if ((params.scene_enabled & 16u) != 0u) {
+      let td = textureDimensions(overlay_tex);
+      if (id.x < td.x && id.y < td.y) {
+        let tc = textureLoad(overlay_tex, vec2<i32>(id), 0);
+        mixc = mixc * (1.0 - tc.a) + tc.rgb;
+      }
+    }
     // Edge fades belong to the animated foreground layers in the CPU
     // compositor; applying their product to the entire frame darkens the
     // artwork/background and cannot match the reference renderer.
@@ -350,7 +361,8 @@ fn scene_uniform_words(
                 4
             } else {
                 0
-            } | if scene.base_texture.as_ref().is_some_and(|b| !b.payload.is_empty()) { 8 } else { 0 };
+            } | if scene.base_texture.as_ref().is_some_and(|b| !b.payload.is_empty()) { 8 } else { 0 }
+            | if scene.text_overlay.as_ref().is_some_and(|o| o.kind == "screen_rgba" && !o.payload.is_empty()) { 16 } else { 0 };
         words[7] = scene
             .glyph_atlas
             .as_ref()
@@ -1139,6 +1151,13 @@ mod tests {
         assert!(SHADER.contains("textureSampleLevel(artwork_tex"));
         assert!(SHADER.contains("params.scene_enabled & 2u"));
         assert!(SHADER.contains("let artwork_rect = params.rects[0]"));
+    }
+
+    #[test]
+    fn shader_declares_screen_text_source_over_gate() {
+        assert!(SHADER.contains("params.scene_enabled & 16u"));
+        assert!(SHADER.contains("textureLoad(overlay_tex"));
+        assert!(SHADER.contains("mixc * (1.0 - tc.a) + tc.rgb"));
     }
 
     #[test]
