@@ -1104,7 +1104,7 @@ func main() {
 			sx, sy := float64(outputWidth)/1280.0, float64(p.Height)/720.0
 			return imageBounds{MinX: int(float64(r.X) * sx), MinY: int(float64(r.Y) * sy), MaxX: int(float64(r.X+r.W) * sx), MaxY: int(float64(r.Y+r.H) * sy)}
 		}
-		regions := map[string]video.SceneRect{"artwork": scene.Layout.Artwork, "title": scene.Layout.Title, "artist": scene.Layout.Artist, "album": scene.Layout.Album}
+		regions := map[string]video.SceneRect{"artwork": scene.Layout.Artwork, "title": scene.Layout.Title, "artist": scene.Layout.Artist, "album": scene.Layout.Album, "spectrum": scene.Layout.Spectrum, "loudness": scene.Layout.Loudness, "progress": scene.Layout.Progress, "time": scene.Layout.Time}
 		for name, rect := range regions {
 			rc := regionComparison{Region: scaleRect(rect), Samples: map[string]imageComparison{}}
 			if name == "title" || name == "artist" || name == "album" {
