@@ -1,6 +1,6 @@
 use crate::adapter;
 use crate::contracts::{
-    ColorSpace, GlyphAtlasReceipt, GpuFrame, MusicScenePayload, Ownership, PixelFormat,
+    ColorSpace, GlyphAtlasReceipt, GlyphInstanceDiagnostic, GlyphRenderDiagnostics, GpuFrame, MusicScenePayload, Ownership, PixelFormat,
     CONTRACT_VERSION, ROW_ALIGNMENT,
 };
 use sha2::{Digest, Sha256};
@@ -297,13 +297,14 @@ fn scene_uniform_words(
     words
 }
 
-fn glyph_instance_words(scene: Option<&MusicScenePayload>, width: u32, height: u32) -> Vec<u32> {
+fn glyph_instance_words(scene: Option<&MusicScenePayload>, width: u32, height: u32) -> (Vec<u32>, GlyphRenderDiagnostics) {
     let mut out = Vec::new();
+    let mut diagnostics = Vec::new();
     let Some(atlas) = scene.and_then(|s| s.glyph_atlas.as_ref()) else {
-        return out;
+        return (out, GlyphRenderDiagnostics { count: 0, instances: diagnostics });
     };
     if atlas.payload.is_empty() || atlas.glyphs.is_empty() {
-        return out;
+        return (out, GlyphRenderDiagnostics { count: 0, instances: diagnostics });
     }
     // TextRun coordinates are part of the canonical 1280x720 scene contract.
     // Convert them to the actual render target here; the previous code treated
@@ -351,10 +352,29 @@ fn glyph_instance_words(scene: Option<&MusicScenePayload>, width: u32, height: u
                 (run.rgba[3] as f32 / 255.0) * run.opacity.clamp(0.0, 1.0),
             ];
             out.extend(vals.into_iter().map(f32::to_bits));
+            diagnostics.push(GlyphInstanceDiagnostic {
+                id,
+                screen: [vals[0], vals[1], vals[2], vals[3]],
+                atlas: [vals[4], vals[5], vals[6], vals[7]],
+                color: [vals[8], vals[9], vals[10], vals[11]],
+                scale,
+                baseline: run.y * sy,
+                ink_top: ATLAS_INK_TOP * scale * sy,
+                // The deterministic Go atlas uses 64px cells. Padding is
+                // exposed so parity tooling can distinguish cell geometry
+                // from ink geometry without changing the render path.
+                cell_padding: [
+                    (64.0 - g.width as f32).max(0.0),
+                    (64.0 - g.height as f32).max(0.0),
+                    0.0,
+                    0.0,
+                ],
+            });
             cursor += g.advance.max(g.width as f32) * scale * sx;
         }
     }
-    out
+    let count = diagnostics.len();
+    (out, GlyphRenderDiagnostics { count, instances: diagnostics })
 }
 
 fn dynamics_sample_words(scene: Option<&MusicScenePayload>) -> Vec<u32> {
@@ -704,7 +724,7 @@ impl Renderer {
         let artwork_sampler = self
             .device
             .create_sampler(&wgpu::SamplerDescriptor::default());
-        let mut glyph_words = glyph_instance_words(scene, width, height);
+        let (mut glyph_words, glyph_diagnostics) = glyph_instance_words(scene, width, height);
         if glyph_words.is_empty() {
             glyph_words.resize(12, 0);
         }
@@ -822,6 +842,7 @@ impl Renderer {
             ownership: Ownership::OwnedByTransport,
             payload: data,
             glyph_atlas_receipt,
+            glyph_diagnostics: Some(glyph_diagnostics),
         })
     }
 }
@@ -923,8 +944,11 @@ mod tests {
             palette: Default::default(),
             fingerprint: String::new(),
         };
-        let words = glyph_instance_words(Some(&scene), 100, 100);
+        let (words, diagnostics) = glyph_instance_words(Some(&scene), 100, 100);
         assert_eq!(words.len(), 24);
+        assert_eq!(diagnostics.count, 2);
+        assert_eq!(diagnostics.instances[0].id, "A");
+        assert!(diagnostics.instances[0].scale > 0.0);
         let x0 = f32::from_bits(words[0]);
         let atlas_x0 = f32::from_bits(words[4]);
         let x1 = f32::from_bits(words[12]);

@@ -102,6 +102,19 @@ func ProbeGPUFingerprint(ctx context.Context, executable, session string) (Sidec
 	return SidecarFingerprint{Adapter: d.Adapter, Backend: d.Backend, Toolchain: d.Toolchain}, nil
 }
 
+// ProbeGPUSceneGlyphDiagnostics performs one diagnostic-only scene render and
+// returns the exact glyph instance metadata built by the sidecar. Production
+// rendering does not call this helper; compare tooling uses it as evidence.
+func ProbeGPUSceneGlyphDiagnostics(ctx context.Context, executable, session string, width, height uint32, scene *MusicScenePayload) (*GlyphRenderDiagnostics, error) {
+	p, err := StartSidecar(ctx, executable, session)
+	if err != nil { return nil, err }
+	defer p.Close()
+	if err := p.Hello(ctx, session); err != nil { return nil, err }
+	frame, err := p.RenderScene(ctx, width, height, 0, 0, scene)
+	if err != nil { return nil, err }
+	return frame.GlyphDiagnostics, nil
+}
+
 type sidecarRequest struct {
 	Type    string `json:"type"`
 	Version uint16 `json:"version,omitempty"`

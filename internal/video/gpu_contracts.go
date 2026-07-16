@@ -260,6 +260,25 @@ type GpuFrame struct {
 	Ownership  string      `json:"ownership"`
 	Payload    []byte      `json:"payload"`
 	GlyphAtlasReceipt *GlyphAtlasReceipt `json:"glyph_atlas_receipt,omitempty"`
+	GlyphDiagnostics *GlyphRenderDiagnostics `json:"glyph_diagnostics,omitempty"`
+}
+
+// GlyphRenderDiagnostics is bounded, read-only evidence of the instance data
+// actually constructed by the GPU sidecar. It is not part of the production
+// rendering decision and exists solely to diagnose CPU/GPU text parity.
+type GlyphRenderDiagnostics struct {
+	Count int `json:"count"`
+	Instances []GlyphInstanceDiagnostic `json:"instances,omitempty"`
+}
+type GlyphInstanceDiagnostic struct {
+	ID string `json:"id"`
+	Screen [4]float32 `json:"screen"`
+	Atlas [4]float32 `json:"atlas"`
+	Color [4]float32 `json:"color"`
+	Scale float32 `json:"scale"`
+	Baseline float32 `json:"baseline"`
+	InkTop float32 `json:"ink_top"`
+	CellPadding [4]float32 `json:"cell_padding"`
 }
 
 type GlyphAtlasReceipt struct {

@@ -231,7 +231,7 @@ pub enum Ownership {
     OwnedByTransport,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GpuFrame {
     pub schema: u16,
     pub sequence: u64,
@@ -247,6 +247,27 @@ pub struct GpuFrame {
     pub payload: Vec<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub glyph_atlas_receipt: Option<GlyphAtlasReceipt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glyph_diagnostics: Option<GlyphRenderDiagnostics>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GlyphRenderDiagnostics {
+    pub count: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub instances: Vec<GlyphInstanceDiagnostic>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GlyphInstanceDiagnostic {
+    pub id: String,
+    pub screen: [f32; 4],
+    pub atlas: [f32; 4],
+    pub color: [f32; 4],
+    pub scale: f32,
+    pub baseline: f32,
+    pub ink_top: f32,
+    pub cell_padding: [f32; 4],
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -470,6 +491,7 @@ mod tests {
             ownership: Ownership::OwnedByTransport,
             payload: vec![0; 512],
             glyph_atlas_receipt: None,
+            glyph_diagnostics: None,
         };
         assert!(good.validate().is_ok());
         let mut bad = good.clone();
