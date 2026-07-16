@@ -135,7 +135,7 @@ T6 ─────────────────┘
 - **description**: Review implementation and evidence; run full Go/Rust suites, fresh NVIDIA and AMD cache-based comparisons, and macOS smoke. Record adapter, sidecar hash/version, render conversion time, screenshot metric thresholds and known raster tolerances. Linux remains contract-only without a Vulkan-capable runner.
 - **validation**: CPU/GPU comparison reports pass stated thresholds on supported adapters; full tests and artifact checks pass; review confirms no CPU production renderer or duplicate FFmpeg overlay remains.
 - **status**: Not Completed
-- **log**: Tier5-directed two-pass mux now separates GPU video encoding from audio/HLS mux, preserves the CPU tail clock, and cleans up the intermediate TS (`8a5033b`). Short cache evidence now matches CPU/GPU at 157 frames and 5.233333s with `comparisonGate.pass=true`. Visual raster parity and AMD/macOS/long-form acceptance remain open.
+- **log**: Tier5-directed two-pass mux now separates GPU video encoding from audio/HLS mux, preserves the CPU tail clock, and cleans up the intermediate TS (`8a5033b`). Canonical GPU text now uses a deterministic embedded Go Regular atlas with advance metrics and Unicode tofu fallback (`409f809`). Fresh NVIDIA-side short-cache evidence matches CPU/GPU at 157 frames and 5.233333s with `comparisonGate.pass=true`; render wall time was CPU 0.97s vs GPU 54.12s. Visual raster parity remains outside the gate (mid RMSE 81.21, end RMSE 88.25), and AMD/macOS/long-form acceptance remain open.
 - **files edited/created**:
 
 ## Five-Tier Allocation
