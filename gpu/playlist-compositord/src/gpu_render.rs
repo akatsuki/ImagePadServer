@@ -79,6 +79,15 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let ar=u32(clamp(ac.r*255.0,0.0,255.0)); let ag=u32(clamp(ac.g*255.0,0.0,255.0)); let ab=u32(clamp(ac.b*255.0,0.0,255.0)); let aa=u32(clamp(ac.a*255.0,0.0,255.0));
     pixels[i]=ar|(ag<<8u)|(ab<<16u)|(aa<<24u); return;
   }
+  // Diagnostic-only flat background probe. This deliberately bypasses every
+  // artwork, waveform, glow, and text layer so the canonical palette upload
+  // can be compared against the CPU background contract in isolation.
+  if (params.sequence == 0xfffffffcu) {
+    let c = params.palette[2];
+    let rr=u32(clamp(c.x,0.0,255.0)); let gg=u32(clamp(c.y,0.0,255.0));
+    let bb=u32(clamp(c.z,0.0,255.0)); let aa=u32(clamp(c.w,0.0,255.0));
+    pixels[i]=rr|(gg<<8u)|(bb<<16u)|(aa<<24u); return;
+  }
   var r: u32;
   var g: u32;
   var b: u32;
@@ -1089,6 +1098,12 @@ mod tests {
         assert!(SHADER.contains("textureSampleLevel(artwork_tex"));
         assert!(SHADER.contains("params.scene_enabled & 2u"));
         assert!(SHADER.contains("let artwork_rect = params.rects[0]"));
+    }
+
+    #[test]
+    fn shader_declares_flat_background_diagnostic_branch() {
+        assert!(SHADER.contains("params.sequence == 0xfffffffcu"));
+        assert!(SHADER.contains("let c = params.palette[2]"));
     }
 
     #[test]

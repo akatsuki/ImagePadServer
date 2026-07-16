@@ -188,6 +188,16 @@ func ProbeGPUSceneArtworkComposite(ctx context.Context, executable string, width
 	return p.RenderScene(ctx, width, height, 0xfffffffd, 0, scene)
 }
 
+// ProbeGPUSceneFlatBackground renders only the canonical background palette.
+// It is diagnostic-only and never changes the production scene route.
+func ProbeGPUSceneFlatBackground(ctx context.Context, executable string, width, height uint32, scene *MusicScenePayload) (GpuFrame, error) {
+	p, err := StartSidecar(ctx, executable, "compare-flat-background")
+	if err != nil { return GpuFrame{}, err }
+	defer p.Close()
+	if err := p.Hello(ctx, "compare-flat-background"); err != nil { return GpuFrame{}, err }
+	return p.RenderScene(ctx, width, height, 0xfffffffc, 0, scene)
+}
+
 // ProbeGPUSceneTextOverlay is an opt-in compare diagnostic. It returns only
 // transport receipt evidence and does not alter production shader output.
 func ProbeGPUSceneTextOverlay(ctx context.Context, executable, session string, width, height uint32, scene *MusicScenePayload) (*TextOverlayReceipt, error) {
