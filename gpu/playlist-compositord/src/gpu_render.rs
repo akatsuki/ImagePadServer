@@ -134,6 +134,14 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let bb=u32(clamp(wc.b*255.0,0.0,255.0)); let aa=u32(clamp(wc.a*255.0,0.0,255.0));
     pixels[i]=rr|(gg<<8u)|(bb<<16u)|(aa<<24u); return;
   }
+  if (params.sequence == 0xfffffff5u) {
+    let sd = textureDimensions(spectrum_tex);
+    if (id.x >= sd.x || id.y >= sd.y || (params.scene_enabled & 128u) == 0u) { pixels[i] = 0u; return; }
+    let sc = textureLoad(spectrum_tex, vec2<i32>(id.xy), 0);
+    let rr=u32(clamp(sc.r*255.0,0.0,255.0)); let gg=u32(clamp(sc.g*255.0,0.0,255.0));
+    let bb=u32(clamp(sc.b*255.0,0.0,255.0)); let aa=u32(clamp(sc.a*255.0,0.0,255.0));
+    pixels[i]=rr|(gg<<8u)|(bb<<16u)|(aa<<24u); return;
+  }
   if (params.sequence == 0xffffffe2u) {
     let ld = textureDimensions(loudness_tex);
     if ((params.scene_enabled & 64u) == 0u || id.x >= ld.x || id.y >= ld.y) { pixels[i] = 0u; return; }

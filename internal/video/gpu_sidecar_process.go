@@ -221,9 +221,13 @@ func ProbeGPUSceneBaseTexture(ctx context.Context, executable string, width, hei
 // composite. Analytic dynamic layers are bypassed by the reserved sequence.
 func ProbeGPUSceneBaseText(ctx context.Context, executable string, width, height uint32, scene *MusicScenePayload) (GpuFrame, error) {
 	p, err := StartSidecar(ctx, executable, "compare-base-text")
-	if err != nil { return GpuFrame{}, err }
+	if err != nil {
+		return GpuFrame{}, err
+	}
 	defer p.Close()
-	if err := p.Hello(ctx, "compare-base-text"); err != nil { return GpuFrame{}, err }
+	if err := p.Hello(ctx, "compare-base-text"); err != nil {
+		return GpuFrame{}, err
+	}
 	return p.RenderScene(ctx, width, height, 0xffffffe0, 0, scene)
 }
 
@@ -271,18 +275,26 @@ func ProbeGPUSceneLoudness(ctx context.Context, executable string, width, height
 // disabled. It is diagnostic-only and does not alter production sequences.
 func ProbeGPUSceneLoudnessOff(ctx context.Context, executable string, width, height uint32, scene *MusicScenePayload) (GpuFrame, error) {
 	p, err := StartSidecar(ctx, executable, "compare-loudness-off")
-	if err != nil { return GpuFrame{}, err }
+	if err != nil {
+		return GpuFrame{}, err
+	}
 	defer p.Close()
-	if err := p.Hello(ctx, "compare-loudness-off"); err != nil { return GpuFrame{}, err }
+	if err := p.Hello(ctx, "compare-loudness-off"); err != nil {
+		return GpuFrame{}, err
+	}
 	return p.RenderScene(ctx, width, height, 0xffffffe1, 0, scene)
 }
 
 // ProbeGPUSceneLoudnessTexture reads back the optional loudness texture.
 func ProbeGPUSceneLoudnessTexture(ctx context.Context, executable string, width, height uint32, scene *MusicScenePayload) (GpuFrame, error) {
 	p, err := StartSidecar(ctx, executable, "compare-loudness-texture")
-	if err != nil { return GpuFrame{}, err }
+	if err != nil {
+		return GpuFrame{}, err
+	}
 	defer p.Close()
-	if err := p.Hello(ctx, "compare-loudness-texture"); err != nil { return GpuFrame{}, err }
+	if err := p.Hello(ctx, "compare-loudness-texture"); err != nil {
+		return GpuFrame{}, err
+	}
 	return p.RenderScene(ctx, width, height, 0xffffffe2, 0, scene)
 }
 
@@ -298,6 +310,20 @@ func ProbeGPUSceneWaveform(ctx context.Context, executable string, width, height
 		return GpuFrame{}, err
 	}
 	return p.RenderScene(ctx, width, height, 0xfffffff7, 0, scene)
+}
+
+// ProbeGPUSceneSpectrumTexture reads back the canonical bars+wave texture
+// uploaded at binding 14 without compositor layers.
+func ProbeGPUSceneSpectrumTexture(ctx context.Context, executable string, width, height uint32, scene *MusicScenePayload) (GpuFrame, error) {
+	p, err := StartSidecar(ctx, executable, "compare-spectrum-texture")
+	if err != nil {
+		return GpuFrame{}, err
+	}
+	defer p.Close()
+	if err := p.Hello(ctx, "compare-spectrum-texture"); err != nil {
+		return GpuFrame{}, err
+	}
+	return p.RenderScene(ctx, width, height, 0xfffffff5, 0, scene)
 }
 
 // ProbeGPUSceneWaveformSequence reuses one sidecar session for a complete
