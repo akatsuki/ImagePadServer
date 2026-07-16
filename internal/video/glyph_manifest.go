@@ -12,20 +12,24 @@ import (
 // diagnostic shader sentinel. It is intentionally separate from production
 // rendering and gives the parity gate a stable atlas-vs-frame contract.
 type GlyphSyntheticEvidence struct {
-	ID                string  `json:"id"`
-	CPUAlphaCoverage  int     `json:"cpuAlphaCoverage"`
-	GPUAlphaCoverage  int     `json:"gpuAlphaCoverage"`
-	CPUAlphaSHA256    string  `json:"cpuAlphaSha256"`
-	GPUAlphaSHA256    string  `json:"gpuAlphaSha256"`
-	CPUVisibleBounds  [4]int  `json:"cpuVisibleBounds"`
-	GPUVisibleBounds  [4]int  `json:"gpuVisibleBounds"`
-	CPUScreenCoverage int     `json:"cpuScreenCoverage"`
-	GPUScreenCoverage int     `json:"gpuScreenCoverage"`
-	ScreenIoU         float64 `json:"screenIou"`
+	ID                string                          `json:"id"`
+	CPUAlphaCoverage  int                             `json:"cpuAlphaCoverage"`
+	GPUAlphaCoverage  int                             `json:"gpuAlphaCoverage"`
+	CPUAlphaSHA256    string                          `json:"cpuAlphaSha256"`
+	GPUAlphaSHA256    string                          `json:"gpuAlphaSha256"`
+	CPUVisibleBounds  [4]int                          `json:"cpuVisibleBounds"`
+	GPUVisibleBounds  [4]int                          `json:"gpuVisibleBounds"`
+	CPUScreenCoverage int                             `json:"cpuScreenCoverage"`
+	GPUScreenCoverage int                             `json:"gpuScreenCoverage"`
+	ScreenIoU         float64                         `json:"screenIou"`
+	Thresholds        map[string]GlyphThresholdMetric `json:"thresholds,omitempty"`
 }
 type GlyphThresholdMetric struct {
-	CPU, GPU int
-	IoU      float64
+	CPU          int     `json:"cpu"`
+	GPU          int     `json:"gpu"`
+	Intersection int     `json:"intersection"`
+	Union        int     `json:"union"`
+	IoU          float64 `json:"iou"`
 }
 
 func thresholdMaskStats(values []uint8, threshold uint8) int {
@@ -57,6 +61,10 @@ func CompareSyntheticGlyph(atlas *GlyphAtlasMetadata, manifest GlyphInstanceMani
 		sh = 1
 	}
 	cpuScreenMask := make(map[int]struct{})
+	cpuScreenMasks := make(map[uint8]map[int]struct{})
+	for _, t := range []uint8{1, 8, 16, 32, 64, 128} {
+		cpuScreenMasks[t] = make(map[int]struct{})
+	}
 	for i := range atlas.Glyphs {
 		if atlas.Glyphs[i].ID == g.ID {
 			a := atlas.Glyphs[i]
@@ -65,12 +73,19 @@ func CompareSyntheticGlyph(atlas *GlyphAtlasMetadata, manifest GlyphInstanceMani
 			for y := uint32(0); y < a.Height; y++ {
 				for x := uint32(0); x < a.Width; x++ {
 					off := int(y*atlas.RowStride + (a.X+x)*4 + 3)
-					if off < len(atlas.Payload) && atlas.Payload[off] > 8 {
-						e.CPUAlphaCoverage++
-						if x := sx0 + int(float32(x)*float32(sw)/float32(a.Width)); x >= sx0 && x < sx0+sw {
-							if y := sy0 + int(float32(y)*float32(sh)/float32(a.Height)); y >= sy0 && y < sy0+sh {
-								cpuScreenMask[y*int(width)+x] = struct{}{}
+					if off < len(atlas.Payload) {
+						alpha := atlas.Payload[off]
+						for threshold, mask := range cpuScreenMasks {
+							if alpha >= threshold {
+								if px := sx0 + int(float32(x)*float32(sw)/float32(a.Width)); px >= sx0 && px < sx0+sw {
+									if py := sy0 + int(float32(y)*float32(sh)/float32(a.Height)); py >= sy0 && py < sy0+sh {
+										mask[py*int(width)+px] = struct{}{}
+									}
+								}
 							}
+						}
+						if alpha >= 8 {
+							e.CPUAlphaCoverage++
 						}
 					}
 				}
@@ -79,8 +94,15 @@ func CompareSyntheticGlyph(atlas *GlyphAtlasMetadata, manifest GlyphInstanceMani
 			break
 		}
 	}
+	for p := range cpuScreenMasks[8] {
+		cpuScreenMask[p] = struct{}{}
+	}
 	e.CPUScreenCoverage = len(cpuScreenMask)
 	gpuScreenMask := make(map[int]struct{})
+	gpuScreenMasks := make(map[uint8]map[int]struct{})
+	for _, t := range []uint8{1, 8, 16, 32, 64, 128} {
+		gpuScreenMasks[t] = make(map[int]struct{})
+	}
 	if len(frame.Payload) == 0 {
 		return e
 	}
@@ -109,8 +131,12 @@ func CompareSyntheticGlyph(atlas *GlyphAtlasMetadata, manifest GlyphInstanceMani
 					maxY = int(y)
 				}
 			}
-			if int(x) >= sx0 && int(x) < sx0+sw && int(y) >= sy0 && int(y) < sy0+sh && v > 8 {
-				gpuScreenMask[int(y)*int(width)+int(x)] = struct{}{}
+			if int(x) >= sx0 && int(x) < sx0+sw && int(y) >= sy0 && int(y) < sy0+sh {
+				for threshold, mask := range gpuScreenMasks {
+					if v >= threshold {
+						mask[int(y)*int(width)+int(x)] = struct{}{}
+					}
+				}
 			}
 		}
 	}
@@ -118,6 +144,9 @@ func CompareSyntheticGlyph(atlas *GlyphAtlasMetadata, manifest GlyphInstanceMani
 	e.GPUAlphaSHA256 = hex.EncodeToString(h[:])
 	if maxX >= 0 {
 		e.GPUVisibleBounds = [4]int{minX, minY, maxX + 1, maxY + 1}
+	}
+	for p := range gpuScreenMasks[8] {
+		gpuScreenMask[p] = struct{}{}
 	}
 	e.GPUScreenCoverage = len(gpuScreenMask)
 	inter := 0
@@ -129,6 +158,22 @@ func CompareSyntheticGlyph(atlas *GlyphAtlasMetadata, manifest GlyphInstanceMani
 	union := len(cpuScreenMask) + len(gpuScreenMask) - inter
 	if union > 0 {
 		e.ScreenIoU = float64(inter) / float64(union)
+	}
+	e.Thresholds = map[string]GlyphThresholdMetric{}
+	for _, threshold := range []uint8{1, 8, 16, 32, 64, 128} {
+		cm, gm := cpuScreenMasks[threshold], gpuScreenMasks[threshold]
+		intersection := 0
+		for p := range cm {
+			if _, ok := gm[p]; ok {
+				intersection++
+			}
+		}
+		union := len(cm) + len(gm) - intersection
+		metric := GlyphThresholdMetric{CPU: len(cm), GPU: len(gm), Intersection: intersection, Union: union}
+		if union > 0 {
+			metric.IoU = float64(intersection) / float64(union)
+		}
+		e.Thresholds[fmt.Sprintf("%d", threshold)] = metric
 	}
 	return e
 }
