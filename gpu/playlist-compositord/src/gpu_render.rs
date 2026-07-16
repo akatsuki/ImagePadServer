@@ -207,6 +207,14 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
       let y_env = f32(loud.y + loud.w) - envelope * f32(loud.w);
       let y_trend = f32(loud.y + loud.w) - trend * f32(loud.w);
       loudness = select(0.0, 1.0, abs(ry - y_env) < 1.5) + select(0.0, 0.65, abs(ry - y_trend) < 1.5);
+      // CPU loudness draws four fixed guide lines in the same rect. Their
+      // quantized positions are carried in the uniform contract so the GPU
+      // does not have to infer them from the envelope.
+      for (var guide_index: u32 = 0u; guide_index < 4u; guide_index = guide_index + 1u) {
+        let guide = f32(params.guides[guide_index]) / 65535.0;
+        let guide_y = f32(loud.y + loud.w) - guide * f32(loud.w);
+        loudness = loudness + select(0.0, 0.55, abs(ry - guide_y) < 0.75);
+      }
       }
   var glyph = 0.0;
     if (params.sequence == 0xfffffffeu) {
