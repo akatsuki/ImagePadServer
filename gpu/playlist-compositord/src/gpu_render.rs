@@ -274,10 +274,12 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     // alpha/luminance affected the background, leaving the GPU tile unlike the
     // CPU reference even when the same artwork bytes were present.
     mixc = mix(mixc, artwork_color, artwork_alpha * 0.9);
-    let fade = clamp(f32(params.dynamics[0].w) / 65535.0, 0.0, 1.0);
-    r = u32(clamp(mixc.r * 255.0 * fade, 0.0, 255.0));
-    g = u32(clamp(mixc.g * 255.0 * fade, 0.0, 255.0));
-    b = u32(clamp(mixc.b * 255.0 * fade, 0.0, 255.0));
+    // Edge fades belong to the animated foreground layers in the CPU
+    // compositor; applying their product to the entire frame darkens the
+    // artwork/background and cannot match the reference renderer.
+    r = u32(clamp(mixc.r * 255.0, 0.0, 255.0));
+    g = u32(clamp(mixc.g * 255.0, 0.0, 255.0));
+    b = u32(clamp(mixc.b * 255.0, 0.0, 255.0));
   }
   pixels[i] = r | (g << 8u) | (b << 16u) | (255u << 24u);
 }
