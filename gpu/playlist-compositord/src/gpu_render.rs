@@ -351,6 +351,10 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
       blurred_bg = textureLoad(base_tex, vec2<i32>(id.xy), 0).rgb;
       artwork = 0.0;
       artwork_alpha = 0.0;
+      // The canonical base already contains the artwork tile and its
+      // luminance/shadow treatment. Do not re-add the artwork-derived glow
+      // on top of that raster; the CPU frame path has no second glow pass.
+      glow = 0.0;
     }
     var mixc = blurred_bg + primary * (glow + glyph + artwork * 0.35) + accent * (bars * 0.75 + wave * 0.35 + rail_track * 0.35 + thumb + loudness);
     let overlay_alpha = overlay.a;
