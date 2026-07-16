@@ -169,6 +169,21 @@ func ProbeGPUSceneTextOverlay(ctx context.Context, executable, session string, w
 	return frame.TextOverlayReceipt, nil
 }
 
+// ProbeGPUSceneTextOverlayComposite is an explicitly diagnostic session. The
+// session name is kept distinct so future overlay-composite shader work cannot
+// accidentally alter the production route.
+func ProbeGPUSceneTextOverlayComposite(ctx context.Context, executable string, width, height uint32, scene *MusicScenePayload) (GpuFrame, error) {
+	p, err := StartSidecar(ctx, executable, "compare-text-overlay-composite")
+	if err != nil {
+		return GpuFrame{}, err
+	}
+	defer p.Close()
+	if err := p.Hello(ctx, "compare-text-overlay-composite"); err != nil {
+		return GpuFrame{}, err
+	}
+	return p.RenderScene(ctx, width, height, 0, 0, scene)
+}
+
 type sidecarRequest struct {
 	Type    string `json:"type"`
 	Version uint16 `json:"version,omitempty"`
