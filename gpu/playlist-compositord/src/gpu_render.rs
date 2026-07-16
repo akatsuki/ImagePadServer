@@ -224,8 +224,14 @@ fn glyph_instance_words(scene: Option<&MusicScenePayload>, width: u32, height: u
     let mut out = Vec::new();
     let Some(atlas) = scene.and_then(|s| s.glyph_atlas.as_ref()) else { return out };
     if atlas.payload.is_empty() || atlas.glyphs.is_empty() { return out; }
+    // TextRun coordinates are part of the canonical 1280x720 scene contract.
+    // Convert them to the actual render target here; the previous code treated
+    // canonical pixels as target pixels, pushing title/artist/album glyphs out
+    // of frame at the 360p comparison size.
+    let sx = width as f32 / 1280.0;
+    let sy = height as f32 / 720.0;
     for run in atlas.text_runs.iter().take(256) {
-        let mut cursor = run.x;
+        let mut cursor = run.x * sx;
         for ch in run.text.chars() {
             if out.len() / 12 >= 256 { break; }
             let id = ch.to_string();
@@ -234,14 +240,14 @@ fn glyph_instance_words(scene: Option<&MusicScenePayload>, width: u32, height: u
             let Some(g) = glyph else { continue };
             let scale = run.size_px / (g.height.max(1) as f32);
             let sw = (g.width as f32 * scale).max(1.0);
-            let sh = run.size_px.max(1.0);
-            let vals = [cursor / width as f32, run.y / height as f32, sw / width as f32, sh / height as f32,
+            let sh = (run.size_px * sy).max(1.0);
+            let vals = [cursor / width as f32, (run.y * sy) / height as f32, (sw * sx) / width as f32, sh / height as f32,
                 g.x as f32 / atlas.width as f32, g.y as f32 / atlas.height as f32,
                 g.width as f32 / atlas.width as f32, g.height as f32 / atlas.height as f32,
                 run.rgba[0] as f32 / 255.0, run.rgba[1] as f32 / 255.0, run.rgba[2] as f32 / 255.0,
                 (run.rgba[3] as f32 / 255.0) * run.opacity.clamp(0.0, 1.0)];
             out.extend(vals.into_iter().map(f32::to_bits));
-            cursor += g.advance.max(g.width as f32) * scale;
+            cursor += g.advance.max(g.width as f32) * scale * sx;
         }
     }
     out
@@ -573,7 +579,7 @@ mod tests {
         let x0 = f32::from_bits(words[0]);
         let atlas_x0 = f32::from_bits(words[4]);
         let x1 = f32::from_bits(words[12]);
-        assert!((x0 - 0.1).abs() < 1e-6);
+        assert!((x0 - 10.0 / 1280.0).abs() < 1e-6);
         assert!((atlas_x0 - 8.0 / 256.0).abs() < 1e-6);
         assert!(x1 > x0);
     }
