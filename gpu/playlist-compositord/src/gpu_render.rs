@@ -50,6 +50,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let primary = vec3<f32>(params.palette[0].xyz) / 255.0;
     let accent = vec3<f32>(params.palette[1].xyz) / 255.0;
     let background = vec3<f32>(params.palette[2].xyz) / 255.0;
+    let overlay = vec4<f32>(params.palette[3]) / 255.0;
     // Canonical scene background and glow, with a deterministic waveform.
     var glow = max(0.0, 1.0 - distance(vec2<f32>(fx, fy), vec2<f32>(0.5, 0.48)) * 1.7) * (0.18 + rms * 0.42);
     // Artwork is a first-class layer. Keep the tile bounded and deterministic
@@ -153,7 +154,31 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
       }
       glyph = glyph * 0.85;
     }
-    var mixc = background * 0.75 + primary * (glow + glyph + artwork * 0.35) + accent * (bars * 0.75 + wave * 0.35 + thumb + loudness);
+    // The CPU compositor starts from the blurred artwork background and then
+    // applies its readability overlay before foreground layers.  Reconstruct
+    // the same ordering here with a bounded three-tap blur.  The payload's
+    // background colour remains the deterministic fallback when artwork is
+    // absent or malformed.
+    var blurred_bg = background;
+    if ((params.scene_enabled & 2u) != 0u) {
+      let dims = vec2<f32>(textureDimensions(artwork_tex));
+      let source_aspect = dims.x / max(1.0, dims.y);
+      let frame_aspect = f32(params.width) / max(1.0, f32(params.height));
+      var buv = vec2<f32>(fx, fy);
+      if (source_aspect > frame_aspect) {
+        buv.x = (fx - 0.5) * frame_aspect / source_aspect + 0.5;
+      } else {
+        buv.y = (fy - 0.5) * source_aspect / frame_aspect + 0.5;
+      }
+      let texel = 1.0 / max(dims, vec2<f32>(1.0));
+      let c0 = textureSampleLevel(artwork_tex, artwork_sampler, clamp(buv, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).rgb;
+      let c1 = textureSampleLevel(artwork_tex, artwork_sampler, clamp(buv + vec2<f32>(texel.x, 0.0), vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).rgb;
+      let c2 = textureSampleLevel(artwork_tex, artwork_sampler, clamp(buv + vec2<f32>(0.0, texel.y), vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).rgb;
+      blurred_bg = mix(background, (c0 + c1 + c2) / 3.0, 0.55);
+    }
+    var mixc = blurred_bg + primary * (glow + glyph + artwork * 0.35) + accent * (bars * 0.75 + wave * 0.35 + thumb + loudness);
+    let overlay_alpha = overlay.a;
+    mixc = mix(mixc, overlay.rgb, overlay_alpha);
     // Composite the actual artwork payload into the tile. Previously only its
     // alpha/luminance affected the background, leaving the GPU tile unlike the
     // CPU reference even when the same artwork bytes were present.
