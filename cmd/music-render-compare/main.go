@@ -122,35 +122,36 @@ type report struct {
 // It makes an empty compare fixture distinguishable from a real metadata/
 // artwork parity run without embedding the potentially large raster twice.
 type sceneEvidence struct {
-	Fingerprint                string                                `json:"fingerprint,omitempty"`
-	ArtworkHash                string                                `json:"artworkHash,omitempty"`
-	GlyphHash                  string                                `json:"glyphHash,omitempty"`
-	GlyphPayloadHash           string                                `json:"glyphPayloadHash,omitempty"`
-	GlyphWidth                 uint32                                `json:"glyphWidth,omitempty"`
-	GlyphHeight                uint32                                `json:"glyphHeight,omitempty"`
-	GlyphRowStride             uint32                                `json:"glyphRowStride,omitempty"`
-	GlyphCount                 int                                   `json:"glyphCount,omitempty"`
-	TextRunCount               int                                   `json:"textRunCount,omitempty"`
-	GlyphCoveragePixels        int                                   `json:"glyphCoveragePixels,omitempty"`
-	GPUInstanceCount           int                                   `json:"gpuInstanceCount,omitempty"`
-	GPUInstanceSample          any                                   `json:"gpuInstanceSample,omitempty"`
-	GPUInstanceDiagnosticError string                                `json:"gpuInstanceDiagnosticError,omitempty"`
-	SyntheticGlyph             *video.GlyphSyntheticEvidence         `json:"syntheticGlyph,omitempty"`
-	TextOverlayCPUHash         string                                `json:"textOverlayCpuHash,omitempty"`
-	TextOverlayGPUReceipt      *video.TextOverlayReceipt             `json:"textOverlayGpuReceipt,omitempty"`
-	TextOverlaySHAEqual        bool                                  `json:"textOverlayShaEqual,omitempty"`
-	TextOverlayAlphaCoverage   int                                   `json:"textOverlayAlphaCoverage,omitempty"`
-	TextOverlayRegionCrop      imageBounds                           `json:"textOverlayRegionCrop,omitempty"`
-	TextOverlayRenderer        string                                `json:"textOverlayRenderer,omitempty"`
-	TextOverlayParity          *video.OverlayParityMetric            `json:"textOverlayParity,omitempty"`
-	TextOverlayParityRegions   map[string]*video.OverlayParityMetric `json:"textOverlayParityRegions,omitempty"`
-	TextOverlayCompositeSHA    string                                `json:"textOverlayCompositeSha,omitempty"`
-	TextOverlayCPUCompositeSHA string                                `json:"textOverlayCpuCompositeSha,omitempty"`
-	CPUInstanceManifest        video.GlyphInstanceManifest           `json:"cpuInstanceManifest,omitempty"`
-	GPUInstanceParity          video.GlyphInstanceParity             `json:"gpuInstanceParity,omitempty"`
-	Title                      string                                `json:"title,omitempty"`
-	Artist                     string                                `json:"artist,omitempty"`
-	Album                      string                                `json:"album,omitempty"`
+	Fingerprint                string                                           `json:"fingerprint,omitempty"`
+	ArtworkHash                string                                           `json:"artworkHash,omitempty"`
+	GlyphHash                  string                                           `json:"glyphHash,omitempty"`
+	GlyphPayloadHash           string                                           `json:"glyphPayloadHash,omitempty"`
+	GlyphWidth                 uint32                                           `json:"glyphWidth,omitempty"`
+	GlyphHeight                uint32                                           `json:"glyphHeight,omitempty"`
+	GlyphRowStride             uint32                                           `json:"glyphRowStride,omitempty"`
+	GlyphCount                 int                                              `json:"glyphCount,omitempty"`
+	TextRunCount               int                                              `json:"textRunCount,omitempty"`
+	GlyphCoveragePixels        int                                              `json:"glyphCoveragePixels,omitempty"`
+	GPUInstanceCount           int                                              `json:"gpuInstanceCount,omitempty"`
+	GPUInstanceSample          any                                              `json:"gpuInstanceSample,omitempty"`
+	GPUInstanceDiagnosticError string                                           `json:"gpuInstanceDiagnosticError,omitempty"`
+	SyntheticGlyph             *video.GlyphSyntheticEvidence                    `json:"syntheticGlyph,omitempty"`
+	TextOverlayCPUHash         string                                           `json:"textOverlayCpuHash,omitempty"`
+	TextOverlayGPUReceipt      *video.TextOverlayReceipt                        `json:"textOverlayGpuReceipt,omitempty"`
+	TextOverlayParityByPoint   map[string]map[string]*video.OverlayParityMetric `json:"textOverlayParityByPoint,omitempty"`
+	TextOverlaySHAEqual        bool                                             `json:"textOverlayShaEqual,omitempty"`
+	TextOverlayAlphaCoverage   int                                              `json:"textOverlayAlphaCoverage,omitempty"`
+	TextOverlayRegionCrop      imageBounds                                      `json:"textOverlayRegionCrop,omitempty"`
+	TextOverlayRenderer        string                                           `json:"textOverlayRenderer,omitempty"`
+	TextOverlayParity          *video.OverlayParityMetric                       `json:"textOverlayParity,omitempty"`
+	TextOverlayParityRegions   map[string]*video.OverlayParityMetric            `json:"textOverlayParityRegions,omitempty"`
+	TextOverlayCompositeSHA    string                                           `json:"textOverlayCompositeSha,omitempty"`
+	TextOverlayCPUCompositeSHA string                                           `json:"textOverlayCpuCompositeSha,omitempty"`
+	CPUInstanceManifest        video.GlyphInstanceManifest                      `json:"cpuInstanceManifest,omitempty"`
+	GPUInstanceParity          video.GlyphInstanceParity                        `json:"gpuInstanceParity,omitempty"`
+	Title                      string                                           `json:"title,omitempty"`
+	Artist                     string                                           `json:"artist,omitempty"`
+	Album                      string                                           `json:"album,omitempty"`
 }
 
 func overlayProbeRegions(layout video.MusicSceneLayout) []struct {
@@ -924,6 +925,23 @@ func main() {
 			} else if rep.SceneEvidence.GPUInstanceDiagnosticError == "" {
 				rep.SceneEvidence.GPUInstanceDiagnosticError = e.Error()
 			}
+		}
+	}
+	if !*cpuOnly {
+		rep.SceneEvidence.TextOverlayParityByPoint = map[string]map[string]*video.OverlayParityMetric{}
+		fps := analysis.FPS
+		if fps <= 0 {
+			fps = 30
+		}
+		last := uint64(math.Max(0, math.Ceil(analysis.Duration*float64(fps))-1))
+		mid := uint64(math.Max(0, math.Floor(analysis.Duration*float64(fps)/2)))
+		for _, pt := range []struct {
+			name string
+			idx  uint64
+		}{{"start", 0}, {"mid", mid}, {"end", last}} {
+			sp := video.CanonicalMusicScene(inputSpec, pt.idx, int64(float64(pt.idx)*1e9/float64(fps)))
+			ev := probeTextOverlayEvidence(ctx, strings.TrimSpace(os.Getenv("IMAGEPAD_PLAYLIST_COMPOSITORD")), pt.name, sp, uint32(math.Round(float64(p.Height)*16.0/9.0)), uint32(p.Height))
+			rep.SceneEvidence.TextOverlayParityByPoint[pt.name] = ev.Regions
 		}
 	}
 	if *cpuOnly {
