@@ -54,6 +54,44 @@ func CompareOverlayParityCPUImageGPUImage(cpu, gpu image.Image, crop image.Recta
 			r.Intersection++
 		}
 	}
+	for p := range cm {
+		x, y := p%100000, p/100000
+		if r.CPUBounds == [4]int{} {
+			r.CPUBounds = [4]int{x, y, x + 1, y + 1}
+		} else {
+			if x < r.CPUBounds[0] {
+				r.CPUBounds[0] = x
+			}
+			if y < r.CPUBounds[1] {
+				r.CPUBounds[1] = y
+			}
+			if x+1 > r.CPUBounds[2] {
+				r.CPUBounds[2] = x + 1
+			}
+			if y+1 > r.CPUBounds[3] {
+				r.CPUBounds[3] = y + 1
+			}
+		}
+	}
+	for p := range gm {
+		x, y := p%100000, p/100000
+		if r.GPUBounds == [4]int{} {
+			r.GPUBounds = [4]int{x, y, x + 1, y + 1}
+		} else {
+			if x < r.GPUBounds[0] {
+				r.GPUBounds[0] = x
+			}
+			if y < r.GPUBounds[1] {
+				r.GPUBounds[1] = y
+			}
+			if x+1 > r.GPUBounds[2] {
+				r.GPUBounds[2] = x + 1
+			}
+			if y+1 > r.GPUBounds[3] {
+				r.GPUBounds[3] = y + 1
+			}
+		}
+	}
 	r.Union = len(cm) + len(gm) - r.Intersection
 	if r.Union > 0 {
 		r.IoU = float64(r.Intersection) / float64(r.Union)
