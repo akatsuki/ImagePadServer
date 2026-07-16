@@ -87,6 +87,19 @@ type report struct {
 	ScreenshotComparisons   map[string]imageComparison  `json:"screenshotComparisons,omitempty"`
 	StaticRegionComparisons map[string]regionComparison `json:"staticRegionComparisons,omitempty"`
 	ComparisonGate          comparisonGate              `json:"comparisonGate"`
+	SceneEvidence           sceneEvidence               `json:"sceneEvidence,omitempty"`
+}
+
+// sceneEvidence records the exact static payload supplied to both renderers.
+// It makes an empty compare fixture distinguishable from a real metadata/
+// artwork parity run without embedding the potentially large raster twice.
+type sceneEvidence struct {
+	Fingerprint string `json:"fingerprint,omitempty"`
+	ArtworkHash string `json:"artworkHash,omitempty"`
+	GlyphHash   string `json:"glyphHash,omitempty"`
+	Title       string `json:"title,omitempty"`
+	Artist      string `json:"artist,omitempty"`
+	Album       string `json:"album,omitempty"`
 }
 
 func compareImageRegion(aPath, bPath string, region imageBounds) (imageComparison, error) {
@@ -511,6 +524,10 @@ func main() {
 	output := flag.String("output-dir", "", "comparison output directory")
 	height := flag.Int("height", 360, "render height")
 	cpuOnly := flag.Bool("cpu-only", false, "render CPU reference only and skip GPU startup")
+	title := flag.String("title", "", "metadata title to include in the canonical scene")
+	artist := flag.String("artist", "", "metadata artist to include in the canonical scene")
+	album := flag.String("album", "", "metadata album to include in the canonical scene")
+	artwork := flag.String("artwork", "", "artwork image path to include in the canonical scene")
 	flag.Parse()
 	if *output == "" {
 		*output = filepath.Join(settings.Dir(), "diagnostics", "music-render-compare", time.Now().Format("20060102-150405"))
@@ -537,7 +554,8 @@ func main() {
 		fatal(err)
 	}
 	p := video.ResolveQuality(strconv.Itoa(*height), 100)
-	inputSpec := video.AudioRenderInput{SourcePath: *input, Kind: video.SourceMusic, Analysis: analysis}
+	inputSpec := video.AudioRenderInput{SourcePath: *input, Kind: video.SourceMusic, Analysis: analysis,
+		Metadata: video.AudioMetadata{Title: *title, Artist: *artist, Album: *album}, ArtworkPath: *artwork}
 	id := "compare"
 	ctx := context.Background()
 	inputHash, _ := sha256File(*input)
@@ -555,6 +573,10 @@ func main() {
 	}
 	rep := report{Input: *input, InputSHA256: inputHash, GeneratedAt: time.Now(), FFmpeg: ffmpegVersion(ctx, ff), GPUAdapter: adapter, GPUFingerprint: fingerprint, CPUOnly: *cpuOnly}
 	rep.FrameContract.ExpectedFrames = int64(math.Max(1, math.Ceil(analysis.Duration*30)))
+	scene := video.CanonicalMusicScene(inputSpec, 0, 0)
+	rep.SceneEvidence = sceneEvidence{Fingerprint: scene.Fingerprint, Title: inputSpec.Metadata.Title, Artist: inputSpec.Metadata.Artist, Album: inputSpec.Metadata.Album}
+	if scene.Artwork != nil { rep.SceneEvidence.ArtworkHash = scene.Artwork.AssetHash }
+	if scene.GlyphAtlas != nil { rep.SceneEvidence.GlyphHash = scene.GlyphAtlas.AssetHash }
 	rep.CPU = render(ctx, false, filepath.Join(*output, "cpu"), ff, inputSpec, id, p)
 	if !*cpuOnly {
 		rep.GPU = render(ctx, true, filepath.Join(*output, "gpu"), ff, inputSpec, id, p)
@@ -574,7 +596,6 @@ func main() {
 	// the same canonical scene payload sent to the GPU, then scale to the
 	// comparison output. This is evidence only; it does not relax Pass.
 	if !*cpuOnly {
-		scene := video.CanonicalMusicScene(inputSpec, 0, 0)
 		scaleRect := func(r video.SceneRect) imageBounds {
 			outputWidth := int(math.Round(float64(p.Height) * 16.0 / 9.0))
 			sx, sy := float64(outputWidth)/1280.0, float64(p.Height)/720.0
