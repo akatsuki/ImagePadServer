@@ -161,6 +161,15 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
       }
       glyph = glyph * 0.85;
     }
+    // Diagnostic-only glyph isolation. The compare harness uses the reserved
+    // sequence value to obtain a synthetic glyph mask without background,
+    // artwork, waveform, or overlay pixels. Production sequences never use
+    // this sentinel and therefore retain the normal compositor path.
+    if (params.sequence == 0xffffffffu) {
+      let v = u32(clamp(glyph * 255.0, 0.0, 255.0));
+      pixels[i] = v | (v << 8u) | (v << 16u) | (255u << 24u);
+      return;
+    }
     // The CPU compositor starts from the blurred artwork background and then
     // applies its readability overlay before foreground layers.  Reconstruct
     // the same ordering here with a bounded three-tap blur.  The payload's

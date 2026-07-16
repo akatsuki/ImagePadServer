@@ -15,7 +15,9 @@ import (
 )
 
 func validateGlyphAtlasReceipt(atlas *GlyphAtlasMetadata, receipt *GlyphAtlasReceipt) error {
-	if receipt == nil { return errors.New("sidecar glyph atlas receipt missing") }
+	if receipt == nil {
+		return errors.New("sidecar glyph atlas receipt missing")
+	}
 	sum := sha256.Sum256(atlas.Payload)
 	want := fmt.Sprintf("%x", sum[:])
 	if receipt.SHA256 != want || receipt.Width != atlas.Width || receipt.Height != atlas.Height || receipt.RowStride != atlas.RowStride || receipt.GlyphCount != uint32(len(atlas.Glyphs)) || receipt.TextRunCount != uint32(len(atlas.TextRuns)) || receipt.Format != string(PixelRGBA8) {
@@ -64,15 +66,15 @@ func (w *boundedBuffer) String() string {
 // SidecarDiagnostics is local process evidence used by diagnostics and tests.
 // It deliberately excludes stderr from normal request errors.
 type SidecarDiagnostics struct {
-	Executable string
-	Args       []string
-	StartedAt  time.Time
-	FinishedAt time.Time
-	ExitError  error
-	Stderr     string
-	Adapter    string
-	Backend    string
-	Toolchain  string
+	Executable        string
+	Args              []string
+	StartedAt         time.Time
+	FinishedAt        time.Time
+	ExitError         error
+	Stderr            string
+	Adapter           string
+	Backend           string
+	Toolchain         string
 	GlyphAtlasReceipt *GlyphAtlasReceipt
 }
 
@@ -107,12 +109,34 @@ func ProbeGPUFingerprint(ctx context.Context, executable, session string) (Sidec
 // rendering does not call this helper; compare tooling uses it as evidence.
 func ProbeGPUSceneGlyphDiagnostics(ctx context.Context, executable, session string, width, height uint32, scene *MusicScenePayload) (*GlyphRenderDiagnostics, error) {
 	p, err := StartSidecar(ctx, executable, session)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	defer p.Close()
-	if err := p.Hello(ctx, session); err != nil { return nil, err }
+	if err := p.Hello(ctx, session); err != nil {
+		return nil, err
+	}
 	frame, err := p.RenderScene(ctx, width, height, 0, 0, scene)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	return frame.GlyphDiagnostics, nil
+}
+
+// ProbeGPUSceneGlyphOnly renders a diagnostic-only synthetic frame containing
+// glyph atlas coverage without background or other compositor layers. The
+// reserved sequence is consumed only by the sidecar shader diagnostic path;
+// production rendering never uses it.
+func ProbeGPUSceneGlyphOnly(ctx context.Context, executable, session string, width, height uint32, scene *MusicScenePayload) (GpuFrame, error) {
+	p, err := StartSidecar(ctx, executable, session)
+	if err != nil {
+		return GpuFrame{}, err
+	}
+	defer p.Close()
+	if err := p.Hello(ctx, session); err != nil {
+		return GpuFrame{}, err
+	}
+	return p.RenderScene(ctx, width, height, ^uint64(0), 0, scene)
 }
 
 type sidecarRequest struct {
@@ -190,7 +214,9 @@ func (p *SidecarProcess) RenderScene(ctx context.Context, width, height uint32, 
 			return GpuFrame{}, err
 		}
 		if scene != nil && scene.GlyphAtlas != nil {
-			if err := validateGlyphAtlasReceipt(scene.GlyphAtlas, resp.Frame.GlyphAtlasReceipt); err != nil { return GpuFrame{}, err }
+			if err := validateGlyphAtlasReceipt(scene.GlyphAtlas, resp.Frame.GlyphAtlasReceipt); err != nil {
+				return GpuFrame{}, err
+			}
 		}
 		p.glyphReceipt = resp.Frame.GlyphAtlasReceipt
 		return *resp.Frame, nil
@@ -201,17 +227,17 @@ func (p *SidecarProcess) RenderScene(ctx context.Context, width, height uint32, 
 // Frame bytes intentionally stay on GPUFrameTransport until the native mapping
 // backend is available.
 type SidecarProcess struct {
-	cmd         *exec.Cmd
-	in          io.WriteCloser
-	out         *bufio.Reader
-	mu          sync.Mutex
-	wait        chan error
-	stderr      *boundedBuffer
-	startedAt   time.Time
-	finishedAt  time.Time
-	exitError   error
-	closed      bool
-	fingerprint SidecarFingerprint
+	cmd          *exec.Cmd
+	in           io.WriteCloser
+	out          *bufio.Reader
+	mu           sync.Mutex
+	wait         chan error
+	stderr       *boundedBuffer
+	startedAt    time.Time
+	finishedAt   time.Time
+	exitError    error
+	closed       bool
+	fingerprint  SidecarFingerprint
 	glyphReceipt *GlyphAtlasReceipt
 }
 
