@@ -166,10 +166,12 @@ func overlayProbeRegions(layout video.MusicSceneLayout) []struct {
 // overlayProbeEvidence is an immutable adapter result; keeping it separate
 // from sceneEvidence allows multiframe probes without mutating frame0 state.
 type overlayProbeEvidence struct {
-	CPUHash    string
-	GPUReceipt *video.TextOverlayReceipt
-	Parity     *video.OverlayParityMetric
-	Regions    map[string]*video.OverlayParityMetric
+	CPUHash         string
+	GPUReceipt      *video.TextOverlayReceipt
+	Parity          *video.OverlayParityMetric
+	Regions         map[string]*video.OverlayParityMetric
+	CompositeSHA    string
+	CPUCompositeSHA string
 }
 
 func (e overlayProbeEvidence) apply(dst *sceneEvidence) {
@@ -187,6 +189,12 @@ func (e overlayProbeEvidence) apply(dst *sceneEvidence) {
 	if e.Regions != nil {
 		dst.TextOverlayParityRegions = e.Regions
 	}
+	if e.CompositeSHA != "" {
+		dst.TextOverlayCompositeSHA = e.CompositeSHA
+	}
+	if e.CPUCompositeSHA != "" {
+		dst.TextOverlayCPUCompositeSHA = e.CPUCompositeSHA
+	}
 }
 
 func probeTextOverlayEvidence(ctx context.Context, executable, pointLabel string, scene video.MusicScenePayload, width, height uint32) overlayProbeEvidence {
@@ -202,6 +210,8 @@ func probeTextOverlayEvidence(ctx context.Context, executable, pointLabel string
 	cctx, ccancel := context.WithTimeout(ctx, 3*time.Second)
 	defer ccancel()
 	if frame, err := video.ProbeGPUSceneTextOverlayComposite(cctx, executable, width, height, &scene); err == nil && scene.TextOverlay != nil {
+		sum := sha256.Sum256(frame.Payload)
+		e.CompositeSHA = fmt.Sprintf("%x", sum[:])
 		gi := image.NewRGBA(image.Rect(0, 0, int(frame.Width), int(frame.Height)))
 		for y := 0; y < int(frame.Height); y++ {
 			for x := 0; x < int(frame.Width); x++ {
@@ -212,8 +222,17 @@ func probeTextOverlayEvidence(ctx context.Context, executable, pointLabel string
 			}
 		}
 		ci := video.RenderTextOverlayScreenRGBA(scene.TextOverlay, frame.Width, frame.Height, scene.Layout.Title)
+		cpuSum := sha256.Sum256(ci.Pix)
+		e.CPUCompositeSHA = fmt.Sprintf("%x", cpuSum[:])
 		m := video.CompareOverlayParityCPUImageGPUImage(ci, gi, image.Rect(scene.Layout.Title.X, scene.Layout.Title.Y, scene.Layout.Title.X+scene.Layout.Title.W, scene.Layout.Title.Y+scene.Layout.Title.H))
 		e.Parity = &m
+		e.Regions = map[string]*video.OverlayParityMetric{}
+		for _, region := range overlayProbeRegions(scene.Layout) {
+			r := region.Rect
+			rect := image.Rect(r.X, r.Y, r.X+r.W, r.Y+r.H)
+			metric := video.CompareOverlayParityCPUImageGPUImage(ci, gi, rect)
+			e.Regions[region.Name] = &metric
+		}
 	}
 	return e
 }
