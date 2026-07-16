@@ -51,8 +51,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (px.x < 0.0 || px.y < 0.0 || px.x >= f32(rect.z) || px.y >= f32(rect.w)) { rect = params.rects[3]; px = vec2<f32>(f32(id.x)-f32(rect.x),f32(id.y)-f32(rect.y)); }
     if (px.x < 0.0 || px.y < 0.0 || px.x >= f32(rect.z) || px.y >= f32(rect.w)) { rect = params.rects[7]; px = vec2<f32>(f32(id.x)-f32(rect.x),f32(id.y)-f32(rect.y)); }
     if (px.x < 0.0 || px.y < 0.0 || px.x >= f32(rect.z) || px.y >= f32(rect.w)) { pixels[i] = 0u; return; }
-    let uv = (floor(px / max(vec2<f32>(f32(rect.z), f32(rect.w)), vec2<f32>(1.0)) * dims) + vec2<f32>(0.5, 0.5)) / max(dims, vec2<f32>(1.0));
-    let c = textureSampleLevel(overlay_tex, overlay_sampler, uv, 0.0);
+    let src = vec2<i32>(floor(px / max(vec2<f32>(f32(rect.z), f32(rect.w)), vec2<f32>(1.0)) * dims));
+    let c = textureLoad(overlay_tex, src, 0);
     let rr = u32(clamp(c.r * 255.0, 0.0, 255.0));
     let gg = u32(clamp(c.g * 255.0, 0.0, 255.0));
     let bb = u32(clamp(c.b * 255.0, 0.0, 255.0));
