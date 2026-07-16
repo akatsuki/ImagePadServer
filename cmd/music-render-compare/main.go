@@ -150,6 +150,7 @@ type sceneEvidence struct {
 	BaseTextureParity          *video.OverlayParityMetric                       `json:"baseTextureParity,omitempty"`
 	SpectrumParity             *video.OverlayParityMetric                       `json:"spectrumParity,omitempty"`
 	ProgressParity             *video.OverlayParityMetric                       `json:"progressParity,omitempty"`
+	LoudnessParity             *video.OverlayParityMetric                       `json:"loudnessParity,omitempty"`
 	TextOverlaySHAEqual        bool                                             `json:"textOverlayShaEqual,omitempty"`
 	TextOverlayAlphaCoverage   int                                              `json:"textOverlayAlphaCoverage,omitempty"`
 	TextOverlayRegionCrop      imageBounds                                      `json:"textOverlayRegionCrop,omitempty"`
@@ -1152,6 +1153,26 @@ func main() {
 			rep.SceneEvidence.ProgressParity = &m
 		}
 		pcancel()
+	}
+	if !*cpuOnly {
+		lctx, lcancel := context.WithTimeout(ctx, 5*time.Second)
+		if lf, le := video.ProbeGPUSceneLoudness(lctx, strings.TrimSpace(os.Getenv("IMAGEPAD_PLAYLIST_COMPOSITORD")), uint32(math.Round(float64(p.Height)*16.0/9.0)), uint32(p.Height), &scene); le == nil {
+			layout, _ := video.LayoutForSize(int(math.Round(float64(p.Height)*16.0/9.0)), p.Height)
+			mode := video.ForegroundMode{AccentColor: color.RGBA{scene.Palette.Accent[0], scene.Palette.Accent[1], scene.Palette.Accent[2], 255}}
+			cpu := video.RenderLoudnessMaskCPU(int(lf.Width), int(lf.Height), inputSpec.Analysis.Features.LoudnessEnvelope, mode, layout)
+			gpu := image.NewRGBA(image.Rect(0, 0, int(lf.Width), int(lf.Height)))
+			for y := 0; y < int(lf.Height); y++ {
+				for x := 0; x < int(lf.Width); x++ {
+					off := y*int(lf.RowStride) + x*4
+					if off+3 < len(lf.Payload) {
+						gpu.SetRGBA(x, y, color.RGBA{lf.Payload[off], lf.Payload[off+1], lf.Payload[off+2], lf.Payload[off+3]})
+					}
+				}
+			}
+			m := video.CompareOverlayParityCPUImageGPUImage(cpu, gpu, cpu.Bounds())
+			rep.SceneEvidence.LoudnessParity = &m
+		}
+		lcancel()
 	}
 	if *cpuOnly {
 		rep.SceneEvidence.CPUInstanceManifest = video.ExpandMusicGlyphManifest(&scene, uint32(math.Round(float64(p.Height)*16.0/9.0)), uint32(p.Height))

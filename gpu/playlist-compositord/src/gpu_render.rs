@@ -116,6 +116,14 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     g = (id.y + params.sequence * 3u) & 255u;
     b = ((id.x + id.y) / 2u + params.sequence * 5u) & 255u;
   } else {
+    if (params.sequence == 0xfffffff8u) {
+      let probe_loud = params.rects[5];
+      if (id.x < u32(max(0, probe_loud.x)) || id.y < u32(max(0, probe_loud.y)) ||
+          id.x >= u32(probe_loud.x + probe_loud.z) || id.y >= u32(probe_loud.y + probe_loud.w)) {
+        pixels[i] = 0u | (255u << 24u);
+        return;
+      }
+    }
     let fx = f32(id.x) / max(1.0, f32(params.width - 1u));
     let fy = f32(id.y) / max(1.0, f32(params.height - 1u));
     let rms = f32(params.rms) / 32767.0;

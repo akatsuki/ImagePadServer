@@ -463,6 +463,14 @@ func drawLoudness(canvas *image.RGBA, envelope [1000]float64, mode ForegroundMod
 // Decorative playback-position display (spec section 13)
 // ---------------------------------------------------------------------------
 
+// RenderLoudnessMaskCPU renders only the canonical loudness layer for parity
+// probes, including the four guides and 1000-sample envelope.
+func RenderLoudnessMaskCPU(width, height int, envelope [1000]float64, mode ForegroundMode, layout VisualizerLayout) *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	drawLoudness(img, envelope, mode, layout)
+	return img
+}
+
 // drawProgress draws the progress track rectangle and circular position marker.
 func drawProgress(canvas *image.RGBA, mode ForegroundMode, layout VisualizerLayout, currentSeconds, duration float64) {
 	trackColor := mode.AccentColor
