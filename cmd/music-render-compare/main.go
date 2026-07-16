@@ -228,10 +228,21 @@ func probeTextOverlayEvidence(ctx context.Context, executable, pointLabel string
 		m := video.CompareOverlayParityCPUImageGPUImage(ci, gi, image.Rect(scene.Layout.Title.X, scene.Layout.Title.Y, scene.Layout.Title.X+scene.Layout.Title.W, scene.Layout.Title.Y+scene.Layout.Title.H))
 		e.Parity = &m
 		e.Regions = map[string]*video.OverlayParityMetric{}
+		ciAll := image.NewRGBA(image.Rect(0, 0, int(frame.Width), int(frame.Height)))
+		for _, region := range overlayProbeRegions(scene.Layout) {
+			rr := video.RenderTextOverlayScreenRGBA(scene.TextOverlay, frame.Width, frame.Height, region.Rect)
+			for y := 0; y < int(frame.Height); y++ {
+				for x := 0; x < int(frame.Width); x++ {
+					if p := rr.RGBAAt(x, y); p.A > 0 {
+						ciAll.SetRGBA(x, y, p)
+					}
+				}
+			}
+		}
 		for _, region := range overlayProbeRegions(scene.Layout) {
 			r := region.Rect
 			rect := image.Rect(r.X, r.Y, r.X+r.W, r.Y+r.H)
-			metric := video.CompareOverlayParityCPUImageGPUImage(ci, gi, rect)
+			metric := video.CompareOverlayParityCPUImageGPUImage(ciAll, gi, rect)
 			e.Regions[region.Name] = &metric
 		}
 	}
