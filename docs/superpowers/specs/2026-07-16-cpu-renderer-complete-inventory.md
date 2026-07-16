@@ -228,16 +228,136 @@ all non-raster invariants match and pixel differences are reported separately
 for background, artwork, graph, text, and UI regions. A single aggregate RMSE
 or timing pass is insufficient evidence.
 
-## Dependency graph and open points
+## Dependency graph and resolved Tier4 decisions
 
 Analysis → artwork preparation → background/foreground mode → layout/text
 metrics → static base image → per-frame spectrum/waveform/loudness/progress →
 encode/mux. Waveform and audio mux must consume the same filtered signal.
-Open points requiring an explicit decision before implementation: the exact
-CPU waveform rectangle source (currently inferred from the filtergraph), the
-font fallback order on each platform, the playlist transition/fade contract,
-and whether HLS tail padding is a presentation requirement or only an encoder
-workaround. These must not be silently approximated by a GPU implementation.
+The following decisions close the Tier5 P0/P1 questions. A decision is still
+subject to the read-only Tier5 recheck; it does not authorize implementation.
+
+### D1. Numeric region gates (owner: Tier4; verifier: Tier5)
+
+All comparisons use decoded *linear-light* RGBA8 frames after the same
+BT.709 conversion. Regions are the canonical rectangles in §C, expanded by
+one pixel for antialiasing. Required samples are frame 0, `round(0.10N)`,
+`round(0.25N)`, `round(0.50N)`, `round(0.75N)`, `round(0.90N)`, and `N-1`;
+scroll/fade boundaries add the samples in D8. For each region and sample,
+the gate reports RGB MAE, RGB RMSE, RGB max, alpha MAE, and changed-alpha
+coverage (pixels with |A_cpu-A_gpu|>1). Pass thresholds are:
+
+| Region | MAE | RMSE | Max | alpha MAE | changed-alpha |
+|---|---:|---:|---:|---:|---:|
+| background/overlay | <=2.0 | <=6.0 | <=32 | <=1.0 | <=2.0% |
+| artwork/fallback | <=1.5 | <=5.0 | <=24 | <=1.0 | <=1.0% |
+| spectrum/waveform/loudness | <=2.0 | <=7.0 | <=40 | <=1.5 | <=2.0% |
+| text | <=1.0 | <=4.0 | <=24 | <=1.0 | <=1.0% |
+| progress/time/edge fade | <=1.0 | <=4.0 | <=24 | <=1.0 | <=1.0% |
+
+Every sampled frame must pass every applicable region; no aggregate score may
+substitute for a failed region. A max error above the limit or a NaN is an
+immediate failure. Thresholds are intentionally measured against CPU goldens,
+not guessed from the current GPU output. Evidence command:
+`go test ./cmd/music-render-compare -run Test.*Region -count=1` (Tier2).
+
+### D2. Waveform, fonts, transitions, and tail (owner: Tier4)
+
+The waveform source is the filtered branch created in
+`internal/video/audio_visualizer.go`: `[1:a]loudnorm=I=-14.0:TP=-1.0:LRA=11.0,
+asplit=2[aud][wsrc];[wsrc]showwaves=s=752x168:rate=30:mode=line:colors=...`.
+The canonical rect is `(432,320,752,168)` and opacity is 0.55. The exact
+filter string, color, and FFmpeg build fingerprint are serialized in every
+fixture; GPU receives the decoded showwaves RGBA samples, never spectrum data.
+
+Font resolution is pinned per platform: Windows `C:/Windows/Fonts/segoeui.ttf`
+then `meiryo.ttc`; macOS `/System/Library/Fonts/SFNS.ttf` then
+`Hiragino Sans`; Linux `/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf` then
+`NotoSansCJK-Regular.ttc`. The first font that contains every shaped glyph is
+selected; mixed-run fallback is forbidden in a single golden unless recorded
+as separate runs. Fixtures include Latin, Japanese, combining marks, and RTL.
+The fixture stores SHA-256, FreeType/fontTools version, glyph IDs, advances,
+clusters, and atlas bounds. Missing declared fonts fail the fixture.
+
+Playlist transitions use the existing radio contract: edge fades are disabled
+unless `EdgeFadeSeconds>0` and duration is greater than twice that value; when
+enabled both audio and video use the same 0.7-second fade (smootherstep only in
+radio fallback). Tracks reset scene state at their first frame; crossfade is
+not implicit. HLS has no presentation padding: frame count is exactly
+`ceil(Duration*30)`, PTS is `i/30`, and the final segment may be shorter than
+4 seconds. Any extra tail frame is an encoder defect, not a workaround.
+
+### D3. Pixel and color contract (owner: Tier4; Tier3 adapter)
+
+Sidecar input is `rgba` (straight alpha, row stride `width*4`) at 1280x720 and
+30fps. FFmpeg output is `yuv420p`, BT.709 primaries/transfer/matrix,
+`tv` (limited) range, 8-bit 4:2:0 chroma with MPEG2 chroma location, and
+explicit `scale=in_range=full:out_range=tv:in_color_matrix=bt709:out_color_matrix=bt709`.
+Alpha is composited against the CPU background before conversion; no alpha
+channel reaches H.264. `-colorspace bt709 -color_primaries bt709
+-color_trc bt709 -color_range tv` are mandatory and ffprobe must confirm them.
+
+### D4. Static raster constants (owner: Tier4; source evidence required)
+
+Cover fit is centered, preserving aspect ratio; crop uses floor origin and
+bilinear sampling. Background analysis is 32x32 then a 3x3 box kernel;
+full-canvas blur is `gblur=sigma=64` with edge pixels clamped. Tile corners
+use the canonical radius from `RoundedRect` (12 px at 720p, scaled and
+rounded); shadow is CPU `draw.Shadow` with offset `(0,8)`, blur radius 24,
+opacity 0.35. Fallback uses `PaletteForFeatures`, 64 rays, width 3 px,
+foreground alpha 0.26, and the note glyph constants in
+`internal/video/fallback_artwork.go`. Any differing constant must be added to
+the fixture rather than shader-local. Evidence: the cited source files plus
+`go test ./internal/video -run 'Test.*(Fallback|Background|Artwork)'` (Tier2).
+
+### D5. Version and adapter matrix (owner: Tier4; executor: Tier3)
+
+Fixtures record `ffmpeg -version`, `ffprobe -show_versions`, Go version,
+wgpu version, shader compiler version, and font file hashes. A fixture is
+portable only when all fingerprints are present; version drift requires a new
+contract version. Adapter matrix:
+
+| Adapter | Required backend/features | Evidence | Unsupported result |
+|---|---|---|---|
+| NVIDIA | Vulkan/DX12, storage buffers, RGBA8 render target | adapter info + short/long/playlist | `gpu_renderer_unavailable` |
+| AMD iGPU | Vulkan/DX12, same limits | same | `gpu_renderer_unavailable` |
+| macOS Apple GPU | Metal, storage buffers, same limits | same | `gpu_renderer_unavailable` |
+| no adapter/remote software | none | hello failure log | `gpu_required` |
+
+No backend substitution is silently accepted. Evidence command is the sidecar
+hello plus `cmd/music-render-compare` short/long/playlist runs (Tier3).
+
+### D6. Cancellation, cleanup, and error precedence (owner: Tier4)
+
+Cancellation must close the raw-frame pipe and terminate both child processes
+within 2 seconds, remove playlist segments/temp MPEG-TS/partial MP4, and leave
+no sidecar child after 5 seconds. A malformed frame (size/stride/index/PTS)
+has precedence over mux failure; explicit context cancellation has precedence
+over child exit; adapter/hello failure maps to `gpu_renderer_unavailable`, and
+`gpu_required` is returned only when GPU was explicitly required. Tests must
+assert error class, cleanup, and the 2s/5s bounds using temporary directories.
+
+### D7. CPU evidence completeness (owner: Tier4; audit: Tier5)
+
+The call-path evidence set is the source files listed above plus
+`audio_visualizer_test.go`, `radio_recipe.go`, `radio_render.go`, and
+`gpu_*_test.go`; each fixture stores the exact generated argument vector and
+the source commit. A missing call-path file or inferred value is a P1 failure.
+
+### D8. Boundary samples (owner: Tier3; audit: Tier5)
+
+For each scrolling field sample `t={0,2.999,3.000,3.001,cycle-0.001,
+cycle,cycle+0.001}`. For edge fades sample `t={0,0.001,0.699,0.700,
+duration-0.700,duration-0.001,duration}`. For progress sample frame 0,
+first/middle/last and exact duration clamp. These samples are mandatory in
+the JSON report and must pass the text/UI gates in D1.
+
+### D9. Shaping fixtures (owner: Tier4; implementation: Tier3)
+
+The font fixture set contains `Café`, `日本語タイトル`, Arabic RTL, emoji,
+and mixed Latin/CJK strings, with expected grapheme clusters, glyph IDs,
+advances, baseline, and fallback run boundaries. HarfBuzz/FreeType shaping
+versions and font hashes are recorded. A placeholder bitmap, character-count
+width, or platform-default fallback without a recorded hash fails Wave 3.
 
 ## Zero-based GPU execution plan
 

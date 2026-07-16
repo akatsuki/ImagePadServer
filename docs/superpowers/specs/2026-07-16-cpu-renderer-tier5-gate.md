@@ -4,35 +4,30 @@ Date: 2026-07-16
 
 ## Decision
 
-**NO-GO for implementation or production-route switch.** The inventory and
-execution plan are useful, but the following gates must be resolved first.
+**RETURNED TO TIER5 FOR RECHECK (implementation still NO-GO).** Tier4 has
+resolved the specification questions below in the inventory. This document is
+not a Tier5 PASS; the owner must wait for a fresh read-only audit.
 
-## P0 blockers
+## P0 blockers — resolved in Tier4, pending Tier5 evidence audit
 
-- Define numeric per-region acceptance thresholds: MAE/RMSE/max error/alpha
-  coverage, sampled frame times, and failure rules. “Matches golden” is not a
-  deterministic gate.
-- Resolve waveform rectangle/filtergraph source, platform font fallback order,
-  playlist transition/fade behavior, and HLS tail policy before Wave 0/1.
+- Numeric region thresholds, frame samples, and fail-closed rules are now D1.
+- Waveform source/rect, font order, playlist fade, and exact HLS tail policy are
+  now D2, with fixture fields and source ownership.
 
-## P1 blockers
+## P1 blockers — resolved in Tier4, pending source/fixture verification
 
-- Freeze pixel conversion: input/output pixel formats, BT.709 limited/full range,
-  chroma subsampling, scaling flags, transfer/primaries, and alpha handling.
-- Complete CPU call-path evidence for waveform, mux, and error helpers.
-- Specify or fixture-derive shadow/rounded-corner/cover interpolation, blur
-  kernel and border behavior, fallback fingerprint ray constants, and exact
-  FFmpeg/font versions.
-- Define the NVIDIA/AMD/Metal/unsupported adapter matrix, feature requirements,
-  evidence schema, and error-path assertions.
-- Add measurable cancellation bounds, cleanup assertions, and error precedence.
+- Pixel format/color range/alpha contract is D3.
+- CPU call-path evidence and completeness criteria are D7.
+- Blur, crop, shadow, rounded corners, fallback constants are D4; tool/font
+  fingerprints are D5.
+- NVIDIA/AMD/Metal/unsupported adapter requirements and evidence are D5.
+- Cancellation bounds, cleanup, and error precedence are D6.
 
-## P2 strengthening
+## P2 strengthening — resolved in Tier4
 
-- Require boundary/time samples beyond start/mid/end for scroll and fade.
-- Require per-region frame masks, not only aggregate metrics.
-- Pin exact font identity/version and shaping/fallback behavior, including
-  Japanese, combining marks, and RTL fixtures.
+- Boundary samples are D8; per-region metrics and masks are D1.
+- Font identity, versions, shaping, Japanese, combining marks, and RTL are D2,
+  D5, and D9.
 
 ## Positive findings
 
@@ -42,8 +37,43 @@ execution plan are useful, but the following gates must be resolved first.
 - The plan correctly bans `len+6`, spectrum-derived waveform, placeholder glyphs,
   simple-blur substitution, and aggregate-RMSE-only acceptance.
 
-## Go criteria
+## Tier5 recheck request
 
-Tier4 must resolve every P0/P1 item, update the inventory with measurable gates,
-and Tier5 must return PASS. Until then, no GPU implementation or production
-route switch is authorized.
+Tier5 must verify every D1–D9 decision against the cited source files and
+fixture-generation commands, then return PASS or identify a concrete residual.
+Until that audit returns PASS, no GPU implementation or production-route
+switch is authorized. Any unresolved source value must remain an explicit
+fixture-derived field; it must not be silently guessed by a shader.
+
+## Residuals intentionally left for Tier5
+
+- Confirm the exact current CPU rounded-corner/shadow symbols and whether their
+  constants match D4 (the inventory records the required value and source).
+- Confirm the installed font paths and FFmpeg/libass/FreeType versions on each
+  target; missing hardware or fonts is evidence-unavailable, not PASS.
+- Confirm that the proposed region thresholds are reproducible on the frozen
+  CPU fixtures and adjust only through a versioned Tier5 decision.
+
+## Tier5 re-audit result (2026-07-16)
+
+**NO-GO remains.** The contract is more explicit, but evidence and current
+implementation are not yet aligned:
+
+- D1 thresholds and sample times are specified, but the golden fixture set has
+  not been generated, so reproducibility is unproven.
+- The cross-platform font contract conflicts with the current embedded
+  NotoSansJP/fallback implementation.
+- Shadow opacity constants in D4 disagree with the current CPU implementation;
+  CatmullRom/crop behavior also needs fixture authority.
+- The required `testdata/music-render` fixture set and JSON evidence reports are
+  absent.
+- The current GPU path still contains `len(Frames)+6`, contrary to the exact
+  frame-count policy.
+- GPU mux output does not yet prove explicit colorspace, primaries, transfer and
+  color-range flags required by D3.
+- Cancellation/cleanup time bounds and adapter/toolchain fingerprints remain
+  unverified.
+
+No implementation or production-route switch is authorized until these
+residuals are resolved and Tier5 returns PASS. The final execution decision
+remains with the owner.
