@@ -12,19 +12,19 @@ import (
 // reference and yields one transparent RGBA waveform tile per 30 Hz frame.
 // The callback owns the byte slice until it returns; the next frame reuses no
 // storage so callers may upload it asynchronously after copying.
-func StreamShowwavesFrames(ctx context.Context, ffmpeg, audioPath string, width, height, frames int, color string, audioFilter string, onFrame func(index int, rgba []byte) error) error {
+func StreamAudioWaveFrames(ctx context.Context, ffmpeg, audioPath string, width, height, frames int, color string, audioFilter string, onFrame func(index int, rgba []byte) error) error {
 	if width <= 0 || height <= 0 || frames < 1 || onFrame == nil {
 		return fmt.Errorf("invalid showwaves stream parameters")
 	}
 	if color == "" {
 		color = "#FFFFFF@0.55"
 	}
-	wave := fmt.Sprintf("showwaves=s=%dx%d:rate=30:mode=line:colors=%s,format=rgba", width, height, color)
+	wave := fmt.Sprintf("showwaves=s=%dx%d:rate=30:mode=line:colors=%s,format=rgba[out]", width, height, color)
 	args := []string{"-hide_banner", "-loglevel", "error", "-i", audioPath}
 	if audioFilter != "" {
 		args = append(args, "-af", audioFilter)
 	}
-	args = append(args, "-vf", wave, "-frames:v", strconv.Itoa(frames), "-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1")
+	args = append(args, "-filter_complex", wave, "-map", "[out]", "-frames:v", strconv.Itoa(frames), "-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1")
 	cmd := exec.CommandContext(ctx, ffmpeg, args...)
 	hideWindow(cmd)
 	out, err := cmd.StdoutPipe()

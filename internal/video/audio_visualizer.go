@@ -671,7 +671,37 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 		return fmt.Errorf("%w: sidecar hello: %v", ErrGPURendererUnavailable, err)
 	}
 	frames := frameCount
+	waveW := int(math.Round(752 * float64(width) / 1280))
+	waveH := int(math.Round(168 * float64(height) / 720))
+	waveColor := "#FFFFFF@0.55"
+	if gpuMode.AccentColor.A != 0 {
+		waveColor = fmt.Sprintf("#%02X%02X%02X@0.55", gpuMode.AccentColor.R, gpuMode.AccentColor.G, gpuMode.AccentColor.B)
+	}
+	waveFrames := make(chan []byte, 2)
+	waveErr := make(chan error, 1)
+	waveCtx, waveCancel := context.WithCancel(ctx)
+	defer waveCancel()
+	go func() {
+		err := StreamAudioWaveFrames(waveCtx, ffmpeg, input.SourcePath, waveW, waveH, frames, waveColor, audioLoudnormFilter(input.Kind), func(_ int, rgba []byte) error {
+			select {
+			case waveFrames <- rgba:
+				return nil
+			case <-waveCtx.Done():
+				return waveCtx.Err()
+			}
+		})
+		close(waveFrames)
+		waveErr <- err
+	}()
 	for i := 0; i < frames; i++ {
+		wave, ok := <-waveFrames
+		if !ok {
+			if e := <-waveErr; e != nil {
+				_ = cmd.Process.Kill()
+				return fmt.Errorf("audio wave stream: %w", e)
+			}
+			return fmt.Errorf("audio wave stream ended early at frame %d", i)
+		}
 		ptsNS := int64(float64(i) * float64(time.Second) / 30)
 		scene := CanonicalMusicScene(input, uint64(i), ptsNS)
 		// The CPU base builder is also the source of truth for foreground
@@ -687,6 +717,13 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 		if textOverlay != nil {
 			scene.TextOverlay = textOverlay
 		}
+		waveStride := ((waveW*4 + int(GPURowAlignment) - 1) / int(GPURowAlignment)) * int(GPURowAlignment)
+		wavePayload := make([]byte, waveStride*waveH)
+		for y := 0; y < waveH; y++ {
+			copy(wavePayload[y*waveStride:y*waveStride+waveW*4], wave[y*waveW*4:(y+1)*waveW*4])
+		}
+		waveMeta := BaseTextureMetadata{TextureID: fmt.Sprintf("wave-%s-%d", id, i), Width: uint32(waveW), Height: uint32(waveH), RowStride: uint32(waveStride), Format: PixelRGBA8, ColorSpace: ColorSRGB, Payload: wavePayload}
+		scene.WaveformTexture = &waveMeta
 		frame, e := sidecar.RenderScene(ctx, uint32(width), uint32(height), uint64(i), ptsNS, &scene)
 		if e != nil {
 			_ = cmd.Process.Kill()
@@ -701,6 +738,10 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 			_ = cmd.Process.Kill()
 			return fmt.Errorf("GPU HLS frame write: %w", e)
 		}
+	}
+	if e := <-waveErr; e != nil {
+		_ = cmd.Process.Kill()
+		return fmt.Errorf("audio wave stream: %w", e)
 	}
 	_ = in.Close()
 	if err := cmd.Wait(); err != nil {
