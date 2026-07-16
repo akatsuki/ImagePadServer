@@ -25,8 +25,13 @@ import (
 )
 
 type probeResult struct {
-	Duration float64 `json:"duration"`
-	Frames   int64   `json:"frames"`
+	Duration   float64 `json:"duration"`
+	Frames     int64   `json:"frames"`
+	PixFmt     string  `json:"pixFmt,omitempty"`
+	ColorSpace string  `json:"colorSpace,omitempty"`
+	ColorRange string  `json:"colorRange,omitempty"`
+	FirstPTS   float64 `json:"firstPts,omitempty"`
+	LastPTS    float64 `json:"lastPts,omitempty"`
 }
 type renderResult struct {
 	Output            string                  `json:"output,omitempty"`
@@ -62,6 +67,7 @@ type report struct {
 	GeneratedAt           time.Time                  `json:"generatedAt"`
 	FFmpeg                string                     `json:"ffmpeg,omitempty"`
 	GPUAdapter            string                     `json:"gpuAdapter,omitempty"`
+	CPUOnly               bool                       `json:"cpuOnly,omitempty"`
 	CPU                   renderResult               `json:"cpu"`
 	GPU                   renderResult               `json:"gpu"`
 	ScreenshotComparisons map[string]imageComparison `json:"screenshotComparisons,omitempty"`
@@ -207,6 +213,18 @@ func sha256File(path string) (string, error) {
 	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
+func ffmpegVersion(ctx context.Context, ff string) string {
+	out, err := exec.CommandContext(ctx, ff, "-version").Output()
+	if err != nil {
+		return ff
+	}
+	line := strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)[0]
+	if line == "" {
+		return ff
+	}
+	return line
+}
+
 func latestAudio(dir string) (string, error) {
 	ents, err := os.ReadDir(dir)
 	if err != nil {
@@ -240,14 +258,17 @@ func probe(ctx context.Context, path string) (probeResult, error) {
 	}
 	// Probe format duration separately because HLS stream duration is often
 	// omitted even when the format duration is available.
-	out, err := exec.CommandContext(ctx, ff, "-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries", "stream=duration,nb_read_frames:format=duration", "-of", "json", path).Output()
+	out, err := exec.CommandContext(ctx, ff, "-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries", "stream=duration,nb_read_frames,pix_fmt,color_space,color_range:format=duration", "-of", "json", path).Output()
 	if err != nil {
 		return probeResult{}, err
 	}
 	var raw struct {
 		Streams []struct {
-			Duration string `json:"duration"`
-			Frames   string `json:"nb_read_frames"`
+			Duration   string `json:"duration"`
+			Frames     string `json:"nb_read_frames"`
+			PixFmt     string `json:"pix_fmt"`
+			ColorSpace string `json:"color_space"`
+			ColorRange string `json:"color_range"`
 		} `json:"streams"`
 		Format struct {
 			Duration string `json:"duration"`
@@ -265,6 +286,25 @@ func probe(ctx context.Context, path string) (probeResult, error) {
 			r.Duration, _ = strconv.ParseFloat(raw.Streams[0].Duration, 64)
 		}
 		r.Frames, _ = strconv.ParseInt(raw.Streams[0].Frames, 10, 64)
+		r.PixFmt = raw.Streams[0].PixFmt
+		r.ColorSpace = raw.Streams[0].ColorSpace
+		r.ColorRange = raw.Streams[0].ColorRange
+	}
+	// PTS summary is intentionally separate so malformed/non-video streams do
+	// not make the primary probe fail.
+	pts, _ := exec.CommandContext(ctx, ff, "-v", "error", "-select_streams", "v:0", "-show_entries", "frame=pts_time", "-of", "csv=p=0", path).Output()
+	for _, line := range strings.Split(strings.TrimSpace(string(pts)), "\n") {
+		if line == "" {
+			continue
+		}
+		v, e := strconv.ParseFloat(strings.TrimSpace(line), 64)
+		if e != nil {
+			continue
+		}
+		if r.FirstPTS == 0 && r.LastPTS == 0 {
+			r.FirstPTS = v
+		}
+		r.LastPTS = v
 	}
 	return r, nil
 }
@@ -311,7 +351,7 @@ func extractScreenshots(ctx context.Context, ffmpeg, playlist, out string, durat
 	}
 	// Avoid exact segment boundaries: some HLS muxers expose no decodable
 	// frame at t=0 or during the final encoder drain interval.
-	for name, at := range map[string]float64{"start": math.Min(0.1, duration/4), "mid": duration / 2, "end": math.Max(0, duration - 0.5)} {
+	for name, at := range map[string]float64{"start": math.Min(0.1, duration/4), "mid": duration / 2, "end": math.Max(0, duration-0.5)} {
 		if at < 0 {
 			at = 0
 		}
@@ -331,6 +371,7 @@ func main() {
 	dataDir := flag.String("data-dir", filepath.Join(settings.Dir(), "media"), "audio cache directory")
 	output := flag.String("output-dir", "", "comparison output directory")
 	height := flag.Int("height", 360, "render height")
+	cpuOnly := flag.Bool("cpu-only", false, "render CPU reference only and skip GPU startup")
 	flag.Parse()
 	if *output == "" {
 		*output = filepath.Join(settings.Dir(), "diagnostics", "music-render-compare", time.Now().Format("20060102-150405"))
@@ -368,9 +409,11 @@ func main() {
 	if adapter == "" {
 		adapter = "unknown (set IMAGEPAD_GPU_ADAPTER to record explicit adapter)"
 	}
-	rep := report{Input: *input, InputSHA256: inputHash, GeneratedAt: time.Now(), FFmpeg: ff, GPUAdapter: adapter}
+	rep := report{Input: *input, InputSHA256: inputHash, GeneratedAt: time.Now(), FFmpeg: ffmpegVersion(ctx, ff), GPUAdapter: adapter, CPUOnly: *cpuOnly}
 	rep.CPU = render(ctx, false, filepath.Join(*output, "cpu"), ff, inputSpec, id, p)
-	rep.GPU = render(ctx, true, filepath.Join(*output, "gpu"), ff, inputSpec, id, p)
+	if !*cpuOnly {
+		rep.GPU = render(ctx, true, filepath.Join(*output, "gpu"), ff, inputSpec, id, p)
+	}
 	rep.ScreenshotComparisons = map[string]imageComparison{}
 	for _, name := range []string{"start", "mid", "end"} {
 		if a, ok := rep.CPU.Screenshots[name]; ok {
@@ -381,13 +424,17 @@ func main() {
 			}
 		}
 	}
-	rep.ComparisonGate = comparisonGate{
-		DurationDeltaSeconds: math.Abs(rep.CPU.Probe.Duration - rep.GPU.Probe.Duration),
-		FrameDelta:           rep.CPU.Probe.Frames - rep.GPU.Probe.Frames,
+	if !*cpuOnly {
+		rep.ComparisonGate = comparisonGate{
+			DurationDeltaSeconds: math.Abs(rep.CPU.Probe.Duration - rep.GPU.Probe.Duration),
+			FrameDelta:           rep.CPU.Probe.Frames - rep.GPU.Probe.Frames,
+		}
 	}
-	rep.ComparisonGate.DurationMatch = rep.ComparisonGate.DurationDeltaSeconds <= 0.05
-	rep.ComparisonGate.FrameCountMatch = rep.ComparisonGate.FrameDelta == 0
-	rep.ComparisonGate.Pass = rep.ComparisonGate.DurationMatch && rep.ComparisonGate.FrameCountMatch
+	if !*cpuOnly {
+		rep.ComparisonGate.DurationMatch = rep.ComparisonGate.DurationDeltaSeconds <= 0.05
+		rep.ComparisonGate.FrameCountMatch = rep.ComparisonGate.FrameDelta == 0
+		rep.ComparisonGate.Pass = rep.ComparisonGate.DurationMatch && rep.ComparisonGate.FrameCountMatch
+	}
 	b, _ := json.MarshalIndent(rep, "", "  ")
 	_ = os.WriteFile(filepath.Join(*output, "report.json"), append(b, '\n'), 0644)
 	writeMarkdown(*output, rep)
@@ -396,7 +443,11 @@ func main() {
 }
 func writeMarkdown(dir string, r report) {
 	var b strings.Builder
-	fmt.Fprintf(&b, "# Music render comparison\n\nInput: `%s`\n\n| Mode | Wall time (s) | Duration (s) | Frames | Error |\n|---|---:|---:|---:|---|\n", r.Input)
+	title := "Music render comparison"
+	if r.CPUOnly {
+		title = "CPU music render fixture"
+	}
+	fmt.Fprintf(&b, "# %s\n\nInput: `%s`\n\n| Mode | Wall time (s) | Duration (s) | Frames | Error |\n|---|---:|---:|---:|---|\n", title, r.Input)
 	fmt.Fprintf(&b, "| CPU | %.3f | %.3f | %d | %s |\n", r.CPU.WallSeconds, r.CPU.Probe.Duration, r.CPU.Probe.Frames, r.CPU.Error)
 	fmt.Fprintf(&b, "| GPU | %.3f | %.3f | %d | %s |\n", r.GPU.WallSeconds, r.GPU.Probe.Duration, r.GPU.Probe.Frames, r.GPU.Error)
 	b.WriteString("\n## Screenshot comparisons\n\n| Point | Size match | Mean absolute RGBA | RMSE | Mismatch ratio |\n|---|---|---:|---:|---:|\n")

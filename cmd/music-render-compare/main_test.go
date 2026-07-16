@@ -6,6 +6,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -28,6 +29,22 @@ func writeTestPNG(t *testing.T, name string, fill, mark color.RGBA) string {
 		t.Fatal(err)
 	}
 	return p
+}
+
+func TestCPUOnlyMarkdownDoesNotClaimGPUComparison(t *testing.T) {
+	dir := t.TempDir()
+	writeMarkdown(dir, report{Input: "fixture.wav", CPUOnly: true, CPU: renderResult{Probe: probeResult{Duration: 1.5, Frames: 45}}})
+	b, err := os.ReadFile(filepath.Join(dir, "report.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	if !strings.Contains(s, "# CPU music render fixture") {
+		t.Fatalf("markdown title = %q", s)
+	}
+	if !strings.Contains(s, "| GPU | 0.000 | 0.000 | 0 |  |") {
+		t.Fatalf("missing explicit empty GPU row: %q", s)
+	}
 }
 
 func TestLoadImageMetricsFindsNonBackgroundBounds(t *testing.T) {
