@@ -89,3 +89,16 @@ func TestCompareImagesReportsDifference(t *testing.T) {
 		t.Fatalf("comparison = %+v", c)
 	}
 }
+
+func TestProbeNormalizesPTSAndExcludesAudio(t *testing.T) {
+	r := probeResult{FirstPTS: 1.5, LastPTS: 6.466667, VideoDuration: 5.1}
+	if r.AudioExcluded {
+		t.Fatal("fixture should start unmarked")
+	}
+	r.NormalizedFirstPTS = 0
+	r.NormalizedLastPTS = r.LastPTS - r.FirstPTS
+	r.AudioExcluded = true
+	if r.NormalizedFirstPTS != 0 || r.NormalizedLastPTS < 4.9 || !r.AudioExcluded {
+		t.Fatalf("normalized probe = %+v", r)
+	}
+}

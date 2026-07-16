@@ -25,13 +25,17 @@ import (
 )
 
 type probeResult struct {
-	Duration   float64 `json:"duration"`
-	Frames     int64   `json:"frames"`
-	PixFmt     string  `json:"pixFmt,omitempty"`
-	ColorSpace string  `json:"colorSpace,omitempty"`
-	ColorRange string  `json:"colorRange,omitempty"`
-	FirstPTS   float64 `json:"firstPts"`
-	LastPTS    float64 `json:"lastPts"`
+	Duration           float64 `json:"duration"`
+	VideoDuration      float64 `json:"videoDuration"`
+	Frames             int64   `json:"frames"`
+	PixFmt             string  `json:"pixFmt,omitempty"`
+	ColorSpace         string  `json:"colorSpace,omitempty"`
+	ColorRange         string  `json:"colorRange,omitempty"`
+	FirstPTS           float64 `json:"firstPts"`
+	LastPTS            float64 `json:"lastPts"`
+	NormalizedFirstPTS float64 `json:"normalizedFirstPts"`
+	NormalizedLastPTS  float64 `json:"normalizedLastPts"`
+	AudioExcluded      bool    `json:"audioExcluded"`
 }
 type renderResult struct {
 	Output            string                  `json:"output,omitempty"`
@@ -325,6 +329,7 @@ func probe(ctx context.Context, path string) (probeResult, error) {
 		r.Duration, _ = strconv.ParseFloat(raw.Format.Duration, 64)
 	}
 	if len(raw.Streams) > 0 {
+		r.VideoDuration, _ = strconv.ParseFloat(raw.Streams[0].Duration, 64)
 		if r.Duration == 0 {
 			r.Duration, _ = strconv.ParseFloat(raw.Streams[0].Duration, 64)
 		}
@@ -349,6 +354,12 @@ func probe(ctx context.Context, path string) (probeResult, error) {
 		}
 		r.LastPTS = v
 	}
+	if r.LastPTS != 0 || r.FirstPTS != 0 {
+		r.NormalizedFirstPTS = 0
+		r.NormalizedLastPTS = r.LastPTS - r.FirstPTS
+	}
+	// The probe explicitly selects v:0; audio is excluded from these metrics.
+	r.AudioExcluded = true
 	return r, nil
 }
 
@@ -482,8 +493,16 @@ func main() {
 		rep.FrameContract.GPUObservedFrames = rep.GPU.Probe.Frames
 		rep.FrameContract.CPUMuxDelta = rep.CPU.Probe.Frames - rep.FrameContract.ExpectedFrames
 		rep.FrameContract.GPUMuxDelta = rep.GPU.Probe.Frames - rep.FrameContract.ExpectedFrames
+		cpuVideoDuration := rep.CPU.Probe.VideoDuration
+		gpuVideoDuration := rep.GPU.Probe.VideoDuration
+		if cpuVideoDuration == 0 {
+			cpuVideoDuration = rep.CPU.Probe.Duration
+		}
+		if gpuVideoDuration == 0 {
+			gpuVideoDuration = rep.GPU.Probe.Duration
+		}
 		rep.ComparisonGate = comparisonGate{
-			DurationDeltaSeconds: math.Abs(rep.CPU.Probe.Duration - rep.GPU.Probe.Duration),
+			DurationDeltaSeconds: math.Abs(cpuVideoDuration - gpuVideoDuration),
 			FrameDelta:           rep.CPU.Probe.Frames - rep.GPU.Probe.Frames,
 		}
 	}
