@@ -161,6 +161,7 @@ type sceneEvidence struct {
 	Title                      string                                           `json:"title,omitempty"`
 	Artist                     string                                           `json:"artist,omitempty"`
 	Album                      string                                           `json:"album,omitempty"`
+	SpectrumQ16                [24]uint16                                       `json:"spectrumQ16,omitempty"`
 }
 
 func overlayProbeRegions(layout video.MusicSceneLayout) []struct {
@@ -885,7 +886,9 @@ func main() {
 	if scene.BaseTexture != nil {
 		inputSpec.BaseTexture = scene.BaseTexture
 	}
-	rep.SceneEvidence = sceneEvidence{Fingerprint: scene.Fingerprint, Title: inputSpec.Metadata.Title, Artist: inputSpec.Metadata.Artist, Album: inputSpec.Metadata.Album}
+	var spectrumQ16 [24]uint16
+	copy(spectrumQ16[:], scene.Feature.SpectrumQ16)
+	rep.SceneEvidence = sceneEvidence{Fingerprint: scene.Fingerprint, Title: inputSpec.Metadata.Title, Artist: inputSpec.Metadata.Artist, Album: inputSpec.Metadata.Album, SpectrumQ16: spectrumQ16}
 	if scene.BaseTexture != nil {
 		rep.SceneEvidence.BaseTextureCPUHash = scene.BaseTexture.AssetHash
 	}
