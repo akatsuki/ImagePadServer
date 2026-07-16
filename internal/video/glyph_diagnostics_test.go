@@ -15,10 +15,21 @@ func TestGlyphRenderDiagnosticsWireRoundTrip(t *testing.T) {
 		}}},
 	}
 	b, err := json.Marshal(f)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	var got GpuFrame
-	if err := json.Unmarshal(b, &got); err != nil { t.Fatal(err) }
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
 	if got.GlyphDiagnostics == nil || got.GlyphDiagnostics.Count != 1 || got.GlyphDiagnostics.Instances[0].ID != "A" {
 		t.Fatalf("glyph diagnostics lost: %+v", got.GlyphDiagnostics)
+	}
+}
+
+func TestThresholdMaskStatsVariesByThreshold(t *testing.T) {
+	v := []uint8{1, 8, 16, 64, 200}
+	if thresholdMaskStats(v, 1) != 5 || thresholdMaskStats(v, 16) != 3 || thresholdMaskStats(v, 128) != 1 {
+		t.Fatalf("threshold stats incorrect")
 	}
 }
