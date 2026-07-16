@@ -105,7 +105,11 @@ func RenderCanonicalASSOverlay(ctx context.Context, ffmpeg string, metadata Audi
 	if err != nil {
 		return nil, err
 	}
-	return NewScreenTextOverlayMetadata(uint32(width), uint32(height), stride, payload, "ffmpeg-libass"), nil
+	overlay := NewScreenTextOverlayMetadata(uint32(width), uint32(height), stride, payload, "ffmpeg-libass")
+	overlay.Title = metadata.Title
+	overlay.Artist = metadata.Artist
+	overlay.Album = metadata.Album
+	return overlay, nil
 }
 
 // NewScreenTextOverlayMetadata wraps a libass RGBA raster with the explicit
