@@ -35,3 +35,23 @@ Additional confirmed differences are:
 
 The current single-face atlas implementation must not be presented as CPU/GPU
 visual parity.
+
+## Ordered implementation worklist
+
+- **T4-TXT-01**: extend `TextOverlayMetadata` with an explicit screen-space
+  payload semantic, alpha mode, pixel origin, and full-frame stride validation.
+- **T4-TXT-02**: rasterize the same ASS/libass input used by the CPU route into
+  a transparent full-frame RGBA payload for each canonical frame.
+- **T4-TXT-03**: add a texture-only sidecar probe and verify payload hash,
+  dimensions, stride, and alpha-edge metrics before enabling production use.
+- **T4-TXT-04**: replace the production glyph loop with one-to-one
+  premultiplied source-over sampling of that payload; retain the atlas only for
+  diagnostics and backward compatibility.
+- **T5-TXT-GATE**: require start/mid/end text-crop parity and Unicode fallback
+  parity before GO.
+
+The same gate discipline applies to the remaining dynamic layers. The current
+GPU loudness path omits the CPU guide lines and down-samples the envelope, and
+the spectrum path uses approximate bar geometry rather than the CPU fixed-fade
+layout. These are separate blockers and must receive region-level probes
+before full-frame approval.
