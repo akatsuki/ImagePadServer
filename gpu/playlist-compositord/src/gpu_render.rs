@@ -200,6 +200,11 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let fade = select(0.0, min(1.0, bottom_dist / max(1.0, fade_px - 1.0)), bottom_dist < fade_px);
     let bars = select(0.0, 0.82 * (select(1.0, fade, bottom_dist < fade_px)),
       in_spectrum && sx >= bar_x && sx < bar_x + bar_w && sy >= bar_y && sy < bar_bottom);
+    if (params.sequence == 0xfffffffbu) {
+      let v = u32(clamp(bars * 255.0, 0.0, 255.0));
+      pixels[i] = v | (v << 8u) | (v << 16u) | (255u << 24u);
+      return;
+    }
     // The CPU scene also carries a fine waveform over the bars.  The canonical
     // payload has bounded spectrum samples rather than a second texture, so
     // use the interpolated band energy as a deterministic proxy centered in
