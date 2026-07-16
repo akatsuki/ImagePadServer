@@ -32,3 +32,16 @@ func TestCompositeTextOverlayCPUCropAndTransparentRGB(t *testing.T) {
 		t.Fatal("parity unexpectedly enabled")
 	}
 }
+
+func TestRenderTextOverlayScreenRGBABounds(t *testing.T) {
+	o := &TextOverlayMetadata{Width: 2, Height: 2, RowStride: 256, Payload: make([]byte, 512)}
+	o.Payload[3], o.Payload[7], o.Payload[259], o.Payload[263] = 255, 255, 255, 255
+	r := RenderTextOverlayScreenRGBA(o, 640, 360, SceneRect{X: 10, Y: 20, W: 4, H: 4})
+	b := r.Bounds()
+	if b.Dx() != 640 || b.Dy() != 360 {
+		t.Fatal(b)
+	}
+	if r.RGBAAt(10, 20).A != 255 || r.RGBAAt(13, 23).A != 255 {
+		t.Fatal("overlay bbox not rasterized")
+	}
+}

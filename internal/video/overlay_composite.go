@@ -6,6 +6,26 @@ import (
 	"os"
 )
 
+// RenderTextOverlayScreenRGBA places the canonical overlay raster into a
+// deterministic screen-space crop using nearest sampling.
+func RenderTextOverlayScreenRGBA(overlay *TextOverlayMetadata, width, height uint32, crop SceneRect) *image.RGBA {
+	out := image.NewRGBA(image.Rect(0, 0, int(width), int(height)))
+	if overlay == nil || len(overlay.Payload) == 0 || crop.W <= 0 || crop.H <= 0 {
+		return out
+	}
+	for y := 0; y < crop.H && crop.Y+y < int(height); y++ {
+		for x := 0; x < crop.W && crop.X+x < int(width); x++ {
+			sx := x * int(overlay.Width) / crop.W
+			sy := y * int(overlay.Height) / crop.H
+			off := sy*int(overlay.RowStride) + sx*4
+			if off+3 < len(overlay.Payload) {
+				out.SetRGBA(crop.X+x, crop.Y+y, color.RGBA{overlay.Payload[off], overlay.Payload[off+1], overlay.Payload[off+2], overlay.Payload[off+3]})
+			}
+		}
+	}
+	return out
+}
+
 // CompositeTextOverlayCPU composites a premultiplied RGBA overlay over base
 // using SrcOver. Transparent overlay pixels are forced to RGB=0, preventing
 // hidden color from leaking into later blends. The input image is never

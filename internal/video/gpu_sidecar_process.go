@@ -155,9 +155,13 @@ func ProbeGPUSceneGlyphOnly(ctx context.Context, executable, session string, wid
 // overlay through the diagnostic shader branch.
 func ProbeGPUSceneTextOverlayComposite(ctx context.Context, executable string, width, height uint32, scene *MusicScenePayload) (GpuFrame, error) {
 	p, err := StartSidecar(ctx, executable, "compare-text-overlay-composite")
-	if err != nil { return GpuFrame{}, err }
+	if err != nil {
+		return GpuFrame{}, err
+	}
 	defer p.Close()
-	if err := p.Hello(ctx, "compare-text-overlay-composite"); err != nil { return GpuFrame{}, err }
+	if err := p.Hello(ctx, "compare-text-overlay-composite"); err != nil {
+		return GpuFrame{}, err
+	}
 	return p.RenderScene(ctx, width, height, 0xfffffffe, 0, scene)
 }
 
@@ -177,6 +181,18 @@ func ProbeGPUSceneTextOverlay(ctx context.Context, executable, session string, w
 		return nil, err
 	}
 	return frame.TextOverlayReceipt, nil
+}
+
+func ProbeGPUSceneTextOverlayComposite(ctx context.Context, executable string, width, height uint32, scene *MusicScenePayload) (GpuFrame, error) {
+	p, err := StartSidecar(ctx, executable, "compare-text-overlay-composite")
+	if err != nil {
+		return GpuFrame{}, err
+	}
+	defer p.Close()
+	if err := p.Hello(ctx, "compare-text-overlay-composite"); err != nil {
+		return GpuFrame{}, err
+	}
+	return p.RenderScene(ctx, width, height, 0xfffffffe, 0, scene)
 }
 
 type sidecarRequest struct {
