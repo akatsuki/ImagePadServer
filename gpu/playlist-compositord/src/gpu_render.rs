@@ -220,7 +220,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let in_rail = rx >= f32(rail.x) && rx < f32(rail.x + rail.z) && ry >= f32(rail.y) && ry < f32(rail.y + rail.w);
     let rail_track = select(0.0, 1.0, in_rail);
     let thumb_x = f32(rail.x) + f32(rail.z) * progress;
-    let thumb = select(0.0, 1.0, distance(vec2<f32>(rx, ry), vec2<f32>(thumb_x, f32(rail.y) + f32(rail.w) * 0.5)) < max(2.0, f32(rail.w) * 0.8));
+    let thumb_radius = max(1.0, round(9.0 * (f32(params.width) / 1280.0)));
+    let thumb = select(0.0, 1.0, distance(vec2<f32>(rx, ry), vec2<f32>(thumb_x, f32(rail.y) + f32(rail.w) * 0.5)) < thumb_radius);
     if (params.sequence == 0xfffffff9u) {
       let v = u32(clamp(max(rail_track * 0.35, thumb), 0.0, 1.0) * 255.0);
       pixels[i] = v | (v << 8u) | (v << 16u) | (255u << 24u);

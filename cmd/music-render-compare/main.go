@@ -149,6 +149,7 @@ type sceneEvidence struct {
 	BaseTextureGPUHash         string                                           `json:"baseTextureGpuHash,omitempty"`
 	BaseTextureParity          *video.OverlayParityMetric                       `json:"baseTextureParity,omitempty"`
 	SpectrumParity             *video.OverlayParityMetric                       `json:"spectrumParity,omitempty"`
+	ProgressParity             *video.OverlayParityMetric                       `json:"progressParity,omitempty"`
 	TextOverlaySHAEqual        bool                                             `json:"textOverlayShaEqual,omitempty"`
 	TextOverlayAlphaCoverage   int                                              `json:"textOverlayAlphaCoverage,omitempty"`
 	TextOverlayRegionCrop      imageBounds                                      `json:"textOverlayRegionCrop,omitempty"`
@@ -1131,6 +1132,26 @@ func main() {
 			rep.SceneEvidence.SpectrumParity = &m
 		}
 		scancel()
+	}
+	if !*cpuOnly {
+		pctx, pcancel := context.WithTimeout(ctx, 5*time.Second)
+		if pf, pe := video.ProbeGPUSceneProgress(pctx, strings.TrimSpace(os.Getenv("IMAGEPAD_PLAYLIST_COMPOSITORD")), uint32(math.Round(float64(p.Height)*16.0/9.0)), uint32(p.Height), &scene); pe == nil {
+			layout, _ := video.LayoutForSize(int(math.Round(float64(p.Height)*16.0/9.0)), p.Height)
+			mode := video.ForegroundMode{PrimaryColor: color.RGBA{scene.Palette.Primary[0], scene.Palette.Primary[1], scene.Palette.Primary[2], 255}, AccentColor: color.RGBA{scene.Palette.Accent[0], scene.Palette.Accent[1], scene.Palette.Accent[2], 255}}
+			cpu := video.RenderProgressMaskCPU(int(pf.Width), int(pf.Height), mode, layout, scene.Dynamics.CurrentSeconds, scene.Dynamics.DurationSeconds)
+			gpu := image.NewRGBA(image.Rect(0, 0, int(pf.Width), int(pf.Height)))
+			for y := 0; y < int(pf.Height); y++ {
+				for x := 0; x < int(pf.Width); x++ {
+					off := y*int(pf.RowStride) + x*4
+					if off+3 < len(pf.Payload) {
+						gpu.SetRGBA(x, y, color.RGBA{pf.Payload[off], pf.Payload[off+1], pf.Payload[off+2], pf.Payload[off+3]})
+					}
+				}
+			}
+			m := video.CompareOverlayParityCPUImageGPUImage(cpu, gpu, cpu.Bounds())
+			rep.SceneEvidence.ProgressParity = &m
+		}
+		pcancel()
 	}
 	if *cpuOnly {
 		rep.SceneEvidence.CPUInstanceManifest = video.ExpandMusicGlyphManifest(&scene, uint32(math.Round(float64(p.Height)*16.0/9.0)), uint32(p.Height))
