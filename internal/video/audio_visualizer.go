@@ -582,23 +582,26 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 	// CPU reference (blur, overlay, artwork mask and shadow). Generate it once
 	// before the frame loop; dynamic layers remain GPU-owned.
 	baseTexture := input.BaseTexture
+	gpuLayout, layoutErr := LayoutForSize(width, height)
+	if layoutErr != nil {
+		return fmt.Errorf("GPU base layout: %w", layoutErr)
+	}
+	var gpuMode ForegroundMode
 	if baseTexture == nil {
-		layout, layoutErr := LayoutForSize(width, height)
-		if layoutErr != nil {
-			return fmt.Errorf("GPU base layout: %w", layoutErr)
-		}
 		fonts, fontErr := VisualizerFonts()
 		if fontErr != nil {
 			return fmt.Errorf("GPU base fonts: %w", fontErr)
 		}
 		var fallback *image.RGBA
 		if input.ArtworkPath == "" {
-			fallback, fontErr = RenderFallbackArtwork(ctx, ffmpeg, fonts, input.Analysis.Features, color.RGBA{255, 255, 255, 224}, layout.Artwork.W)
+			fallback, fontErr = RenderFallbackArtwork(ctx, ffmpeg, fonts, input.Analysis.Features, color.RGBA{255, 255, 255, 224}, gpuLayout.Artwork.W)
 			if fontErr != nil {
 				return fmt.Errorf("GPU base fallback artwork: %w", fontErr)
 			}
 		}
-		base, _, baseErr := RenderVisualizerBaseCPU(ctx, ffmpeg, input.ArtworkPath, fallback, layout)
+		var base *image.RGBA
+		var baseErr error
+		base, gpuMode, baseErr = RenderVisualizerBaseCPU(ctx, ffmpeg, input.ArtworkPath, fallback, gpuLayout)
 		if baseErr != nil {
 			return fmt.Errorf("GPU base raster: %w", baseErr)
 		}
@@ -607,6 +610,15 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 			return fmt.Errorf("GPU base metadata: %w", metaErr)
 		}
 		baseTexture = &meta
+	}
+	// Use the same libass raster as the CPU path when the caller did not
+	// provide one. This prevents the legacy glyph atlas from becoming a
+	// second, visually different production text renderer.
+	textOverlay := input.TextOverlay
+	if textOverlay == nil {
+		if overlay, overlayErr := RenderCanonicalASSOverlay(ctx, ffmpeg, input.Metadata, input.Analysis.Duration, gpuLayout, gpuMode, width, height); overlayErr == nil {
+			textOverlay = overlay
+		}
 	}
 	audioFilter := audioLoudnormFilter(input.Kind)
 	if audioFilter == "" {
@@ -664,6 +676,9 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 		scene := CanonicalMusicScene(input, uint64(i), ptsNS)
 		if baseTexture != nil {
 			scene.BaseTexture = baseTexture
+		}
+		if textOverlay != nil {
+			scene.TextOverlay = textOverlay
 		}
 		frame, e := sidecar.RenderScene(ctx, uint32(width), uint32(height), uint64(i), ptsNS, &scene)
 		if e != nil {
