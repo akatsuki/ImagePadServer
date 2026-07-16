@@ -45,3 +45,14 @@ func TestRenderTextOverlayScreenRGBABounds(t *testing.T) {
 		t.Fatal("overlay bbox not rasterized")
 	}
 }
+
+func TestCompareOverlayParityCPUImageGPUImage(t *testing.T) {
+	a := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	b := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	a.SetRGBA(0, 0, color.RGBA{255, 255, 255, 255})
+	b.SetRGBA(0, 0, color.RGBA{255, 255, 255, 255})
+	m := CompareOverlayParityCPUImageGPUImage(a, b, image.Rect(0, 0, 2, 2))
+	if m.IoU != 1 || m.CPUVisible != 1 || m.GPUVisible != 1 {
+		t.Fatalf("metric=%+v", m)
+	}
+}

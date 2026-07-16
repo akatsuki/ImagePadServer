@@ -3,8 +3,67 @@ package video
 import (
 	"image"
 	"image/color"
+	"math"
 	"os"
 )
+
+type OverlayParityMetric struct {
+	Threshold    uint8   `json:"threshold"`
+	CPUVisible   int     `json:"cpuVisible"`
+	GPUVisible   int     `json:"gpuVisible"`
+	Intersection int     `json:"intersection"`
+	Union        int     `json:"union"`
+	IoU          float64 `json:"iou"`
+	MAE          float64 `json:"mae"`
+	RMSE         float64 `json:"rmse"`
+	CPUBounds    [4]int  `json:"cpuBounds"`
+	GPUBounds    [4]int  `json:"gpuBounds"`
+}
+
+func CompareOverlayParityCPUImageGPUImage(cpu, gpu image.Image, crop image.Rectangle) OverlayParityMetric {
+	r := OverlayParityMetric{Threshold: 8}
+	cm, gm := map[int]bool{}, map[int]bool{}
+	var sum, sq float64
+	n := 0
+	for y := crop.Min.Y; y < crop.Max.Y; y++ {
+		for x := crop.Min.X; x < crop.Max.X; x++ {
+			cr, cg, cb, _ := cpu.At(x, y).RGBA()
+			gr, gg, gb, _ := gpu.At(x, y).RGBA()
+			cv := uint8((299*(cr/257) + 587*(cg/257) + 114*(cb/257)) / 1000)
+			gv := uint8((299*(gr/257) + 587*(gg/257) + 114*(gb/257)) / 1000)
+			p := y*100000 + x
+			if cv >= 8 {
+				cm[p] = true
+				r.CPUVisible++
+			}
+			if gv >= 8 {
+				gm[p] = true
+				r.GPUVisible++
+			}
+			d := float64(cv) - float64(gv)
+			if d < 0 {
+				d = -d
+			}
+			sum += d
+			sq += d * d
+			n++
+		}
+	}
+	for p := range cm {
+		if gm[p] {
+			r.Intersection++
+		}
+	}
+	r.Union = len(cm) + len(gm) - r.Intersection
+	if r.Union > 0 {
+		r.IoU = float64(r.Intersection) / float64(r.Union)
+	}
+	if n > 0 {
+		r.MAE = sum / float64(n)
+		r.RMSE = math.Sqrt(sq / float64(n))
+	}
+	return r
+}
 
 // RenderTextOverlayScreenRGBA places the canonical overlay raster into a
 // deterministic screen-space crop using nearest sampling.
