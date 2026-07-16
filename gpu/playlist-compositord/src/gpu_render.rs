@@ -60,6 +60,13 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     pixels[i] = rr | (gg << 8u) | (bb << 16u) | (aa << 24u);
     return;
   }
+  if (params.sequence == 0xfffffffdu) {
+    let ad = vec2<f32>(textureDimensions(artwork_tex));
+    let auv = (vec2<f32>(f32(id.x), f32(id.y)) + vec2<f32>(0.5, 0.5)) / max(ad, vec2<f32>(1.0));
+    let ac = textureSampleLevel(artwork_tex, artwork_sampler, auv, 0.0);
+    let ar=u32(clamp(ac.r*255.0,0.0,255.0)); let ag=u32(clamp(ac.g*255.0,0.0,255.0)); let ab=u32(clamp(ac.b*255.0,0.0,255.0)); let aa=u32(clamp(ac.a*255.0,0.0,255.0));
+    pixels[i]=ar|(ag<<8u)|(ab<<16u)|(aa<<24u); return;
+  }
   var r: u32;
   var g: u32;
   var b: u32;
