@@ -745,6 +745,12 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 		return fmt.Errorf("%w: sidecar hello: %v", ErrGPURendererUnavailable, err)
 	}
 	frames := frameCount
+	postYUV := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_SPECTRUM_POST_YUV")) == "1"
+	var postYUVSpectrum [][]byte
+	postYUVMax := 3
+	if postYUV && frames < postYUVMax {
+		postYUVMax = frames
+	}
 	waveFrames := make(chan []byte, 2)
 	waveErr := make(chan error, 1)
 	waveCtx, waveCancel := context.WithCancel(ctx)
@@ -813,6 +819,9 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 				return fmt.Errorf("spectrum texture metadata: %w", metaErr)
 			}
 			scene.SpectrumTexture = &meta
+			if postYUV && i < postYUVMax {
+				postYUVSpectrum = append(postYUVSpectrum, append([]byte(nil), composite.Pix...))
+			}
 		}
 		if useWaveFilter {
 			scene.WaveformTexture = nil
@@ -832,6 +841,14 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 		if e = writeGPUFrame(ctx, in, yuv); e != nil {
 			_ = cmd.Process.Kill()
 			return fmt.Errorf("GPU HLS frame write: %w", e)
+		}
+	}
+	if postYUV && len(postYUVSpectrum) > 0 {
+		art := gpuPostYUVArtifacts{spectrumRaw: filepath.Join(outDir, ".spectrum-post-yuv-"+id+".rgba")}
+		defer art.cleanup()
+		if _, err := writeSpectrumRawFrames(ctx, art.spectrumRaw, postYUVSpectrum, waveW, waveH, postYUVMax); err != nil {
+			_ = cmd.Process.Kill()
+			return fmt.Errorf("post-yuv spectrum raw: %w", err)
 		}
 	}
 	if e := <-waveErr; e != nil {
