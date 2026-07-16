@@ -241,9 +241,9 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     var loudness = 0.0;
       if (rx >= f32(loud.x) && rx < f32(loud.x + loud.z) && ry >= f32(loud.y) && ry < f32(loud.y + loud.w)) {
       let u = clamp((rx - f32(loud.x)) / max(1.0, f32(loud.z - 1)), 0.0, 1.0);
-      let sample_index = min(255u, u32(u * 255.0 + 0.5));
+      let sample_index = min(999u, u32(u * 999.0 + 0.5));
       let envelope = f32(dynamics_samples[sample_index]) / 65535.0;
-      let trend = f32(dynamics_samples[256u + sample_index]) / 65535.0;
+      let trend = f32(dynamics_samples[1000u + sample_index]) / 65535.0;
       let y_env = f32(loud.y + loud.w) - envelope * f32(loud.w);
       let y_trend = f32(loud.y + loud.w) - trend * f32(loud.w);
       loudness = select(0.0, 1.0, abs(ry - y_env) < 1.5) + select(0.0, 0.65, abs(ry - y_trend) < 1.5);
@@ -567,20 +567,20 @@ fn dynamics_sample_words(scene: Option<&MusicScenePayload>) -> Vec<u32> {
     // preserve the CPU renderer's fine detail at 720p and below.  The source
     // analysis is capped at 1000 samples; resample it deterministically into
     // 256 points per curve for the GPU.
-    let mut out = vec![0u32; 512];
+    let mut out = vec![0u32; 2000];
     if let Some(scene) = scene {
         let env = &scene.dynamics.loudness_envelope;
         let trend = &scene.dynamics.loudness_trend;
-        for i in 0..256 {
+        for i in 0..1000 {
             let sample = |values: &Vec<u16>| -> u32 {
                 if values.is_empty() {
                     return scene.feature.rms_q15 as u32;
                 }
-                let idx = i * values.len().saturating_sub(1) / 255;
+                let idx = i * values.len().saturating_sub(1) / 999;
                 values[idx] as u32
             };
             out[i] = sample(env);
-            out[256 + i] = sample(trend);
+            out[1000 + i] = sample(trend);
         }
     }
     out
