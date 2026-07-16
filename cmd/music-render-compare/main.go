@@ -148,9 +148,11 @@ type sceneEvidence struct {
 	BaseTextureCPUHash         string                                           `json:"baseTextureCpuHash,omitempty"`
 	BaseTextureGPUHash         string                                           `json:"baseTextureGpuHash,omitempty"`
 	BaseTextureParity          *video.OverlayParityMetric                       `json:"baseTextureParity,omitempty"`
+	BaseTextParity             *video.OverlayParityMetric                       `json:"baseTextParity,omitempty"`
 	SpectrumParity             *video.OverlayParityMetric                       `json:"spectrumParity,omitempty"`
 	ProgressParity             *video.OverlayParityMetric                       `json:"progressParity,omitempty"`
 	LoudnessParity             *video.OverlayParityMetric                       `json:"loudnessParity,omitempty"`
+	WaveformParity             *video.OverlayParityMetric                       `json:"waveformParity,omitempty"`
 	TextOverlaySHAEqual        bool                                             `json:"textOverlayShaEqual,omitempty"`
 	TextOverlayAlphaCoverage   int                                              `json:"textOverlayAlphaCoverage,omitempty"`
 	TextOverlayRegionCrop      imageBounds                                      `json:"textOverlayRegionCrop,omitempty"`
@@ -159,6 +161,8 @@ type sceneEvidence struct {
 	TextOverlayParityRegions   map[string]*video.OverlayParityMetric            `json:"textOverlayParityRegions,omitempty"`
 	TextOverlayCompositeSHA    string                                           `json:"textOverlayCompositeSha,omitempty"`
 	TextOverlayCPUCompositeSHA string                                           `json:"textOverlayCpuCompositeSha,omitempty"`
+	TextOverlayPayloadSHAEqual bool                                             `json:"textOverlayPayloadShaEqual,omitempty"`
+	TextOverlayPayloadParity   *video.OverlayParityMetric                       `json:"textOverlayPayloadParity,omitempty"`
 	CPUInstanceManifest        video.GlyphInstanceManifest                      `json:"cpuInstanceManifest,omitempty"`
 	GPUInstanceParity          video.GlyphInstanceParity                        `json:"gpuInstanceParity,omitempty"`
 	Title                      string                                           `json:"title,omitempty"`
@@ -857,11 +861,35 @@ func main() {
 	}
 	rep.FrameContract.ExpectedFrames = int64(math.Max(1, math.Ceil(analysis.Duration*30)))
 	rep.FrameContract.SharedMuxPolicy = "raw:30fps,cfr,frames:v;hls:passthrough,video-copy"
+	compareW := int(math.Round(float64(p.Height) * 16.0 / 9.0))
 	scene := video.CanonicalMusicScene(inputSpec, 0, 0)
+	// For GPU diagnostics, inject one canonical FFmpeg showwaves frame into the
+	// scene. This keeps the compare path representative without changing the
+	// production renderer (which streams one texture per frame).
+	if !*cpuOnly && strings.TrimSpace(os.Getenv("IMAGEPAD_PLAYLIST_COMPOSITORD")) != "" {
+		waveW := int(math.Round(752 * float64(compareW) / 1280.0))
+		waveH := int(math.Round(168 * float64(p.Height) / 720.0))
+		waveColor := fmt.Sprintf("#%02X%02X%02X@0.55", scene.Palette.Accent[0], scene.Palette.Accent[1], scene.Palette.Accent[2])
+		var waveMeta *video.BaseTextureMetadata
+		wctx, wcancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = video.StreamAudioWaveFrames(wctx, ff, *input, waveW, waveH, 1, waveColor, "loudnorm=I=-14.0:TP=-1.0:LRA=11.0", func(_ int, rgba []byte) error {
+			img := image.NewRGBA(image.Rect(0, 0, waveW, waveH))
+			copy(img.Pix, rgba)
+			meta, err := video.NewBaseTextureMetadata("compare-waveform-0", img, video.ColorSRGB)
+			if err == nil {
+				waveMeta = &meta
+			}
+			return err
+		})
+		wcancel()
+		if waveMeta != nil {
+			inputSpec.WaveformTexture = waveMeta
+			scene.WaveformTexture = waveMeta
+		}
+	}
 	// Build the production-equivalent libass screen payload for the text-only
 	// GPU probe. Keep the legacy atlas if the local FFmpeg/font toolchain cannot
 	// render it; the report then remains explicit about which source was used.
-	compareW := int(math.Round(float64(p.Height) * 16.0 / 9.0))
 	if layout, le := video.LayoutForSize(compareW, p.Height); le == nil {
 		mode := video.ForegroundMode{PrimaryColor: color.RGBA{scene.Palette.Primary[0], scene.Palette.Primary[1], scene.Palette.Primary[2], scene.Palette.Primary[3]}, AccentColor: color.RGBA{scene.Palette.Accent[0], scene.Palette.Accent[1], scene.Palette.Accent[2], scene.Palette.Accent[3]}}
 		if overlay, oe := video.RenderCanonicalASSOverlay(ctx, ff, inputSpec.Metadata, analysis.Duration, layout, mode, compareW, p.Height); oe == nil {
@@ -970,6 +998,25 @@ func main() {
 					for name, rect := range map[string]video.SceneRect{"title": scene.Layout.Title, "artist": scene.Layout.Artist, "album": scene.Layout.Album, "time": scene.Layout.Time} {
 						m := video.CompareOverlayParityCPUImageGPUImage(cpuImg, gpuImg, image.Rect(rect.X, rect.Y, rect.X+rect.W, rect.Y+rect.H))
 						rep.SceneEvidence.TextOverlayParityRegions[name] = &m
+					}
+					// Payload A/B: compare the text-only sentinel directly against
+					// the original screen_rgba payload, independent of production
+					// composition or YUV conversion.
+					if scene.TextOverlay.Kind == "screen_rgba" {
+						pw, ph := int(scene.TextOverlay.Width), int(scene.TextOverlay.Height)
+						if pw > 0 && ph > 0 && pw <= w && ph <= hgt {
+							payloadCPU := video.RenderTextOverlayScreenRGBA(scene.TextOverlay, uint32(pw), uint32(ph), video.SceneRect{W: pw, H: ph})
+							payloadCrop := image.Rect(0, 0, pw, ph)
+							m := video.CompareOverlayParityCPUImageGPUImage(payloadCPU, gpuImg, payloadCrop)
+							rep.SceneEvidence.TextOverlayPayloadParity = &m
+							gpuPayload := make([]byte, pw*ph*4)
+							for y := 0; y < ph; y++ {
+								copy(gpuPayload[y*pw*4:(y+1)*pw*4], cf.Payload[y*int(cf.RowStride):y*int(cf.RowStride)+pw*4])
+							}
+							cpuHash := sha256.Sum256(payloadCPU.Pix)
+							gpuHash := sha256.Sum256(gpuPayload)
+							rep.SceneEvidence.TextOverlayPayloadSHAEqual = string(cpuHash[:]) == string(gpuHash[:])
+						}
 					}
 				}
 				if scene.TextOverlay != nil {
@@ -1111,6 +1158,32 @@ func main() {
 		}
 		bcancel()
 	}
+	if !*cpuOnly && scene.BaseTexture != nil && scene.TextOverlay != nil {
+		bctx, bcancel := context.WithTimeout(ctx, 5*time.Second)
+		if bf, be := video.ProbeGPUSceneBaseText(bctx, strings.TrimSpace(os.Getenv("IMAGEPAD_PLAYLIST_COMPOSITORD")), scene.BaseTexture.Width, scene.BaseTexture.Height, &scene); be == nil {
+			w, h := int(scene.BaseTexture.Width), int(scene.BaseTexture.Height)
+			base := image.NewRGBA(image.Rect(0, 0, w, h))
+			for y := 0; y < h; y++ {
+				src := y * int(scene.BaseTexture.RowStride)
+				if src+w*4 <= len(scene.BaseTexture.Payload) {
+					copy(base.Pix[y*base.Stride:y*base.Stride+w*4], scene.BaseTexture.Payload[src:src+w*4])
+				}
+			}
+			cpu := video.CompositeTextOverlayCPU(base, scene.TextOverlay)
+			gpu := image.NewRGBA(image.Rect(0, 0, int(bf.Width), int(bf.Height)))
+			for y := 0; y < int(bf.Height); y++ {
+				for x := 0; x < int(bf.Width); x++ {
+					off := y*int(bf.RowStride) + x*4
+					if off+3 < len(bf.Payload) {
+						gpu.SetRGBA(x, y, color.RGBA{bf.Payload[off], bf.Payload[off+1], bf.Payload[off+2], bf.Payload[off+3]})
+					}
+				}
+			}
+			m := video.CompareOverlayParityCPUImageGPUImage(cpu, gpu, cpu.Bounds())
+			rep.SceneEvidence.BaseTextParity = &m
+		}
+		bcancel()
+	}
 	if !*cpuOnly {
 		sctx, scancel := context.WithTimeout(ctx, 5*time.Second)
 		if sf, se := video.ProbeGPUSceneSpectrum(sctx, strings.TrimSpace(os.Getenv("IMAGEPAD_PLAYLIST_COMPOSITORD")), uint32(math.Round(float64(p.Height)*16.0/9.0)), uint32(p.Height), &scene); se == nil {
@@ -1176,6 +1249,33 @@ func main() {
 			rep.SceneEvidence.LoudnessParity = &m
 		}
 		lcancel()
+	}
+	if !*cpuOnly && scene.WaveformTexture != nil {
+		wctx, wcancel := context.WithTimeout(ctx, 5*time.Second)
+		if wf, we := video.ProbeGPUSceneWaveform(wctx, strings.TrimSpace(os.Getenv("IMAGEPAD_PLAYLIST_COMPOSITORD")), scene.WaveformTexture.Width, scene.WaveformTexture.Height, &scene); we == nil {
+			w := int(scene.WaveformTexture.Width)
+			h := int(scene.WaveformTexture.Height)
+			cpu := image.NewRGBA(image.Rect(0, 0, w, h))
+			for y := 0; y < h; y++ {
+				src := y * int(scene.WaveformTexture.RowStride)
+				dst := y * cpu.Stride
+				if src+w*4 <= len(scene.WaveformTexture.Payload) {
+					copy(cpu.Pix[dst:dst+w*4], scene.WaveformTexture.Payload[src:src+w*4])
+				}
+			}
+			gpu := image.NewRGBA(image.Rect(0, 0, int(wf.Width), int(wf.Height)))
+			for y := 0; y < int(wf.Height); y++ {
+				for x := 0; x < int(wf.Width); x++ {
+					off := y*int(wf.RowStride) + x*4
+					if off+3 < len(wf.Payload) {
+						gpu.SetRGBA(x, y, color.RGBA{wf.Payload[off], wf.Payload[off+1], wf.Payload[off+2], wf.Payload[off+3]})
+					}
+				}
+			}
+			m := video.CompareOverlayParityCPUImageGPUImage(cpu, gpu, cpu.Bounds())
+			rep.SceneEvidence.WaveformParity = &m
+		}
+		wcancel()
 	}
 	if *cpuOnly {
 		rep.SceneEvidence.CPUInstanceManifest = video.ExpandMusicGlyphManifest(&scene, uint32(math.Round(float64(p.Height)*16.0/9.0)), uint32(p.Height))

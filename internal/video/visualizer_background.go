@@ -661,6 +661,12 @@ func PrepareVisualizerBase(ctx context.Context, ffmpeg, artworkPath string, fall
 // CPU reference renderer. It is intended for the shared base-texture parity
 // path and keeps the FFmpeg blur/compositing policy in one place.
 func RenderVisualizerBaseCPU(ctx context.Context, ffmpeg, artworkPath string, fallback *image.RGBA, layout VisualizerLayout) (*image.RGBA, ForegroundMode, error) {
+	return RenderVisualizerBaseCPUWithFallback(ctx, ffmpeg, artworkPath, fallback, nil, layout)
+}
+
+// RenderVisualizerBaseCPUWithFallback is the exact CPU base path with the
+// optional adaptive fallback-artwork rerender used by production music mode.
+func RenderVisualizerBaseCPUWithFallback(ctx context.Context, ffmpeg, artworkPath string, fallback *image.RGBA, fallbackRenderer func(color.RGBA) (*image.RGBA, error), layout VisualizerLayout) (*image.RGBA, ForegroundMode, error) {
 	tmp, err := os.CreateTemp("", "imagepad-base-*.png")
 	if err != nil {
 		return nil, ForegroundMode{}, err
@@ -668,7 +674,7 @@ func RenderVisualizerBaseCPU(ctx context.Context, ffmpeg, artworkPath string, fa
 	path := tmp.Name()
 	_ = tmp.Close()
 	defer os.Remove(path)
-	mode, err := PrepareVisualizerBase(ctx, ffmpeg, artworkPath, fallback, layout, path)
+	mode, err := prepareVisualizerBase(ctx, ffmpeg, artworkPath, fallback, fallbackRenderer, layout, path)
 	if err != nil {
 		return nil, ForegroundMode{}, err
 	}

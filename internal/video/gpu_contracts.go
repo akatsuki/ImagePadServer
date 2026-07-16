@@ -33,6 +33,7 @@ type MusicScenePayload struct {
 	// WaveformTexture is a per-frame FFmpeg showwaves raster. It reuses the
 	// bounded RGBA contract while the GPU binding is being introduced.
 	WaveformTexture *BaseTextureMetadata `json:"waveform_texture,omitempty"`
+	LoudnessTexture *BaseTextureMetadata `json:"loudness_texture,omitempty"`
 	GlyphAtlas      *GlyphAtlasMetadata  `json:"glyph_atlas,omitempty"`
 	TextOverlay     *TextOverlayMetadata `json:"text_overlay,omitempty"`
 	Layout          MusicSceneLayout     `json:"layout"`
@@ -217,6 +218,9 @@ func (s MusicScenePayload) Validate() error {
 		if err := s.WaveformTexture.Validate(); err != nil {
 			return fmt.Errorf("scene waveform texture: %w", err)
 		}
+	}
+	if s.LoudnessTexture != nil {
+		if err := s.LoudnessTexture.Validate(); err != nil { return fmt.Errorf("scene loudness texture: %w", err) }
 	}
 	if s.GlyphAtlas != nil {
 		if err := s.GlyphAtlas.Validate(); err != nil {

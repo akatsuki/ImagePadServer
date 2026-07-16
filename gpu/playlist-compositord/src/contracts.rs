@@ -56,6 +56,8 @@ pub struct MusicScenePayload {
     #[serde(default)]
     pub waveform_texture: Option<BaseTextureMetadata>,
     #[serde(default)]
+    pub loudness_texture: Option<BaseTextureMetadata>,
+    #[serde(default)]
     pub glyph_atlas: Option<GlyphAtlasMetadata>,
     #[serde(default)]
     pub text_overlay: Option<TextOverlayMetadata>,
@@ -409,6 +411,9 @@ impl MusicScenePayload {
         }
         if let Some(waveform) = &self.waveform_texture {
             waveform.validate()?;
+        }
+        if let Some(loudness) = &self.loudness_texture {
+            loudness.validate()?;
         }
         if let Some(overlay) = &self.text_overlay {
             overlay.validate()?;

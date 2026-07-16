@@ -217,6 +217,16 @@ func ProbeGPUSceneBaseTexture(ctx context.Context, executable string, width, hei
 	return p.RenderScene(ctx, width, height, 0xfffffffa, 0, scene)
 }
 
+// ProbeGPUSceneBaseText renders the diagnostic static base plus screen text
+// composite. Analytic dynamic layers are bypassed by the reserved sequence.
+func ProbeGPUSceneBaseText(ctx context.Context, executable string, width, height uint32, scene *MusicScenePayload) (GpuFrame, error) {
+	p, err := StartSidecar(ctx, executable, "compare-base-text")
+	if err != nil { return GpuFrame{}, err }
+	defer p.Close()
+	if err := p.Hello(ctx, "compare-base-text"); err != nil { return GpuFrame{}, err }
+	return p.RenderScene(ctx, width, height, 0xffffffe0, 0, scene)
+}
+
 // ProbeGPUSceneSpectrum renders only the CPU-shaped spectrum bar mask. It is
 // evidence-only and uses the reserved sequence 0xfffffffb.
 func ProbeGPUSceneSpectrum(ctx context.Context, executable string, width, height uint32, scene *MusicScenePayload) (GpuFrame, error) {
@@ -255,6 +265,25 @@ func ProbeGPUSceneLoudness(ctx context.Context, executable string, width, height
 		return GpuFrame{}, err
 	}
 	return p.RenderScene(ctx, width, height, 0xfffffff8, 0, scene)
+}
+
+// ProbeGPUSceneLoudnessOff renders the normal composite with only loudness
+// disabled. It is diagnostic-only and does not alter production sequences.
+func ProbeGPUSceneLoudnessOff(ctx context.Context, executable string, width, height uint32, scene *MusicScenePayload) (GpuFrame, error) {
+	p, err := StartSidecar(ctx, executable, "compare-loudness-off")
+	if err != nil { return GpuFrame{}, err }
+	defer p.Close()
+	if err := p.Hello(ctx, "compare-loudness-off"); err != nil { return GpuFrame{}, err }
+	return p.RenderScene(ctx, width, height, 0xffffffe1, 0, scene)
+}
+
+// ProbeGPUSceneLoudnessTexture reads back the optional loudness texture.
+func ProbeGPUSceneLoudnessTexture(ctx context.Context, executable string, width, height uint32, scene *MusicScenePayload) (GpuFrame, error) {
+	p, err := StartSidecar(ctx, executable, "compare-loudness-texture")
+	if err != nil { return GpuFrame{}, err }
+	defer p.Close()
+	if err := p.Hello(ctx, "compare-loudness-texture"); err != nil { return GpuFrame{}, err }
+	return p.RenderScene(ctx, width, height, 0xffffffe2, 0, scene)
 }
 
 // ProbeGPUSceneWaveform reads back the exact per-frame waveform texture

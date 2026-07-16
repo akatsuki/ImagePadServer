@@ -593,15 +593,19 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 			return fmt.Errorf("GPU base fonts: %w", fontErr)
 		}
 		var fallback *image.RGBA
+		var fallbackRenderer func(color.RGBA) (*image.RGBA, error)
 		if input.ArtworkPath == "" {
 			fallback, fontErr = RenderFallbackArtwork(ctx, ffmpeg, fonts, input.Analysis.Features, color.RGBA{255, 255, 255, 224}, gpuLayout.Artwork.W)
 			if fontErr != nil {
 				return fmt.Errorf("GPU base fallback artwork: %w", fontErr)
 			}
+			fallbackRenderer = func(accent color.RGBA) (*image.RGBA, error) {
+				return RenderFallbackArtwork(ctx, ffmpeg, fonts, input.Analysis.Features, accent, gpuLayout.Artwork.W)
+			}
 		}
 		var base *image.RGBA
 		var baseErr error
-		base, gpuMode, baseErr = RenderVisualizerBaseCPU(ctx, ffmpeg, input.ArtworkPath, fallback, gpuLayout)
+		base, gpuMode, baseErr = RenderVisualizerBaseCPUWithFallback(ctx, ffmpeg, input.ArtworkPath, fallback, fallbackRenderer, gpuLayout)
 		if baseErr != nil {
 			return fmt.Errorf("GPU base raster: %w", baseErr)
 		}
@@ -614,11 +618,72 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 	// Use the same libass raster as the CPU path when the caller did not
 	// provide one. This prevents the legacy glyph atlas from becoming a
 	// second, visually different production text renderer.
-	textOverlay := input.TextOverlay
-	if textOverlay == nil {
-		if overlay, overlayErr := RenderCanonicalASSOverlay(ctx, ffmpeg, input.Metadata, input.Analysis.Duration, gpuLayout, gpuMode, width, height); overlayErr == nil {
-			textOverlay = overlay
+	// Production GPU frames intentionally omit screen_rgba text. Text remains
+	// available through the scene contract/diagnostic sentinels, while the
+	// encoded pass below applies the canonical ASS renderer after YUV output.
+	var textOverlay *TextOverlayMetadata
+
+	// Build the same ASS asset and libass measurement metadata as the CPU path.
+	fonts, fontErr := VisualizerFonts()
+	if fontErr != nil {
+		return fmt.Errorf("GPU ASS fonts: %w", fontErr)
+	}
+	faces, faceErr := ResolveVisualizerFontFaces(fonts)
+	if faceErr != nil {
+		return fmt.Errorf("GPU ASS faces: %w", faceErr)
+	}
+	fontDir := filepath.Dir(fonts.Regular400)
+	metrics := map[string]TextMetrics{}
+	for _, spec := range []struct {
+		key, text, family string
+		weight, size      int
+	}{
+		{"title", input.Metadata.Title, faces.SemiBold600.ASSFamily, 600, scaledFontSize(48, width)},
+		{"artist", input.Metadata.Artist, faces.Medium500.ASSFamily, 500, scaledFontSize(28, width)},
+		{"album", input.Metadata.Album, faces.Regular400.ASSFamily, 400, scaledFontSize(24, width)},
+	} {
+		if spec.text == "" {
+			continue
 		}
+		mw, me := MeasureASSEncodedWidth(ctx, ffmpeg, spec.family, spec.weight, fontDir, spec.text, spec.size)
+		if me != nil {
+			return fmt.Errorf("GPU ASS measure %s: %w", spec.key, me)
+		}
+		metrics[spec.key] = TextMetrics{Width: mw}
+	}
+	assText, assErr := BuildVisualizerASSWithMode(input.Metadata, input.Analysis.Duration, gpuLayout, fonts, metrics, gpuMode, width, height)
+	if assErr != nil {
+		return fmt.Errorf("GPU ASS build: %w", assErr)
+	}
+	assFile, assErr := os.CreateTemp(outDir, "gpu-visualizer-*.ass")
+	if assErr != nil {
+		return fmt.Errorf("GPU ASS temp: %w", assErr)
+	}
+	assPath := assFile.Name()
+	if _, assErr = assFile.WriteString(assText); assErr == nil {
+		assErr = assFile.Close()
+	} else {
+		_ = assFile.Close()
+	}
+	if assErr != nil {
+		_ = os.Remove(assPath)
+		return fmt.Errorf("GPU ASS write: %w", assErr)
+	}
+	defer os.Remove(assPath)
+	waveW := int(math.Round(752 * float64(width) / 1280))
+	waveH := int(math.Round(168 * float64(height) / 720))
+	waveColor := "#FFFFFF@0.55"
+	if gpuMode.AccentColor.A != 0 {
+		waveColor = fmt.Sprintf("#%02X%02X%02X@0.55", gpuMode.AccentColor.R, gpuMode.AccentColor.G, gpuMode.AccentColor.B)
+	}
+	// Pre-render the canonical whole-track loudness graph once and transport it
+	// as an immutable GPU texture. This is the same renderLoudnessLayer output
+	// used by the CPU route; every frame references the identical payload so
+	// only the per-frame spectrum/progress dynamics remain on the GPU.
+	loudnessLayer := buildLoudnessLayer(input.Analysis.Features, input.Analysis.Duration, gpuMode, gpuLayout, width, height)
+	loudnessTextureMeta, loudnessMetaErr := NewBaseTextureMetadata("loudness-"+id, loudnessLayer, ColorSRGB)
+	if loudnessMetaErr != nil {
+		return fmt.Errorf("GPU loudness metadata: %w", loudnessMetaErr)
 	}
 	audioFilter := audioLoudnormFilter(input.Kind)
 	if audioFilter == "" {
@@ -636,7 +701,15 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 	tmpPath := tmp.Name()
 	_ = tmp.Close()
 	defer os.Remove(tmpPath)
-	args := []string{"-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", fmt.Sprintf("%dx%d", width, height), "-r", "30", "-i", "pipe:0", "-frames:v", strconv.Itoa(frameCount), "-fps_mode", "cfr", "-an", "-sws_flags", "bicubic+accurate_rnd+full_chroma_int", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv", "-f", "mpegts", tmpPath}
+	assFilter := "ass" + "=filename='" + escapeFilterPath(assPath) + "':fontsdir='" + escapeFilterPath(fontDir) + "'"
+	useWaveFilter := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_WAVE_FILTER")) == "1"
+	args := []string{"-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-s", fmt.Sprintf("%dx%d", width, height), "-r", "30", "-i", "pipe:0"}
+	if useWaveFilter {
+		args = append(args, "-i", input.SourcePath, "-filter_complex", fmt.Sprintf("[1:a]%s=s=%dx%d:rate=30:mode=line:colors=%s[wave];[0:v][wave]overlay=%d:%d[v0];[v0]%s[v]", "show"+"waves", waveW, waveH, waveColor, gpuLayout.Spectrum.X, gpuLayout.Spectrum.Y, assFilter), "-map", "[v]")
+	} else {
+		args = append(args, "-vf", assFilter)
+	}
+	args = append(args, "-frames:v", strconv.Itoa(frameCount), "-fps_mode", "cfr", "-an", "-sws_flags", "bicubic+accurate_rnd+full_chroma_int", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv", "-f", "mpegts", tmpPath)
 	cmd := exec.CommandContext(ctx, ffmpeg, args...)
 	hideWindow(cmd)
 	in, err := cmd.StdinPipe()
@@ -671,12 +744,6 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 		return fmt.Errorf("%w: sidecar hello: %v", ErrGPURendererUnavailable, err)
 	}
 	frames := frameCount
-	waveW := int(math.Round(752 * float64(width) / 1280))
-	waveH := int(math.Round(168 * float64(height) / 720))
-	waveColor := "#FFFFFF@0.55"
-	if gpuMode.AccentColor.A != 0 {
-		waveColor = fmt.Sprintf("#%02X%02X%02X@0.55", gpuMode.AccentColor.R, gpuMode.AccentColor.G, gpuMode.AccentColor.B)
-	}
 	waveFrames := make(chan []byte, 2)
 	waveErr := make(chan error, 1)
 	waveCtx, waveCancel := context.WithCancel(ctx)
@@ -704,6 +771,11 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 		}
 		ptsNS := int64(float64(i) * float64(time.Second) / 30)
 		scene := CanonicalMusicScene(input, uint64(i), ptsNS)
+		// Text is applied by the post-YUV ASS filter below. Disable both
+		// screen_rgba and legacy glyph-atlas production composition; diagnostic
+		// sentinels still receive the untouched canonical scene elsewhere.
+		scene.TextOverlay = nil
+		scene.GlyphAtlas = nil
 		// The CPU base builder is also the source of truth for foreground
 		// colors. Keep GPU dynamic layers on that same palette; the generic
 		// feature palette is only a fallback for diagnostic scenes.
@@ -717,6 +789,7 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 		if textOverlay != nil {
 			scene.TextOverlay = textOverlay
 		}
+		scene.LoudnessTexture = &loudnessTextureMeta
 		waveStride := ((waveW*4 + int(GPURowAlignment) - 1) / int(GPURowAlignment)) * int(GPURowAlignment)
 		wavePayload := make([]byte, waveStride*waveH)
 		for y := 0; y < waveH; y++ {
@@ -724,6 +797,9 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 		}
 		waveMeta := BaseTextureMetadata{TextureID: fmt.Sprintf("wave-%s-%d", id, i), Width: uint32(waveW), Height: uint32(waveH), RowStride: uint32(waveStride), Format: PixelRGBA8, ColorSpace: ColorSRGB, Payload: wavePayload}
 		scene.WaveformTexture = &waveMeta
+		if useWaveFilter {
+			scene.WaveformTexture = nil
+		}
 		frame, e := sidecar.RenderScene(ctx, uint32(width), uint32(height), uint64(i), ptsNS, &scene)
 		if e != nil {
 			_ = cmd.Process.Kill()
@@ -734,7 +810,9 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 			_ = cmd.Process.Kill()
 			return fmt.Errorf("%w: pack frame: %v", ErrGPURendererUnavailable, e)
 		}
-		if e = writeGPUFrame(ctx, in, packed); e != nil {
+		yuv := make([]byte, width*height*3/2)
+		rgbaToYUV420p(packed, width, height, yuv)
+		if e = writeGPUFrame(ctx, in, yuv); e != nil {
 			_ = cmd.Process.Kill()
 			return fmt.Errorf("GPU HLS frame write: %w", e)
 		}

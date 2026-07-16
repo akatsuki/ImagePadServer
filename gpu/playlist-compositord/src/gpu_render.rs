@@ -37,6 +37,7 @@ struct GlyphInstance { screen: vec4<f32>, atlas: vec4<f32>, color: vec4<f32> }
 @group(0) @binding(10) var base_tex: texture_2d<f32>;
 @group(0) @binding(11) var base_sampler: sampler;
 @group(0) @binding(12) var waveform_tex: texture_2d<f32>;
+@group(0) @binding(13) var loudness_tex: texture_2d<f32>;
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   if (id.x >= params.width || id.y >= params.height) { return; }
@@ -109,12 +110,35 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let bb=u32(clamp(c.b*255.0,0.0,255.0)); let aa=u32(clamp(c.a*255.0,0.0,255.0));
     pixels[i]=rr|(gg<<8u)|(bb<<16u)|(aa<<24u); return;
   }
+  // Diagnostic-only base plus screen text composite. Dynamic analytic layers
+  // are deliberately bypassed so the static/text contribution can be
+  // compared against the CPU pre-encode reference without changing production
+  // sequences.
+  if (params.sequence == 0xffffffe0u) {
+    var c = textureLoad(base_tex, vec2<i32>(id.xy), 0);
+    let od = textureDimensions(overlay_tex);
+    if (id.x < od.x && id.y < od.y) {
+      let o = textureLoad(overlay_tex, vec2<i32>(id.xy), 0);
+      c = mix(c, o, clamp(o.a, 0.0, 1.0));
+    }
+    let rr=u32(clamp(c.r*255.0,0.0,255.0)); let gg=u32(clamp(c.g*255.0,0.0,255.0));
+    let bb=u32(clamp(c.b*255.0,0.0,255.0)); let aa=u32(clamp(c.a*255.0,0.0,255.0));
+    pixels[i]=rr|(gg<<8u)|(bb<<16u)|(aa<<24u); return;
+  }
   if (params.sequence == 0xfffffff7u) {
     let wd = textureDimensions(waveform_tex);
     if ((params.scene_enabled & 32u) == 0u || id.x >= wd.x || id.y >= wd.y) { pixels[i] = 0u; return; }
     let wc = textureLoad(waveform_tex, vec2<i32>(id.xy), 0);
     let rr=u32(clamp(wc.r*255.0,0.0,255.0)); let gg=u32(clamp(wc.g*255.0,0.0,255.0));
     let bb=u32(clamp(wc.b*255.0,0.0,255.0)); let aa=u32(clamp(wc.a*255.0,0.0,255.0));
+    pixels[i]=rr|(gg<<8u)|(bb<<16u)|(aa<<24u); return;
+  }
+  if (params.sequence == 0xffffffe2u) {
+    let ld = textureDimensions(loudness_tex);
+    if ((params.scene_enabled & 64u) == 0u || id.x >= ld.x || id.y >= ld.y) { pixels[i] = 0u; return; }
+    let c = textureLoad(loudness_tex, vec2<i32>(id.xy), 0);
+    let rr=u32(clamp(c.r*255.0,0.0,255.0)); let gg=u32(clamp(c.g*255.0,0.0,255.0));
+    let bb=u32(clamp(c.b*255.0,0.0,255.0)); let aa=u32(clamp(c.a*255.0,0.0,255.0));
     pixels[i]=rr|(gg<<8u)|(bb<<16u)|(aa<<24u); return;
   }
   var r: u32;
@@ -129,7 +153,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
       let probe_loud = params.rects[5];
       if (id.x < u32(max(0, probe_loud.x)) || id.y < u32(max(0, probe_loud.y)) ||
           id.x >= u32(probe_loud.x + probe_loud.z) || id.y >= u32(probe_loud.y + probe_loud.w)) {
-        pixels[i] = 0u | (255u << 24u);
+        pixels[i] = 0u;
         return;
       }
     }
@@ -203,20 +227,35 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     // Match drawSpectrumFixedFade: canonical bar width/gap, first-bar inset,
     // minimum height, and a fixed bottom alpha fade.
     let scale = f32(params.width) / 1280.0;
-    let bar_w = max(1.0, round(18.0 * scale));
-    let bar_gap = max(1.0, round(13.0 * scale));
-    let first_bar_x = f32(spectrum_rect.x) + round(11.0 * scale);
+    let bar_w = max(1.0, floor(18.0 * scale + 0.5));
+    let bar_gap = max(1.0, floor(13.0 * scale + 0.5));
+    let first_bar_x = f32(spectrum_rect.x) + floor(11.0 * scale + 0.5);
     let bar_bottom = f32(spectrum_rect.y + spectrum_rect.w);
-    let max_bar_h = f32(spectrum_rect.w) - round(16.0 * scale);
-    let min_bar_h = max(1.0, round(4.0 * scale));
-    let bar_h = min_bar_h + level * max(0.0, max_bar_h - min_bar_h);
+    let max_bar_h = f32(spectrum_rect.w) - floor(16.0 * scale + 0.5);
+    let min_bar_h = max(1.0, floor(4.0 * scale + 0.5));
+    // Select the band from the same screen-space bar grid as the CPU
+    // renderer. Mapping across the whole spectrum rect compresses the final
+    // bars into the right edge and was the source of the large mask mismatch.
+    let geom_u = (sx - first_bar_x) / max(1.0, bar_w + bar_gap);
+    if (geom_u >= 0.0 && geom_u < 24.0) {
+      band_index = min(23u, u32(floor(geom_u)));
+      level = f32(params.spectrum[band_index / 4u][band_index % 4u]) / 65535.0;
+    } else {
+      level = 0.0;
+    }
+    let bar_h = floor(min_bar_h + level * max(0.0, max_bar_h - min_bar_h));
     let bar_x = first_bar_x + f32(band_index) * (bar_w + bar_gap);
     let bar_y = bar_bottom - bar_h;
-    let fade_px = max(1.0, round(10.0 * scale));
-    let bottom_dist = bar_bottom - 1.0 - sy;
-    let fade = select(0.0, min(1.0, bottom_dist / max(1.0, fade_px - 1.0)), bottom_dist < fade_px);
-    let bars = select(0.0, 0.82 * (select(1.0, fade, bottom_dist < fade_px)),
-      in_spectrum && sx >= bar_x && sx < bar_x + bar_w && sy >= bar_y && sy < bar_bottom);
+    let fade_px = max(1.0, floor(10.0 * scale + 0.5));
+    let eff_fade = min(fade_px, bar_h);
+    let bottom_dist = bar_h - 1.0 - (sy - bar_y);
+    var bar_alpha = 209.0;
+    if (bottom_dist < eff_fade) {
+      if (eff_fade == 1.0) { bar_alpha = 0.0; }
+      else { bar_alpha = round(209.0 * bottom_dist / (eff_fade - 1.0)); }
+    }
+    let bars = select(0.0, bar_alpha / 255.0,
+      sx >= bar_x && sx < bar_x + bar_w && sy >= bar_y && sy < bar_bottom);
     if (params.sequence == 0xfffffffbu) {
       let v = u32(clamp(bars * 255.0, 0.0, 255.0));
       pixels[i] = v | (v << 8u) | (v << 16u) | (255u << 24u);
@@ -228,21 +267,42 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     // the spectrum rect.  This preserves the line silhouette and avoids a
     // second per-frame readback path.
     let wave_y = f32(spectrum_rect.y) + f32(spectrum_rect.w) * (0.70 - level * 0.42);
-    let wave = select(0.0, 1.0,
+    var wave = select(0.0, 1.0,
       in_spectrum && abs(sy - wave_y) < 1.0);
+    // A canonical waveform texture is authoritative. Do not add the
+    // analytic proxy on top of it or the line is rendered twice.
+    if ((params.scene_enabled & 32u) != 0u) { wave = 0.0; }
     // Progress rail and thumb use the canonical progress rectangle.
     let progress = f32(params.dynamics[0].z) / 65535.0;
     let rail = params.rects[6];
     let rx = f32(id.x); let ry = f32(id.y);
-    let in_rail = rx >= f32(rail.x) && rx < f32(rail.x + rail.z) && ry >= f32(rail.y) && ry < f32(rail.y + rail.w);
+    let radius = max(1.0, floor(f32(rail.w) * 0.5 + 0.5));
+    var in_rail = rx >= f32(rail.x) && rx < f32(rail.x + rail.z) && ry >= f32(rail.y) && ry < f32(rail.y + rail.w);
+    if (in_rail) {
+      if (rx < f32(rail.x) + radius && ry < f32(rail.y) + radius) {
+        let dx = rx - (f32(rail.x) + radius - 1.0); let dy = ry - (f32(rail.y) + radius - 1.0); in_rail = dx*dx + dy*dy <= radius*radius;
+      } else if (rx >= f32(rail.x + rail.z) - radius && ry < f32(rail.y) + radius) {
+        let dx = rx - (f32(rail.x + rail.z) - radius); let dy = ry - (f32(rail.y) + radius - 1.0); in_rail = dx*dx + dy*dy <= radius*radius;
+      } else if (rx < f32(rail.x) + radius && ry >= f32(rail.y + rail.w) - radius) {
+        let dx = rx - (f32(rail.x) + radius - 1.0); let dy = ry - (f32(rail.y + rail.w) - radius); in_rail = dx*dx + dy*dy <= radius*radius;
+      } else if (rx >= f32(rail.x + rail.z) - radius && ry >= f32(rail.y + rail.w) - radius) {
+        let dx = rx - (f32(rail.x + rail.z) - radius); let dy = ry - (f32(rail.y + rail.w) - radius); in_rail = dx*dx + dy*dy <= radius*radius;
+      }
+    }
     let rail_track = select(0.0, 1.0, in_rail);
     let rail_center_y = f32(rail.y) + f32(rail.w) * 0.5;
-    let thumb_x = f32(rail.x) + f32(rail.z) * progress;
-    let thumb_radius = max(1.0, round(9.0 * (f32(params.width) / 1280.0)));
+    let thumb_x = f32(rail.x) + floor(f32(rail.z) * progress + 0.5);
+    let thumb_radius = max(1.0, floor(9.0 * f32(rail.z) / 1000.0 + 0.5));
     let thumb = select(0.0, 1.0, distance(vec2<f32>(rx, ry), vec2<f32>(thumb_x, rail_center_y)) <= thumb_radius);
     if (params.sequence == 0xfffffff9u) {
-      let v = u32(clamp(max(rail_track * 0.35, thumb), 0.0, 1.0) * 255.0);
-      pixels[i] = v | (v << 8u) | (v << 16u) | (255u << 24u);
+      let a = select(0u, 89u, in_rail);
+      let ma = select(0u, 224u, thumb > 0.0);
+      let c = params.palette[1];
+      let aa = max(a, ma);
+      let cr = select(0u, c.x, aa > 0u);
+      let cg = select(0u, c.y, aa > 0u);
+      let cb = select(0u, c.z, aa > 0u);
+      pixels[i] = cr | (cg << 8u) | (cb << 16u) | (aa << 24u);
       return;
     }
     // Loudness envelope/trend are bounded Q0.16 samples. Render them in the
@@ -253,33 +313,48 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
       let u = clamp((rx - f32(loud.x)) / max(1.0, f32(loud.z - 1)), 0.0, 1.0);
       let sample_index = min(999u, u32(u * 999.0 + 0.5));
       let envelope = f32(dynamics_samples[sample_index]) / 65535.0;
-      let y_env = f32(loud.y + loud.w) - envelope * f32(loud.w);
+      let trend = f32(dynamics_samples[1000u + sample_index]) / 65535.0;
+      let y_env = f32(loud.y + loud.w) - floor(envelope * f32(loud.w) + 0.5);
+      let y_trend = f32(loud.y + loud.w) - floor(trend * f32(loud.w) + 0.5);
       // CPU lineWidth=2 writes the current sample column and the following
       // column. Re-evaluate the preceding sample for the second coverage
       // column instead of widening vertically.
       let prev_u = clamp((rx - 1.0 - f32(loud.x)) / max(1.0, f32(loud.z - 1)), 0.0, 1.0);
       let prev_index = min(999u, u32(prev_u * 999.0 + 0.5));
       let prev_envelope = f32(dynamics_samples[prev_index]) / 65535.0;
-      let prev_y_env = f32(loud.y + loud.w) - prev_envelope * f32(loud.w);
+      let prev_y_env = f32(loud.y + loud.w) - floor(prev_envelope * f32(loud.w) + 0.5);
+      let prev_trend = f32(dynamics_samples[1000u + prev_index]) / 65535.0;
+      let prev_y_trend = f32(loud.y + loud.w) - floor(prev_trend * f32(loud.w) + 0.5);
       // The CPU reference's drawLoudness layer is the envelope plus guides;
       // trend data remains available in the contract for future opt-in use.
       // CPU drawLoudness writes exactly one raster row per sample (the
       // integer-rounded y coordinate); a one-pixel half-open test avoids
       // widening fractional positions into two rows.
-      loudness = select(0.0, 1.0, abs(ry - y_env) < 0.5 || abs(ry - prev_y_env) < 0.5);
+      loudness = select(0.0, 0.80, abs(ry - y_env) < 0.5 || abs(ry - prev_y_env) < 0.5);
+      loudness = loudness + select(0.0, 0.80, abs(ry - y_trend) < 0.5 || abs(ry - prev_y_trend) < 0.5);
       // CPU loudness draws four fixed guide lines in the same rect. Their
       // quantized positions are carried in the uniform contract so the GPU
       // does not have to infer them from the envelope.
       for (var guide_index: u32 = 0u; guide_index < 4u; guide_index = guide_index + 1u) {
         let guide = f32(params.guides[guide_index]) / 65535.0;
         let guide_y = f32(loud.y + loud.w) - guide * f32(loud.w);
-        loudness = loudness + select(0.0, 0.55, abs(ry - guide_y) < 0.5);
+        loudness = loudness + select(0.0, 56.0 / 255.0, abs(ry - floor(guide_y + 0.5)) < 0.5);
       }
       if (params.sequence == 0xfffffff8u) {
         let v = u32(clamp(loudness, 0.0, 1.0) * 255.0);
-        pixels[i] = v | (v << 8u) | (v << 16u) | (255u << 24u);
+        let c = params.palette[1];
+        let cr = select(0u, c.x, v > 0u);
+        let cg = select(0u, c.y, v > 0u);
+        let cb = select(0u, c.z, v > 0u);
+        pixels[i] = cr | (cg << 8u) | (cb << 16u) | (v << 24u);
         return;
       }
+      // Diagnostic full-composite variant: retain every production layer
+      // except loudness so its contribution can be measured in isolation.
+      if (params.sequence == 0xffffffe1u) { loudness = 0.0; }
+      // When a canonical loudness raster is supplied, it is authoritative;
+      // disable the analytic trace to avoid double-rendering the graph.
+      if ((params.scene_enabled & 64u) != 0u) { loudness = 0.0; }
       }
   var glyph = 0.0;
     if (params.sequence == 0xfffffffeu) {
@@ -365,7 +440,11 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
       // on top of that raster; the CPU frame path has no second glow pass.
       glow = 0.0;
     }
-    var mixc = blurred_bg + primary * (glow + glyph + artwork * 0.35) + accent * (bars * 0.75 + wave * 0.35 + rail_track * 0.35 + thumb + loudness);
+    var mixc = blurred_bg + primary * (glow + glyph + artwork * 0.35) + accent * (bars * 0.75 + wave * 0.35 + loudness);
+    // Progress uses the CPU renderer's SrcOver alpha values and ordering:
+    // rounded track first, then the position thumb.
+    mixc = mix(mixc, accent, clamp(rail_track * (89.0 / 255.0), 0.0, 1.0));
+    mixc = mix(mixc, accent, clamp(thumb * (224.0 / 255.0), 0.0, 1.0));
     if (has_base) {
       // The CPU renderer composites each dynamic layer with Porter-Duff
       // source-over in this order. The legacy expression above is retained
@@ -399,6 +478,17 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         let wy = min(wd.y - 1u, u32(id.y) - u32(wr.y));
         let wc = textureLoad(waveform_tex, vec2<i32>(i32(wx), i32(wy)), 0);
         mixc = mix(mixc, wc.rgb, wc.a);
+      }
+    }
+    // Canonical CPU loudness raster. The payload is full-frame RGBA, while
+    // only the bounded loudness rect contains non-transparent pixels. Apply
+    // it source-over after the waveform texture and before the final text
+    // overlay. Diagnostic loudness-off mode intentionally bypasses it.
+    if ((params.scene_enabled & 64u) != 0u && params.sequence != 0xffffffe1u) {
+      let lr = params.rects[5];
+      if (id.x >= u32(lr.x) && id.x < u32(lr.x + lr.z) && id.y >= u32(lr.y) && id.y < u32(lr.y + lr.w)) {
+        let lc = textureLoad(loudness_tex, vec2<i32>(id.xy), 0);
+        mixc = mixc * (1.0 - lc.a) + lc.rgb;
       }
     }
     // A screen_rgba overlay is already premultiplied and uses target-space
@@ -470,6 +560,7 @@ fn scene_uniform_words(
             } | if scene.base_texture.as_ref().is_some_and(|b| !b.payload.is_empty()) { 8 } else { 0 }
             | if scene.text_overlay.as_ref().is_some_and(|o| o.kind == "screen_rgba" && !o.payload.is_empty()) { 16 } else { 0 };
         words[6] |= if scene.waveform_texture.as_ref().is_some_and(|w| !w.payload.is_empty()) { 32 } else { 0 };
+        words[6] |= if scene.loudness_texture.as_ref().is_some_and(|w| !w.payload.is_empty()) { 64 } else { 0 };
         words[7] = scene
             .glyph_atlas
             .as_ref()
@@ -842,6 +933,7 @@ impl Renderer {
                 wgpu::BindGroupLayoutEntry { binding: 10, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
                 wgpu::BindGroupLayoutEntry { binding: 11, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering), count: None },
                 wgpu::BindGroupLayoutEntry { binding: 12, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 13, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
             ],
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -896,7 +988,7 @@ impl Renderer {
         if width == 0 || height == 0 {
             return Err("invalid render dimensions".into());
         }
-        let (artwork_texture, atlas_texture, overlay_texture, base_texture, waveform_texture) = if let Some(scene) = scene {
+        let (artwork_texture, atlas_texture, overlay_texture, base_texture, waveform_texture, loudness_texture) = if let Some(scene) = scene {
             scene.validate().map_err(|e| format!("scene: {e:?}"))?;
             let artwork = scene
                 .artwork
@@ -913,9 +1005,10 @@ impl Renderer {
             let overlay = scene.text_overlay.as_ref().map(|o| self.upload_text_overlay(o)).transpose()?;
             let base = scene.base_texture.as_ref().map(|b| { b.validate().map_err(|e| format!("base texture: {e:?}"))?; self.upload_base_texture(b) }).transpose()?;
             let waveform = scene.waveform_texture.as_ref().map(|w| { w.validate().map_err(|e| format!("waveform texture: {e:?}"))?; self.upload_base_texture(w) }).transpose()?;
-            (artwork, atlas, overlay, base, waveform)
+            let loudness = scene.loudness_texture.as_ref().map(|w| { w.validate().map_err(|e| format!("loudness texture: {e:?}"))?; self.upload_base_texture(w) }).transpose()?;
+            (artwork, atlas, overlay, base, waveform, loudness)
         } else {
-            (None, None, None, None, None)
+            (None, None, None, None, None, None)
         };
         let glyph_atlas_receipt = scene.and_then(|s| s.glyph_atlas.as_ref()).map(|atlas| {
             let mut h = Sha256::new();
@@ -978,11 +1071,13 @@ impl Renderer {
         let overlay_texture = overlay_texture.unwrap_or_else(|| fallback_texture());
         let base_texture = base_texture.unwrap_or_else(|| fallback_texture());
         let waveform_texture = waveform_texture.unwrap_or_else(|| fallback_texture());
+        let loudness_texture = loudness_texture.unwrap_or_else(|| fallback_texture());
         let artwork_view = artwork_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let atlas_view = atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let overlay_view = overlay_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let base_view = base_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let waveform_view = waveform_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let loudness_view = loudness_texture.create_view(&wgpu::TextureViewDescriptor::default());
         // Atlas coverage is CPU-rasterized RGBA8.  Linear filtering blends
         // neighbouring fixed cells and creates halos at glyph boundaries;
         // nearest sampling preserves the source coverage contract. Keep a
@@ -1080,6 +1175,7 @@ impl Renderer {
                 wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::TextureView(&base_view) },
                 wgpu::BindGroupEntry { binding: 11, resource: wgpu::BindingResource::Sampler(&atlas_sampler) },
                 wgpu::BindGroupEntry { binding: 12, resource: wgpu::BindingResource::TextureView(&waveform_view) },
+                wgpu::BindGroupEntry { binding: 13, resource: wgpu::BindingResource::TextureView(&loudness_view) },
             ],
         });
         let mut enc = self
@@ -1158,6 +1254,7 @@ mod tests {
             artwork: None,
             base_texture: None,
             waveform_texture: None,
+            loudness_texture: None,
             glyph_atlas: None,
             text_overlay: None,
             layout: Default::default(),
@@ -1188,6 +1285,7 @@ mod tests {
             artwork: None,
             base_texture: None,
             waveform_texture: None,
+            loudness_texture: None,
             glyph_atlas: Some(GlyphAtlasMetadata {
                 texture_id: "atlas".into(),
                 font_family: "sans".into(),
