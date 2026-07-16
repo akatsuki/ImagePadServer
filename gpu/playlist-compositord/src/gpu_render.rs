@@ -109,6 +109,14 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let bb=u32(clamp(c.b*255.0,0.0,255.0)); let aa=u32(clamp(c.a*255.0,0.0,255.0));
     pixels[i]=rr|(gg<<8u)|(bb<<16u)|(aa<<24u); return;
   }
+  if (params.sequence == 0xfffffff7u) {
+    let wd = textureDimensions(waveform_tex);
+    if ((params.scene_enabled & 32u) == 0u || id.x >= wd.x || id.y >= wd.y) { pixels[i] = 0u; return; }
+    let wc = textureLoad(waveform_tex, vec2<i32>(id.xy), 0);
+    let rr=u32(clamp(wc.r*255.0,0.0,255.0)); let gg=u32(clamp(wc.g*255.0,0.0,255.0));
+    let bb=u32(clamp(wc.b*255.0,0.0,255.0)); let aa=u32(clamp(wc.a*255.0,0.0,255.0));
+    pixels[i]=rr|(gg<<8u)|(bb<<16u)|(aa<<24u); return;
+  }
   var r: u32;
   var g: u32;
   var b: u32;

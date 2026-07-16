@@ -257,6 +257,20 @@ func ProbeGPUSceneLoudness(ctx context.Context, executable string, width, height
 	return p.RenderScene(ctx, width, height, 0xfffffff8, 0, scene)
 }
 
+// ProbeGPUSceneWaveform reads back the exact per-frame waveform texture
+// without the rest of the compositor, for CPU showwaves hash/alpha parity.
+func ProbeGPUSceneWaveform(ctx context.Context, executable string, width, height uint32, scene *MusicScenePayload) (GpuFrame, error) {
+	p, err := StartSidecar(ctx, executable, "compare-waveform")
+	if err != nil {
+		return GpuFrame{}, err
+	}
+	defer p.Close()
+	if err := p.Hello(ctx, "compare-waveform"); err != nil {
+		return GpuFrame{}, err
+	}
+	return p.RenderScene(ctx, width, height, 0xfffffff7, 0, scene)
+}
+
 // ProbeGPUSceneTextOverlay is an opt-in compare diagnostic. It returns only
 // transport receipt evidence and does not alter production shader output.
 func ProbeGPUSceneTextOverlay(ctx context.Context, executable, session string, width, height uint32, scene *MusicScenePayload) (*TextOverlayReceipt, error) {
