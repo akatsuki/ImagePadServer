@@ -34,6 +34,8 @@ type MusicScenePayload struct {
 	// bounded RGBA contract while the GPU binding is being introduced.
 	WaveformTexture *BaseTextureMetadata `json:"waveform_texture,omitempty"`
 	LoudnessTexture *BaseTextureMetadata `json:"loudness_texture,omitempty"`
+	// SpectrumTexture is a CPU-canonical bars+wave raster for exact parity.
+	SpectrumTexture *BaseTextureMetadata `json:"spectrum_texture,omitempty"`
 	GlyphAtlas      *GlyphAtlasMetadata  `json:"glyph_atlas,omitempty"`
 	TextOverlay     *TextOverlayMetadata `json:"text_overlay,omitempty"`
 	Layout          MusicSceneLayout     `json:"layout"`
@@ -221,6 +223,9 @@ func (s MusicScenePayload) Validate() error {
 	}
 	if s.LoudnessTexture != nil {
 		if err := s.LoudnessTexture.Validate(); err != nil { return fmt.Errorf("scene loudness texture: %w", err) }
+	}
+	if s.SpectrumTexture != nil {
+		if err := s.SpectrumTexture.Validate(); err != nil { return fmt.Errorf("scene spectrum texture: %w", err) }
 	}
 	if s.GlyphAtlas != nil {
 		if err := s.GlyphAtlas.Validate(); err != nil {

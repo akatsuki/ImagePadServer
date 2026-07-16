@@ -87,6 +87,7 @@ mod tests {
                 base_texture: None,
                 waveform_texture: None,
                 loudness_texture: None,
+                spectrum_texture: None,
                 glyph_atlas: None,
                 text_overlay: None,
                 layout: Default::default(),
