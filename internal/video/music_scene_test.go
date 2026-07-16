@@ -63,3 +63,23 @@ func TestCanonicalMusicSceneIsStableAcrossRenderRoutes(t *testing.T) {
 		t.Fatalf("single and playlist scene inputs diverged: %#v != %#v", a.Feature, b.Feature)
 	}
 }
+
+func TestCanonicalMusicSceneUsesRasterizedGlyphAtlas(t *testing.T) {
+	in := AudioRenderInput{Metadata: AudioMetadata{Title: "WiFi", Artist: "A", Album: "B"}, Analysis: AudioAnalysis{Frames: []AudioFrame{{}}}}
+	s := CanonicalMusicScene(in, 0, 0)
+	if s.GlyphAtlas == nil || s.GlyphAtlas.FontFamily != "Go Regular" {
+		t.Fatalf("expected embedded raster font, got %#v", s.GlyphAtlas)
+	}
+	var alpha int
+	for i := 3; i < len(s.GlyphAtlas.Payload); i += 4 {
+		if s.GlyphAtlas.Payload[i] != 0 {
+			alpha++
+		}
+	}
+	if alpha < 100 {
+		t.Fatalf("rasterized atlas has too few covered pixels: %d", alpha)
+	}
+	if len(s.GlyphAtlas.Glyphs) < 4 || s.GlyphAtlas.Glyphs[0].Advance == s.GlyphAtlas.Glyphs[1].Advance {
+		t.Fatalf("glyph advances do not reflect font metrics: %#v", s.GlyphAtlas.Glyphs[:min(4, len(s.GlyphAtlas.Glyphs))])
+	}
+}

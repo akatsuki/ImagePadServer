@@ -5,10 +5,16 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"image"
+	"image/color"
 	_ "image/png"
 	"math"
 	"os"
 	"strings"
+
+	"golang.org/x/image/font"
+	"golang.org/x/image/font/gofont/goregular"
+	"golang.org/x/image/font/opentype"
+	"golang.org/x/image/math/fixed"
 )
 
 // CanonicalMusicScene is the sole normalization boundary for both single HLS
@@ -233,7 +239,10 @@ func normalizeGlyphs(meta AudioMetadata, layout VisualizerLayout, primary [4]uin
 	if len(all) == 0 {
 		return nil
 	}
-	const gw, gh, cols = 24, 40, 32
+	// Use a real, deterministic embedded font for glyph coverage. The atlas
+	// remains fixed-cell and bounded so the Rust side needs no protocol change;
+	// unsupported runes use the existing deterministic placeholder pattern.
+	const gw, gh, cols = 64, 64, 16
 	runes := all
 	if len(runes) > 256 {
 		runes = runes[:256]
@@ -242,6 +251,17 @@ func normalizeGlyphs(meta AudioMetadata, layout VisualizerLayout, primary [4]uin
 	h := gh
 	stride := (w*4 + 255) &^ 255
 	payload := make([]byte, stride*h)
+	face, faceErr := opentype.Parse(goregular.TTF)
+	var fontFace font.Face
+	if faceErr == nil {
+		fontFace, faceErr = opentype.NewFace(face, &opentype.FaceOptions{Size: 48, DPI: 72, Hinting: font.HintingNone})
+		if faceErr != nil {
+			fontFace = nil
+		}
+	}
+	if fontFace != nil {
+		defer fontFace.Close()
+	}
 	glyphs := make([]GlyphEntry, 0, len(runes))
 	seen := map[rune]bool{}
 	for i, r := range runes {
@@ -250,18 +270,41 @@ func normalizeGlyphs(meta AudioMetadata, layout VisualizerLayout, primary [4]uin
 		}
 		seen[r] = true
 		x := uint32((i % cols) * gw)
-		glyphs = append(glyphs, GlyphEntry{ID: string(r), X: x, Y: 0, Width: gw, Height: gh, Advance: gw})
-		for yy := 2; yy < gh-2; yy++ {
-			for xx := 2; xx < gw-2; xx++ {
-				if (xx+yy)%7 < 4 {
-					off := yy*stride + int(x) + xx
-					payload[off] = 255
-					payload[off+1] = 255
-					payload[off+2] = 255
-					payload[off+3] = 255
+		advance := float32(gw)
+		rasterized := false
+		if fontFace != nil {
+			_, _, ok := fontFace.GlyphBounds(r)
+			if ok {
+				dst := image.NewRGBA(image.Rect(int(x), 0, int(x)+gw, gh))
+				d := &font.Drawer{Dst: dst, Src: image.NewUniform(color.White), Face: fontFace,
+					Dot: fixed.Point26_6{X: fixed.I(int(x) + 4), Y: fixed.I(52)}}
+				d.DrawString(string(r))
+				for yy := 0; yy < gh; yy++ {
+					copy(payload[yy*stride+int(x)*4:yy*stride+(int(x)+gw)*4], dst.Pix[yy*dst.Stride:yy*dst.Stride+gw*4])
+				}
+				adv, ok := fontFace.GlyphAdvance(r)
+				if ok && adv > 0 {
+					advance = float32(adv) / 64
+					if advance > gw {
+						advance = gw
+					}
+				}
+				rasterized = true
+			}
+		}
+		if !rasterized {
+			// Deterministic tofu fallback for unsupported Unicode (including
+			// Japanese when GoRegular has no glyph), preserving prior behavior.
+			for yy := 4; yy < gh-4; yy++ {
+				for xx := 4; xx < gw-4; xx++ {
+					if xx == 4 || xx == gw-5 || yy == 4 || yy == gh-5 || (xx+yy)%11 < 2 {
+						off := yy*stride + (int(x)+xx)*4
+						payload[off], payload[off+1], payload[off+2], payload[off+3] = 255, 255, 255, 255
+					}
 				}
 			}
 		}
+		glyphs = append(glyphs, GlyphEntry{ID: string(r), X: x, Y: 0, Width: gw, Height: gh, Advance: advance})
 	}
 	sum := sha256.Sum256(payload)
 	runs := make([]TextRun, 0, len(fields))
@@ -281,5 +324,5 @@ func normalizeGlyphs(meta AudioMetadata, layout VisualizerLayout, primary [4]uin
 		y := float32(f.rect.Y) + (float32(f.rect.H)-f.size)/2
 		runs = append(runs, TextRun{Text: f.text, X: x, Y: y, SizePx: f.size, RGBA: primary, Opacity: 1})
 	}
-	return &GlyphAtlasMetadata{TextureID: "glyphs-" + hex.EncodeToString(sum[:8]), FontFamily: "canonical-sans", FontWeight: 500, FallbackOrder: []string{"Noto Sans CJK JP", "Segoe UI", "sans-serif"}, Width: uint32(w), Height: uint32(h), RowStride: uint32(stride), GlyphCount: uint32(len(glyphs)), MissingGlyphID: "?", Payload: payload, AssetHash: hex.EncodeToString(sum[:]), Glyphs: glyphs, TextRuns: runs}
+	return &GlyphAtlasMetadata{TextureID: "glyphs-" + hex.EncodeToString(sum[:8]), FontFamily: "Go Regular", FontWeight: 400, FallbackOrder: []string{"Noto Sans CJK JP", "Segoe UI", "sans-serif"}, Width: uint32(w), Height: uint32(h), RowStride: uint32(stride), GlyphCount: uint32(len(glyphs)), MissingGlyphID: "?", Payload: payload, AssetHash: hex.EncodeToString(sum[:]), Glyphs: glyphs, TextRuns: runs}
 }
