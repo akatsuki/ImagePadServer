@@ -62,8 +62,20 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   }
   if (params.sequence == 0xfffffffdu) {
     let ad = vec2<f32>(textureDimensions(artwork_tex));
-    let auv = (vec2<f32>(f32(id.x), f32(id.y)) + vec2<f32>(0.5, 0.5)) / max(ad, vec2<f32>(1.0));
-    let ac = textureSampleLevel(artwork_tex, artwork_sampler, auv, 0.0);
+    let src_aspect = ad.x / ad.y;
+    let dst_aspect = f32(params.width) / f32(params.height);
+    var sx = f32(id.x) + 0.5;
+    var sy = f32(id.y) + 0.5;
+    if (src_aspect > dst_aspect) {
+      let crop_w = ad.y * dst_aspect;
+      sx = (ad.x - crop_w) * 0.5 + sx * crop_w / f32(params.width);
+      sy = sy * ad.y / f32(params.height);
+    } else {
+      let crop_h = ad.x / dst_aspect;
+      sx = sx * ad.x / f32(params.width);
+      sy = (ad.y - crop_h) * 0.5 + sy * crop_h / f32(params.height);
+    }
+    let ac = textureSampleLevel(artwork_tex, artwork_sampler, vec2<f32>(sx, sy) / ad, 0.0);
     let ar=u32(clamp(ac.r*255.0,0.0,255.0)); let ag=u32(clamp(ac.g*255.0,0.0,255.0)); let ab=u32(clamp(ac.b*255.0,0.0,255.0)); let aa=u32(clamp(ac.a*255.0,0.0,255.0));
     pixels[i]=ar|(ag<<8u)|(ab<<16u)|(aa<<24u); return;
   }
