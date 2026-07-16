@@ -12,13 +12,16 @@ import (
 // diagnostic shader sentinel. It is intentionally separate from production
 // rendering and gives the parity gate a stable atlas-vs-frame contract.
 type GlyphSyntheticEvidence struct {
-	ID               string `json:"id"`
-	CPUAlphaCoverage int    `json:"cpuAlphaCoverage"`
-	GPUAlphaCoverage int    `json:"gpuAlphaCoverage"`
-	CPUAlphaSHA256   string `json:"cpuAlphaSha256"`
-	GPUAlphaSHA256   string `json:"gpuAlphaSha256"`
-	CPUVisibleBounds [4]int `json:"cpuVisibleBounds"`
-	GPUVisibleBounds [4]int `json:"gpuVisibleBounds"`
+	ID                string  `json:"id"`
+	CPUAlphaCoverage  int     `json:"cpuAlphaCoverage"`
+	GPUAlphaCoverage  int     `json:"gpuAlphaCoverage"`
+	CPUAlphaSHA256    string  `json:"cpuAlphaSha256"`
+	GPUAlphaSHA256    string  `json:"gpuAlphaSha256"`
+	CPUVisibleBounds  [4]int  `json:"cpuVisibleBounds"`
+	GPUVisibleBounds  [4]int  `json:"gpuVisibleBounds"`
+	CPUScreenCoverage int     `json:"cpuScreenCoverage"`
+	GPUScreenCoverage int     `json:"gpuScreenCoverage"`
+	ScreenIoU         float64 `json:"screenIou"`
 }
 
 // CompareSyntheticGlyph compares the first expanded glyph against an isolated
@@ -31,6 +34,14 @@ func CompareSyntheticGlyph(atlas *GlyphAtlasMetadata, manifest GlyphInstanceMani
 	}
 	g := manifest.Instances[0]
 	e.ID = g.ID
+	sx0, sy0 := int(g.Screen[0]*float32(width)), int(g.Screen[1]*float32(height))
+	sw, sh := int(g.Screen[2]*float32(width)), int(g.Screen[3]*float32(height))
+	if sw < 1 {
+		sw = 1
+	}
+	if sh < 1 {
+		sh = 1
+	}
 	for i := range atlas.Glyphs {
 		if atlas.Glyphs[i].ID == g.ID {
 			a := atlas.Glyphs[i]
@@ -41,6 +52,11 @@ func CompareSyntheticGlyph(atlas *GlyphAtlasMetadata, manifest GlyphInstanceMani
 					off := int(y*atlas.RowStride + (a.X+x)*4 + 3)
 					if off < len(atlas.Payload) && atlas.Payload[off] > 0 {
 						e.CPUAlphaCoverage++
+					}
+					if x := sx0 + int(float32(x)*float32(sw)/float32(a.Width)); x >= sx0 && x < sx0+sw {
+						if y := sy0 + int(float32(y)*float32(sh)/float32(a.Height)); y >= sy0 && y < sy0+sh {
+							e.CPUScreenCoverage++
+						}
 					}
 				}
 			}
@@ -76,6 +92,9 @@ func CompareSyntheticGlyph(atlas *GlyphAtlasMetadata, manifest GlyphInstanceMani
 					maxY = int(y)
 				}
 			}
+			if int(x) >= sx0 && int(x) < sx0+sw && int(y) >= sy0 && int(y) < sy0+sh && v > 8 {
+				e.GPUScreenCoverage++
+			}
 		}
 	}
 	h := sha256.Sum256(raw)
@@ -83,7 +102,23 @@ func CompareSyntheticGlyph(atlas *GlyphAtlasMetadata, manifest GlyphInstanceMani
 	if maxX >= 0 {
 		e.GPUVisibleBounds = [4]int{minX, minY, maxX + 1, maxY + 1}
 	}
+	if e.CPUScreenCoverage+e.GPUScreenCoverage > 0 {
+		e.ScreenIoU = float64(minIntGlyph(e.CPUScreenCoverage, e.GPUScreenCoverage)) / float64(maxIntGlyph(e.CPUScreenCoverage, e.GPUScreenCoverage))
+	}
 	return e
+}
+
+func minIntGlyph(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+func maxIntGlyph(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // ExpandMusicGlyphManifest applies the same bounded expansion contract as the
