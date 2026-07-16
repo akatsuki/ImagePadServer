@@ -117,6 +117,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let has_base = (params.scene_enabled & 8u) != 0u;
     // Canonical scene background and glow, with a deterministic waveform.
     var glow = max(0.0, 1.0 - distance(vec2<f32>(fx, fy), vec2<f32>(0.5, 0.48)) * 1.7) * (0.18 + rms * 0.42);
+    if (has_base) { glow = 0.0; }
     // Artwork is a first-class layer. Keep the tile bounded and deterministic
     // so malformed/absent artwork can use the same fallback texture without
     // changing the bind group contract. The soft edge is a rounded-tile
@@ -287,7 +288,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     var mixc = blurred_bg + primary * (glow + glyph + artwork * 0.35) + accent * (bars * 0.75 + wave * 0.35 + thumb + loudness);
     let overlay_alpha = overlay.a;
-    mixc = mix(mixc, overlay.rgb, overlay_alpha);
+    if (!has_base) { mixc = mix(mixc, overlay.rgb, overlay_alpha); }
     // Composite the actual artwork payload into the tile. Previously only its
     // alpha/luminance affected the background, leaving the GPU tile unlike the
     // CPU reference even when the same artwork bytes were present.

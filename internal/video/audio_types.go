@@ -94,5 +94,6 @@ type AudioRenderInput struct {
 	Kind        SourceKind
 	Metadata    AudioMetadata
 	ArtworkPath string
+	BaseTexture *BaseTextureMetadata
 	Analysis    AudioAnalysis
 }

@@ -870,6 +870,9 @@ func main() {
 			}
 		}
 	}
+	if scene.BaseTexture != nil {
+		inputSpec.BaseTexture = scene.BaseTexture
+	}
 	rep.SceneEvidence = sceneEvidence{Fingerprint: scene.Fingerprint, Title: inputSpec.Metadata.Title, Artist: inputSpec.Metadata.Artist, Album: inputSpec.Metadata.Album}
 	if scene.BaseTexture != nil {
 		rep.SceneEvidence.BaseTextureCPUHash = scene.BaseTexture.AssetHash

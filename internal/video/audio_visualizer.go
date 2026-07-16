@@ -616,6 +616,9 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 	for i := 0; i < frames; i++ {
 		ptsNS := int64(float64(i) * float64(time.Second) / 30)
 		scene := CanonicalMusicScene(input, uint64(i), ptsNS)
+		if input.BaseTexture != nil {
+			scene.BaseTexture = input.BaseTexture
+		}
 		frame, e := sidecar.RenderScene(ctx, uint32(width), uint32(height), uint64(i), ptsNS, &scene)
 		if e != nil {
 			_ = cmd.Process.Kill()
