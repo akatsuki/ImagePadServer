@@ -45,12 +45,12 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let dims = vec2<f32>(textureDimensions(overlay_tex));
     // Canonical CPU probe places the atlas into the title rect (rect index 1)
     // using nearest scaling; mirror that placement for the diagnostic readback.
-    let rect = params.rects[1];
-    let px = vec2<f32>(f32(id.x) - f32(rect.x), f32(id.y) - f32(rect.y));
-    if (px.x < 0.0 || px.y < 0.0 || px.x >= f32(rect.z) || px.y >= f32(rect.w)) {
-      pixels[i] = 0u;
-      return;
-    }
+    var rect = params.rects[1];
+    var px = vec2<f32>(f32(id.x) - f32(rect.x), f32(id.y) - f32(rect.y));
+    if (px.x < 0.0 || px.y < 0.0 || px.x >= f32(rect.z) || px.y >= f32(rect.w)) { rect = params.rects[2]; px = vec2<f32>(f32(id.x)-f32(rect.x),f32(id.y)-f32(rect.y)); }
+    if (px.x < 0.0 || px.y < 0.0 || px.x >= f32(rect.z) || px.y >= f32(rect.w)) { rect = params.rects[3]; px = vec2<f32>(f32(id.x)-f32(rect.x),f32(id.y)-f32(rect.y)); }
+    if (px.x < 0.0 || px.y < 0.0 || px.x >= f32(rect.z) || px.y >= f32(rect.w)) { rect = params.rects[7]; px = vec2<f32>(f32(id.x)-f32(rect.x),f32(id.y)-f32(rect.y)); }
+    if (px.x < 0.0 || px.y < 0.0 || px.x >= f32(rect.z) || px.y >= f32(rect.w)) { pixels[i] = 0u; return; }
     let uv = (floor(px / max(vec2<f32>(f32(rect.z), f32(rect.w)), vec2<f32>(1.0)) * dims) + vec2<f32>(0.5, 0.5)) / max(dims, vec2<f32>(1.0));
     let c = textureSampleLevel(overlay_tex, overlay_sampler, uv, 0.0);
     let rr = u32(clamp(c.r * 255.0, 0.0, 255.0));
