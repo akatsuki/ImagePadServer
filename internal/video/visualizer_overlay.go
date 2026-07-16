@@ -1,0 +1,51 @@
+package video
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"fmt"
+	"os/exec"
+)
+
+// RenderASSOverlayRGBA rasterizes an already-resolved production ASS script
+// through the same libass filter used by the video encoder. The input is a
+// transparent canvas, so the returned bytes are suitable for a premultiplied
+// screen-space GPU texture once the alpha convention is verified by the
+// acceptance probe.
+func RenderASSOverlayRGBA(ctx context.Context, ffmpeg, assPath, fontDir string, width, height uint32) ([]byte, uint32, error) {
+	if ffmpeg == "" || assPath == "" || width == 0 || height == 0 {
+		return nil, 0, fmt.Errorf("invalid ASS overlay render arguments")
+	}
+	stride := (width*4 + 255) &^ 255
+	args := []string{"-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black@0.0:s=" + fmt.Sprintf("%dx%d", width, height) + ":r=1", "-vf", "ass=filename='" + escapeFilterPath(assPath) + "':fontsdir='" + escapeFilterPath(fontDir) + "',format=rgba", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1"}
+	cmd := exec.CommandContext(ctx, ffmpeg, args...)
+	hideWindow(cmd)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, 0, fmt.Errorf("ffmpeg ASS overlay: %w\n%s", err, stderr.String())
+	}
+	rowBytes := width * 4
+	if uint64(len(out)) != uint64(rowBytes)*uint64(height) {
+		return nil, 0, fmt.Errorf("unexpected ASS overlay bytes: got %d want %d", len(out), uint64(rowBytes)*uint64(height))
+	}
+	// The transport contract requires aligned rows. Expand each row without
+	// changing the libass-generated texels.
+	if stride != rowBytes {
+		aligned := make([]byte, uint64(stride)*uint64(height))
+		for y := uint32(0); y < height; y++ {
+			copy(aligned[uint64(y)*uint64(stride):], out[uint64(y)*uint64(rowBytes):uint64(y+1)*uint64(rowBytes)])
+		}
+		out = aligned
+	}
+	return out, stride, nil
+}
+
+// NewScreenTextOverlayMetadata wraps a libass RGBA raster with the explicit
+// screen-space semantics required by the shared contract.
+func NewScreenTextOverlayMetadata(width, height, stride uint32, payload []byte, rendererVersion string) *TextOverlayMetadata {
+	h := sha256.Sum256(payload)
+	return &TextOverlayMetadata{Kind: "screen_rgba", Width: width, Height: height, RowStride: stride, Format: PixelRGBA8, ColorSpace: ColorSRGB, Premultiplied: true, Payload: payload, AssetHash: fmt.Sprintf("%x", h[:]), RendererID: "ffmpeg-libass-overlay", RendererVersion: rendererVersion, ScreenRect: SceneRect{W: int(width), H: int(height)}, AlphaMode: "premultiplied", PixelOrigin: "top_left"}
+}
