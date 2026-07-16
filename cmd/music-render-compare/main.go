@@ -850,6 +850,18 @@ func main() {
 	rep.FrameContract.ExpectedFrames = int64(math.Max(1, math.Ceil(analysis.Duration*30)))
 	rep.FrameContract.SharedMuxPolicy = "raw:30fps,cfr,frames:v;hls:passthrough,video-copy"
 	scene := video.CanonicalMusicScene(inputSpec, 0, 0)
+	// Build the production-equivalent libass screen payload for the text-only
+	// GPU probe. Keep the legacy atlas if the local FFmpeg/font toolchain cannot
+	// render it; the report then remains explicit about which source was used.
+	compareW := int(math.Round(float64(p.Height) * 16.0 / 9.0))
+	if layout, le := video.LayoutForSize(compareW, p.Height); le == nil {
+		mode := video.ForegroundMode{PrimaryColor: color.RGBA{scene.Palette.Primary[0], scene.Palette.Primary[1], scene.Palette.Primary[2], scene.Palette.Primary[3]}, AccentColor: color.RGBA{scene.Palette.Accent[0], scene.Palette.Accent[1], scene.Palette.Accent[2], scene.Palette.Accent[3]}}
+		if overlay, oe := video.RenderCanonicalASSOverlay(ctx, ff, inputSpec.Metadata, analysis.Duration, layout, mode, compareW, p.Height); oe == nil {
+			scene.TextOverlay = overlay
+		} else {
+			fmt.Fprintf(os.Stderr, "warning: libass screen overlay unavailable: %v\n", oe)
+		}
+	}
 	if scene.Artwork != nil {
 		aw, ah := int(scene.Artwork.Width), int(scene.Artwork.Height)
 		src := image.NewRGBA(image.Rect(0, 0, aw, ah))

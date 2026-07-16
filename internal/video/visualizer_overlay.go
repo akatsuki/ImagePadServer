@@ -5,7 +5,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 )
 
 // RenderASSOverlayRGBA rasterizes an already-resolved production ASS script
@@ -49,6 +51,61 @@ func RenderASSOverlayRGBA(ctx context.Context, ffmpeg, assPath, fontDir string, 
 		out = aligned
 	}
 	return out, stride, nil
+}
+
+// RenderCanonicalASSOverlay resolves the same fonts and libass measurements
+// used by the CPU encoder, then returns one canonical screen-space overlay.
+// Callers may use it as a texture-only diagnostic before routing it into the
+// production GPU scene.
+func RenderCanonicalASSOverlay(ctx context.Context, ffmpeg string, metadata AudioMetadata, duration float64, layout VisualizerLayout, mode ForegroundMode, width, height int) (*TextOverlayMetadata, error) {
+	fonts, err := VisualizerFonts()
+	if err != nil {
+		return nil, fmt.Errorf("visualizer fonts: %w", err)
+	}
+	faces, err := ResolveVisualizerFontFaces(fonts)
+	if err != nil {
+		return nil, fmt.Errorf("resolve visualizer fonts: %w", err)
+	}
+	fontDir := filepath.Dir(fonts.Regular400)
+	metrics := map[string]TextMetrics{}
+	measure := func(text, family string, weight, size int, key string) error {
+		if text == "" {
+			return nil
+		}
+		w, e := MeasureASSEncodedWidth(ctx, ffmpeg, family, weight, fontDir, text, size)
+		if e != nil {
+			return e
+		}
+		metrics[key] = TextMetrics{Width: w}
+		return nil
+	}
+	if err := measure(metadata.Title, faces.SemiBold600.ASSFamily, 600, scaledFontSize(48, width), "title"); err != nil {
+		return nil, fmt.Errorf("measure title: %w", err)
+	}
+	if err := measure(metadata.Artist, faces.Medium500.ASSFamily, 500, scaledFontSize(28, width), "artist"); err != nil {
+		return nil, fmt.Errorf("measure artist: %w", err)
+	}
+	if err := measure(metadata.Album, faces.Regular400.ASSFamily, 400, scaledFontSize(24, width), "album"); err != nil {
+		return nil, fmt.Errorf("measure album: %w", err)
+	}
+	ass, err := BuildVisualizerASSWithMode(metadata, duration, layout, fonts, metrics, mode, width, height)
+	if err != nil {
+		return nil, err
+	}
+	tmp, err := os.MkdirTemp("", "imagepad-ass-overlay-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmp)
+	assPath := filepath.Join(tmp, "overlay.ass")
+	if err := os.WriteFile(assPath, []byte(ass), 0644); err != nil {
+		return nil, err
+	}
+	payload, stride, err := RenderASSOverlayRGBA(ctx, ffmpeg, assPath, fontDir, uint32(width), uint32(height))
+	if err != nil {
+		return nil, err
+	}
+	return NewScreenTextOverlayMetadata(uint32(width), uint32(height), stride, payload, "ffmpeg-libass"), nil
 }
 
 // NewScreenTextOverlayMetadata wraps a libass RGBA raster with the explicit

@@ -45,6 +45,16 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   // enter this branch.
   if (params.sequence == 0xfffffffeu) {
     let dims = vec2<f32>(textureDimensions(overlay_tex));
+    if ((params.scene_enabled & 16u) != 0u) {
+      if (id.x >= u32(dims.x) || id.y >= u32(dims.y)) { pixels[i] = 0u; return; }
+      let c = textureLoad(overlay_tex, vec2<i32>(id.xy), 0);
+      let rr = u32(clamp(c.r * 255.0, 0.0, 255.0));
+      let gg = u32(clamp(c.g * 255.0, 0.0, 255.0));
+      let bb = u32(clamp(c.b * 255.0, 0.0, 255.0));
+      let aa = u32(clamp(c.a * 255.0, 0.0, 255.0));
+      pixels[i] = rr | (gg << 8u) | (bb << 16u) | (aa << 24u);
+      return;
+    }
     // Canonical CPU probe places the atlas into the title rect (rect index 1)
     // using nearest scaling; mirror that placement for the diagnostic readback.
     var rect = params.rects[1];
