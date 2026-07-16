@@ -271,6 +271,29 @@ func ProbeGPUSceneWaveform(ctx context.Context, executable string, width, height
 	return p.RenderScene(ctx, width, height, 0xfffffff7, 0, scene)
 }
 
+// ProbeGPUSceneWaveformSequence reuses one sidecar session for a complete
+// frame sequence so upload/readback parity is measured without process-start
+// noise or a different adapter state per frame.
+func ProbeGPUSceneWaveformSequence(ctx context.Context, executable string, width, height uint32, scenes []*MusicScenePayload) ([]GpuFrame, error) {
+	p, err := StartSidecar(ctx, executable, "waveform-sequence")
+	if err != nil {
+		return nil, err
+	}
+	defer p.Close()
+	if err := p.Hello(ctx, "waveform-sequence"); err != nil {
+		return nil, err
+	}
+	frames := make([]GpuFrame, 0, len(scenes))
+	for i, scene := range scenes {
+		frame, err := p.RenderScene(ctx, width, height, 0xfffffff7, int64(i)*int64(1_000_000_000/30), scene)
+		if err != nil {
+			return nil, fmt.Errorf("waveform frame %d: %w", i, err)
+		}
+		frames = append(frames, frame)
+	}
+	return frames, nil
+}
+
 // ProbeGPUSceneTextOverlay is an opt-in compare diagnostic. It returns only
 // transport receipt evidence and does not alter production shader output.
 func ProbeGPUSceneTextOverlay(ctx context.Context, executable, session string, width, height uint32, scene *MusicScenePayload) (*TextOverlayReceipt, error) {
