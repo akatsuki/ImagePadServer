@@ -224,9 +224,32 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         glow = glow + luminance * 0.08 * alpha;
       }
     }
-    let spectrum_rect = params.rects[4];
     let sx = f32(id.x);
     let sy = f32(id.y);
+    var blurred_bg = background;
+    // GPU-only fallback artwork: reproduce the deterministic gradient and
+    // radial fingerprint when no cover texture is available. The Q16 bands
+    // arrive through binding 16; no CPU raster is required.
+    if (!has_base && (params.scene_enabled & 2u) == 0u) {
+      let ar = params.rects[0];
+      let ax = f32(ar.x); let ay = f32(ar.y);
+      let aw = max(1.0, f32(ar.z)); let ah = max(1.0, f32(ar.w));
+      if (sx >= ax && sx < ax + aw && sy >= ay && sy < ay + ah) {
+        let lx = (sx - ax) / aw; let ly = (sy - ay) / ah;
+        let grad = mix(background, accent, clamp(ly, 0.0, 1.0));
+        blurred_bg = grad;
+        let dx = lx - 0.5; let dy = ly - 0.5;
+        let radius = sqrt(dx * dx + dy * dy);
+        let angle = atan2(dy, dx);
+        let sector = (angle + 3.14159265) / 6.2831853 * 64.0;
+        let band = min(63u, u32(max(0.0, floor(sector))));
+        let energy = f32(fingerprint_samples[band]) / 65535.0;
+        let inner = 54.0 / aw; let outer = inner + energy * 58.0 / aw;
+        let line = select(0.0, 0.26, radius >= inner && radius <= outer && abs(fract(sector) - 0.5) < 0.10);
+        blurred_bg = mix(blurred_bg, primary, line);
+      }
+    }
+    let spectrum_rect = params.rects[4];
     let in_spectrum = sx >= f32(spectrum_rect.x) && sx < f32(spectrum_rect.x + spectrum_rect.z) &&
       sy >= f32(spectrum_rect.y) && sy < f32(spectrum_rect.y + spectrum_rect.w);
     let spectrum_u = clamp((sx - f32(spectrum_rect.x)) / max(1.0, f32(spectrum_rect.z - 1)), 0.0, 1.0);
@@ -438,7 +461,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     // the same ordering here with a bounded three-tap blur.  The payload's
     // background colour remains the deterministic fallback when artwork is
     // absent or malformed.
-    var blurred_bg = background;
+    blurred_bg = background;
     if ((params.scene_enabled & 2u) != 0u && !has_base) {
       let dims = vec2<f32>(textureDimensions(artwork_tex));
       let source_aspect = dims.x / max(1.0, dims.y);
