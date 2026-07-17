@@ -34,6 +34,7 @@ type fixture struct {
 func main() {
 	manifestPath := flag.String("manifest", "testdata/music-render/manifest.json", "fixture manifest")
 	out := flag.String("out", ".tmp/music-fixtures", "output directory")
+	strict := flag.Bool("strict-gates", false, "enforce Tier5 fixture requirements")
 	flag.Parse()
 	data, err := os.ReadFile(*manifestPath)
 	if err != nil {
@@ -48,6 +49,19 @@ func main() {
 	}
 	files := make([]map[string]any, 0, len(m.Fixtures))
 	for _, f := range m.Fixtures {
+		if *strict {
+			if frames := int(math.Ceil(f.Duration * 30)); frames < 150 {
+				panic(fmt.Sprintf("fixture %q has %d frames; strict gate requires at least 150", f.ID, frames))
+			}
+			for _, key := range []string{"title", "artist", "album"} {
+				if f.Metadata[key] == "" {
+					panic(fmt.Sprintf("fixture %q missing metadata.%s", f.ID, key))
+				}
+			}
+			if len(f.BoundarySamples) == 0 {
+				panic(fmt.Sprintf("fixture %q has no boundary_samples", f.ID))
+			}
+		}
 		if err := writeFixture(*out, f); err != nil {
 			panic(err)
 		}
