@@ -84,3 +84,27 @@ func (f YUV420PFrame) Validate() error {
 	}
 	return nil
 }
+
+// PackedBytes returns a tightly packed yuv420p frame in FFmpeg's plane order
+// (Y, U, V). Stride padding is deliberately discarded at this boundary.
+func (f YUV420PFrame) PackedBytes() ([]byte, error) {
+	if err := f.Validate(); err != nil {
+		return nil, err
+	}
+	cw, ch := (f.Width+1)/2, (f.Height+1)/2
+	out := make([]byte, int(f.Width*f.Height+2*cw*ch))
+	off := 0
+	for y := uint32(0); y < f.Height; y++ {
+		copy(out[off:off+int(f.Width)], f.Y[int(y*f.YStride):int(y*f.YStride+f.Width)])
+		off += int(f.Width)
+	}
+	for y := uint32(0); y < ch; y++ {
+		copy(out[off:off+int(cw)], f.U[int(y*f.UStride):int(y*f.UStride+cw)])
+		off += int(cw)
+	}
+	for y := uint32(0); y < ch; y++ {
+		copy(out[off:off+int(cw)], f.V[int(y*f.VStride):int(y*f.VStride+cw)])
+		off += int(cw)
+	}
+	return out, nil
+}

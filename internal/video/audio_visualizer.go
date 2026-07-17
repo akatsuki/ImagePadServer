@@ -3,6 +3,7 @@ package video
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -779,7 +780,8 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 	// YUV420P transport.  Keep this opt-in while the transport is being rolled
 	// out, but fail closed when explicitly requested: never silently convert the
 	// GPU RGBA result on the CPU.
-	if strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_YUV_REQUIRED")) == "1" {
+	yuvRequired := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_YUV_REQUIRED")) == "1"
+	if yuvRequired {
 		if err := sidecar.RequireYUV420Output(); err != nil {
 			_ = cmd.Process.Kill()
 			return fmt.Errorf("%w: sidecar YUV420P output required: %v", ErrGPURendererUnavailable, err)
@@ -789,6 +791,14 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 	postYUVFilter := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_SPECTRUM_POST_YUV_FILTER")) == "1"
 	useGPUWaveform := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_WAVEFORM_SHADER")) == "1"
 	postYUV := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_SPECTRUM_POST_YUV")) == "1" && !postYUVFilter
+	if yuvRequired && (postYUV || postYUVFilter) {
+		_ = cmd.Process.Kill()
+		return errors.New("GPU YUV-required route is incompatible with post-YUV filters")
+	}
+	if yuvRequired && strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_WAVE_FILTER")) == "1" {
+		_ = cmd.Process.Kill()
+		return errors.New("GPU YUV-required route is incompatible with wave filter")
+	}
 	var postYUVSpectrum [][]byte
 	postArtifacts := gpuPostYUVArtifacts{}
 	postYUVMax := 3
@@ -931,21 +941,35 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 		if useWaveFilter {
 			scene.WaveformTexture = nil
 		}
-		frame, e := sidecar.RenderScene(ctx, uint32(width), uint32(height), uint64(i), ptsNS, &scene)
-		if e != nil {
-			_ = cmd.Process.Kill()
-			return fmt.Errorf("%w: render frame: %v", ErrGPURendererUnavailable, e)
+		var yuv []byte
+		if yuvRequired {
+			yuvFrame, renderErr := sidecar.RenderSceneYUV(ctx, uint32(width), uint32(height), uint64(i), ptsNS, &scene)
+			if renderErr != nil {
+				_ = cmd.Process.Kill()
+				return fmt.Errorf("%w: render yuv frame: %v", ErrGPURendererUnavailable, renderErr)
+			}
+			yuv, renderErr = yuvFrame.PackedBytes()
+			if renderErr != nil {
+				_ = cmd.Process.Kill()
+				return fmt.Errorf("%w: pack yuv frame: %v", ErrGPURendererUnavailable, renderErr)
+			}
+		} else {
+			frame, renderErr := sidecar.RenderScene(ctx, uint32(width), uint32(height), uint64(i), ptsNS, &scene)
+			if renderErr != nil {
+				_ = cmd.Process.Kill()
+				return fmt.Errorf("%w: render frame: %v", ErrGPURendererUnavailable, renderErr)
+			}
+			packed, renderErr := GPUFrameToPackedRGBA(frame)
+			if renderErr != nil {
+				_ = cmd.Process.Kill()
+				return fmt.Errorf("%w: pack frame: %v", ErrGPURendererUnavailable, renderErr)
+			}
+			yuv = make([]byte, width*height*3/2)
+			rgbaToYUV420p(packed, width, height, yuv)
 		}
-		packed, e := GPUFrameToPackedRGBA(frame)
-		if e != nil {
+		if err := writeGPUFrame(ctx, in, yuv); err != nil {
 			_ = cmd.Process.Kill()
-			return fmt.Errorf("%w: pack frame: %v", ErrGPURendererUnavailable, e)
-		}
-		yuv := make([]byte, width*height*3/2)
-		rgbaToYUV420p(packed, width, height, yuv)
-		if e = writeGPUFrame(ctx, in, yuv); e != nil {
-			_ = cmd.Process.Kill()
-			return fmt.Errorf("GPU HLS frame write: %w", e)
+			return fmt.Errorf("GPU HLS frame write: %w", err)
 		}
 	}
 	if postYUV && len(postYUVSpectrum) > 0 {

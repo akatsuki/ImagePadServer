@@ -1,6 +1,7 @@
 package video
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -79,6 +80,14 @@ func TestYUV420PFrameValidate(t *testing.T) {
 	if err := bad.Validate(); err == nil {
 		t.Fatal("unknown ownership accepted")
 	}
+}
+
+func TestYUV420PFramePackedBytesCopiesOnlyPlaneRows(t *testing.T) {
+	f := YUV420PFrame{Schema: GPUContractVersion, Width: 3, Height: 3, YStride: 4, UStride: 3, VStride: 3, ColorSpace: ColorSRGB, Ownership: "OwnedByTransport", Y: []byte{1, 2, 3, 99, 4, 5, 6, 99, 7, 8, 9, 99}, U: []byte{10, 11, 88, 12, 13, 88}, V: []byte{20, 21, 77, 22, 23, 77}}
+	got, err := f.PackedBytes()
+	if err != nil { t.Fatal(err) }
+	want := []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 20, 21, 22, 23}
+	if !bytes.Equal(got, want) { t.Fatalf("packed=%v want=%v", got, want) }
 }
 
 func TestGPUOutputCapabilitiesFailClosed(t *testing.T) {

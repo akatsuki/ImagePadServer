@@ -101,6 +101,16 @@ func TestGPUYUVRequiredRouteFailsClosed(t *testing.T) {
 	}
 }
 
+func TestGPUYUVRequiredRouteUsesNativeYUVFrame(t *testing.T) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok { t.Fatal("runtime.Caller failed") }
+	source := readRouteSource(t, filepath.Join(filepath.Dir(file), "audio_visualizer.go"))
+	body := routeBody(sourceBetween(source, "func runAudioVisualizerHLSGPU", "func writeGPUFrame"))
+	for _, want := range []string{`sidecar.RenderSceneYUV`, `yuvFrame.PackedBytes`, `if yuvRequired`} {
+		if !strings.Contains(body, want) { t.Errorf("GPU YUV route missing native transport %q", want) }
+	}
+}
+
 func TestGPUTextShaderOwnsGlyphComposition(t *testing.T) {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
