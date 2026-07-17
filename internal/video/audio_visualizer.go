@@ -745,7 +745,8 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 		return fmt.Errorf("%w: sidecar hello: %v", ErrGPURendererUnavailable, err)
 	}
 	frames := frameCount
-	postYUV := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_SPECTRUM_POST_YUV")) == "1"
+	postYUVFilter := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_SPECTRUM_POST_YUV_FILTER")) == "1"
+	postYUV := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_SPECTRUM_POST_YUV")) == "1" && !postYUVFilter
 	var postYUVSpectrum [][]byte
 	postArtifacts := gpuPostYUVArtifacts{}
 	postYUVMax := 3
@@ -805,7 +806,7 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 		}
 		waveMeta := BaseTextureMetadata{TextureID: fmt.Sprintf("wave-%s-%d", id, i), Width: uint32(waveW), Height: uint32(waveH), RowStride: uint32(waveStride), Format: PixelRGBA8, ColorSpace: ColorSRGB, Payload: wavePayload}
 		scene.WaveformTexture = &waveMeta
-		if useSpectrumCanonical || postYUV {
+		if useSpectrumCanonical || postYUV || postYUVFilter {
 			// The canonical layer already contains the showwaves raster; do not
 			// upload the source waveform as well or it would be composited twice.
 			scene.WaveformTexture = nil
@@ -813,7 +814,16 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 			if frameIndex >= len(input.Analysis.Frames) {
 				frameIndex = len(input.Analysis.Frames) - 1
 			}
-			composite := RenderSpectrumCompositeTextureCPU(width, height, input.Analysis.Frames[frameIndex].Spectrum24, wave, waveW, waveH, gpuMode, gpuLayout)
+			var composite *image.RGBA
+			if postYUVFilter {
+				// Post-YUV FFmpeg supplies the waveform; retain only the analytic
+				// bars in the GPU scene so neither layer is omitted or duplicated.
+				var spectrum [24]float64
+				copy(spectrum[:], input.Analysis.Frames[frameIndex].Spectrum24[:])
+				composite = RenderSpectrumMaskCPU(width, height, spectrum, gpuMode, gpuLayout)
+			} else {
+				composite = RenderSpectrumCompositeTextureCPU(width, height, input.Analysis.Frames[frameIndex].Spectrum24, wave, waveW, waveH, gpuMode, gpuLayout)
+			}
 			meta, metaErr := NewBaseTextureMetadata(fmt.Sprintf("spectrum-%s-%d", id, i), composite, ColorSRGB)
 			if metaErr != nil {
 				_ = cmd.Process.Kill()
@@ -827,6 +837,12 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 				// overlay must carry only the FFmpeg showwaves raster.
 				postYUVSpectrum = append(postYUVSpectrum, append([]byte(nil), wave...))
 			}
+		}
+		if postYUVFilter {
+			// The canonical showwaves raster is inserted after GPU YUV conversion.
+			// Keep the GPU scene free of spectrum/wave layers to avoid double draw.
+			scene.WaveformTexture = nil
+			// SpectrumTexture remains the bars-only texture prepared above.
 		}
 		if useWaveFilter {
 			scene.WaveformTexture = nil
@@ -876,6 +892,20 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 		}
 		tmpPath = postArtifacts.overlayTS
 		frameCount = postYUVMax
+	}
+	if postYUVFilter {
+		filterTS := filepath.Join(outDir, ".spectrum-filter-"+id+".ts")
+		defer os.Remove(filterTS)
+		graph := buildMusicPostYUVFilter(waveW, waveH, gpuLayout.Spectrum.X, gpuLayout.Spectrum.Y, waveColor, audioFilter, assPath, fontDir)
+		filterArgs := []string{"-hide_banner", "-loglevel", "error", "-y", "-i", tmpPath, "-i", input.SourcePath, "-filter_complex", graph, "-map", "[out]", "-frames:v", strconv.Itoa(frameCount), "-an", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv", "-f", "mpegts", filterTS}
+		filterCmd := exec.CommandContext(ctx, ffmpeg, filterArgs...)
+		hideWindow(filterCmd)
+		var filterErr bytes.Buffer
+		filterCmd.Stderr = &filterErr
+		if err := filterCmd.Run(); err != nil {
+			return fmt.Errorf("GPU post-YUV filter: %w: %s", err, trimOutput(filterErr.Bytes()))
+		}
+		tmpPath = filterTS
 	}
 	// Mux audio in a separate pass. Keeping audio away from the raw-video
 	// encoder prevents FFmpeg's audio EOF from truncating the final video GOP.
