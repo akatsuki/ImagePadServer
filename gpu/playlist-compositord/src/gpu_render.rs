@@ -504,14 +504,43 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
       let wr = params.rects[4];
       if (id.x >= u32(wr.x) && id.x < u32(wr.x + wr.z) && id.y >= u32(wr.y) && id.y < u32(wr.y + wr.w)) {
         let u = clamp((f32(id.x) - f32(wr.x)) / max(1.0, f32(wr.z - 1)), 0.0, 1.0);
-        let si = min(params.dynamics[1].z - 1u, u32(u * f32(params.dynamics[1].z - 1u)));
-          let raw = f32(waveform_samples[si]) / 65535.0;
-          let signed = raw * 2.0 - 1.0;
-          let amp = select(raw, signed, (params.scene_enabled & 512u) != 0u);
-          let wy = select(f32(wr.y + wr.w) - amp * f32(wr.w),
-            f32(wr.y) + f32(wr.w) * 0.5 - signed * f32(wr.w) * 0.5,
-            (params.scene_enabled & 512u) != 0u);
-        if (abs(f32(id.y) + 0.5 - wy) < 1.0) {
+        // Min/max mode stores two signed Q16 values per column. Interpolate
+        // both endpoints in screen space so narrow transients survive the
+        // upload instead of collapsing to a midpoint. The column count in
+        // dynamics[1].z remains the logical count (not the storage length).
+        let minmax = (params.scene_enabled & 1024u) != 0u;
+        let columns = params.dynamics[1].z;
+        let fi = u * f32(max(1u, columns - 1u));
+        let c0 = min(columns - 1u, u32(fi));
+        let c1 = min(columns - 1u, c0 + 1u);
+        let frac = fi - f32(c0);
+        let raw0 = f32(waveform_samples[c0]) / 65535.0;
+        let raw1 = f32(waveform_samples[c1]) / 65535.0;
+        let signed_mode = (params.scene_enabled & 512u) != 0u;
+        let a0 = select(raw0, raw0 * 2.0 - 1.0, signed_mode);
+        let a1 = select(raw1, raw1 * 2.0 - 1.0, signed_mode);
+        var y0 = select(f32(wr.y + wr.w) - a0 * f32(wr.w),
+          f32(wr.y) + f32(wr.w) * 0.5 - a0 * f32(wr.w) * 0.5,
+          signed_mode);
+        var y1 = select(f32(wr.y + wr.w) - a1 * f32(wr.w),
+          f32(wr.y) + f32(wr.w) * 0.5 - a1 * f32(wr.w) * 0.5,
+          signed_mode);
+        if (minmax) {
+          let lo0 = f32(waveform_samples[c0 * 2u]) / 65535.0;
+          let hi0 = f32(waveform_samples[c0 * 2u + 1u]) / 65535.0;
+          let lo1 = f32(waveform_samples[c1 * 2u]) / 65535.0;
+          let hi1 = f32(waveform_samples[c1 * 2u + 1u]) / 65535.0;
+          let low = mix(lo0, lo1, frac) * 2.0 - 1.0;
+          let high = mix(hi0, hi1, frac) * 2.0 - 1.0;
+          y0 = f32(wr.y) + f32(wr.w) * 0.5 - high * f32(wr.w) * 0.5;
+          y1 = f32(wr.y) + f32(wr.w) * 0.5 - low * f32(wr.w) * 0.5;
+        } else {
+          let y = mix(y0, y1, frac);
+          y0 = y;
+          y1 = y;
+        }
+        let py = f32(id.y) + 0.5;
+        if (py >= min(y0, y1) - 0.5 && py <= max(y0, y1) + 0.5) {
           // Match the CPU/FFmpeg showwaves source alpha (0.55).
           mixc = mix(mixc, primary, 0.55);
         }
@@ -662,6 +691,16 @@ fn scene_uniform_words(
         {
             words[6] |= 512;
         }
+        // Experimental signed min/max envelope encoding. The payload is
+        // [min,max] pairs, while words[38] below carries the logical column
+        // count. Keep this opt-in and independent from the legacy single
+        // sample/signed paths so existing captures remain reproducible.
+        if !scene.feature.waveform_q16.is_empty()
+            && env::var("IMAGEPAD_GPU_WAVEFORM_MINMAX").as_deref() == Ok("1")
+            && scene.feature.waveform_q16.len() >= 2
+        {
+            words[6] |= 1024;
+        }
         words[7] = scene
             .glyph_atlas
             .as_ref()
@@ -689,7 +728,12 @@ fn scene_uniform_words(
             .first()
             .copied()
             .unwrap_or(scene.feature.rms_q15) as u32;
-        words[38] = scene.feature.waveform_q16.len().min(4096) as u32;
+        let waveform_len = scene.feature.waveform_q16.len().min(4096);
+        words[38] = if env::var("IMAGEPAD_GPU_WAVEFORM_MINMAX").as_deref() == Ok("1") {
+            (waveform_len / 2) as u32
+        } else {
+            waveform_len as u32
+        };
         let p = &scene.palette;
         words[40..44].copy_from_slice(&p.primary.map(|v| v as u32));
         words[44..48].copy_from_slice(&p.accent.map(|v| v as u32));
