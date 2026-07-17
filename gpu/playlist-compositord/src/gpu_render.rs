@@ -619,7 +619,7 @@ fn b(c: u32) -> f32 { return f32((c >> 16u) & 255u); }
 fn yv(c: u32) -> u32 { return u32(clamp(16.0+0.257*r(c)+0.504*g(c)+0.098*b(c), 16.0, 235.0)); }
 fn uv(c0: u32, c1: u32, c2: u32, c3: u32, which: u32) -> u32 {
  let rr=(r(c0)+r(c1)+r(c2)+r(c3))*0.25; let gg=(g(c0)+g(c1)+g(c2)+g(c3))*0.25; let bb=(b(c0)+b(c1)+b(c2)+b(c3))*0.25;
- let x=select((bb-0.5*rr-0.4187*gg)+128.0,(rr-0.1687*gg-0.5*bb)+128.0,which==1u); return u32(clamp(x,0.0,255.0));
+ let x=select((0.5*rr-0.4187*gg-0.0813*bb)+128.0,(-0.1687*rr-0.3313*gg+0.5*bb)+128.0,which==1u); return u32(clamp(x,0.0,255.0));
 }
 @compute @workgroup_size(8,8,1) fn main(@builtin(global_invocation_id) id:vec3<u32>) {
  if(id.x>=p.width||id.y>=p.height){return;} let idx=id.y*p.width+id.x; let c=rgba[id.y*p.rgba_words+id.x]; y_plane[idx]=yv(c);
