@@ -407,7 +407,13 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
           // Sample at the covered pixel center to avoid a half-pixel nearest
           // filtering shift at small glyph sizes.
           let uv = g.atlas.xy + ((pixel + vec2<f32>(0.5, 0.5)) - screen.xy) / max(screen.zw, vec2<f32>(1.0)) * g.atlas.zw;
-          glyph = max(glyph, textureSampleLevel(atlas_tex, atlas_sampler, uv, 0.0).a * g.color.a);
+          // Glyph cells are an immutable CPU-rasterized atlas. Read the
+          // exact texel instead of sampling through a normalized coordinate;
+          // this avoids backend-dependent sampler/LOD behavior in compute
+          // shaders and preserves the source alpha byte-for-byte.
+          let atlas_dims = vec2<f32>(textureDimensions(atlas_tex));
+          let atlas_xy = vec2<i32>(clamp(floor(uv * atlas_dims), vec2<f32>(0.0), atlas_dims - vec2<f32>(1.0)));
+          glyph = max(glyph, textureLoad(atlas_tex, atlas_xy, 0).a * g.color.a);
         }
       }
       // Production compositor applies a readability gain.  The sentinel is
