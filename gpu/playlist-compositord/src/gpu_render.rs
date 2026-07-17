@@ -502,7 +502,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
       let wr = params.rects[4];
       if (id.x >= u32(wr.x) && id.x < u32(wr.x + wr.z) && id.y >= u32(wr.y) && id.y < u32(wr.y + wr.w)) {
         let u = clamp((f32(id.x) - f32(wr.x)) / max(1.0, f32(wr.z - 1)), 0.0, 1.0);
-        let si = min(params.dynamics[1].z - 1u, u32(u * f32(params.dynamics[1].z - 1u) + 0.5));
+        let si = min(params.dynamics[1].z - 1u, u32(u * f32(params.dynamics[1].z - 1u)));
         let amp = f32(waveform_samples[si]) / 65535.0;
         let wy = f32(wr.y + wr.w) - amp * f32(wr.w);
         if (abs(f32(id.y) + 0.5 - wy) < 1.0) {
