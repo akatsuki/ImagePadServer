@@ -823,7 +823,9 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 				scene.SpectrumTexture = &meta
 			}
 			if postYUV && i < postYUVMax {
-				postYUVSpectrum = append(postYUVSpectrum, append([]byte(nil), composite.Pix...))
+				// Main GPU YUV already contains the analytic bars. Post-YUV
+				// overlay must carry only the FFmpeg showwaves raster.
+				postYUVSpectrum = append(postYUVSpectrum, append([]byte(nil), wave...))
 			}
 		}
 		if useWaveFilter {
