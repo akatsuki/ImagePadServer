@@ -10,4 +10,7 @@ func TestBuildMusicPostYUVFilterOrdering(t *testing.T) {
 	if !(strings.Index(g, "showwaves") < strings.Index(g, "overlay") && strings.Index(g, "overlay") < strings.Index(g, "ass=")) {
 		t.Fatalf("unexpected graph ordering: %s", g)
 	}
+	if got := musicPostYUVFilterSHA256(g); got == "" || got != musicPostYUVFilterSHA256(g) {
+		t.Fatalf("unstable filter hash: %q", got)
+	}
 }
