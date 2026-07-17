@@ -379,10 +379,55 @@ type sidecarResponse struct {
 	Code      string                 `json:"code,omitempty"`
 	Message   string                 `json:"message,omitempty"`
 	Frame     *GpuFrame              `json:"frame,omitempty"`
+	YuvFrame  *YUV420PFrame           `json:"-"`
 	Adapter   string                 `json:"adapter,omitempty"`
 	Backend   string                 `json:"backend,omitempty"`
 	Toolchain string                 `json:"toolchain,omitempty"`
 	Outputs   *GPUOutputCapabilities `json:"outputs,omitempty"`
+}
+
+// UnmarshalJSON accepts both the legacy frame response and the additive
+// yuv_frame response. Keeping the discriminator here avoids duplicate
+// `frame` JSON tags and makes the YUV validation boundary explicit.
+func (r *sidecarResponse) UnmarshalJSON(data []byte) error {
+	type responseFields struct {
+		Type      string                 `json:"type"`
+		Version   uint16                 `json:"version,omitempty"`
+		Ready     bool                   `json:"ready,omitempty"`
+		Code      string                 `json:"code,omitempty"`
+		Message   string                 `json:"message,omitempty"`
+		Frame     json.RawMessage        `json:"frame,omitempty"`
+		Adapter   string                 `json:"adapter,omitempty"`
+		Backend   string                 `json:"backend,omitempty"`
+		Toolchain string                 `json:"toolchain,omitempty"`
+		Outputs   *GPUOutputCapabilities `json:"outputs,omitempty"`
+	}
+	var f responseFields
+	if err := json.Unmarshal(data, &f); err != nil {
+		return err
+	}
+	*r = sidecarResponse{Type: f.Type, Version: f.Version, Ready: f.Ready, Code: f.Code, Message: f.Message, Adapter: f.Adapter, Backend: f.Backend, Toolchain: f.Toolchain, Outputs: f.Outputs}
+	if len(f.Frame) == 0 || string(f.Frame) == "null" {
+		return nil
+	}
+	switch f.Type {
+	case "frame":
+		var frame GpuFrame
+		if err := json.Unmarshal(f.Frame, &frame); err != nil {
+			return err
+		}
+		r.Frame = &frame
+	case "yuv_frame":
+		var frame YUV420PFrame
+		if err := json.Unmarshal(f.Frame, &frame); err != nil {
+			return err
+		}
+		if err := frame.Validate(); err != nil {
+			return fmt.Errorf("invalid sidecar yuv frame: %w", err)
+		}
+		r.YuvFrame = &frame
+	}
+	return nil
 }
 
 // Render requests one GPU-produced frame. The response is validated before it
@@ -435,6 +480,9 @@ func (p *SidecarProcess) RenderScene(ctx context.Context, width, height uint32, 
 		}
 		if resp.Code != "" {
 			return GpuFrame{}, fmt.Errorf("sidecar %s: %s", resp.Code, resp.Message)
+		}
+		if resp.YuvFrame != nil {
+			return GpuFrame{}, errors.New("sidecar yuv frame received by rgba render")
 		}
 		if resp.Frame == nil {
 			return GpuFrame{}, errors.New("sidecar frame missing")

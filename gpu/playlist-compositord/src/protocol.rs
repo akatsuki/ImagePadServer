@@ -1,4 +1,4 @@
-use crate::contracts::{GpuFrame, MusicScenePayload, OutputCapabilities};
+use crate::contracts::{GpuFrame, MusicScenePayload, OutputCapabilities, Yuv420pFrame};
 use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_VERSION: u16 = 1;
@@ -45,6 +45,11 @@ pub enum Response {
     Bye,
     Frame {
         frame: GpuFrame,
+    },
+    /// Additive planar-output response. It is decoded by clients that
+    /// negotiate YUV420P; legacy Frame responses remain unchanged.
+    YuvFrame {
+        frame: Yuv420pFrame,
     },
 }
 
@@ -132,5 +137,48 @@ mod tests {
             panic!("scene missing")
         };
         assert_eq!(scene.artwork.unwrap().payload, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn yuv_frame_response_round_trips_without_changing_legacy_frame() {
+        let response = Response::YuvFrame {
+            frame: Yuv420pFrame {
+                schema: crate::contracts::CONTRACT_VERSION,
+                sequence: 7,
+                pts_ns: 123,
+                width: 3,
+                height: 2,
+                y_stride: 3,
+                u_stride: 2,
+                v_stride: 2,
+                color_space: crate::contracts::ColorSpace::Srgb,
+                ownership: crate::contracts::Ownership::OwnedByTransport,
+                y: vec![16, 32, 48, 64, 80, 96],
+                u: vec![128, 129],
+                v: vec![130, 131],
+            },
+        };
+        let encoded = encode(&response).unwrap();
+        assert!(encoded.contains(r#""type":"yuv_frame""#));
+        let decoded: Response = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, response);
+        if let Response::YuvFrame { frame } = decoded {
+            assert!(frame.validate().is_ok());
+        } else {
+            panic!("response variant changed");
+        }
+
+        let legacy = Response::Frame { frame: GpuFrame {
+            schema: crate::contracts::CONTRACT_VERSION, sequence: 1, pts_ns: 0,
+            width: 1, height: 1, row_stride: 256,
+            format: crate::contracts::PixelFormat::Rgba8,
+            color_space: crate::contracts::ColorSpace::Srgb, alpha: true,
+            ownership: crate::contracts::Ownership::OwnedByTransport,
+            payload: vec![0, 0, 0, 255], glyph_atlas_receipt: None,
+            text_overlay_receipt: None, artwork_receipt: None,
+            base_texture_receipt: None, glyph_diagnostics: None,
+        }};
+        let legacy_decoded: Response = serde_json::from_str(&encode(&legacy).unwrap()).unwrap();
+        assert_eq!(legacy_decoded, legacy);
     }
 }
