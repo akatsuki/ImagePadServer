@@ -2,13 +2,17 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub enum Provider {
+    #[serde(rename = "NativeGPU")]
     NativeGpu,
+    #[serde(rename = "GoldenUpload")]
     GoldenUpload,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub enum ArtworkMode {
+    #[serde(rename = "Source")]
     Source,
+    #[serde(rename = "Fallback")]
     Fallback,
 }
 
@@ -37,10 +41,16 @@ pub fn validate_production(job: &Job) -> Result<(), String> {
     }
     for layer in &job.layers {
         if layer.name == "screen_rgba" {
-            return Err(format!("CPU final raster is forbidden for layer {}", layer.name));
+            return Err(format!(
+                "CPU final raster is forbidden for layer {}",
+                layer.name
+            ));
         }
         if layer.provider != Provider::NativeGpu {
-            return Err(format!("non-native provider is forbidden for layer {}", layer.name));
+            return Err(format!(
+                "non-native provider is forbidden for layer {}",
+                layer.name
+            ));
         }
     }
     Ok(())
@@ -52,7 +62,26 @@ mod tests {
 
     #[test]
     fn rejects_cpu_final_raster() {
-        let job = Job { width: 1280, height: 720, fps: 30, artwork_mode: ArtworkMode::Fallback, layers: vec![LayerReceipt { name: "screen_rgba".into(), provider: Provider::GoldenUpload, input_hash: String::new(), shader_hash: String::new() }] };
+        let job = Job {
+            width: 1280,
+            height: 720,
+            fps: 30,
+            artwork_mode: ArtworkMode::Fallback,
+            layers: vec![LayerReceipt {
+                name: "screen_rgba".into(),
+                provider: Provider::GoldenUpload,
+                input_hash: String::new(),
+                shader_hash: String::new(),
+            }],
+        };
         assert!(validate_production(&job).is_err());
+    }
+
+    #[test]
+    fn uses_go_contract_provider_names() {
+        let json = serde_json::to_string(&Provider::NativeGpu).unwrap();
+        assert_eq!(json, "\"NativeGPU\"");
+        let json = serde_json::to_string(&ArtworkMode::Fallback).unwrap();
+        assert_eq!(json, "\"Fallback\"");
     }
 }
