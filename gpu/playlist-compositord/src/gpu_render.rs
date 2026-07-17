@@ -45,6 +45,7 @@ struct GlyphInstance { screen: vec4<f32>, atlas: vec4<f32>, color: vec4<f32> }
 // storage path is opt-in (scene bit 256) and leaves the legacy texture path
 // untouched for parity diagnostics.
 @group(0) @binding(15) var<storage, read> waveform_samples: array<u32>;
+@group(0) @binding(16) var<storage, read> fingerprint_samples: array<u32>;
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   if (id.x >= params.width || id.y >= params.height) { return; }
@@ -962,6 +963,15 @@ fn waveform_sample_words(scene: Option<&MusicScenePayload>) -> Vec<u32> {
         .collect()
 }
 
+fn scene_fingerprint_words(scene: Option<&MusicScenePayload>) -> Vec<u32> {
+    let Some(scene) = scene else { return vec![0; 64] };
+    let mut out = vec![0u32; 64];
+    for (i, value) in scene.feature.fingerprint_q16.iter().take(64).enumerate() {
+        out[i] = *value as u32;
+    }
+    out
+}
+
 impl Renderer {
     fn upload_text_overlay(
         &self,
@@ -1310,6 +1320,16 @@ impl Renderer {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 16,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -1616,6 +1636,11 @@ impl Renderer {
                 contents: bytemuck::cast_slice(&waveform_sample_words(scene)),
                 usage: wgpu::BufferUsages::STORAGE,
             });
+        let fingerprint_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("fingerprint-samples-q16"),
+            contents: bytemuck::cast_slice(&scene_fingerprint_words(scene)),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
         let stride = ((width * 4 + ROW_ALIGNMENT - 1) / ROW_ALIGNMENT) * ROW_ALIGNMENT;
         let bytes = stride as usize * height as usize;
         let output = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -1705,6 +1730,10 @@ impl Renderer {
                 wgpu::BindGroupEntry {
                     binding: 15,
                     resource: waveform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 16,
+                    resource: fingerprint_buffer.as_entire_binding(),
                 },
             ],
         });
