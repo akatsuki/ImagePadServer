@@ -373,15 +373,15 @@ type sidecarRequest struct {
 	Session string `json:"session,omitempty"`
 }
 type sidecarResponse struct {
-	Type      string    `json:"type"`
-	Version   uint16    `json:"version,omitempty"`
-	Ready     bool      `json:"ready,omitempty"`
-	Code      string    `json:"code,omitempty"`
-	Message   string    `json:"message,omitempty"`
-	Frame     *GpuFrame `json:"frame,omitempty"`
-	Adapter   string    `json:"adapter,omitempty"`
-	Backend   string    `json:"backend,omitempty"`
-	Toolchain string    `json:"toolchain,omitempty"`
+	Type      string                 `json:"type"`
+	Version   uint16                 `json:"version,omitempty"`
+	Ready     bool                   `json:"ready,omitempty"`
+	Code      string                 `json:"code,omitempty"`
+	Message   string                 `json:"message,omitempty"`
+	Frame     *GpuFrame              `json:"frame,omitempty"`
+	Adapter   string                 `json:"adapter,omitempty"`
+	Backend   string                 `json:"backend,omitempty"`
+	Toolchain string                 `json:"toolchain,omitempty"`
 	Outputs   *GPUOutputCapabilities `json:"outputs,omitempty"`
 }
 
@@ -478,6 +478,7 @@ type SidecarProcess struct {
 	closed       bool
 	fingerprint  SidecarFingerprint
 	glyphReceipt *GlyphAtlasReceipt
+	outputs      *GPUOutputCapabilities
 }
 
 func StartSidecar(ctx context.Context, executable, session string) (*SidecarProcess, error) {
@@ -528,6 +529,27 @@ func (p *SidecarProcess) Diagnostics() SidecarDiagnostics {
 	return d
 }
 
+// OutputCapabilities returns the most recently negotiated sidecar output
+// capabilities. A nil result means the sidecar did not advertise outputs.
+func (p *SidecarProcess) OutputCapabilities() *GPUOutputCapabilities {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.outputs == nil {
+		return nil
+	}
+	c := *p.outputs
+	c.Formats = append([]GPUOutputFormat(nil), p.outputs.Formats...)
+	return &c
+}
+
+// RequireYUV420Output enforces the GPU-only production boundary. Callers must
+// invoke this after Hello and before selecting the YUV transport; absence of
+// an advertisement is an explicit unsupported result, never an invitation to
+// perform CPU RGBA conversion.
+func (p *SidecarProcess) RequireYUV420Output() error {
+	return RequireGPUYUV420Output(p.OutputCapabilities())
+}
+
 func (p *SidecarProcess) rpc(ctx context.Context, req sidecarRequest) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -569,6 +591,11 @@ func (p *SidecarProcess) rpc(ctx context.Context, req sidecarRequest) error {
 		}
 		if r.Toolchain != "" {
 			p.fingerprint.Toolchain = r.Toolchain
+		}
+		if r.Outputs != nil {
+			c := *r.Outputs
+			c.Formats = append([]GPUOutputFormat(nil), r.Outputs.Formats...)
+			p.outputs = &c
 		}
 		return nil
 	}

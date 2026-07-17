@@ -26,23 +26,38 @@ type GPUOutputCapabilities struct {
 
 var ErrGPUYUVUnsupported = errors.New("gpu yuv420p output unsupported")
 
+// RequireGPUYUV420Output validates an advertised output set before a
+// production GPU-only render is selected. Missing capabilities and unknown
+// formats fail closed; callers must not substitute RGBA8ToYUV420P.
+func RequireGPUYUV420Output(c *GPUOutputCapabilities) error {
+	if c == nil {
+		return ErrGPUYUVUnsupported
+	}
+	for _, format := range c.Formats {
+		if format == GPUOutputYUV420P {
+			return nil
+		}
+	}
+	return ErrGPUYUVUnsupported
+}
+
 // YUV420PFrame is the bounded, CPU-readable transport shape for a future
 // compute-produced output. Planes are separate to make strides explicit and
 // prevent accidental RGBA/YUV mixing.
 type YUV420PFrame struct {
-	Schema      uint16      `json:"schema"`
-	Sequence    uint64      `json:"sequence"`
-	PTSNs       int64       `json:"pts_ns"`
-	Width       uint32      `json:"width"`
-	Height      uint32      `json:"height"`
-	YStride     uint32      `json:"y_stride"`
-	UStride     uint32      `json:"u_stride"`
-	VStride     uint32      `json:"v_stride"`
-	ColorSpace  ColorSpace  `json:"color_space"`
-	Ownership   string      `json:"ownership"`
-	Y           []byte      `json:"y"`
-	U           []byte      `json:"u"`
-	V           []byte      `json:"v"`
+	Schema     uint16     `json:"schema"`
+	Sequence   uint64     `json:"sequence"`
+	PTSNs      int64      `json:"pts_ns"`
+	Width      uint32     `json:"width"`
+	Height     uint32     `json:"height"`
+	YStride    uint32     `json:"y_stride"`
+	UStride    uint32     `json:"u_stride"`
+	VStride    uint32     `json:"v_stride"`
+	ColorSpace ColorSpace `json:"color_space"`
+	Ownership  string     `json:"ownership"`
+	Y          []byte     `json:"y"`
+	U          []byte     `json:"u"`
+	V          []byte     `json:"v"`
 }
 
 func (f YUV420PFrame) Validate() error {
