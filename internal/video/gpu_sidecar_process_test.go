@@ -30,6 +30,20 @@ func TestSidecarHelper(t *testing.T) {
 		case "health":
 			_ = enc.Encode(map[string]any{"type": "health", "ready": true, "protocol": 1, "adapter": "fixture-adapter", "backend": "vulkan", "toolchain": "wgpu-fixture-1"})
 		case "render":
+			if output, _ := req["output"].(string); output == string(GPUOutputYUV420P) {
+				w, _ := req["width"].(float64)
+				h, _ := req["height"].(float64)
+				seq, _ := req["sequence"].(float64)
+				pts, _ := req["pts_ns"].(float64)
+				width, height := uint32(w), uint32(h)
+				cw, ch := (width+1)/2, (height+1)/2
+				_ = enc.Encode(map[string]any{"type": "yuv_frame", "frame": YUV420PFrame{
+					Schema: GPUContractVersion, Sequence: uint64(seq), PTSNs: int64(pts), Width: width, Height: height,
+					YStride: width, UStride: cw, VStride: cw, ColorSpace: ColorSRGB, Ownership: "OwnedByTransport",
+					Y: make([]byte, int(width*height)), U: make([]byte, int(cw*ch)), V: make([]byte, int(cw*ch)),
+				}})
+				continue
+			}
 			if os.Getenv("IMAGEPAD_SIDECAR_MALFORMED_FRAME") == "1" {
 				_ = enc.Encode(map[string]any{"type": "frame", "frame": map[string]any{"width": 0, "height": 0, "stride": 0, "format": "rgba8", "data": "!!!"}})
 				continue
@@ -41,6 +55,28 @@ func TestSidecarHelper(t *testing.T) {
 			_ = enc.Encode(map[string]any{"type": "bye"})
 			return
 		}
+	}
+}
+
+func TestSidecarProcessRenderSceneYUVRequestsAndValidates(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=TestSidecarHelper")
+	cmd.Env = append(os.Environ(), "IMAGEPAD_SIDECAR_HELPER=1")
+	p, err := startSidecarCommand(context.Background(), cmd, "yuv-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	frame, err := p.RenderSceneYUV(ctx, 4, 2, 7, 1234, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := frame.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if frame.Sequence != 7 || frame.PTSNs != 1234 || len(frame.Y) != 8 {
+		t.Fatalf("unexpected yuv frame: %+v", frame)
 	}
 }
 

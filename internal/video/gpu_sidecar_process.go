@@ -379,7 +379,7 @@ type sidecarResponse struct {
 	Code      string                 `json:"code,omitempty"`
 	Message   string                 `json:"message,omitempty"`
 	Frame     *GpuFrame              `json:"frame,omitempty"`
-	YuvFrame  *YUV420PFrame           `json:"-"`
+	YuvFrame  *YUV420PFrame          `json:"-"`
 	Adapter   string                 `json:"adapter,omitempty"`
 	Backend   string                 `json:"backend,omitempty"`
 	Toolchain string                 `json:"toolchain,omitempty"`
@@ -507,6 +507,64 @@ func (p *SidecarProcess) RenderScene(ctx context.Context, width, height uint32, 
 		}
 		p.glyphReceipt = resp.Frame.GlyphAtlasReceipt
 		return *resp.Frame, nil
+	}
+}
+
+// RenderSceneYUV requests a compute-produced planar YUV420P frame. This is a
+// deliberately separate API from RenderScene: a legacy RGBA response is an
+// error, never an invitation to perform a CPU colorspace conversion.
+func (p *SidecarProcess) RenderSceneYUV(ctx context.Context, width, height uint32, sequence uint64, ptsNS int64, scene *MusicScenePayload) (YUV420PFrame, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return YUV420PFrame{}, ErrGPUUnavailable
+	}
+	b, _ := json.Marshal(struct {
+		Type     string             `json:"type"`
+		Output   string             `json:"output"`
+		Width    uint32             `json:"width"`
+		Height   uint32             `json:"height"`
+		Sequence uint64             `json:"sequence"`
+		PTSNS    int64              `json:"pts_ns"`
+		Scene    *MusicScenePayload `json:"scene,omitempty"`
+	}{"render", string(GPUOutputYUV420P), width, height, sequence, ptsNS, scene})
+	if _, err := fmt.Fprintln(p.in, string(b)); err != nil {
+		return YUV420PFrame{}, err
+	}
+	line := make(chan []byte, 1)
+	errs := make(chan error, 1)
+	go func() {
+		s, e := p.out.ReadBytes('\n')
+		if e != nil {
+			errs <- e
+		} else {
+			line <- s
+		}
+	}()
+	select {
+	case <-ctx.Done():
+		return YUV420PFrame{}, ctx.Err()
+	case e := <-errs:
+		return YUV420PFrame{}, e
+	case b := <-line:
+		var resp sidecarResponse
+		if err := json.Unmarshal(b, &resp); err != nil {
+			return YUV420PFrame{}, err
+		}
+		if resp.Code != "" {
+			return YUV420PFrame{}, fmt.Errorf("sidecar %s: %s", resp.Code, resp.Message)
+		}
+		if resp.Frame != nil {
+			return YUV420PFrame{}, errors.New("sidecar rgba frame received by yuv render")
+		}
+		if resp.Type != "yuv_frame" || resp.YuvFrame == nil {
+			return YUV420PFrame{}, errors.New("sidecar yuv frame missing")
+		}
+		frame := *resp.YuvFrame
+		if frame.Sequence != sequence || frame.PTSNs != ptsNS || frame.Width != width || frame.Height != height {
+			return YUV420PFrame{}, errors.New("sidecar yuv frame metadata mismatch")
+		}
+		return frame, nil
 	}
 }
 
