@@ -17,9 +17,18 @@ type manifest struct {
 	Fixtures []fixture `json:"fixtures"`
 }
 type fixture struct {
-	ID       string  `json:"id"`
-	Seed     int64   `json:"seed"`
-	Duration float64 `json:"duration_s"`
+	ID              string            `json:"id"`
+	Seed            int64             `json:"seed"`
+	Duration        float64           `json:"duration_s"`
+	Metadata        map[string]string `json:"metadata"`
+	Artwork         *string           `json:"artwork"`
+	FeatureProfile  string            `json:"feature_profile"`
+	BoundarySamples []float64         `json:"boundary_samples"`
+	Output          *struct {
+		Width  int `json:"width"`
+		Height int `json:"height"`
+	} `json:"output"`
+	CancelAt *float64 `json:"cancel_at_s"`
 }
 
 func main() {
@@ -68,7 +77,15 @@ func main() {
 }
 
 func fixtureEvidence(path string, f fixture) map[string]any {
-	evidence := map[string]any{"id": f.ID, "path": filepath.Base(path), "expected_duration_s": f.Duration}
+	evidence := map[string]any{
+		"id": f.ID, "path": filepath.Base(path), "expected_duration_s": f.Duration,
+		"expected_frame_count": int(math.Ceil(f.Duration * 30)),
+		"metadata":             f.Metadata, "artwork": f.Artwork, "feature_profile": f.FeatureProfile,
+		"boundary_samples": f.BoundarySamples, "cancel_at_s": f.CancelAt,
+	}
+	if f.Output != nil {
+		evidence["output"] = f.Output
+	}
 	if data, err := os.ReadFile(path); err == nil {
 		sum := sha256.Sum256(data)
 		evidence["sha256"] = fmt.Sprintf("%x", sum)
