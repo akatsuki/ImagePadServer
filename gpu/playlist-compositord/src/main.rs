@@ -3,6 +3,7 @@ mod contracts;
 mod gpu_render;
 mod hardware_surface;
 mod lifecycle;
+mod music_v2_contract;
 mod protocol;
 mod shared_mapping;
 mod shared_ring;
