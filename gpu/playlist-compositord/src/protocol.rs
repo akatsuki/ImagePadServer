@@ -1,4 +1,7 @@
-use crate::contracts::{GpuFrame, MusicScenePayload, OutputCapabilities, OutputFormat, Yuv420pFrame};
+use crate::contracts::{
+    GpuFrame, MusicScenePayload, OutputCapabilities, OutputFormat, Yuv420pFrame,
+};
+use crate::music_v2_contract::Job as MusicRenderV2Job;
 use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_VERSION: u16 = 1;
@@ -21,6 +24,17 @@ pub enum Request {
         scene: Option<MusicScenePayload>,
         /// Requested transport format. Omitted by legacy callers and therefore
         /// defaults to the existing packed RGBA response.
+        #[serde(default)]
+        output: OutputFormat,
+    },
+    /// V2 ownership-contract request. The rendering payload is intentionally
+    /// separate from the legacy scene so CPU-final rasters cannot be reused.
+    RenderV2 {
+        width: u32,
+        height: u32,
+        sequence: u64,
+        pts_ns: i64,
+        job: MusicRenderV2Job,
         #[serde(default)]
         output: OutputFormat,
     },
@@ -73,7 +87,14 @@ mod tests {
         let request =
             decode_request(r#"{"type":"render","width":64,"height":64,"sequence":1,"pts_ns":0}"#)
                 .unwrap();
-        assert!(matches!(request, Request::Render { scene: None, output: OutputFormat::Rgba8, .. }));
+        assert!(matches!(
+            request,
+            Request::Render {
+                scene: None,
+                output: OutputFormat::Rgba8,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -174,27 +195,42 @@ mod tests {
             panic!("response variant changed");
         }
 
-        let legacy = Response::Frame { frame: GpuFrame {
-            schema: crate::contracts::CONTRACT_VERSION, sequence: 1, pts_ns: 0,
-            width: 1, height: 1, row_stride: 256,
-            format: crate::contracts::PixelFormat::Rgba8,
-            color_space: crate::contracts::ColorSpace::Srgb, alpha: true,
-            ownership: crate::contracts::Ownership::OwnedByTransport,
-            payload: vec![0, 0, 0, 255], glyph_atlas_receipt: None,
-            text_overlay_receipt: None, artwork_receipt: None,
-            base_texture_receipt: None, glyph_diagnostics: None,
-        }};
+        let legacy = Response::Frame {
+            frame: GpuFrame {
+                schema: crate::contracts::CONTRACT_VERSION,
+                sequence: 1,
+                pts_ns: 0,
+                width: 1,
+                height: 1,
+                row_stride: 256,
+                format: crate::contracts::PixelFormat::Rgba8,
+                color_space: crate::contracts::ColorSpace::Srgb,
+                alpha: true,
+                ownership: crate::contracts::Ownership::OwnedByTransport,
+                payload: vec![0, 0, 0, 255],
+                glyph_atlas_receipt: None,
+                text_overlay_receipt: None,
+                artwork_receipt: None,
+                base_texture_receipt: None,
+                glyph_diagnostics: None,
+            },
+        };
         let legacy_decoded: Response = serde_json::from_str(&encode(&legacy).unwrap()).unwrap();
         assert_eq!(legacy_decoded, legacy);
     }
 
     #[test]
     fn render_output_format_is_optional_and_round_trips() {
-        let legacy = decode_request(
-            r#"{"type":"render","width":2,"height":2,"sequence":3,"pts_ns":4}"#,
-        )
-        .unwrap();
-        assert!(matches!(legacy, Request::Render { output: OutputFormat::Rgba8, .. }));
+        let legacy =
+            decode_request(r#"{"type":"render","width":2,"height":2,"sequence":3,"pts_ns":4}"#)
+                .unwrap();
+        assert!(matches!(
+            legacy,
+            Request::Render {
+                output: OutputFormat::Rgba8,
+                ..
+            }
+        ));
         let yuv = Request::Render {
             width: 2,
             height: 2,

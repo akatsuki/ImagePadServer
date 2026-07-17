@@ -16,7 +16,7 @@ pub enum ArtworkMode {
     Fallback,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct LayerReceipt {
     pub name: String,
     pub provider: Provider,
@@ -26,7 +26,7 @@ pub struct LayerReceipt {
     pub shader_hash: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct Job {
     pub width: u32,
     pub height: u32,

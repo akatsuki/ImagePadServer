@@ -115,6 +115,22 @@ fn response_for(request: Request, renderer: &mut Option<gpu_render::Renderer>) -
                 false,
             ),
         },
+        Request::RenderV2 { job, .. } => match music_v2_contract::validate_production(&job) {
+            Err(message) => (
+                Response::Error {
+                    code: "invalid_music_render_v2_job".into(),
+                    message,
+                },
+                false,
+            ),
+            Ok(()) => (
+                Response::Error {
+                    code: "music_render_v2_not_implemented".into(),
+                    message: "V2 contract accepted; native pass graph is not wired yet".into(),
+                },
+                false,
+            ),
+        },
         Request::Shutdown => (Response::Bye, true),
     }
 }
