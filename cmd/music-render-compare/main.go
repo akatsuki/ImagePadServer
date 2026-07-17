@@ -457,6 +457,8 @@ type comparisonGate struct {
 	MaxVisualRMSE        float64 `json:"maxVisualRmse"`
 	ExpectedVisualPoints int     `json:"expectedVisualPoints"`
 	ObservedVisualPoints int     `json:"observedVisualPoints"`
+	NativeGPURequired    bool    `json:"nativeGpuRequired"`
+	DiagnosticMode       bool    `json:"diagnosticMode"`
 }
 
 type runtimeFingerprint struct {
@@ -1398,6 +1400,8 @@ func main() {
 			FrameDelta:           rep.CPU.Probe.Frames - rep.GPU.Probe.Frames,
 			ExpectedVisualPoints: len(rep.CPU.Screenshots),
 			ObservedVisualPoints: len(rep.ScreenshotComparisons),
+			NativeGPURequired:    os.Getenv("IMAGEPAD_COMPARE_REQUIRE_NATIVE_GPU") == "1",
+			DiagnosticMode:       os.Getenv("IMAGEPAD_GPU_PARITY_MODE") == "1" || os.Getenv("IMAGEPAD_GPU_RASTER_ONLY") == "1",
 		}
 	}
 	if !*cpuOnly {
@@ -1417,7 +1421,8 @@ func main() {
 		}
 		// GO requires the final rendered pixels, not just mux/PTS parity.
 		rep.ComparisonGate.VisualParityPass = rep.ComparisonGate.ObservedVisualPoints == rep.ComparisonGate.ExpectedVisualPoints && rep.ComparisonGate.MaxVisualMAE <= 1.0 && rep.ComparisonGate.MaxVisualRMSE <= 2.0
-		rep.ComparisonGate.Pass = rep.ComparisonGate.DurationMatch && rep.ComparisonGate.FrameCountMatch && rep.ComparisonGate.FingerprintRecorded && rep.ComparisonGate.VisualParityPass
+		nativePass := !rep.ComparisonGate.NativeGPURequired || !rep.ComparisonGate.DiagnosticMode
+		rep.ComparisonGate.Pass = nativePass && rep.ComparisonGate.DurationMatch && rep.ComparisonGate.FrameCountMatch && rep.ComparisonGate.FingerprintRecorded && rep.ComparisonGate.VisualParityPass
 	}
 	b, _ := json.MarshalIndent(rep, "", "  ")
 	_ = os.WriteFile(filepath.Join(*output, "report.json"), append(b, '\n'), 0644)
