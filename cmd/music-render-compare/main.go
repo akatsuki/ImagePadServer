@@ -484,6 +484,10 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+func nativeGatePass(required, diagnostic bool) bool {
+	return !required || !diagnostic
+}
+
 func (f runtimeFingerprint) Complete() bool {
 	return f.Adapter != "" && f.Backend != "" && f.Toolchain != ""
 }
@@ -1421,7 +1425,7 @@ func main() {
 		}
 		// GO requires the final rendered pixels, not just mux/PTS parity.
 		rep.ComparisonGate.VisualParityPass = rep.ComparisonGate.ObservedVisualPoints == rep.ComparisonGate.ExpectedVisualPoints && rep.ComparisonGate.MaxVisualMAE <= 1.0 && rep.ComparisonGate.MaxVisualRMSE <= 2.0
-		nativePass := !rep.ComparisonGate.NativeGPURequired || !rep.ComparisonGate.DiagnosticMode
+		nativePass := nativeGatePass(rep.ComparisonGate.NativeGPURequired, rep.ComparisonGate.DiagnosticMode)
 		rep.ComparisonGate.Pass = nativePass && rep.ComparisonGate.DurationMatch && rep.ComparisonGate.FrameCountMatch && rep.ComparisonGate.FingerprintRecorded && rep.ComparisonGate.VisualParityPass
 	}
 	b, _ := json.MarshalIndent(rep, "", "  ")

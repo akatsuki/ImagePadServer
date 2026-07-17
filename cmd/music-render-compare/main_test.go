@@ -144,3 +144,15 @@ func TestProbeNormalizesPTSAndExcludesAudio(t *testing.T) {
 		t.Fatalf("normalized probe = %+v", r)
 	}
 }
+
+func TestNativeGatePass(t *testing.T) {
+	if !nativeGatePass(false, true) {
+		t.Fatal("diagnostic mode should remain usable when native gate is not required")
+	}
+	if nativeGatePass(true, true) {
+		t.Fatal("diagnostic mode must fail when native GPU evidence is required")
+	}
+	if !nativeGatePass(true, false) {
+		t.Fatal("native mode should pass the ownership gate")
+	}
+}
