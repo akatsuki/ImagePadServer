@@ -855,13 +855,15 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 			// nil is required so the sidecar does not disable its shader branch.
 			scene.LoudnessTexture = nil
 		}
-		waveStride := ((waveW*4 + int(GPURowAlignment) - 1) / int(GPURowAlignment)) * int(GPURowAlignment)
-		wavePayload := make([]byte, waveStride*waveH)
-		for y := 0; y < waveH; y++ {
-			copy(wavePayload[y*waveStride:y*waveStride+waveW*4], wave[y*waveW*4:(y+1)*waveW*4])
+		if !useGPUDynamic {
+			waveStride := ((waveW*4 + int(GPURowAlignment) - 1) / int(GPURowAlignment)) * int(GPURowAlignment)
+			wavePayload := make([]byte, waveStride*waveH)
+			for y := 0; y < waveH; y++ {
+				copy(wavePayload[y*waveStride:y*waveStride+waveW*4], wave[y*waveW*4:(y+1)*waveW*4])
+			}
+			waveMeta := BaseTextureMetadata{TextureID: fmt.Sprintf("wave-%s-%d", id, i), Width: uint32(waveW), Height: uint32(waveH), RowStride: uint32(waveStride), Format: PixelRGBA8, ColorSpace: ColorSRGB, Payload: wavePayload}
+			scene.WaveformTexture = &waveMeta
 		}
-		waveMeta := BaseTextureMetadata{TextureID: fmt.Sprintf("wave-%s-%d", id, i), Width: uint32(waveW), Height: uint32(waveH), RowStride: uint32(waveStride), Format: PixelRGBA8, ColorSpace: ColorSRGB, Payload: wavePayload}
-		scene.WaveformTexture = &waveMeta
 		if useSpectrumCanonical || postYUV || postYUVFilter {
 			// The canonical layer already contains the showwaves raster; do not
 			// upload the source waveform as well or it would be composited twice.
