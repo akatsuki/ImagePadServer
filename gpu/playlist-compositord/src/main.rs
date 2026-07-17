@@ -4,6 +4,7 @@ mod gpu_render;
 mod hardware_surface;
 mod lifecycle;
 mod music_v2_contract;
+mod music_v2_pass_graph;
 mod protocol;
 mod shared_mapping;
 mod shared_ring;
