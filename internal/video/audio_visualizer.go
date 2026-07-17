@@ -775,6 +775,16 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 		_ = cmd.Process.Kill()
 		return fmt.Errorf("%w: sidecar hello: %v", ErrGPURendererUnavailable, err)
 	}
+	// GPU-only production can require the sidecar to advertise its native
+	// YUV420P transport.  Keep this opt-in while the transport is being rolled
+	// out, but fail closed when explicitly requested: never silently convert the
+	// GPU RGBA result on the CPU.
+	if strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_YUV_REQUIRED")) == "1" {
+		if err := sidecar.RequireYUV420Output(); err != nil {
+			_ = cmd.Process.Kill()
+			return fmt.Errorf("%w: sidecar YUV420P output required: %v", ErrGPURendererUnavailable, err)
+		}
+	}
 	frames := frameCount
 	postYUVFilter := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_SPECTRUM_POST_YUV_FILTER")) == "1"
 	useGPUWaveform := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_WAVEFORM_SHADER")) == "1"

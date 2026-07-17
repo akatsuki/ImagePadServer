@@ -80,6 +80,27 @@ func TestGPUDynamicShaderOwnsWaveformAndSpectrum(t *testing.T) {
 	}
 }
 
+func TestGPUYUVRequiredRouteFailsClosed(t *testing.T) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	source := readRouteSource(t, filepath.Join(filepath.Dir(file), "audio_visualizer.go"))
+	body := routeBody(sourceBetween(source, "func runAudioVisualizerHLSGPU", "func writeGPUFrame"))
+	for _, want := range []string{
+		`IMAGEPAD_GPU_YUV_REQUIRED`,
+		`sidecar.RequireYUV420Output()`,
+		`sidecar YUV420P output required`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("GPU YUV-required route missing fail-closed guard %q", want)
+		}
+	}
+	if !strings.Contains(body, `== "1"`) {
+		t.Error("GPU YUV-required guard must remain opt-in")
+	}
+}
+
 func TestGPUTextShaderOwnsGlyphComposition(t *testing.T) {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
