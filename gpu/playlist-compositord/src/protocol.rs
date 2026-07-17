@@ -1,4 +1,4 @@
-use crate::contracts::{GpuFrame, MusicScenePayload, OutputCapabilities, Yuv420pFrame};
+use crate::contracts::{GpuFrame, MusicScenePayload, OutputCapabilities, OutputFormat, Yuv420pFrame};
 use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_VERSION: u16 = 1;
@@ -19,6 +19,10 @@ pub enum Request {
         pts_ns: i64,
         #[serde(default)]
         scene: Option<MusicScenePayload>,
+        /// Requested transport format. Omitted by legacy callers and therefore
+        /// defaults to the existing packed RGBA response.
+        #[serde(default)]
+        output: OutputFormat,
     },
 }
 
@@ -69,7 +73,7 @@ mod tests {
         let request =
             decode_request(r#"{"type":"render","width":64,"height":64,"sequence":1,"pts_ns":0}"#)
                 .unwrap();
-        assert!(matches!(request, Request::Render { scene: None, .. }));
+        assert!(matches!(request, Request::Render { scene: None, output: OutputFormat::Rgba8, .. }));
     }
 
     #[test]
@@ -103,6 +107,7 @@ mod tests {
                 palette: Default::default(),
                 fingerprint: String::new(),
             }),
+            output: OutputFormat::Rgba8,
         };
         let encoded = encode(&request).unwrap();
         let decoded = decode_request(&encoded).unwrap();
@@ -180,5 +185,24 @@ mod tests {
         }};
         let legacy_decoded: Response = serde_json::from_str(&encode(&legacy).unwrap()).unwrap();
         assert_eq!(legacy_decoded, legacy);
+    }
+
+    #[test]
+    fn render_output_format_is_optional_and_round_trips() {
+        let legacy = decode_request(
+            r#"{"type":"render","width":2,"height":2,"sequence":3,"pts_ns":4}"#,
+        )
+        .unwrap();
+        assert!(matches!(legacy, Request::Render { output: OutputFormat::Rgba8, .. }));
+        let yuv = Request::Render {
+            width: 2,
+            height: 2,
+            sequence: 3,
+            pts_ns: 4,
+            scene: None,
+            output: OutputFormat::Yuv420p,
+        };
+        let decoded = decode_request(&encode(&yuv).unwrap()).unwrap();
+        assert_eq!(decoded, yuv);
     }
 }

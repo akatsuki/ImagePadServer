@@ -295,6 +295,12 @@ pub enum OutputFormat {
     Yuv420p,
 }
 
+impl Default for OutputFormat {
+    fn default() -> Self {
+        Self::Rgba8
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OutputCapabilities {
     pub schema: u16,

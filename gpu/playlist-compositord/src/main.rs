@@ -42,11 +42,15 @@ fn response_for(request: Request, renderer: &mut Option<gpu_render::Renderer>) -
                         adapter: fingerprint.adapter,
                         backend: fingerprint.backend,
                         toolchain: fingerprint.toolchain,
-                        // YUV compute is contract-only for now; advertise the
-                        // existing RGBA readback explicitly.
+                        // Both formats are produced by the GPU renderer. The
+                        // client still selects RGBA by default for backwards
+                        // compatibility.
                         outputs: Some(crate::contracts::OutputCapabilities {
                             schema: crate::contracts::CONTRACT_VERSION,
-                            formats: vec![crate::contracts::OutputFormat::Rgba8],
+                            formats: vec![
+                                crate::contracts::OutputFormat::Rgba8,
+                                crate::contracts::OutputFormat::Yuv420p,
+                            ],
                             max_width: crate::contracts::MAX_DIMENSION,
                             max_height: crate::contracts::MAX_DIMENSION,
                             row_alignment: crate::contracts::ROW_ALIGNMENT as u32,
@@ -69,6 +73,7 @@ fn response_for(request: Request, renderer: &mut Option<gpu_render::Renderer>) -
             sequence,
             pts_ns,
             scene,
+            output,
         } => match renderer.as_ref() {
             Some(renderer) => {
                 if let Some(scene) = scene.as_ref() {
@@ -82,8 +87,16 @@ fn response_for(request: Request, renderer: &mut Option<gpu_render::Renderer>) -
                         );
                     }
                 }
-                match renderer.render_with_scene(width, height, sequence, pts_ns, scene.as_ref()) {
-                    Ok(frame) => (Response::Frame { frame }, false),
+                let rendered = match output {
+                    crate::contracts::OutputFormat::Rgba8 => renderer
+                        .render_with_scene(width, height, sequence, pts_ns, scene.as_ref())
+                        .map(|frame| Response::Frame { frame }),
+                    crate::contracts::OutputFormat::Yuv420p => renderer
+                        .render_yuv420_with_scene(width, height, sequence, pts_ns, scene.as_ref())
+                        .map(|frame| Response::YuvFrame { frame }),
+                };
+                match rendered {
+                    Ok(response) => (response, false),
                     Err(message) => (
                         Response::Error {
                             code: "gpu_render_failed".into(),
