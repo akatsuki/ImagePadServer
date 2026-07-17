@@ -455,6 +455,8 @@ type comparisonGate struct {
 	VisualParityPass     bool    `json:"visualParityPass"`
 	MaxVisualMAE         float64 `json:"maxVisualMae"`
 	MaxVisualRMSE        float64 `json:"maxVisualRmse"`
+	ExpectedVisualPoints int     `json:"expectedVisualPoints"`
+	ObservedVisualPoints int     `json:"observedVisualPoints"`
 }
 
 type runtimeFingerprint struct {
@@ -1386,9 +1388,12 @@ func main() {
 		rep.ComparisonGate = comparisonGate{
 			DurationDeltaSeconds: math.Abs(cpuVideoDuration - gpuVideoDuration),
 			FrameDelta:           rep.CPU.Probe.Frames - rep.GPU.Probe.Frames,
+			ExpectedVisualPoints: len(requiredPoints),
+			ObservedVisualPoints: len(rep.ScreenshotComparisons),
 		}
 	}
 	if !*cpuOnly {
+		requiredPoints := []string{"start", "mid", "end"}
 		rep.ComparisonGate.DurationMatch = rep.ComparisonGate.DurationDeltaSeconds <= 0.05
 		// Strict gate: both observed streams must match the canonical clock.
 		// The separate frameContract fields make a mux tail diagnosable instead
@@ -1404,7 +1409,7 @@ func main() {
 			}
 		}
 		// GO requires the final rendered pixels, not just mux/PTS parity.
-		rep.ComparisonGate.VisualParityPass = rep.ComparisonGate.MaxVisualMAE <= 1.0 && rep.ComparisonGate.MaxVisualRMSE <= 2.0
+		rep.ComparisonGate.VisualParityPass = rep.ComparisonGate.ObservedVisualPoints == rep.ComparisonGate.ExpectedVisualPoints && rep.ComparisonGate.MaxVisualMAE <= 1.0 && rep.ComparisonGate.MaxVisualRMSE <= 2.0
 		rep.ComparisonGate.Pass = rep.ComparisonGate.DurationMatch && rep.ComparisonGate.FrameCountMatch && rep.ComparisonGate.FingerprintRecorded && rep.ComparisonGate.VisualParityPass
 	}
 	b, _ := json.MarshalIndent(rep, "", "  ")
