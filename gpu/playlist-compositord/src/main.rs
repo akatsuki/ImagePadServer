@@ -7,6 +7,7 @@ mod protocol;
 mod shared_mapping;
 mod shared_ring;
 mod transport;
+mod yuv420;
 
 use protocol::{decode_request, encode, Request, Response, PROTOCOL_VERSION};
 use std::io::{self, BufRead, Write};
