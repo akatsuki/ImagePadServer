@@ -115,3 +115,55 @@ func SignedPCMToWaveformQ16(pcm []int16, channels, sampleRate, frameRate, frameI
 	}
 	return out
 }
+
+// SignedPCMToWaveformMinMaxQ16 converts each time window into a signed Q16
+// range. The wire payload stores [min,max] pairs (two values per column),
+// centre-biased at 32768. maxSamples is the maximum number of columns, so the
+// returned payload is bounded to 2*maxSamples values (and callers can cap it
+// at the 4096-value scene contract). This preserves transients that a single
+// midpoint cannot represent while remaining JSON-compatible with []uint16.
+func SignedPCMToWaveformMinMaxQ16(pcm []int16, channels, sampleRate, frameRate, frameIndex, maxSamples int) []uint16 {
+	if channels <= 0 || sampleRate <= 0 || frameRate <= 0 || frameIndex < 0 || maxSamples <= 0 || len(pcm) < channels {
+		return nil
+	}
+	totalFrames := len(pcm) / channels
+	first := (int64(frameIndex) * int64(sampleRate)) / int64(frameRate)
+	if first >= int64(totalFrames) {
+		return nil
+	}
+	available := (int64(totalFrames)*int64(frameRate)+int64(sampleRate)-1)/int64(sampleRate) - int64(frameIndex)
+	if available <= 0 {
+		return nil
+	}
+	count := available
+	if count > int64(maxSamples) {
+		count = int64(maxSamples)
+	}
+	out := make([]uint16, int(count)*2)
+	for i := int64(0); i < count; i++ {
+		start := (int64(frameIndex) + i) * int64(sampleRate) / int64(frameRate)
+		end := ((int64(frameIndex)+i+1)*int64(sampleRate) + int64(frameRate) - 1) / int64(frameRate)
+		if end > int64(totalFrames) {
+			end = int64(totalFrames)
+		}
+		if end <= start {
+			continue
+		}
+		lo, hi := int64(32767), int64(-32768)
+		for sample := start; sample < end; sample++ {
+			base := sample * int64(channels)
+			for ch := 0; ch < channels; ch++ {
+				v := int64(pcm[base+int64(ch)])
+				if v < lo {
+					lo = v
+				}
+				if v > hi {
+					hi = v
+				}
+			}
+		}
+		out[2*i] = uint16(lo + 32768)
+		out[2*i+1] = uint16(hi + 32768)
+	}
+	return out
+}

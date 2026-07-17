@@ -62,3 +62,21 @@ func TestSignedPCMToWaveformQ16Invalid(t *testing.T) {
 		t.Fatal("nil input should be nil")
 	}
 }
+
+func TestSignedPCMToWaveformMinMaxQ16PreservesRange(t *testing.T) {
+	pcm := []int16{-20000, -10000, 10000, 20000}
+	got := SignedPCMToWaveformMinMaxQ16(pcm, 1, 4, 2, 0, 8)
+	want := []uint16{uint16(-20000 + 32768), uint16(-10000 + 32768), uint16(10000 + 32768), uint16(20000 + 32768)}
+	if len(got) != len(want) {
+		t.Fatalf("len=%d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] { t.Fatalf("sample %d=%d, want %d", i, got[i], want[i]) }
+	}
+}
+
+func TestSignedPCMToWaveformMinMaxQ16BoundsColumns(t *testing.T) {
+	pcm := make([]int16, 100)
+	got := SignedPCMToWaveformMinMaxQ16(pcm, 1, 100, 10, 0, 3)
+	if len(got) != 6 { t.Fatalf("len=%d, want 6", len(got)) }
+}

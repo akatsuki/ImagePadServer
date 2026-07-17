@@ -425,7 +425,9 @@ func (a *streamAnalyzer) Finish() (AudioAnalysis, error) {
 		if end > len(a.waveformPCM) {
 			end = len(a.waveformPCM)
 		}
-		if os.Getenv("IMAGEPAD_GPU_WAVEFORM_SIGNED") == "1" {
+		if os.Getenv("IMAGEPAD_GPU_WAVEFORM_MINMAX") == "1" {
+			waveformFrames[i] = SignedPCMToWaveformMinMaxQ16(a.waveformPCM[start:end], 2, sampleRate, 30*waveformColumns, 0, waveformColumns)
+		} else if os.Getenv("IMAGEPAD_GPU_WAVEFORM_SIGNED") == "1" {
 			waveformFrames[i] = SignedPCMToWaveformQ16(a.waveformPCM[start:end], 2, sampleRate, 30*waveformColumns, 0, waveformColumns)
 		} else {
 			waveformFrames[i] = PCMToWaveformQ16(a.waveformPCM[start:end], 2, sampleRate, 30*waveformColumns, 0, waveformColumns)
