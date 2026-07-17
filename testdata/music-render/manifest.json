@@ -19,6 +19,6 @@
     {"id":"loud-envelope","seed":1005,"duration_s":5.0,"metadata":{"title":"Loud","artist":"Envelope","album":"Fixtures"},"artwork":null,"feature_profile":"loud","boundary_samples":[0,2.5,4.75]},
     {"id":"fade-start-mid-end","seed":1006,"duration_s":8.0,"metadata":{"title":"Fade","artist":"Transition","album":"Fixtures"},"artwork":null,"boundary_samples":[0,0.7,4,7.3,7.99]},
     {"id":"invalid-artwork","seed":1007,"duration_s":5.0,"metadata":{"title":"Invalid Artwork","artist":"Error Path","album":"Fixtures"},"artwork":"invalid-artwork.bin","boundary_samples":[0,2.5,4.75]},
-    {"id":"odd-dimensions-cancel","seed":1008,"duration_s":3.0,"metadata":{"title":"Cancel","artist":"Odd Dimensions","album":"Fixtures"},"artwork":null,"output":{"width":1279,"height":719},"cancel_at_s":1.2,"boundary_samples":[0,1.19,1.2]}
+    {"id":"odd-dimensions-cancel","seed":1008,"duration_s":5.0,"metadata":{"title":"Cancel","artist":"Odd Dimensions","album":"Fixtures"},"artwork":null,"output":{"width":1279,"height":719},"cancel_at_s":1.2,"boundary_samples":[0,1.19,1.2,4.99]}
   ]
 }
