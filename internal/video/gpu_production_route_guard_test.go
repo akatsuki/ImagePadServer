@@ -37,6 +37,28 @@ func TestGPUProductionRoutesDoNotReintroduceCPUComposition(t *testing.T) {
 	}
 }
 
+// TestGPULoudnessShaderOwnsTheProductionLayer guards the migration seam: the
+// opt-in GPU loudness route must not eagerly rasterize/upload the CPU graph,
+// and must leave the scene texture nil so the sidecar's dynamics shader is
+// enabled by the absence of a canonical texture.
+func TestGPULoudnessShaderOwnsTheProductionLayer(t *testing.T) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	source := readRouteSource(t, filepath.Join(filepath.Dir(file), "audio_visualizer.go"))
+	body := routeBody(sourceBetween(source, "func runAudioVisualizerHLSGPU", "func writeGPUFrame"))
+	for _, want := range []string{
+		`IMAGEPAD_GPU_LOUDNESS_SHADER`,
+		`if !useGPULoudness`,
+		`scene.LoudnessTexture = nil`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("GPU loudness route missing migration guard %q", want)
+		}
+	}
+}
+
 func readRouteSource(t *testing.T, path string) string {
 	t.Helper()
 	b, err := os.ReadFile(path)
