@@ -698,6 +698,7 @@ fn scene_uniform_words(
         if !scene.feature.waveform_q16.is_empty()
             && env::var("IMAGEPAD_GPU_WAVEFORM_MINMAX").as_deref() == Ok("1")
             && scene.feature.waveform_q16.len() >= 2
+            && scene.feature.waveform_q16.len() % 2 == 0
         {
             words[6] |= 1024;
         }
@@ -729,7 +730,9 @@ fn scene_uniform_words(
             .copied()
             .unwrap_or(scene.feature.rms_q15) as u32;
         let waveform_len = scene.feature.waveform_q16.len().min(4096);
-        words[38] = if env::var("IMAGEPAD_GPU_WAVEFORM_MINMAX").as_deref() == Ok("1") {
+        words[38] = if env::var("IMAGEPAD_GPU_WAVEFORM_MINMAX").as_deref() == Ok("1")
+            && waveform_len % 2 == 0
+        {
             (waveform_len / 2) as u32
         } else {
             waveform_len as u32
