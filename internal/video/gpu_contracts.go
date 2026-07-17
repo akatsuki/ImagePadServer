@@ -362,14 +362,15 @@ type OverlayCommand struct {
 	Opacity   float32  `json:"opacity,omitempty"`
 }
 type AudioFeatureFrame struct {
-	Schema       uint16   `json:"schema"`
-	SampleRateHz uint32   `json:"sample_rate_hz"`
-	FrameIndex   uint64   `json:"frame_index"`
-	PTSNs        int64    `json:"pts_ns"`
-	SpectrumQ16  []uint16 `json:"spectrum_q16"`
-	WaveformQ16  []uint16 `json:"waveform_q16,omitempty"`
-	RMSQ15       uint16   `json:"rms_q15"`
-	PeakQ15      uint16   `json:"peak_q15"`
+	Schema         uint16   `json:"schema"`
+	SampleRateHz   uint32   `json:"sample_rate_hz"`
+	FrameIndex     uint64   `json:"frame_index"`
+	PTSNs          int64    `json:"pts_ns"`
+	SpectrumQ16    []uint16 `json:"spectrum_q16"`
+	WaveformQ16    []uint16 `json:"waveform_q16,omitempty"`
+	FingerprintQ16 []uint16 `json:"fingerprint_q16,omitempty"`
+	RMSQ15         uint16   `json:"rms_q15"`
+	PeakQ15        uint16   `json:"peak_q15"`
 }
 type PixelFormat string
 

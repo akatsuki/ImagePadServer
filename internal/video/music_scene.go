@@ -58,7 +58,11 @@ func CanonicalMusicScene(input AudioRenderInput, frameIndex uint64, ptsNS int64)
 	}
 	layout, _ := LayoutForSize(1280, 720)
 	palette := canonicalScenePalette(input)
-	scene := MusicScenePayload{Schema: MusicSceneSchema, Feature: AudioFeatureFrame{Schema: GPUContractVersion, SampleRateHz: 48000, FrameIndex: frameIndex, PTSNs: ptsNS, SpectrumQ16: spectrum, RMSQ15: uint16(math.Round(sceneClamp01(rms) * 32767)), PeakQ15: uint16(math.Round(sceneClamp01(peak) * 32767))}, Layout: musicSceneLayout(layout), Dynamics: musicSceneDynamics(input.Analysis.Features, current, duration, ratio), Palette: palette}
+	fingerprint := make([]uint16, len(input.Analysis.Features.Fingerprint64))
+	for i, v := range input.Analysis.Features.Fingerprint64 {
+		fingerprint[i] = uint16(math.Round(sceneClamp01(v) * 65535))
+	}
+	scene := MusicScenePayload{Schema: MusicSceneSchema, Feature: AudioFeatureFrame{Schema: GPUContractVersion, SampleRateHz: 48000, FrameIndex: frameIndex, PTSNs: ptsNS, SpectrumQ16: spectrum, FingerprintQ16: fingerprint, RMSQ15: uint16(math.Round(sceneClamp01(rms) * 32767)), PeakQ15: uint16(math.Round(sceneClamp01(peak) * 32767))}, Layout: musicSceneLayout(layout), Dynamics: musicSceneDynamics(input.Analysis.Features, current, duration, ratio), Palette: palette}
 	if a, ok := normalizeArtwork(input.ArtworkPath); ok {
 		scene.Artwork = &a
 	} else {

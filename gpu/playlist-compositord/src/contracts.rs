@@ -280,6 +280,9 @@ pub struct AudioFeatureFrame {
     /// Optional bounded Q0.16 waveform samples.  Omitted by legacy producers.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub waveform_q16: Vec<u16>,
+    /// Optional bounded Q0.16 fingerprint bands for GPU fallback artwork.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fingerprint_q16: Vec<u16>,
     pub rms_q15: u16,
     pub peak_q15: u16,
 }
@@ -861,6 +864,7 @@ mod tests {
             frame_index: 1,
             pts_ns: 0,
             spectrum_q16: vec![0, 65535],
+            fingerprint_q16: vec![],
             waveform_q16: vec![1, 2, 3],
             rms_q15: 1,
             peak_q15: 2,

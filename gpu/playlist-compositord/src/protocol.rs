@@ -91,6 +91,7 @@ mod tests {
                     frame_index: 0,
                     pts_ns: 0,
                     spectrum_q16: vec![1, 2],
+                    fingerprint_q16: vec![],
                     waveform_q16: vec![],
                     rms_q15: 1,
                     peak_q15: 2,
