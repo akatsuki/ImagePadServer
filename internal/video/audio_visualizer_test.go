@@ -17,6 +17,37 @@ import (
 
 type blockingVisualizerWriter struct{ release chan struct{} }
 
+func TestShouldUseGPUArtworkBaseIsStrictlyOptIn(t *testing.T) {
+	in := AudioRenderInput{ArtworkPath: "cover.png"}
+	t.Setenv("IMAGEPAD_GPU_BASE_SHADER", "")
+	if shouldUseGPUArtworkBase(in) {
+		t.Fatal("GPU artwork base enabled without opt-in")
+	}
+	t.Setenv("IMAGEPAD_GPU_BASE_SHADER", "1")
+	if !shouldUseGPUArtworkBase(in) {
+		t.Fatal("GPU artwork base not enabled for real artwork with opt-in")
+	}
+	in.BaseTexture = &BaseTextureMetadata{TextureID: "caller-owned"}
+	if shouldUseGPUArtworkBase(in) {
+		t.Fatal("caller-provided base texture must remain authoritative")
+	}
+	in.BaseTexture = nil
+	in.ArtworkPath = ""
+	if shouldUseGPUArtworkBase(in) {
+		t.Fatal("fallback/no-artwork must not enter GPU artwork experiment")
+	}
+}
+
+func TestGPUArtworkForegroundModeHasStableRoles(t *testing.T) {
+	m := gpuArtworkForegroundMode(AudioRenderInput{})
+	if m.PrimaryColor != (color.RGBA{255, 255, 255, 255}) {
+		t.Fatalf("primary = %#v", m.PrimaryColor)
+	}
+	if m.Overlay.A != 92 {
+		t.Fatalf("overlay alpha = %d, want 92", m.Overlay.A)
+	}
+}
+
 func (w *blockingVisualizerWriter) Write(p []byte) (int, error) {
 	<-w.release
 	return len(p), nil

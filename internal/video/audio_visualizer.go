@@ -582,12 +582,24 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 	// CPU reference (blur, overlay, artwork mask and shadow). Generate it once
 	// before the frame loop; dynamic layers remain GPU-owned.
 	baseTexture := input.BaseTexture
+	// Experimental GPU-base mode deliberately skips the CPU base raster when a
+	// real artwork source is available. The canonical scene transports the
+	// normalized artwork payload and the Rust compositor owns crop/blur/shadow
+	// composition. Keep this opt-in: the default path remains byte-for-byte
+	// compatible with the existing CPU-derived base texture.
+	useGPUArtworkBase := shouldUseGPUArtworkBase(input)
 	gpuLayout, layoutErr := LayoutForSize(width, height)
 	if layoutErr != nil {
 		return fmt.Errorf("GPU base layout: %w", layoutErr)
 	}
 	var gpuMode ForegroundMode
-	if baseTexture == nil {
+	if baseTexture == nil && useGPUArtworkBase {
+		if _, ok := normalizeArtwork(input.ArtworkPath); !ok {
+			return fmt.Errorf("GPU artwork base: artwork path is not decodable: %q", input.ArtworkPath)
+		}
+		gpuMode = gpuArtworkForegroundMode(input)
+	}
+	if baseTexture == nil && !useGPUArtworkBase {
 		fonts, fontErr := VisualizerFonts()
 		if fontErr != nil {
 			return fmt.Errorf("GPU base fonts: %w", fontErr)
@@ -933,6 +945,27 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 	return nil
 }
 
+// shouldUseGPUArtworkBase gates the opt-in base migration. A caller-provided
+// BaseTexture remains authoritative, and fallback artwork is intentionally not
+// routed through this experiment because its CPU-generated silhouette is not
+// the same payload as a real cover image.
+func shouldUseGPUArtworkBase(input AudioRenderInput) bool {
+	return strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_BASE_SHADER")) == "1" &&
+		input.BaseTexture == nil && strings.TrimSpace(input.ArtworkPath) != ""
+}
+
+// gpuArtworkForegroundMode supplies the palette roles needed by the dynamic
+// shader/ASS metadata without rasterizing a CPU base. The artwork itself is
+// still decoded once as an input payload; crop, blur, shadow and composite are
+// performed by the wgpu sidecar.
+func gpuArtworkForegroundMode(input AudioRenderInput) ForegroundMode {
+	p := PaletteForFeatures(input.Analysis.Features)
+	primary := color.RGBA{R: 255, G: 255, B: 255, A: 255}
+	accent := color.RGBA{R: p.End.R, G: p.End.G, B: p.End.B, A: 255}
+	overlay := color.RGBA{A: 92}
+	return ForegroundMode{PrimaryColor: primary, AccentColor: accent, Overlay: overlay, Color: accent}
+}
+
 // waveformEnvelopeQ16 converts the already-decoded audio raster into bounded
 // transport samples for the GPU waveform shader. It does not draw anything;
 // the sidecar performs the final line rasterization.
@@ -953,7 +986,9 @@ func waveformEnvelopeQ16(rgba []byte, width, height int) []uint16 {
 		}
 		if total > 0 {
 			denom := height - 1
-			if denom < 1 { denom = 1 }
+			if denom < 1 {
+				denom = 1
+			}
 			out[x] = uint16((weighted * 65535) / (total * uint64(denom)))
 		}
 	}
