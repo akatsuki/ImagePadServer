@@ -59,6 +59,27 @@ func TestGPULoudnessShaderOwnsTheProductionLayer(t *testing.T) {
 	}
 }
 
+func TestGPUDynamicShaderOwnsWaveformAndSpectrum(t *testing.T) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	source := readRouteSource(t, filepath.Join(filepath.Dir(file), "audio_visualizer.go"))
+	body := routeBody(sourceBetween(source, "func runAudioVisualizerHLSGPU", "func writeGPUFrame"))
+	for _, want := range []string{
+		`IMAGEPAD_GPU_DYNAMIC_SHADER`,
+		`if !useGPUDynamic`,
+		`useGPUWaveform = true`,
+		`useSpectrumCanonical = false`,
+		`wave = make([]byte, waveW*waveH*4)`,
+		`scene.WaveformTexture = nil`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dynamic GPU route missing %q", want)
+		}
+	}
+}
+
 func readRouteSource(t *testing.T, path string) string {
 	t.Helper()
 	b, err := os.ReadFile(path)

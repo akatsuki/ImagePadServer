@@ -772,30 +772,49 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 	if postYUV && frames < postYUVMax {
 		postYUVMax = frames
 	}
+	// Dynamic GPU mode owns waveform and spectrum primitives in WGSL. Avoid
+	// starting FFmpeg's showwaves producer entirely; the loop still receives a
+	// correctly sized zero payload for legacy metadata branches that are
+	// explicitly enabled alongside the experiment.
+	useGPUDynamic := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_DYNAMIC_SHADER")) == "1"
+	if useGPUDynamic {
+		useGPUWaveform = true
+		useSpectrumCanonical = false
+		postYUV = false
+		postYUVFilter = false
+	}
 	waveFrames := make(chan []byte, 2)
 	waveErr := make(chan error, 1)
 	waveCtx, waveCancel := context.WithCancel(ctx)
 	defer waveCancel()
-	go func() {
-		err := StreamAudioWaveFrames(waveCtx, ffmpeg, input.SourcePath, waveW, waveH, frames, waveColor, audioLoudnormFilter(input.Kind), func(_ int, rgba []byte) error {
-			select {
-			case waveFrames <- rgba:
-				return nil
-			case <-waveCtx.Done():
-				return waveCtx.Err()
-			}
-		})
-		close(waveFrames)
-		waveErr <- err
-	}()
+	if !useGPUDynamic {
+		go func() {
+			err := StreamAudioWaveFrames(waveCtx, ffmpeg, input.SourcePath, waveW, waveH, frames, waveColor, audioLoudnormFilter(input.Kind), func(_ int, rgba []byte) error {
+				select {
+				case waveFrames <- rgba:
+					return nil
+				case <-waveCtx.Done():
+					return waveCtx.Err()
+				}
+			})
+			close(waveFrames)
+			waveErr <- err
+		}()
+	}
 	for i := 0; i < frames; i++ {
-		wave, ok := <-waveFrames
-		if !ok {
-			if e := <-waveErr; e != nil {
-				_ = cmd.Process.Kill()
-				return fmt.Errorf("audio wave stream: %w", e)
+		var wave []byte
+		if useGPUDynamic {
+			wave = make([]byte, waveW*waveH*4)
+		} else {
+			var ok bool
+			wave, ok = <-waveFrames
+			if !ok {
+				if e := <-waveErr; e != nil {
+					_ = cmd.Process.Kill()
+					return fmt.Errorf("audio wave stream: %w", e)
+				}
+				return fmt.Errorf("audio wave stream ended early at frame %d", i)
 			}
-			return fmt.Errorf("audio wave stream ended early at frame %d", i)
 		}
 		ptsNS := int64(float64(i) * float64(time.Second) / 30)
 		scene := CanonicalMusicScene(input, uint64(i), ptsNS)
@@ -909,9 +928,11 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 			return fmt.Errorf("post-yuv spectrum raw: %w", err)
 		}
 	}
-	if e := <-waveErr; e != nil {
-		_ = cmd.Process.Kill()
-		return fmt.Errorf("audio wave stream: %w", e)
+	if !useGPUDynamic {
+		if e := <-waveErr; e != nil {
+			_ = cmd.Process.Kill()
+			return fmt.Errorf("audio wave stream: %w", e)
+		}
 	}
 	_ = in.Close()
 	if err := cmd.Wait(); err != nil {
