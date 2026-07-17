@@ -867,6 +867,8 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 		// disables both scene text payloads and applies canonical ASS later.
 		if useGPUText {
 			scene.TextOverlay = nil
+			// Keep the glyph atlas and runs in the scene: the WGSL text path
+			// consumes them directly. Only the CPU full-frame overlay is disabled.
 		} else {
 			scene.TextOverlay = nil
 			scene.GlyphAtlas = nil

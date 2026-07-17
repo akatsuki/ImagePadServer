@@ -469,6 +469,11 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
       mixc = mix(blurred_bg, accent, clamp(bars, 0.0, 1.0));
       mixc = mix(mixc, primary, clamp(wave * 0.55, 0.0, 1.0));
       mixc = mix(mixc, primary, clamp(glyph, 0.0, 1.0));
+      // Keep the analytic loudness graph in the production base path. The
+      // CPU reference composites this layer after the spectrum/waveform and
+      // before progress, so omitting it creates a large lower-graph parity
+      // error even though the transport contract is otherwise correct.
+      mixc = mix(mixc, accent, clamp(loudness, 0.0, 1.0));
       // A/B diagnostic: the production reference's showwaves texture is the
       // authoritative lower graph; keep the analytical loudness trace out of
       // the final base path while parity is measured.
