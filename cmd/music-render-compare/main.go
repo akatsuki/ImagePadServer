@@ -791,7 +791,15 @@ func extractScreenshots(ctx context.Context, ffmpeg, playlist, out string, durat
 	}
 	// Avoid exact segment boundaries: some HLS muxers expose no decodable
 	// frame at t=0 or during the final encoder drain interval.
-	for name, at := range map[string]float64{"start": math.Min(0.1, duration/4), "mid": duration / 2, "end": math.Max(0, duration-0.5)} {
+	points := map[string]float64{"start": math.Min(0.1, duration/4), "mid": duration / 2, "end": math.Max(0, duration-0.5)}
+	// Optional boundary probes are supplied as comma-separated seconds. They
+	// are deliberately opt-in so existing diagnostics remain stable.
+	for i, raw := range strings.Split(os.Getenv("IMAGEPAD_COMPARE_BOUNDARIES"), ",") {
+		if at, err := strconv.ParseFloat(strings.TrimSpace(raw), 64); err == nil && at >= 0 && at <= duration {
+			points[fmt.Sprintf("boundary-%02d", i)] = at
+		}
+	}
+	for name, at := range points {
 		if at < 0 {
 			at = 0
 		}
@@ -848,7 +856,6 @@ func main() {
 	ctx := context.Background()
 	inputHash, _ := sha256File(*input)
 	fingerprint := runtimeFingerprintFromEnv()
-	requiredPoints := []string{"start", "mid", "end"}
 	if !*cpuOnly {
 		if executable := strings.TrimSpace(os.Getenv("IMAGEPAD_PLAYLIST_COMPOSITORD")); executable != "" {
 			if actual, probeErr := video.ProbeGPUFingerprint(ctx, executable, "compare-fingerprint"); probeErr == nil {
@@ -1389,7 +1396,7 @@ func main() {
 		rep.ComparisonGate = comparisonGate{
 			DurationDeltaSeconds: math.Abs(cpuVideoDuration - gpuVideoDuration),
 			FrameDelta:           rep.CPU.Probe.Frames - rep.GPU.Probe.Frames,
-			ExpectedVisualPoints: len(requiredPoints),
+			ExpectedVisualPoints: len(rep.CPU.Screenshots),
 			ObservedVisualPoints: len(rep.ScreenshotComparisons),
 		}
 	}
