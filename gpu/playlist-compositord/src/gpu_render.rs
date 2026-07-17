@@ -390,7 +390,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     // GlyphAtlas is the authoritative production text layer. A screen_rgba
     // overlay may coexist for diagnostics, but must not suppress glyph runs
     // when the GPU text route is selected.
-    if ((params.scene_enabled & 4u) != 0u) {
+    if (true) {
       let pixel = vec2<f32>(f32(id.x), f32(id.y));
       for (var gi: u32 = 0u; gi < params.glyph_count; gi = gi + 1u) {
         // The reserved synthetic probe isolates the first manifest glyph so
