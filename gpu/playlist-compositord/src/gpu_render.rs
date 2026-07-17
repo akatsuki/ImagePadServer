@@ -2,7 +2,7 @@ use crate::adapter;
 use crate::contracts::{
     ArtworkReceipt, BaseTextureReceipt, ColorSpace, GlyphAtlasReceipt, GlyphInstanceDiagnostic,
     GlyphRenderDiagnostics, GpuFrame, MusicScenePayload, Ownership, PixelFormat,
-    TextOverlayReceipt, CONTRACT_VERSION, ROW_ALIGNMENT,
+    TextOverlayReceipt, Yuv420pFrame, CONTRACT_VERSION, ROW_ALIGNMENT,
 };
 use sha2::{Digest, Sha256};
 use std::env;
@@ -600,6 +600,9 @@ pub struct Renderer {
     adapter_name: String,
     runtime_fingerprint: adapter::RuntimeFingerprint,
 }
+
+const UNSUPPORTED_YUV_OUTPUT: &str =
+    "unsupported_yuv_output: GPU YUV420 compute/readback is not connected";
 
 fn scene_uniform_words(
     width: u32,
@@ -1312,6 +1315,23 @@ impl Renderer {
         self.render_with_scene(width, height, sequence, pts_ns, None)
     }
 
+    /// Explicit GPU-only YUV420P integration seam.
+    ///
+    /// This stays separate from the legacy RGBA render response so callers
+    /// cannot accidentally trigger a CPU colour conversion. It will return a
+    /// deterministic error until the Y/U/V compute buffers and readback pass
+    /// are connected to this retained renderer.
+    pub fn render_yuv420_with_scene(
+        &self,
+        _width: u32,
+        _height: u32,
+        _sequence: u64,
+        _pts_ns: i64,
+        _scene: Option<&MusicScenePayload>,
+    ) -> Result<Yuv420pFrame, String> {
+        Err(UNSUPPORTED_YUV_OUTPUT.into())
+    }
+
     pub fn render_with_scene(
         &self,
         width: u32,
@@ -1834,6 +1854,12 @@ mod tests {
     fn shader_declares_flat_background_diagnostic_branch() {
         assert!(SHADER.contains("params.sequence == 0xfffffffcu"));
         assert!(SHADER.contains("let c = params.palette[2]"));
+    }
+
+    #[test]
+    fn yuv_output_seam_fails_closed_without_cpu_conversion() {
+        assert!(UNSUPPORTED_YUV_OUTPUT.starts_with("unsupported_yuv_output:"));
+        assert!(UNSUPPORTED_YUV_OUTPUT.contains("compute/readback"));
     }
 
     #[test]

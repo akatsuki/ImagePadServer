@@ -444,7 +444,8 @@ pub enum ContractError {
 
 impl Yuv420pFrame {
     pub fn validate(&self) -> Result<(), ContractError> {
-        valid_dimensions(self.width, self.height).map_err(|_| ContractError::InvalidYuvDimensions)?;
+        valid_dimensions(self.width, self.height)
+            .map_err(|_| ContractError::InvalidYuvDimensions)?;
         // Chroma uses ceil subsampling; odd edges are replicated.
         let cw = (self.width + 1) / 2;
         let ch = (self.height + 1) / 2;
@@ -454,7 +455,9 @@ impl Yuv420pFrame {
         let y = self.y_stride as usize * self.height as usize;
         let u = self.u_stride as usize * ch as usize;
         let v = self.v_stride as usize * ch as usize;
-        if y > MAX_PAYLOAD_BYTES || u > MAX_PAYLOAD_BYTES || v > MAX_PAYLOAD_BYTES
+        if y > MAX_PAYLOAD_BYTES
+            || u > MAX_PAYLOAD_BYTES
+            || v > MAX_PAYLOAD_BYTES
             || y.saturating_add(u).saturating_add(v) > MAX_PAYLOAD_BYTES
         {
             return Err(ContractError::PayloadTooLarge);
