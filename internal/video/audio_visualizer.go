@@ -688,14 +688,20 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 	if gpuMode.AccentColor.A != 0 {
 		waveColor = fmt.Sprintf("#%02X%02X%02X@0.55", gpuMode.AccentColor.R, gpuMode.AccentColor.G, gpuMode.AccentColor.B)
 	}
-	// Pre-render the canonical whole-track loudness graph once and transport it
-	// as an immutable GPU texture. This is the same renderLoudnessLayer output
-	// used by the CPU route; every frame references the identical payload so
-	// only the per-frame spectrum/progress dynamics remain on the GPU.
-	loudnessLayer := buildLoudnessLayer(input.Analysis.Features, input.Analysis.Duration, gpuMode, gpuLayout, width, height)
-	loudnessTextureMeta, loudnessMetaErr := NewBaseTextureMetadata("loudness-"+id, loudnessLayer, ColorSRGB)
-	if loudnessMetaErr != nil {
-		return fmt.Errorf("GPU loudness metadata: %w", loudnessMetaErr)
+	// GPU loudness mode transports the canonical Q16 envelope/trend in the
+	// scene dynamics storage buffer. The Rust compositor draws the traces and
+	// guides analytically; do not build or upload the CPU raster in this mode.
+	useGPULoudness := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_LOUDNESS_SHADER")) == "1"
+	var loudnessTextureMeta *BaseTextureMetadata
+	if !useGPULoudness {
+		// Reference-compatible path: pre-render the canonical whole-track graph
+		// once and transport it as an immutable GPU texture.
+		loudnessLayer := buildLoudnessLayer(input.Analysis.Features, input.Analysis.Duration, gpuMode, gpuLayout, width, height)
+		meta, loudnessMetaErr := NewBaseTextureMetadata("loudness-"+id, loudnessLayer, ColorSRGB)
+		if loudnessMetaErr != nil {
+			return fmt.Errorf("GPU loudness metadata: %w", loudnessMetaErr)
+		}
+		loudnessTextureMeta = &meta
 	}
 	audioFilter := audioLoudnormFilter(input.Kind)
 	if audioFilter == "" {
@@ -823,7 +829,13 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 		if textOverlay != nil {
 			scene.TextOverlay = textOverlay
 		}
-		scene.LoudnessTexture = &loudnessTextureMeta
+		if loudnessTextureMeta != nil {
+			scene.LoudnessTexture = loudnessTextureMeta
+		} else {
+			// Keep the analytic GPU dynamics path authoritative. In particular,
+			// nil is required so the sidecar does not disable its shader branch.
+			scene.LoudnessTexture = nil
+		}
 		waveStride := ((waveW*4 + int(GPURowAlignment) - 1) / int(GPURowAlignment)) * int(GPURowAlignment)
 		wavePayload := make([]byte, waveStride*waveH)
 		for y := 0; y < waveH; y++ {
