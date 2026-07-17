@@ -81,9 +81,13 @@ pub struct MusicScenePayload {
 pub struct TextOverlayMetadata {
     #[serde(default)]
     pub kind: String,
+    #[serde(default)]
     pub title: String,
+    #[serde(default)]
     pub artist: String,
+    #[serde(default)]
     pub album: String,
+    #[serde(default)]
     pub font_family: String,
     pub font_weight: u16,
     pub size_px: f32,
