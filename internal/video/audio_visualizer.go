@@ -588,15 +588,21 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 	// normalized artwork payload and the Rust compositor owns crop/blur/shadow
 	// composition. Keep this opt-in: the default path remains byte-for-byte
 	// compatible with the existing CPU-derived base texture.
-	useGPUArtworkBase := shouldUseGPUArtworkBase(input)
+	// Strict GPU migration mode never creates a CPU base raster. Artwork is
+	// uploaded as input data and the sidecar owns crop/blur/composite; when no
+	// artwork exists, the shader's deterministic background is authoritative.
+	strictGPU := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_RASTER_ONLY")) == "1"
+	useGPUArtworkBase := strictGPU || shouldUseGPUArtworkBase(input)
 	gpuLayout, layoutErr := LayoutForSize(width, height)
 	if layoutErr != nil {
 		return fmt.Errorf("GPU base layout: %w", layoutErr)
 	}
 	var gpuMode ForegroundMode
 	if baseTexture == nil && useGPUArtworkBase {
-		if _, ok := normalizeArtwork(input.ArtworkPath); !ok {
-			return fmt.Errorf("GPU artwork base: artwork path is not decodable: %q", input.ArtworkPath)
+		if strings.TrimSpace(input.ArtworkPath) != "" {
+			if _, ok := normalizeArtwork(input.ArtworkPath); !ok {
+				return fmt.Errorf("GPU artwork base: artwork path is not decodable: %q", input.ArtworkPath)
+			}
 		}
 		gpuMode = gpuArtworkForegroundMode(input)
 	}
