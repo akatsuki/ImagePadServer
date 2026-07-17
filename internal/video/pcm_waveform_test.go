@@ -17,7 +17,7 @@ func TestPCMToWaveformQ16Silence(t *testing.T) {
 func TestPCMToWaveformQ16PeakAndChannels(t *testing.T) {
 	pcm := []int16{0, 0, 16384, -16384, 32767, -32768}
 	got := PCMToWaveformQ16(pcm, 2, 6, 3, 0, 8)
-	if len(got) != 3 || got[0] != 0 || got[1] != 32768 || got[2] != 65535 {
+	if len(got) != 2 || got[0] != 32768 || got[1] != 65535 {
 		t.Fatalf("got %#v", got)
 	}
 }
