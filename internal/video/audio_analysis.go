@@ -199,6 +199,7 @@ type spectrumResult struct {
 
 type streamAnalyzer struct {
 	pcm               []float64
+	waveformPCM       []int16
 	totalMonoSamples  int64
 	frames            []AudioFrame
 	monoBuf           []float64
@@ -234,6 +235,7 @@ type streamAnalyzer struct {
 func newStreamAnalyzer() *streamAnalyzer {
 	a := &streamAnalyzer{
 		pcm:            make([]float64, 0, fftWindowSize+frameAdvance),
+		waveformPCM:    make([]int16, 0, sampleRate),
 		frames:         make([]AudioFrame, 0, 3000),
 		monoBuf:        make([]float64, 0, onsetHopSamples),
 		onsetFlux:      make([]float64, 0, 6000),
@@ -305,6 +307,7 @@ func (a *streamAnalyzer) ConsumeStereo(samples []int16) error {
 		return ErrIncompleteSample
 	}
 	for i := 0; i < len(samples); i += 2 {
+		a.waveformPCM = append(a.waveformPCM, samples[i], samples[i+1])
 		mono := (float64(samples[i]) + float64(samples[i+1])) / 2
 		a.totalMonoSamples++
 		a.pcm = append(a.pcm, mono)
@@ -408,7 +411,13 @@ func (a *streamAnalyzer) Finish() (AudioAnalysis, error) {
 		}
 	}
 	clampFeatures(&features)
-	return AudioAnalysis{FPS: 30, Duration: duration, Frames: finalizeSpectrumFrames(a.frames, 30), Features: features}, nil
+	frames := finalizeSpectrumFrames(a.frames, 30)
+	envelope := PCMToWaveformQ16(a.waveformPCM, 2, sampleRate, 30, 0, len(frames))
+	waveformFrames := make([][]uint16, len(envelope))
+	for i, value := range envelope {
+		waveformFrames[i] = []uint16{value}
+	}
+	return AudioAnalysis{FPS: 30, Duration: duration, Frames: frames, WaveformFrames: waveformFrames, Features: features}, nil
 }
 
 // finalizeSpectrumFrames converts the raw per-frame band magnitudes collected

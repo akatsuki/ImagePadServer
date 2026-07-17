@@ -74,6 +74,29 @@ func TestAnalyzeAudioFPSConstant(t *testing.T) {
 	}
 }
 
+func TestStreamAnalyzerBuildsWaveformFramesFromPCM(t *testing.T) {
+	a := newStreamAnalyzer()
+	pcm := make([]int16, sampleRate*2) // one second, stereo
+	for i := 0; i < len(pcm); i += 2 {
+		pcm[i], pcm[i+1] = 12000, 12000
+	}
+	if err := a.ConsumeStereo(pcm); err != nil {
+		t.Fatalf("ConsumeStereo: %v", err)
+	}
+	analysis, err := a.Finish()
+	if err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	if len(analysis.WaveformFrames) != len(analysis.Frames) || len(analysis.Frames) != 30 {
+		t.Fatalf("waveform/frame count mismatch: waveform=%d frames=%d", len(analysis.WaveformFrames), len(analysis.Frames))
+	}
+	for i, frame := range analysis.WaveformFrames {
+		if len(frame) != 1 || frame[0] < 23900 || frame[0] > 24100 {
+			t.Fatalf("frame %d: got %#v, want approximately 24000", i, frame)
+		}
+	}
+}
+
 func generateClickTrack(bpm float64, durationSec float64, sampleRate int) []int16 {
 	totalSamples := int(durationSec * float64(sampleRate))
 	pcm := make([]int16, totalSamples*2) // stereo interleaved

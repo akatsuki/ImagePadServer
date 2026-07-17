@@ -60,7 +60,11 @@ type AudioAnalysis struct {
 	FPS      int
 	Duration float64
 	Frames   []AudioFrame
-	Features AudioFeatures
+	// WaveformFrames contains the bounded Q16 peak envelope generated from
+	// the same decoded PCM stream as Frames. Each entry corresponds to one
+	// video tick and is kept separate from AudioFrame for wire compatibility.
+	WaveformFrames [][]uint16
+	Features       AudioFeatures
 }
 
 type FontSet struct {
