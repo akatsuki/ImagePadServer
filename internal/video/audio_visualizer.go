@@ -938,14 +938,20 @@ func waveformEnvelopeQ16(rgba []byte, width, height int) []uint16 {
 	}
 	out := make([]uint16, width)
 	for x := 0; x < width; x++ {
-		var peak uint8
+		var weighted, total uint64
 		for y := 0; y < height; y++ {
 			i := (y*width + x) * 4
-			if rgba[i+3] > 0 && rgba[i] > peak {
-				peak = rgba[i]
+			a := uint64(rgba[i+3])
+			if a > 0 {
+				weighted += uint64(height-1-y) * a
+				total += a
 			}
 		}
-		out[x] = uint16(peak) * 257
+		if total > 0 {
+			denom := height - 1
+			if denom < 1 { denom = 1 }
+			out[x] = uint16((weighted * 65535) / (total * uint64(denom)))
+		}
 	}
 	return out
 }
