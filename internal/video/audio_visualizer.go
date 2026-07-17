@@ -884,6 +884,11 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 		if gpuMode.PrimaryColor.A != 0 || gpuMode.AccentColor.A != 0 {
 			scene.Palette.Primary = [4]uint8{gpuMode.PrimaryColor.R, gpuMode.PrimaryColor.G, gpuMode.PrimaryColor.B, gpuMode.PrimaryColor.A}
 			scene.Palette.Accent = [4]uint8{gpuMode.AccentColor.R, gpuMode.AccentColor.G, gpuMode.AccentColor.B, gpuMode.AccentColor.A}
+			if scene.GlyphAtlas != nil {
+				for i := range scene.GlyphAtlas.TextRuns {
+					scene.GlyphAtlas.TextRuns[i].RGBA = scene.Palette.Primary
+				}
+			}
 		}
 		if baseTexture != nil {
 			scene.BaseTexture = baseTexture
