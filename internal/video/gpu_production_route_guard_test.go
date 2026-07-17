@@ -80,6 +80,28 @@ func TestGPUDynamicShaderOwnsWaveformAndSpectrum(t *testing.T) {
 	}
 }
 
+func TestGPUTextShaderOwnsGlyphComposition(t *testing.T) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	source := readRouteSource(t, filepath.Join(filepath.Dir(file), "audio_visualizer.go"))
+	body := routeBody(sourceBetween(source, "func runAudioVisualizerHLSGPU", "func writeGPUFrame"))
+	for _, want := range []string{
+		`IMAGEPAD_GPU_TEXT_SHADER`,
+		`if !useGPUText`,
+		`scene.GlyphAtlas = nil`,
+		`else {`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("GPU text route missing migration guard %q", want)
+		}
+	}
+	if strings.Contains(body, `postYUVFilter {`) && !strings.Contains(body, `postYUVFilter && !useGPUText`) {
+		t.Error("GPU text route must not apply the post-YUV ASS filter")
+	}
+}
+
 func readRouteSource(t *testing.T, path string) string {
 	t.Helper()
 	b, err := os.ReadFile(path)

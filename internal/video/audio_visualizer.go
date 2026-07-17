@@ -627,6 +627,10 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 		}
 		baseTexture = &meta
 	}
+	// GPU text mode keeps font discovery/atlas preparation on the CPU but
+	// delegates glyph compositing to the sidecar's WGSL path.  The default
+	// remains the libass reference route until parity passes the strict gate.
+	useGPUText := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_TEXT_SHADER")) == "1"
 	// Use the same libass raster as the CPU path when the caller did not
 	// provide one. This prevents the legacy glyph atlas from becoming a
 	// second, visually different production text renderer.
@@ -663,25 +667,28 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 		}
 		metrics[spec.key] = TextMetrics{Width: mw}
 	}
-	assText, assErr := BuildVisualizerASSWithMode(input.Metadata, input.Analysis.Duration, gpuLayout, fonts, metrics, gpuMode, width, height)
-	if assErr != nil {
-		return fmt.Errorf("GPU ASS build: %w", assErr)
+	var assPath string
+	if !useGPUText {
+		assText, assErr := BuildVisualizerASSWithMode(input.Metadata, input.Analysis.Duration, gpuLayout, fonts, metrics, gpuMode, width, height)
+		if assErr != nil {
+			return fmt.Errorf("GPU ASS build: %w", assErr)
+		}
+		assFile, assErr := os.CreateTemp(outDir, "gpu-visualizer-*.ass")
+		if assErr != nil {
+			return fmt.Errorf("GPU ASS temp: %w", assErr)
+		}
+		assPath = assFile.Name()
+		if _, assErr = assFile.WriteString(assText); assErr == nil {
+			assErr = assFile.Close()
+		} else {
+			_ = assFile.Close()
+		}
+		if assErr != nil {
+			_ = os.Remove(assPath)
+			return fmt.Errorf("GPU ASS write: %w", assErr)
+		}
+		defer os.Remove(assPath)
 	}
-	assFile, assErr := os.CreateTemp(outDir, "gpu-visualizer-*.ass")
-	if assErr != nil {
-		return fmt.Errorf("GPU ASS temp: %w", assErr)
-	}
-	assPath := assFile.Name()
-	if _, assErr = assFile.WriteString(assText); assErr == nil {
-		assErr = assFile.Close()
-	} else {
-		_ = assFile.Close()
-	}
-	if assErr != nil {
-		_ = os.Remove(assPath)
-		return fmt.Errorf("GPU ASS write: %w", assErr)
-	}
-	defer os.Remove(assPath)
 	waveW := int(math.Round(752 * float64(width) / 1280))
 	waveH := int(math.Round(168 * float64(height) / 720))
 	waveColor := "#FFFFFF@0.55"
@@ -719,13 +726,19 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 	tmpPath := tmp.Name()
 	_ = tmp.Close()
 	defer os.Remove(tmpPath)
-	assFilter := "ass" + "=filename='" + escapeFilterPath(assPath) + "':fontsdir='" + escapeFilterPath(fontDir) + "'"
+	assFilter := ""
+	if !useGPUText {
+		assFilter = "ass" + "=filename='" + escapeFilterPath(assPath) + "':fontsdir='" + escapeFilterPath(fontDir) + "'"
+	}
 	useWaveFilter := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_WAVE_FILTER")) == "1"
+	if useGPUText {
+		useWaveFilter = false
+	}
 	useSpectrumCanonical := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_SPECTRUM_CANONICAL")) == "1"
 	args := []string{"-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-s", fmt.Sprintf("%dx%d", width, height), "-r", "30", "-i", "pipe:0"}
 	if useWaveFilter {
 		args = append(args, "-i", input.SourcePath, "-filter_complex", fmt.Sprintf("[1:a]%s=s=%dx%d:rate=30:mode=line:colors=%s[wave];[0:v][wave]overlay=%d:%d[v0];[v0]%s[v]", "show"+"waves", waveW, waveH, waveColor, gpuLayout.Spectrum.X, gpuLayout.Spectrum.Y, assFilter), "-map", "[v]")
-	} else {
+	} else if !useGPUText {
 		args = append(args, "-vf", assFilter)
 	}
 	args = append(args, "-frames:v", strconv.Itoa(frameCount), "-fps_mode", "cfr", "-an", "-sws_flags", "bicubic+accurate_rnd+full_chroma_int", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv", "-f", "mpegts", tmpPath)
@@ -830,11 +843,14 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 			// legacy FFmpeg raster texture in the GPU-only path.
 			scene.WaveformTexture = nil
 		}
-		// Text is applied by the post-YUV ASS filter below. Disable both
-		// screen_rgba and legacy glyph-atlas production composition; diagnostic
-		// sentinels still receive the untouched canonical scene elsewhere.
-		scene.TextOverlay = nil
-		scene.GlyphAtlas = nil
+		// GPU text mode owns glyph compositing in WGSL. The reference route
+		// disables both scene text payloads and applies canonical ASS later.
+		if useGPUText {
+			scene.TextOverlay = nil
+		} else {
+			scene.TextOverlay = nil
+			scene.GlyphAtlas = nil
+		}
 		// The CPU base builder is also the source of truth for foreground
 		// colors. Keep GPU dynamic layers on that same palette; the generic
 		// feature palette is only a fallback for diagnostic scenes.
@@ -953,7 +969,7 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 		tmpPath = postArtifacts.overlayTS
 		frameCount = postYUVMax
 	}
-	if postYUVFilter {
+	if postYUVFilter && !useGPUText {
 		filterTS := filepath.Join(outDir, ".spectrum-filter-"+id+".ts")
 		defer os.Remove(filterTS)
 		graph := buildMusicPostYUVFilter(waveW, waveH, gpuLayout.Spectrum.X, gpuLayout.Spectrum.Y, waveColor, audioFilter, assPath, fontDir)
