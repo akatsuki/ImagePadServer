@@ -91,8 +91,8 @@ func TestStreamAnalyzerBuildsWaveformFramesFromPCM(t *testing.T) {
 		t.Fatalf("waveform/frame count mismatch: waveform=%d frames=%d", len(analysis.WaveformFrames), len(analysis.Frames))
 	}
 	for i, frame := range analysis.WaveformFrames {
-		if len(frame) != 1 || frame[0] < 23900 || frame[0] > 24100 {
-			t.Fatalf("frame %d: got %#v, want approximately 24000", i, frame)
+		if len(frame) == 0 || frame[0] < 23900 || frame[0] > 24100 {
+			t.Fatalf("frame %d: got %#v, want first sample approximately 24000", i, frame)
 		}
 	}
 }

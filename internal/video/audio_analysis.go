@@ -412,10 +412,15 @@ func (a *streamAnalyzer) Finish() (AudioAnalysis, error) {
 	}
 	clampFeatures(&features)
 	frames := finalizeSpectrumFrames(a.frames, 30)
-	envelope := PCMToWaveformQ16(a.waveformPCM, 2, sampleRate, 30, 0, len(frames))
-	waveformFrames := make([][]uint16, len(envelope))
-	for i, value := range envelope {
-		waveformFrames[i] = []uint16{value}
+	const waveformColumns = 752
+	const stereoTickSamples = sampleRate / 30 * 2
+	waveformFrames := make([][]uint16, len(frames))
+	for i := range waveformFrames {
+		start := i * stereoTickSamples
+		end := start + stereoTickSamples
+		if start >= len(a.waveformPCM) { break }
+		if end > len(a.waveformPCM) { end = len(a.waveformPCM) }
+		waveformFrames[i] = PCMToWaveformQ16(a.waveformPCM[start:end], 2, sampleRate, 30*waveformColumns, 0, waveformColumns)
 	}
 	return AudioAnalysis{FPS: 30, Duration: duration, Frames: frames, WaveformFrames: waveformFrames, Features: features}, nil
 }

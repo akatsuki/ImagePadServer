@@ -782,7 +782,11 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 		ptsNS := int64(float64(i) * float64(time.Second) / 30)
 		scene := CanonicalMusicScene(input, uint64(i), ptsNS)
 		if useGPUWaveform {
-			scene.Feature.WaveformQ16 = waveformEnvelopeQ16(wave, waveW, waveH)
+			if i < len(input.Analysis.WaveformFrames) && len(input.Analysis.WaveformFrames[i]) > 0 {
+				scene.Feature.WaveformQ16 = input.Analysis.WaveformFrames[i]
+			} else {
+				scene.Feature.WaveformQ16 = waveformEnvelopeQ16(wave, waveW, waveH)
+			}
 		}
 		if useGPUWaveform && len(scene.Feature.WaveformQ16) > 0 {
 			// GPU waveform primitive owns this layer; do not also upload the
