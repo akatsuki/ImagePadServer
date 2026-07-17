@@ -382,6 +382,7 @@ type sidecarResponse struct {
 	Adapter   string    `json:"adapter,omitempty"`
 	Backend   string    `json:"backend,omitempty"`
 	Toolchain string    `json:"toolchain,omitempty"`
+	Outputs   *GPUOutputCapabilities `json:"outputs,omitempty"`
 }
 
 // Render requests one GPU-produced frame. The response is validated before it

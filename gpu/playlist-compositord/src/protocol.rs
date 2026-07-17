@@ -1,4 +1,4 @@
-use crate::contracts::{GpuFrame, MusicScenePayload};
+use crate::contracts::{GpuFrame, MusicScenePayload, OutputCapabilities};
 use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_VERSION: u16 = 1;
@@ -31,6 +31,8 @@ pub enum Response {
         adapter: String,
         backend: String,
         toolchain: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outputs: Option<OutputCapabilities>,
     },
     Health {
         ready: bool,

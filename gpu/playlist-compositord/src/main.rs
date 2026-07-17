@@ -41,6 +41,15 @@ fn response_for(request: Request, renderer: &mut Option<gpu_render::Renderer>) -
                         adapter: fingerprint.adapter,
                         backend: fingerprint.backend,
                         toolchain: fingerprint.toolchain,
+                        // YUV compute is contract-only for now; advertise the
+                        // existing RGBA readback explicitly.
+                        outputs: Some(crate::contracts::OutputCapabilities {
+                            schema: crate::contracts::CONTRACT_VERSION,
+                            formats: vec![crate::contracts::OutputFormat::Rgba8],
+                            max_width: crate::contracts::MAX_DIMENSION,
+                            max_height: crate::contracts::MAX_DIMENSION,
+                            row_alignment: crate::contracts::ROW_ALIGNMENT as u32,
+                        }),
                     },
                     false,
                 )

@@ -286,6 +286,46 @@ pub enum PixelFormat {
     Bgra8,
 }
 
+/// Additive output negotiation vocabulary. YUV420P is intentionally a
+/// contract-only format until the compute encoder is implemented.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputFormat {
+    Rgba8,
+    Yuv420p,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OutputCapabilities {
+    pub schema: u16,
+    pub formats: Vec<OutputFormat>,
+    pub max_width: u32,
+    pub max_height: u32,
+    pub row_alignment: u32,
+}
+
+/// Future compute-produced planar output. Keeping planes separate prevents a
+/// caller from confusing packed RGBA bytes with YUV payload bytes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Yuv420pFrame {
+    pub schema: u16,
+    pub sequence: u64,
+    pub pts_ns: i64,
+    pub width: u32,
+    pub height: u32,
+    pub y_stride: u32,
+    pub u_stride: u32,
+    pub v_stride: u32,
+    pub color_space: ColorSpace,
+    pub ownership: Ownership,
+    #[serde(with = "base64_bytes")]
+    pub y: Vec<u8>,
+    #[serde(with = "base64_bytes")]
+    pub u: Vec<u8>,
+    #[serde(with = "base64_bytes")]
+    pub v: Vec<u8>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ColorSpace {
     Srgb,
@@ -366,9 +406,24 @@ pub struct TextOverlayReceipt {
     pub renderer_version: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ArtworkReceipt { pub sha256:String, pub source_width:u32, pub source_height:u32, pub output_width:u32, pub output_height:u32, pub crop_mode:String, pub aspect_mode:String }
+pub struct ArtworkReceipt {
+    pub sha256: String,
+    pub source_width: u32,
+    pub source_height: u32,
+    pub output_width: u32,
+    pub output_height: u32,
+    pub crop_mode: String,
+    pub aspect_mode: String,
+}
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BaseTextureReceipt { pub sha256:String, pub width:u32, pub height:u32, pub row_stride:u32, pub format:String, pub color_space:String }
+pub struct BaseTextureReceipt {
+    pub sha256: String,
+    pub width: u32,
+    pub height: u32,
+    pub row_stride: u32,
+    pub format: String,
+    pub color_space: String,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContractError {
@@ -381,6 +436,37 @@ pub enum ContractError {
     InvalidScene,
     InvalidArtwork,
     InvalidGlyphAtlas,
+    InvalidYuvDimensions,
+    InvalidYuvStride,
+    InvalidYuvPayload,
+    UnsupportedYuvOutput,
+}
+
+impl Yuv420pFrame {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        valid_dimensions(self.width, self.height).map_err(|_| ContractError::InvalidYuvDimensions)?;
+        // Chroma uses ceil subsampling; odd edges are replicated.
+        let cw = (self.width + 1) / 2;
+        let ch = (self.height + 1) / 2;
+        if self.y_stride < self.width || self.u_stride < cw || self.v_stride < cw {
+            return Err(ContractError::InvalidYuvStride);
+        }
+        let y = self.y_stride as usize * self.height as usize;
+        let u = self.u_stride as usize * ch as usize;
+        let v = self.v_stride as usize * ch as usize;
+        if y > MAX_PAYLOAD_BYTES || u > MAX_PAYLOAD_BYTES || v > MAX_PAYLOAD_BYTES
+            || y.saturating_add(u).saturating_add(v) > MAX_PAYLOAD_BYTES
+        {
+            return Err(ContractError::PayloadTooLarge);
+        }
+        if self.y.len() != y || self.u.len() != u || self.v.len() != v {
+            return Err(ContractError::InvalidYuvPayload);
+        }
+        if self.schema != CONTRACT_VERSION || self.ownership != Ownership::OwnedByTransport {
+            return Err(ContractError::InvalidYuvPayload);
+        }
+        Ok(())
+    }
 }
 
 impl MusicScenePayload {
@@ -436,16 +522,30 @@ impl MusicScenePayload {
 
 impl TextOverlayMetadata {
     pub fn validate(&self) -> Result<(), ContractError> {
-        if self.title.len() + self.artist.len() + self.album.len() + self.font_family.len() > MUSIC_MAX_TEXT_BYTES
-            || !self.size_px.is_finite() || self.size_px < 0.0
-            || !self.opacity.is_finite() || self.opacity < 0.0 || self.opacity > 1.0
-        || self.width == 0 || self.height == 0 || self.width > MUSIC_MAX_ARTWORK_DIMENSION || self.height > MUSIC_MAX_ARTWORK_DIMENSION
-            || self.row_stride < self.width.saturating_mul(4) || self.row_stride % ROW_ALIGNMENT != 0
-            || (self.row_stride as usize).saturating_mul(self.height as usize) > MUSIC_MAX_ARTWORK_BYTES
-            || (!self.payload.is_empty() && self.payload.len() != self.row_stride as usize * self.height as usize)
-            || self.asset_hash.len() != 64 || !self.asset_hash.bytes().all(|b| b.is_ascii_hexdigit())
-            || self.renderer_id.is_empty() || self.renderer_version.is_empty()
-        { return Err(ContractError::InvalidScene); }
+        if self.title.len() + self.artist.len() + self.album.len() + self.font_family.len()
+            > MUSIC_MAX_TEXT_BYTES
+            || !self.size_px.is_finite()
+            || self.size_px < 0.0
+            || !self.opacity.is_finite()
+            || self.opacity < 0.0
+            || self.opacity > 1.0
+            || self.width == 0
+            || self.height == 0
+            || self.width > MUSIC_MAX_ARTWORK_DIMENSION
+            || self.height > MUSIC_MAX_ARTWORK_DIMENSION
+            || self.row_stride < self.width.saturating_mul(4)
+            || self.row_stride % ROW_ALIGNMENT != 0
+            || (self.row_stride as usize).saturating_mul(self.height as usize)
+                > MUSIC_MAX_ARTWORK_BYTES
+            || (!self.payload.is_empty()
+                && self.payload.len() != self.row_stride as usize * self.height as usize)
+            || self.asset_hash.len() != 64
+            || !self.asset_hash.bytes().all(|b| b.is_ascii_hexdigit())
+            || self.renderer_id.is_empty()
+            || self.renderer_version.is_empty()
+        {
+            return Err(ContractError::InvalidScene);
+        }
         if !self.kind.is_empty() && self.kind != "atlas" && self.kind != "screen_rgba" {
             return Err(ContractError::InvalidScene);
         }
@@ -490,11 +590,25 @@ impl ArtworkMetadata {
 
 impl BaseTextureMetadata {
     pub fn validate(&self) -> Result<(), ContractError> {
-        if self.texture_id.is_empty() || self.width == 0 || self.height == 0 || self.width > MUSIC_MAX_ARTWORK_DIMENSION || self.height > MUSIC_MAX_ARTWORK_DIMENSION { return Err(ContractError::InvalidArtwork); }
-        let min_stride = self.width.checked_mul(4).ok_or(ContractError::InvalidArtwork)?;
-        if self.row_stride < min_stride || self.row_stride % ROW_ALIGNMENT != 0 { return Err(ContractError::InvalidArtwork); }
+        if self.texture_id.is_empty()
+            || self.width == 0
+            || self.height == 0
+            || self.width > MUSIC_MAX_ARTWORK_DIMENSION
+            || self.height > MUSIC_MAX_ARTWORK_DIMENSION
+        {
+            return Err(ContractError::InvalidArtwork);
+        }
+        let min_stride = self
+            .width
+            .checked_mul(4)
+            .ok_or(ContractError::InvalidArtwork)?;
+        if self.row_stride < min_stride || self.row_stride % ROW_ALIGNMENT != 0 {
+            return Err(ContractError::InvalidArtwork);
+        }
         let size = self.row_stride as usize * self.height as usize;
-        if size > MUSIC_MAX_ARTWORK_BYTES || self.payload.len() != size { return Err(ContractError::InvalidArtwork); }
+        if size > MUSIC_MAX_ARTWORK_BYTES || self.payload.len() != size {
+            return Err(ContractError::InvalidArtwork);
+        }
         Ok(())
     }
 }
@@ -618,7 +732,30 @@ mod tests {
     use super::*;
     #[test]
     fn text_overlay_roundtrip_and_rejects_bad_provenance() {
-        let overlay = TextOverlayMetadata { kind: "atlas".into(), title: "T".into(), artist: String::new(), album: String::new(), font_family: "sans".into(), font_weight: 400, size_px: 16.0, rgba: [255,255,255,255], opacity: 1.0, width: 1, height: 1, row_stride: 256, format: PixelFormat::Rgba8, color_space: ColorSpace::Srgb, premultiplied: true, payload: vec![0;256], asset_hash: "a".repeat(64), renderer_id: "cpu-ass".into(), renderer_version: "1".into(), screen_rect: SceneRect::default(), alpha_mode: String::new(), pixel_origin: String::new() };
+        let overlay = TextOverlayMetadata {
+            kind: "atlas".into(),
+            title: "T".into(),
+            artist: String::new(),
+            album: String::new(),
+            font_family: "sans".into(),
+            font_weight: 400,
+            size_px: 16.0,
+            rgba: [255, 255, 255, 255],
+            opacity: 1.0,
+            width: 1,
+            height: 1,
+            row_stride: 256,
+            format: PixelFormat::Rgba8,
+            color_space: ColorSpace::Srgb,
+            premultiplied: true,
+            payload: vec![0; 256],
+            asset_hash: "a".repeat(64),
+            renderer_id: "cpu-ass".into(),
+            renderer_version: "1".into(),
+            screen_rect: SceneRect::default(),
+            alpha_mode: String::new(),
+            pixel_origin: String::new(),
+        };
         assert!(overlay.validate().is_ok());
         let encoded = serde_json::to_string(&overlay).unwrap();
         let decoded: TextOverlayMetadata = serde_json::from_str(&encoded).unwrap();
@@ -654,6 +791,54 @@ mod tests {
         bad = good.clone();
         bad.payload.pop();
         assert_eq!(bad.validate(), Err(ContractError::PayloadLength));
+    }
+
+    #[test]
+    fn yuv420p_contract_checks_even_dimensions_and_planes() {
+        let good = Yuv420pFrame {
+            schema: 1,
+            sequence: 1,
+            pts_ns: 0,
+            width: 4,
+            height: 2,
+            y_stride: 4,
+            u_stride: 2,
+            v_stride: 2,
+            color_space: ColorSpace::Srgb,
+            ownership: Ownership::OwnedByTransport,
+            y: vec![0; 8],
+            u: vec![0; 2],
+            v: vec![0; 2],
+        };
+        assert!(good.validate().is_ok());
+        let mut odd = good.clone();
+        odd.width = 3;
+        odd.height = 3;
+        odd.y_stride = 3;
+        odd.u_stride = 2;
+        odd.v_stride = 2;
+        odd.y = vec![0; 9];
+        odd.u = vec![0; 4];
+        odd.v = vec![0; 4];
+        assert!(odd.validate().is_ok());
+        let mut bad = good.clone();
+        bad.u.pop();
+        assert_eq!(bad.validate(), Err(ContractError::InvalidYuvPayload));
+    }
+
+    #[test]
+    fn output_capabilities_round_trip_without_enabling_yuv() {
+        let caps = OutputCapabilities {
+            schema: 1,
+            formats: vec![OutputFormat::Rgba8],
+            max_width: MAX_DIMENSION,
+            max_height: MAX_DIMENSION,
+            row_alignment: ROW_ALIGNMENT as u32,
+        };
+        let json = serde_json::to_string(&caps).unwrap();
+        let decoded: OutputCapabilities = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, caps);
+        assert!(!decoded.formats.contains(&OutputFormat::Yuv420p));
     }
     #[test]
     fn audio_rejects_invalid_schema_and_levels() {
