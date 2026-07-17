@@ -347,7 +347,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
       // integer-rounded y coordinate); a one-pixel half-open test avoids
       // widening fractional positions into two rows.
       loudness = select(0.0, 0.80, abs(ry - y_env) < 0.5 || abs(ry - prev_y_env) < 0.5);
-      loudness = loudness + select(0.0, 0.80, abs(ry - y_trend) < 0.5 || abs(ry - prev_y_trend) < 0.5);
+      // CPU reference renders the envelope and guides; trend is transport
+      // metadata for future use and must not add a second visible trace.
       // CPU loudness draws four fixed guide lines in the same rect. Their
       // quantized positions are carried in the uniform contract so the GPU
       // does not have to infer them from the envelope.
@@ -480,8 +481,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
       // The CPU reference's final progress pass is emitted as an opaque
       // foreground by the FFmpeg graph (the alpha is already represented in
       // the graph's colour). Keep the rail/marker at full source-over alpha.
-      mixc = mix(mixc, accent, clamp(rail_track, 0.0, 1.0));
-      mixc = mix(mixc, accent, clamp(thumb, 0.0, 1.0));
+      mixc = mix(mixc, accent, clamp(rail_track * (89.0 / 255.0), 0.0, 1.0));
+      mixc = mix(mixc, accent, clamp(thumb * (224.0 / 255.0), 0.0, 1.0));
     }
     let overlay_alpha = overlay.a;
     if (!has_base) { mixc = mix(mixc, overlay.rgb, overlay_alpha); }
