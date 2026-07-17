@@ -866,7 +866,12 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 		// GPU text mode owns glyph compositing in WGSL. The reference route
 		// disables both scene text payloads and applies canonical ASS later.
 		if useGPUText {
-			scene.TextOverlay = nil
+			if strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_TEXT_OVERLAY_DIAGNOSTIC")) == "1" {
+				// Diagnostic A/B only: let the GPU composite the canonical
+				// screen_rgba payload while glyph coverage is investigated.
+			} else {
+				scene.TextOverlay = nil
+			}
 			// Keep the glyph atlas and runs in the scene: the WGSL text path
 			// consumes them directly. Only the CPU full-frame overlay is disabled.
 		} else {
