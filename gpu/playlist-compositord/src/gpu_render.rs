@@ -506,7 +506,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         let amp = f32(waveform_samples[si]) / 65535.0;
         let wy = f32(wr.y + wr.w) - amp * f32(wr.w);
         if (abs(f32(id.y) + 0.5 - wy) < 1.0) {
-          mixc = mix(mixc, primary, 0.80);
+          // Match the CPU/FFmpeg showwaves source alpha (0.55).
+          mixc = mix(mixc, primary, 0.55);
         }
       }
     }
