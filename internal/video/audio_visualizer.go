@@ -746,6 +746,7 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 	}
 	frames := frameCount
 	postYUVFilter := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_SPECTRUM_POST_YUV_FILTER")) == "1"
+	useGPUWaveform := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_WAVEFORM_SHADER")) == "1"
 	postYUV := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_SPECTRUM_POST_YUV")) == "1" && !postYUVFilter
 	var postYUVSpectrum [][]byte
 	postArtifacts := gpuPostYUVArtifacts{}
@@ -780,8 +781,10 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 		}
 		ptsNS := int64(float64(i) * float64(time.Second) / 30)
 		scene := CanonicalMusicScene(input, uint64(i), ptsNS)
-		scene.Feature.WaveformQ16 = waveformEnvelopeQ16(wave, waveW, waveH)
-		if len(scene.Feature.WaveformQ16) > 0 {
+		if useGPUWaveform {
+			scene.Feature.WaveformQ16 = waveformEnvelopeQ16(wave, waveW, waveH)
+		}
+		if useGPUWaveform && len(scene.Feature.WaveformQ16) > 0 {
 			// GPU waveform primitive owns this layer; do not also upload the
 			// legacy FFmpeg raster texture in the GPU-only path.
 			scene.WaveformTexture = nil
