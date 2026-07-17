@@ -780,6 +780,12 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 		}
 		ptsNS := int64(float64(i) * float64(time.Second) / 30)
 		scene := CanonicalMusicScene(input, uint64(i), ptsNS)
+		scene.Feature.WaveformQ16 = waveformEnvelopeQ16(wave, waveW, waveH)
+		if len(scene.Feature.WaveformQ16) > 0 {
+			// GPU waveform primitive owns this layer; do not also upload the
+			// legacy FFmpeg raster texture in the GPU-only path.
+			scene.WaveformTexture = nil
+		}
 		// Text is applied by the post-YUV ASS filter below. Disable both
 		// screen_rgba and legacy glyph-atlas production composition; diagnostic
 		// sentinels still receive the untouched canonical scene elsewhere.
@@ -918,6 +924,27 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 		return fmt.Errorf("GPU HLS mux: %w: %s", err, trimOutput(finalErr.Bytes()))
 	}
 	return nil
+}
+
+// waveformEnvelopeQ16 converts the already-decoded audio raster into bounded
+// transport samples for the GPU waveform shader. It does not draw anything;
+// the sidecar performs the final line rasterization.
+func waveformEnvelopeQ16(rgba []byte, width, height int) []uint16 {
+	if width <= 0 || height <= 0 || len(rgba) < width*height*4 {
+		return nil
+	}
+	out := make([]uint16, width)
+	for x := 0; x < width; x++ {
+		var peak uint8
+		for y := 0; y < height; y++ {
+			i := (y*width + x) * 4
+			if rgba[i+3] > 0 && rgba[i] > peak {
+				peak = rgba[i]
+			}
+		}
+		out[x] = uint16(peak) * 257
+	}
+	return out
 }
 
 // canonicalMusicVideoFrameCount returns the 30 Hz output clock used by the
