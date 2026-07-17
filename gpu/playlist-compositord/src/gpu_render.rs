@@ -490,6 +490,24 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
       // on top of that raster; the CPU frame path has no second glow pass.
       glow = 0.0;
     }
+    if (!has_base && (params.scene_enabled & 2u) == 0u) {
+      let ar = params.rects[0];
+      let ax = f32(ar.x); let ay = f32(ar.y);
+      let aw = max(1.0, f32(ar.z)); let ah = max(1.0, f32(ar.w));
+      if (sx >= ax && sx < ax + aw && sy >= ay && sy < ay + ah) {
+        let lx = (sx - ax) / aw; let ly = (sy - ay) / ah;
+        blurred_bg = mix(background, accent, clamp(ly, 0.0, 1.0));
+        let dx = lx - 0.5; let dy = ly - 0.5;
+        let radius = sqrt(dx * dx + dy * dy);
+        let angle = atan2(dy, dx);
+        let sector = (angle + 3.14159265) / 6.2831853 * 64.0;
+        let band = min(63u, u32(max(0.0, floor(sector))));
+        let energy = f32(fingerprint_samples[band]) / 65535.0;
+        let inner = 54.0 / aw; let outer = inner + energy * 58.0 / aw;
+        let line = select(0.0, 0.26, radius >= inner && radius <= outer && abs(fract(sector) - 0.5) < 0.10);
+        blurred_bg = mix(blurred_bg, primary, line);
+      }
+    }
     var mixc = blurred_bg + primary * (glow + glyph + artwork * 0.35) + accent * (bars * 0.75 + wave * 0.35 + loudness);
     // Progress uses the CPU renderer's SrcOver alpha values and ordering:
     // rounded track first, then the position thumb.
