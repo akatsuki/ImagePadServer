@@ -39,6 +39,10 @@ struct GlyphInstance { screen: vec4<f32>, atlas: vec4<f32>, color: vec4<f32> }
 @group(0) @binding(12) var waveform_tex: texture_2d<f32>;
 @group(0) @binding(13) var loudness_tex: texture_2d<f32>;
 @group(0) @binding(14) var spectrum_tex: texture_2d<f32>;
+// Bounded Q16 waveform samples supplied by the MusicFeature contract. The
+// storage path is opt-in (scene bit 256) and leaves the legacy texture path
+// untouched for parity diagnostics.
+@group(0) @binding(15) var<storage, read> waveform_samples: array<u32>;
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   if (id.x >= params.width || id.y >= params.height) { return; }
@@ -490,6 +494,22 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         mixc = mix(mixc, wc.rgb, wc.a);
       }
     }
+    // GPU-native waveform primitive. Each output column selects one bounded
+    // sample and draws a one-pixel line around its Q16 amplitude. This is
+    // intentionally a small, deterministic primitive; the texture-based
+    // showwaves path above remains authoritative until parity is proven.
+    if ((params.scene_enabled & 256u) != 0u && params.dynamics[1].z > 0u) {
+      let wr = params.rects[4];
+      if (id.x >= u32(wr.x) && id.x < u32(wr.x + wr.z) && id.y >= u32(wr.y) && id.y < u32(wr.y + wr.w)) {
+        let u = clamp((f32(id.x) - f32(wr.x)) / max(1.0, f32(wr.z - 1)), 0.0, 1.0);
+        let si = min(params.dynamics[1].z - 1u, u32(u * f32(params.dynamics[1].z - 1u) + 0.5));
+        let amp = f32(waveform_samples[si]) / 65535.0;
+        let wy = f32(wr.y + wr.w) - amp * f32(wr.w);
+        if (abs(f32(id.y) + 0.5 - wy) < 1.0) {
+          mixc = mix(mixc, primary, 0.80);
+        }
+      }
+    }
     if ((params.scene_enabled & 128u) != 0u) {
       let sr = params.rects[4];
       let sd = textureDimensions(spectrum_tex);
@@ -582,6 +602,9 @@ fn scene_uniform_words(
         words[6] |= if scene.waveform_texture.as_ref().is_some_and(|w| !w.payload.is_empty()) { 32 } else { 0 };
         words[6] |= if scene.loudness_texture.as_ref().is_some_and(|w| !w.payload.is_empty()) { 64 } else { 0 };
         words[6] |= if scene.spectrum_texture.as_ref().is_some_and(|w| !w.payload.is_empty()) { 128 } else { 0 };
+        // Bit 256 enables the bounded waveform_q16 storage path. Keep the
+        // legacy waveform texture bit (32) independent for parity diagnostics.
+        words[6] |= if !scene.feature.waveform_q16.is_empty() { 256 } else { 0 };
         words[7] = scene
             .glyph_atlas
             .as_ref()
@@ -609,6 +632,7 @@ fn scene_uniform_words(
             .first()
             .copied()
             .unwrap_or(scene.feature.rms_q15) as u32;
+        words[38] = scene.feature.waveform_q16.len().min(4096) as u32;
         let p = &scene.palette;
         words[40..44].copy_from_slice(&p.primary.map(|v| v as u32));
         words[44..48].copy_from_slice(&p.accent.map(|v| v as u32));
@@ -750,6 +774,23 @@ fn dynamics_sample_words(scene: Option<&MusicScenePayload>) -> Vec<u32> {
         }
     }
     out
+}
+
+/// Upload the bounded Q16 waveform contract as a read-only storage buffer.
+/// Keep one element even when the feature is absent so the binding remains
+/// valid on every backend; the shader is gated by the explicit scene bit.
+fn waveform_sample_words(scene: Option<&MusicScenePayload>) -> Vec<u32> {
+    let Some(scene) = scene else { return vec![0]; };
+    if scene.feature.waveform_q16.is_empty() {
+        return vec![0];
+    }
+    scene
+        .feature
+        .waveform_q16
+        .iter()
+        .copied()
+        .map(u32::from)
+        .collect()
 }
 
 impl Renderer {
@@ -956,6 +997,10 @@ impl Renderer {
                 wgpu::BindGroupLayoutEntry { binding: 12, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
                 wgpu::BindGroupLayoutEntry { binding: 13, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
                 wgpu::BindGroupLayoutEntry { binding: 14, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
+                // Bounded MusicFeature::waveform_q16 input. Binding 15 is
+                // intentionally appended so existing texture bindings remain
+                // wire-compatible with older sidecars.
+                wgpu::BindGroupLayoutEntry { binding: 15, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
             ],
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -1137,6 +1182,13 @@ impl Renderer {
                 contents: bytemuck::cast_slice(&dynamics_sample_words(scene)),
                 usage: wgpu::BufferUsages::STORAGE,
             });
+        let waveform_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("waveform-samples-q16"),
+                contents: bytemuck::cast_slice(&waveform_sample_words(scene)),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
         let stride = ((width * 4 + ROW_ALIGNMENT - 1) / ROW_ALIGNMENT) * ROW_ALIGNMENT;
         let bytes = stride as usize * height as usize;
         let output = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -1202,6 +1254,7 @@ impl Renderer {
                 wgpu::BindGroupEntry { binding: 12, resource: wgpu::BindingResource::TextureView(&waveform_view) },
                 wgpu::BindGroupEntry { binding: 13, resource: wgpu::BindingResource::TextureView(&loudness_view) },
                 wgpu::BindGroupEntry { binding: 14, resource: wgpu::BindingResource::TextureView(&spectrum_view) },
+                wgpu::BindGroupEntry { binding: 15, resource: waveform_buffer.as_entire_binding() },
             ],
         });
         let mut enc = self
