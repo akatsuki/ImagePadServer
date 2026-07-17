@@ -33,8 +33,8 @@ func TestShouldUseGPUArtworkBaseIsStrictlyOptIn(t *testing.T) {
 	}
 	in.BaseTexture = nil
 	in.ArtworkPath = ""
-	if !shouldUseGPUArtworkBase(in) {
-		t.Fatal("GPU-only base mode must cover fallback/no-artwork scenes")
+	if shouldUseGPUArtworkBase(in) {
+		t.Fatal("fallback/no-artwork must not enter GPU artwork experiment")
 	}
 }
 

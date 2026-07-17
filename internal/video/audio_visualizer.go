@@ -595,10 +595,8 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 	}
 	var gpuMode ForegroundMode
 	if baseTexture == nil && useGPUArtworkBase {
-		if strings.TrimSpace(input.ArtworkPath) != "" {
-			if _, ok := normalizeArtwork(input.ArtworkPath); !ok {
-				return fmt.Errorf("GPU artwork base: artwork path is not decodable: %q", input.ArtworkPath)
-			}
+		if _, ok := normalizeArtwork(input.ArtworkPath); !ok {
+			return fmt.Errorf("GPU artwork base: artwork path is not decodable: %q", input.ArtworkPath)
 		}
 		gpuMode = gpuArtworkForegroundMode(input)
 	}
@@ -1040,7 +1038,7 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 // the same payload as a real cover image.
 func shouldUseGPUArtworkBase(input AudioRenderInput) bool {
 	return strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_BASE_SHADER")) == "1" &&
-		input.BaseTexture == nil
+		input.BaseTexture == nil && strings.TrimSpace(input.ArtworkPath) != ""
 }
 
 // gpuArtworkForegroundMode supplies the palette roles needed by the dynamic
