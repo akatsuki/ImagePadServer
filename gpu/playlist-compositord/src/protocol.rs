@@ -241,5 +241,28 @@ mod tests {
         };
         let decoded = decode_request(&encode(&yuv).unwrap()).unwrap();
         assert_eq!(decoded, yuv);
+
+        let v2 = Request::RenderV2 {
+            width: 1280,
+            height: 720,
+            sequence: 1,
+            pts_ns: 33_333_333,
+            job: crate::music_v2_contract::Job {
+                width: 1280,
+                height: 720,
+                fps: 30,
+                artwork_mode: crate::music_v2_contract::ArtworkMode::Fallback,
+                layers: vec![crate::music_v2_contract::LayerReceipt {
+                    name: "background".into(),
+                    provider: crate::music_v2_contract::Provider::NativeGpu,
+                    input_hash: String::new(),
+                    shader_hash: String::new(),
+                }],
+            },
+            output: OutputFormat::Rgba8,
+        };
+        let encoded = encode(&v2).unwrap();
+        assert!(encoded.contains(r#""type":"render_v2""#));
+        assert_eq!(decode_request(&encoded).unwrap(), v2);
     }
 }
