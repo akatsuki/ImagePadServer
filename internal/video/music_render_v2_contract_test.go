@@ -15,3 +15,13 @@ func TestMusicRenderV2ProductionAcceptsNativeLayers(t *testing.T) {
 		t.Fatalf("native GPU job rejected: %v", err)
 	}
 }
+
+func TestNewMusicRenderV2JobUsesLogicalNativeLayers(t *testing.T) {
+	job := NewMusicRenderV2Job(AudioRenderInput{}, 1280, 720, 30, MusicRenderV2ArtworkFallback)
+	if err := job.ValidateProduction(); err != nil {
+		t.Fatalf("constructed job rejected: %v", err)
+	}
+	if len(job.Layers) != 8 || job.Layers[0].Name != "background" {
+		t.Fatalf("unexpected logical layer manifest: %+v", job.Layers)
+	}
+}

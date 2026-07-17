@@ -34,6 +34,18 @@ type MusicRenderV2Job struct {
 	Layers      []MusicRenderV2LayerReceipt
 }
 
+// NewMusicRenderV2Job creates the production ownership manifest before the
+// renderer is invoked. It intentionally contains logical layers only; no
+// screen-sized CPU texture can be smuggled in through this constructor.
+func NewMusicRenderV2Job(input AudioRenderInput, width, height, fps uint32, artworkMode MusicRenderV2ArtworkMode) MusicRenderV2Job {
+	_ = input
+	layers := make([]MusicRenderV2LayerReceipt, 0, 8)
+	for _, name := range []string{"background", "artwork", "spectrum", "waveform", "loudness", "text", "progress", "fade"} {
+		layers = append(layers, MusicRenderV2LayerReceipt{Name: name, Provider: MusicRenderV2NativeGPU})
+	}
+	return MusicRenderV2Job{Width: width, Height: height, FPS: fps, ArtworkMode: artworkMode, Layers: layers}
+}
+
 // ValidateProduction rejects the legacy CPU-final-raster contract at the
 // boundary, before any sidecar process is started.
 func (j MusicRenderV2Job) ValidateProduction() error {
