@@ -848,6 +848,7 @@ func main() {
 	ctx := context.Background()
 	inputHash, _ := sha256File(*input)
 	fingerprint := runtimeFingerprintFromEnv()
+	requiredPoints := []string{"start", "mid", "end"}
 	if !*cpuOnly {
 		if executable := strings.TrimSpace(os.Getenv("IMAGEPAD_PLAYLIST_COMPOSITORD")); executable != "" {
 			if actual, probeErr := video.ProbeGPUFingerprint(ctx, executable, "compare-fingerprint"); probeErr == nil {
@@ -1393,7 +1394,6 @@ func main() {
 		}
 	}
 	if !*cpuOnly {
-		requiredPoints := []string{"start", "mid", "end"}
 		rep.ComparisonGate.DurationMatch = rep.ComparisonGate.DurationDeltaSeconds <= 0.05
 		// Strict gate: both observed streams must match the canonical clock.
 		// The separate frameContract fields make a mux tail diagnosable instead
