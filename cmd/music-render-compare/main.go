@@ -868,7 +868,8 @@ func main() {
 	// For GPU diagnostics, inject one canonical FFmpeg showwaves frame into the
 	// scene. This keeps the compare path representative without changing the
 	// production renderer (which streams one texture per frame).
-	if !*cpuOnly && strings.TrimSpace(os.Getenv("IMAGEPAD_PLAYLIST_COMPOSITORD")) != "" {
+	if !*cpuOnly && strings.TrimSpace(os.Getenv("IMAGEPAD_PLAYLIST_COMPOSITORD")) != "" &&
+		strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_WAVEFORM_SHADER")) != "1" {
 		waveW := int(math.Round(752 * float64(compareW) / 1280.0))
 		waveH := int(math.Round(168 * float64(p.Height) / 720.0))
 		waveColor := fmt.Sprintf("#%02X%02X%02X@0.55", scene.Palette.Accent[0], scene.Palette.Accent[1], scene.Palette.Accent[2])
