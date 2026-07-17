@@ -14,6 +14,10 @@ const GPUMaxDimension uint32 = 16384
 const GPUMaxPayload = 256 * 1024 * 1024
 const MusicSceneSchema uint16 = 1
 const MusicMaxFeatureBins = 256
+
+// MusicMaxWaveformSamples bounds the optional per-frame Q0.16 waveform
+// payload sent to the GPU sidecar. Empty remains valid for legacy requests.
+const MusicMaxWaveformSamples = 4096
 const MusicMaxArtworkDimension uint32 = 4096
 const MusicMaxArtworkBytes = 16 * 1024 * 1024
 const MusicMaxGlyphs = 4096
@@ -222,10 +226,14 @@ func (s MusicScenePayload) Validate() error {
 		}
 	}
 	if s.LoudnessTexture != nil {
-		if err := s.LoudnessTexture.Validate(); err != nil { return fmt.Errorf("scene loudness texture: %w", err) }
+		if err := s.LoudnessTexture.Validate(); err != nil {
+			return fmt.Errorf("scene loudness texture: %w", err)
+		}
 	}
 	if s.SpectrumTexture != nil {
-		if err := s.SpectrumTexture.Validate(); err != nil { return fmt.Errorf("scene spectrum texture: %w", err) }
+		if err := s.SpectrumTexture.Validate(); err != nil {
+			return fmt.Errorf("scene spectrum texture: %w", err)
+		}
 	}
 	if s.GlyphAtlas != nil {
 		if err := s.GlyphAtlas.Validate(); err != nil {
@@ -359,6 +367,7 @@ type AudioFeatureFrame struct {
 	FrameIndex   uint64   `json:"frame_index"`
 	PTSNs        int64    `json:"pts_ns"`
 	SpectrumQ16  []uint16 `json:"spectrum_q16"`
+	WaveformQ16  []uint16 `json:"waveform_q16,omitempty"`
 	RMSQ15       uint16   `json:"rms_q15"`
 	PeakQ15      uint16   `json:"peak_q15"`
 }
@@ -478,7 +487,7 @@ func (s SceneSnapshot) Validate() error {
 	return nil
 }
 func (a AudioFeatureFrame) Validate() error {
-	if a.Schema != GPUContractVersion || a.SampleRateHz == 0 || a.RMSQ15 > 0x7fff || a.PeakQ15 > 0x7fff {
+	if a.Schema != GPUContractVersion || a.SampleRateHz == 0 || a.RMSQ15 > 0x7fff || a.PeakQ15 > 0x7fff || len(a.WaveformQ16) > MusicMaxWaveformSamples {
 		return errors.New("invalid audio feature frame")
 	}
 	return nil

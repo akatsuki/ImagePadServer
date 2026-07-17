@@ -61,6 +61,20 @@ func TestGPUContractAudioValidation(t *testing.T) {
 		t.Fatal("wrong schema accepted")
 	}
 }
+
+func TestGPUContractWaveformBackwardCompatibleAndBounded(t *testing.T) {
+	var legacy AudioFeatureFrame
+	if err := json.Unmarshal([]byte(`{"schema":1,"sample_rate_hz":48000,"frame_index":0,"pts_ns":0,"spectrum_q16":[],"rms_q15":0,"peak_q15":0}`), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if len(legacy.WaveformQ16) != 0 {
+		t.Fatalf("legacy waveform = %d, want empty", len(legacy.WaveformQ16))
+	}
+	legacy.WaveformQ16 = make([]uint16, MusicMaxWaveformSamples+1)
+	if legacy.Validate() == nil {
+		t.Fatal("oversized waveform accepted")
+	}
+}
 func TestGPUContractJSONRoundTrip(t *testing.T) {
 	s := SceneSnapshot{Schema: 1, Sequence: 4, PTSNs: 10, Width: 640, Height: 480, Overlays: []OverlayCommand{{Kind: "text", ID: "title", Text: "x"}}}
 	b, err := EncodeGPUContract(s)

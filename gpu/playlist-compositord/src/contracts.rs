@@ -38,6 +38,10 @@ pub const MAX_DIMENSION: u32 = 16_384;
 pub const MAX_PAYLOAD_BYTES: usize = 256 * 1024 * 1024;
 pub const MUSIC_SCENE_SCHEMA: u16 = 1;
 pub const MUSIC_MAX_FEATURE_BINS: usize = 256;
+/// Maximum per-frame waveform samples accepted on the JSON control plane.
+/// Q0.16 values keep the contract bounded while allowing the GPU shader to
+/// reconstruct the canonical waveform without a CPU-rasterized texture.
+pub const MUSIC_MAX_WAVEFORM_SAMPLES: usize = 4096;
 pub const MUSIC_MAX_ARTWORK_DIMENSION: u32 = 4096;
 pub const MUSIC_MAX_ARTWORK_BYTES: usize = 16 * 1024 * 1024;
 pub const MUSIC_MAX_GLYPHS: u32 = 4096;
@@ -269,6 +273,9 @@ pub struct AudioFeatureFrame {
     pub pts_ns: i64,
     /// Little-endian wire values, quantized to unsigned Q0.16.
     pub spectrum_q16: Vec<u16>,
+    /// Optional bounded Q0.16 waveform samples.  Omitted by legacy producers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waveform_q16: Vec<u16>,
     pub rms_q15: u16,
     pub peak_q15: u16,
 }
@@ -566,6 +573,7 @@ impl AudioFeatureFrame {
             || self.sample_rate_hz == 0
             || self.rms_q15 > 0x7fff
             || self.peak_q15 > 0x7fff
+            || self.waveform_q16.len() > MUSIC_MAX_WAVEFORM_SAMPLES
         {
             return Err(ContractError::InvalidAudio);
         }
@@ -655,12 +663,23 @@ mod tests {
             frame_index: 1,
             pts_ns: 0,
             spectrum_q16: vec![0, 65535],
+            waveform_q16: vec![1, 2, 3],
             rms_q15: 1,
             peak_q15: 2,
         };
         assert!(a.validate().is_ok());
         a.schema = 2;
         assert_eq!(a.validate(), Err(ContractError::InvalidAudio));
+    }
+
+    #[test]
+    fn legacy_audio_without_waveform_decodes_and_waveform_is_bounded() {
+        let legacy = r#"{"schema":1,"sample_rate_hz":48000,"frame_index":0,"pts_ns":0,"spectrum_q16":[],"rms_q15":0,"peak_q15":0}"#;
+        let decoded: AudioFeatureFrame = serde_json::from_str(legacy).unwrap();
+        assert!(decoded.waveform_q16.is_empty());
+        let mut oversized = decoded;
+        oversized.waveform_q16 = vec![0; MUSIC_MAX_WAVEFORM_SAMPLES + 1];
+        assert_eq!(oversized.validate(), Err(ContractError::InvalidAudio));
     }
     #[test]
     fn serde_round_trip_preserves_format_and_order() {
