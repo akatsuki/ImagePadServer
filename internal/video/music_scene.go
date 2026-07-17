@@ -9,7 +9,6 @@ import (
 	_ "image/png"
 	"math"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"golang.org/x/image/font"
@@ -21,11 +20,6 @@ import (
 // CanonicalMusicScene is the sole normalization boundary for both single HLS
 // and playlist rendering. It intentionally does not mutate AudioRenderInput.
 func CanonicalMusicScene(input AudioRenderInput, frameIndex uint64, ptsNS int64) MusicScenePayload {
-	meta := input.Metadata
-	if strings.TrimSpace(meta.Title) == "" && strings.TrimSpace(input.SourcePath) != "" {
-		name := filepath.Base(input.SourcePath)
-		meta.Title = strings.TrimSuffix(name, filepath.Ext(name))
-	}
 	var spectrum []uint16
 	var rms, peak float64
 	if len(input.Analysis.Frames) > 0 {
@@ -73,11 +67,11 @@ func CanonicalMusicScene(input AudioRenderInput, frameIndex uint64, ptsNS int64)
 		a := fallbackArtwork(input.Analysis.Features)
 		scene.Artwork = &a
 	}
-	scene.GlyphAtlas = normalizeGlyphs(meta, layout, palette.Primary, current, duration)
+	scene.GlyphAtlas = normalizeGlyphs(input.Metadata, layout, palette.Primary, current, duration)
 	if input.TextOverlay != nil {
 		scene.TextOverlay = input.TextOverlay
 	} else {
-		scene.TextOverlay = RenderCanonicalTextOverlay(meta, layout, 1280, 720)
+		scene.TextOverlay = RenderCanonicalTextOverlay(input.Metadata, layout, 1280, 720)
 	}
 	if input.WaveformTexture != nil {
 		scene.WaveformTexture = input.WaveformTexture
