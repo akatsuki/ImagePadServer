@@ -1,6 +1,7 @@
 mod adapter;
 mod contracts;
 mod gpu_render;
+mod gpu_yuv_transport;
 mod hardware_surface;
 mod lifecycle;
 mod music_v2_contract;
