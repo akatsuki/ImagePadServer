@@ -637,7 +637,8 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 	// GPU text mode keeps font discovery/atlas preparation on the CPU but
 	// delegates glyph compositing to the sidecar's WGSL path.  The default
 	// remains the libass reference route until parity passes the strict gate.
-	useGPUText := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_TEXT_SHADER")) == "1"
+	parityMode := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_PARITY_MODE")) == "1"
+	useGPUText := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_TEXT_SHADER")) == "1" && !parityMode
 	// Use the same libass raster as the CPU path when the caller did not
 	// provide one. This prevents the legacy glyph atlas from becoming a
 	// second, visually different production text renderer.
@@ -675,7 +676,7 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 		metrics[spec.key] = TextMetrics{Width: mw}
 	}
 	var assPath string
-	if !useGPUText {
+	if !useGPUText && !parityMode {
 		assText, assErr := BuildVisualizerASSWithMode(input.Metadata, input.Analysis.Duration, gpuLayout, fonts, metrics, gpuMode, width, height)
 		if assErr != nil {
 			return fmt.Errorf("GPU ASS build: %w", assErr)
@@ -705,7 +706,7 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 	// GPU loudness mode transports the canonical Q16 envelope/trend in the
 	// scene dynamics storage buffer. The Rust compositor draws the traces and
 	// guides analytically; do not build or upload the CPU raster in this mode.
-	useGPULoudness := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_LOUDNESS_SHADER")) == "1"
+	useGPULoudness := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_LOUDNESS_SHADER")) == "1" && !parityMode
 	var loudnessTextureMeta *BaseTextureMetadata
 	if !useGPULoudness {
 		// Reference-compatible path: pre-render the canonical whole-track graph
@@ -738,6 +739,9 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 		assFilter = "ass" + "=filename='" + escapeFilterPath(assPath) + "':fontsdir='" + escapeFilterPath(fontDir) + "'"
 	}
 	useWaveFilter := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_WAVE_FILTER")) == "1"
+	if parityMode {
+		useWaveFilter = false
+	}
 	if useGPUText {
 		useWaveFilter = false
 	}
@@ -745,7 +749,7 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 	args := []string{"-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-s", fmt.Sprintf("%dx%d", width, height), "-r", "30", "-i", "pipe:0"}
 	if useWaveFilter {
 		args = append(args, "-i", input.SourcePath, "-filter_complex", fmt.Sprintf("[1:a]%s=s=%dx%d:rate=30:mode=line:colors=%s[wave];[0:v][wave]overlay=%d:%d[v0];[v0]%s[v]", "show"+"waves", waveW, waveH, waveColor, gpuLayout.Spectrum.X, gpuLayout.Spectrum.Y, assFilter), "-map", "[v]")
-	} else if !useGPUText {
+	} else if !useGPUText && !parityMode {
 		args = append(args, "-vf", assFilter)
 	}
 	args = append(args, "-frames:v", strconv.Itoa(frameCount), "-fps_mode", "cfr", "-an", "-sws_flags", "bicubic+accurate_rnd+full_chroma_int", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv", "-f", "mpegts", tmpPath)
@@ -815,7 +819,12 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 	// starting FFmpeg's showwaves producer entirely; the loop still receives a
 	// correctly sized zero payload for legacy metadata branches that are
 	// explicitly enabled alongside the experiment.
-	useGPUDynamic := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_DYNAMIC_SHADER")) == "1"
+	useGPUDynamic := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_DYNAMIC_SHADER")) == "1" && !parityMode
+	if parityMode {
+		// Parity-first route: transport CPU-reference layers as GPU textures;
+		// the sidecar still owns final compositing and YUV conversion.
+		useSpectrumCanonical = true
+	}
 	if useGPUDynamic {
 		useGPUWaveform = true
 		useSpectrumCanonical = false
@@ -880,7 +889,7 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 			}
 			// Keep the glyph atlas and runs in the scene: the WGSL text path
 			// consumes them directly. Only the CPU full-frame overlay is disabled.
-		} else {
+		} else if !parityMode {
 			scene.TextOverlay = nil
 			scene.GlyphAtlas = nil
 		}
