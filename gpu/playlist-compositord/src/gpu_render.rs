@@ -1,9 +1,11 @@
 use crate::adapter;
 use crate::contracts::{
-    BaseTextureReceipt, ColorSpace, GlyphAtlasReceipt, GlyphInstanceDiagnostic, GlyphRenderDiagnostics, GpuFrame, MusicScenePayload, Ownership, PixelFormat, TextOverlayReceipt, ArtworkReceipt,
-    CONTRACT_VERSION, ROW_ALIGNMENT,
+    ArtworkReceipt, BaseTextureReceipt, ColorSpace, GlyphAtlasReceipt, GlyphInstanceDiagnostic,
+    GlyphRenderDiagnostics, GpuFrame, MusicScenePayload, Ownership, PixelFormat,
+    TextOverlayReceipt, CONTRACT_VERSION, ROW_ALIGNMENT,
 };
 use sha2::{Digest, Sha256};
+use std::env;
 use std::num::NonZeroU32;
 use std::sync::mpsc::channel;
 use wgpu::util::DeviceExt;
@@ -503,8 +505,12 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
       if (id.x >= u32(wr.x) && id.x < u32(wr.x + wr.z) && id.y >= u32(wr.y) && id.y < u32(wr.y + wr.w)) {
         let u = clamp((f32(id.x) - f32(wr.x)) / max(1.0, f32(wr.z - 1)), 0.0, 1.0);
         let si = min(params.dynamics[1].z - 1u, u32(u * f32(params.dynamics[1].z - 1u)));
-        let amp = f32(waveform_samples[si]) / 65535.0;
-        let wy = f32(wr.y + wr.w) - amp * f32(wr.w);
+          let raw = f32(waveform_samples[si]) / 65535.0;
+          let signed = raw * 2.0 - 1.0;
+          let amp = select(raw, signed, (params.scene_enabled & 512u) != 0u);
+          let wy = select(f32(wr.y + wr.w) - amp * f32(wr.w),
+            f32(wr.y) + f32(wr.w) * 0.5 - signed * f32(wr.w) * 0.5,
+            (params.scene_enabled & 512u) != 0u);
         if (abs(f32(id.y) + 0.5 - wy) < 1.0) {
           // Match the CPU/FFmpeg showwaves source alpha (0.55).
           mixc = mix(mixc, primary, 0.55);
@@ -598,14 +604,64 @@ fn scene_uniform_words(
                 4
             } else {
                 0
-            } | if scene.base_texture.as_ref().is_some_and(|b| !b.payload.is_empty()) { 8 } else { 0 }
-            | if scene.text_overlay.as_ref().is_some_and(|o| o.kind == "screen_rgba" && !o.payload.is_empty()) { 16 } else { 0 };
-        words[6] |= if scene.waveform_texture.as_ref().is_some_and(|w| !w.payload.is_empty()) { 32 } else { 0 };
-        words[6] |= if scene.loudness_texture.as_ref().is_some_and(|w| !w.payload.is_empty()) { 64 } else { 0 };
-        words[6] |= if scene.spectrum_texture.as_ref().is_some_and(|w| !w.payload.is_empty()) { 128 } else { 0 };
+            } | if scene
+                .base_texture
+                .as_ref()
+                .is_some_and(|b| !b.payload.is_empty())
+            {
+                8
+            } else {
+                0
+            } | if scene
+                .text_overlay
+                .as_ref()
+                .is_some_and(|o| o.kind == "screen_rgba" && !o.payload.is_empty())
+            {
+                16
+            } else {
+                0
+            };
+        words[6] |= if scene
+            .waveform_texture
+            .as_ref()
+            .is_some_and(|w| !w.payload.is_empty())
+        {
+            32
+        } else {
+            0
+        };
+        words[6] |= if scene
+            .loudness_texture
+            .as_ref()
+            .is_some_and(|w| !w.payload.is_empty())
+        {
+            64
+        } else {
+            0
+        };
+        words[6] |= if scene
+            .spectrum_texture
+            .as_ref()
+            .is_some_and(|w| !w.payload.is_empty())
+        {
+            128
+        } else {
+            0
+        };
         // Bit 256 enables the bounded waveform_q16 storage path. Keep the
         // legacy waveform texture bit (32) independent for parity diagnostics.
-        words[6] |= if !scene.feature.waveform_q16.is_empty() { 256 } else { 0 };
+        words[6] |= if !scene.feature.waveform_q16.is_empty() {
+            256
+        } else {
+            0
+        };
+        // Experimental signed-centre waveform encoding. Keep opt-in so legacy
+        // unsigned payloads and parity diagnostics remain unchanged.
+        if !scene.feature.waveform_q16.is_empty()
+            && env::var("IMAGEPAD_GPU_WAVEFORM_SIGNED").as_deref() == Ok("1")
+        {
+            words[6] |= 512;
+        }
         words[7] = scene
             .glyph_atlas
             .as_ref()
@@ -673,14 +729,30 @@ fn scene_uniform_words(
     words
 }
 
-fn glyph_instance_words(scene: Option<&MusicScenePayload>, width: u32, height: u32) -> (Vec<u32>, GlyphRenderDiagnostics) {
+fn glyph_instance_words(
+    scene: Option<&MusicScenePayload>,
+    width: u32,
+    height: u32,
+) -> (Vec<u32>, GlyphRenderDiagnostics) {
     let mut out = Vec::new();
     let mut diagnostics = Vec::new();
     let Some(atlas) = scene.and_then(|s| s.glyph_atlas.as_ref()) else {
-        return (out, GlyphRenderDiagnostics { count: 0, instances: diagnostics });
+        return (
+            out,
+            GlyphRenderDiagnostics {
+                count: 0,
+                instances: diagnostics,
+            },
+        );
     };
     if atlas.payload.is_empty() || atlas.glyphs.is_empty() {
-        return (out, GlyphRenderDiagnostics { count: 0, instances: diagnostics });
+        return (
+            out,
+            GlyphRenderDiagnostics {
+                count: 0,
+                instances: diagnostics,
+            },
+        );
     }
     // TextRun coordinates are part of the canonical 1280x720 scene contract.
     // Convert them to the actual render target here; the previous code treated
@@ -750,7 +822,13 @@ fn glyph_instance_words(scene: Option<&MusicScenePayload>, width: u32, height: u
         }
     }
     let count = diagnostics.len();
-    (out, GlyphRenderDiagnostics { count, instances: diagnostics })
+    (
+        out,
+        GlyphRenderDiagnostics {
+            count,
+            instances: diagnostics,
+        },
+    )
 }
 
 fn dynamics_sample_words(scene: Option<&MusicScenePayload>) -> Vec<u32> {
@@ -781,7 +859,9 @@ fn dynamics_sample_words(scene: Option<&MusicScenePayload>) -> Vec<u32> {
 /// Keep one element even when the feature is absent so the binding remains
 /// valid on every backend; the shader is gated by the explicit scene bit.
 fn waveform_sample_words(scene: Option<&MusicScenePayload>) -> Vec<u32> {
-    let Some(scene) = scene else { return vec![0]; };
+    let Some(scene) = scene else {
+        return vec![0];
+    };
     if scene.feature.waveform_q16.is_empty() {
         return vec![0];
     }
@@ -795,12 +875,48 @@ fn waveform_sample_words(scene: Option<&MusicScenePayload>) -> Vec<u32> {
 }
 
 impl Renderer {
-    fn upload_text_overlay(&self, o: &crate::contracts::TextOverlayMetadata) -> Result<wgpu::Texture, String> {
-        if o.payload.is_empty() || o.width == 0 || o.height == 0 { return Err("empty text overlay payload".into()); }
+    fn upload_text_overlay(
+        &self,
+        o: &crate::contracts::TextOverlayMetadata,
+    ) -> Result<wgpu::Texture, String> {
+        if o.payload.is_empty() || o.width == 0 || o.height == 0 {
+            return Err("empty text overlay payload".into());
+        }
         // Keep canonical premultiplied bytes numerically identical to the Go
         // parity reference; sRGB decode would alter low-alpha edge luminance.
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor { label: Some("text-overlay"), size: wgpu::Extent3d { width:o.width,height:o.height,depth_or_array_layers:1 }, mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Rgba8Unorm,usage:wgpu::TextureUsages::COPY_DST|wgpu::TextureUsages::TEXTURE_BINDING,view_formats:&[] });
-        self.queue.write_texture(wgpu::ImageCopyTexture { texture:&texture,mip_level:0,origin:wgpu::Origin3d::ZERO,aspect:wgpu::TextureAspect::All }, &o.payload, wgpu::ImageDataLayout { offset:0,bytes_per_row:Some(NonZeroU32::new(o.row_stride).unwrap().into()),rows_per_image:Some(NonZeroU32::new(o.height).unwrap().into()) }, wgpu::Extent3d { width:o.width,height:o.height,depth_or_array_layers:1 });
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("text-overlay"),
+            size: wgpu::Extent3d {
+                width: o.width,
+                height: o.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        self.queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &o.payload,
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(NonZeroU32::new(o.row_stride).unwrap().into()),
+                rows_per_image: Some(NonZeroU32::new(o.height).unwrap().into()),
+            },
+            wgpu::Extent3d {
+                width: o.width,
+                height: o.height,
+                depth_or_array_layers: 1,
+            },
+        );
         Ok(texture)
     }
     fn upload_artwork(
@@ -822,7 +938,11 @@ impl Renderer {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: if diagnostic_raw { wgpu::TextureFormat::Rgba8Unorm } else { wgpu::TextureFormat::Rgba8UnormSrgb },
+            format: if diagnostic_raw {
+                wgpu::TextureFormat::Rgba8Unorm
+            } else {
+                wgpu::TextureFormat::Rgba8UnormSrgb
+            },
             usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
@@ -848,10 +968,46 @@ impl Renderer {
         Ok(texture)
     }
 
-    fn upload_base_texture(&self, base: &crate::contracts::BaseTextureMetadata) -> Result<wgpu::Texture, String> {
-        if base.payload.is_empty() || base.width == 0 || base.height == 0 { return Err("empty base texture payload".into()); }
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor { label: Some("music-base-texture"), size: wgpu::Extent3d { width: base.width, height: base.height, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba8Unorm, usage: wgpu::TextureUsages::COPY_DST|wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] });
-        self.queue.write_texture(wgpu::ImageCopyTexture { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All }, &base.payload, wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(NonZeroU32::new(base.row_stride).unwrap().into()), rows_per_image: Some(NonZeroU32::new(base.height).unwrap().into()) }, wgpu::Extent3d { width: base.width, height: base.height, depth_or_array_layers: 1 });
+    fn upload_base_texture(
+        &self,
+        base: &crate::contracts::BaseTextureMetadata,
+    ) -> Result<wgpu::Texture, String> {
+        if base.payload.is_empty() || base.width == 0 || base.height == 0 {
+            return Err("empty base texture payload".into());
+        }
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("music-base-texture"),
+            size: wgpu::Extent3d {
+                width: base.width,
+                height: base.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        self.queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &base.payload,
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(NonZeroU32::new(base.row_stride).unwrap().into()),
+                rows_per_image: Some(NonZeroU32::new(base.height).unwrap().into()),
+            },
+            wgpu::Extent3d {
+                width: base.width,
+                height: base.height,
+                depth_or_array_layers: 1,
+            },
+        );
         Ok(texture)
     }
 
@@ -991,17 +1147,81 @@ impl Renderer {
                     },
                     count: None,
                 },
-                wgpu::BindGroupLayoutEntry { binding: 8, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 9, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
-                wgpu::BindGroupLayoutEntry { binding: 10, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 11, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering), count: None },
-                wgpu::BindGroupLayoutEntry { binding: 12, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 13, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 14, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 8,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 9,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 10,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 11,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 12,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 13,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 14,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
                 // Bounded MusicFeature::waveform_q16 input. Binding 15 is
                 // intentionally appended so existing texture bindings remain
                 // wire-compatible with older sidecars.
-                wgpu::BindGroupLayoutEntry { binding: 15, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 15,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -1056,7 +1276,15 @@ impl Renderer {
         if width == 0 || height == 0 {
             return Err("invalid render dimensions".into());
         }
-        let (artwork_texture, atlas_texture, overlay_texture, base_texture, waveform_texture, loudness_texture, spectrum_texture) = if let Some(scene) = scene {
+        let (
+            artwork_texture,
+            atlas_texture,
+            overlay_texture,
+            base_texture,
+            waveform_texture,
+            loudness_texture,
+            spectrum_texture,
+        ) = if let Some(scene) = scene {
             scene.validate().map_err(|e| format!("scene: {e:?}"))?;
             let artwork = scene
                 .artwork
@@ -1070,11 +1298,46 @@ impl Renderer {
                 .filter(|a| !a.payload.is_empty())
                 .map(|a| self.upload_glyph_atlas(a))
                 .transpose()?;
-            let overlay = scene.text_overlay.as_ref().map(|o| self.upload_text_overlay(o)).transpose()?;
-            let base = scene.base_texture.as_ref().map(|b| { b.validate().map_err(|e| format!("base texture: {e:?}"))?; self.upload_base_texture(b) }).transpose()?;
-            let waveform = scene.waveform_texture.as_ref().map(|w| { w.validate().map_err(|e| format!("waveform texture: {e:?}"))?; self.upload_base_texture(w) }).transpose()?;
-            let loudness = scene.loudness_texture.as_ref().map(|w| { w.validate().map_err(|e| format!("loudness texture: {e:?}"))?; self.upload_base_texture(w) }).transpose()?;
-            let spectrum = scene.spectrum_texture.as_ref().map(|w| { w.validate().map_err(|e| format!("spectrum texture: {e:?}"))?; self.upload_base_texture(w) }).transpose()?;
+            let overlay = scene
+                .text_overlay
+                .as_ref()
+                .map(|o| self.upload_text_overlay(o))
+                .transpose()?;
+            let base = scene
+                .base_texture
+                .as_ref()
+                .map(|b| {
+                    b.validate().map_err(|e| format!("base texture: {e:?}"))?;
+                    self.upload_base_texture(b)
+                })
+                .transpose()?;
+            let waveform = scene
+                .waveform_texture
+                .as_ref()
+                .map(|w| {
+                    w.validate()
+                        .map_err(|e| format!("waveform texture: {e:?}"))?;
+                    self.upload_base_texture(w)
+                })
+                .transpose()?;
+            let loudness = scene
+                .loudness_texture
+                .as_ref()
+                .map(|w| {
+                    w.validate()
+                        .map_err(|e| format!("loudness texture: {e:?}"))?;
+                    self.upload_base_texture(w)
+                })
+                .transpose()?;
+            let spectrum = scene
+                .spectrum_texture
+                .as_ref()
+                .map(|w| {
+                    w.validate()
+                        .map_err(|e| format!("spectrum texture: {e:?}"))?;
+                    self.upload_base_texture(w)
+                })
+                .transpose()?;
             (artwork, atlas, overlay, base, waveform, loudness, spectrum)
         } else {
             (None, None, None, None, None, None, None)
@@ -1093,11 +1356,45 @@ impl Renderer {
             }
         });
         let text_overlay_receipt = scene.and_then(|s| s.text_overlay.as_ref()).map(|overlay| {
-            let mut h = Sha256::new(); h.update(&overlay.payload);
-            TextOverlayReceipt { sha256: format!("{:x}", h.finalize()), width: overlay.width, height: overlay.height, row_stride: overlay.row_stride, format: format!("{:?}", overlay.format), color_space: format!("{:?}", overlay.color_space), premultiplied: overlay.premultiplied, renderer_id: overlay.renderer_id.clone(), renderer_version: overlay.renderer_version.clone() }
+            let mut h = Sha256::new();
+            h.update(&overlay.payload);
+            TextOverlayReceipt {
+                sha256: format!("{:x}", h.finalize()),
+                width: overlay.width,
+                height: overlay.height,
+                row_stride: overlay.row_stride,
+                format: format!("{:?}", overlay.format),
+                color_space: format!("{:?}", overlay.color_space),
+                premultiplied: overlay.premultiplied,
+                renderer_id: overlay.renderer_id.clone(),
+                renderer_version: overlay.renderer_version.clone(),
+            }
         });
-        let artwork_receipt = scene.and_then(|s| s.artwork.as_ref()).map(|a| { let mut h=Sha256::new(); h.update(&a.payload); ArtworkReceipt { sha256:format!("{:x}",h.finalize()), source_width:a.width, source_height:a.height, output_width:width, output_height:height, crop_mode:"center-crop".into(), aspect_mode:"cover".into() } });
-        let base_texture_receipt = scene.and_then(|s| s.base_texture.as_ref()).map(|b| { let mut h=Sha256::new(); h.update(&b.payload); BaseTextureReceipt { sha256:format!("{:x}",h.finalize()), width:b.width, height:b.height, row_stride:b.row_stride, format:format!("{:?}",b.format), color_space:format!("{:?}",b.color_space) } });
+        let artwork_receipt = scene.and_then(|s| s.artwork.as_ref()).map(|a| {
+            let mut h = Sha256::new();
+            h.update(&a.payload);
+            ArtworkReceipt {
+                sha256: format!("{:x}", h.finalize()),
+                source_width: a.width,
+                source_height: a.height,
+                output_width: width,
+                output_height: height,
+                crop_mode: "center-crop".into(),
+                aspect_mode: "cover".into(),
+            }
+        });
+        let base_texture_receipt = scene.and_then(|s| s.base_texture.as_ref()).map(|b| {
+            let mut h = Sha256::new();
+            h.update(&b.payload);
+            BaseTextureReceipt {
+                sha256: format!("{:x}", h.finalize()),
+                width: b.width,
+                height: b.height,
+                row_stride: b.row_stride,
+                format: format!("{:?}", b.format),
+                color_space: format!("{:?}", b.color_space),
+            }
+        });
         let fallback = [255u8, 255, 255, 255];
         let fallback_texture = || {
             let texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -1248,14 +1545,38 @@ impl Renderer {
                     binding: 7,
                     resource: dynamics_buffer.as_entire_binding(),
                 },
-                wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(&overlay_view) },
-                wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::Sampler(&atlas_sampler) },
-                wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::TextureView(&base_view) },
-                wgpu::BindGroupEntry { binding: 11, resource: wgpu::BindingResource::Sampler(&atlas_sampler) },
-                wgpu::BindGroupEntry { binding: 12, resource: wgpu::BindingResource::TextureView(&waveform_view) },
-                wgpu::BindGroupEntry { binding: 13, resource: wgpu::BindingResource::TextureView(&loudness_view) },
-                wgpu::BindGroupEntry { binding: 14, resource: wgpu::BindingResource::TextureView(&spectrum_view) },
-                wgpu::BindGroupEntry { binding: 15, resource: waveform_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: wgpu::BindingResource::TextureView(&overlay_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: wgpu::BindingResource::Sampler(&atlas_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 10,
+                    resource: wgpu::BindingResource::TextureView(&base_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 11,
+                    resource: wgpu::BindingResource::Sampler(&atlas_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 12,
+                    resource: wgpu::BindingResource::TextureView(&waveform_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 13,
+                    resource: wgpu::BindingResource::TextureView(&loudness_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 14,
+                    resource: wgpu::BindingResource::TextureView(&spectrum_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 15,
+                    resource: waveform_buffer.as_entire_binding(),
+                },
             ],
         });
         let mut enc = self

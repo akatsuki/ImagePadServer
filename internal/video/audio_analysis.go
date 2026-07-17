@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"os"
 	"os/exec"
 	"regexp"
 	"runtime"
@@ -418,9 +419,17 @@ func (a *streamAnalyzer) Finish() (AudioAnalysis, error) {
 	for i := range waveformFrames {
 		start := i * stereoTickSamples
 		end := start + stereoTickSamples
-		if start >= len(a.waveformPCM) { break }
-		if end > len(a.waveformPCM) { end = len(a.waveformPCM) }
-		waveformFrames[i] = PCMToWaveformQ16(a.waveformPCM[start:end], 2, sampleRate, 30*waveformColumns, 0, waveformColumns)
+		if start >= len(a.waveformPCM) {
+			break
+		}
+		if end > len(a.waveformPCM) {
+			end = len(a.waveformPCM)
+		}
+		if os.Getenv("IMAGEPAD_GPU_WAVEFORM_SIGNED") == "1" {
+			waveformFrames[i] = SignedPCMToWaveformQ16(a.waveformPCM[start:end], 2, sampleRate, 30*waveformColumns, 0, waveformColumns)
+		} else {
+			waveformFrames[i] = PCMToWaveformQ16(a.waveformPCM[start:end], 2, sampleRate, 30*waveformColumns, 0, waveformColumns)
+		}
 	}
 	return AudioAnalysis{FPS: 30, Duration: duration, Frames: frames, WaveformFrames: waveformFrames, Features: features}, nil
 }

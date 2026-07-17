@@ -44,3 +44,21 @@ func TestPCMToWaveformQ16Invalid(t *testing.T) {
 		t.Fatal("partial channel should be nil")
 	}
 }
+
+func TestSignedPCMToWaveformQ16PreservesCentreAndPolarity(t *testing.T) {
+	pcm := []int16{-20000, -10000, 10000, 20000}
+	got := SignedPCMToWaveformQ16(pcm, 1, 4, 2, 0, 8)
+	if len(got) != 2 {
+		t.Fatalf("len=%d", len(got))
+	}
+	// First window midpoint is -15000, second is +15000.
+	if got[0] != uint16(-15000+32768) || got[1] != uint16(15000+32768) {
+		t.Fatalf("got %#v", got)
+	}
+}
+
+func TestSignedPCMToWaveformQ16Invalid(t *testing.T) {
+	if SignedPCMToWaveformQ16(nil, 2, 48000, 30, 0, 10) != nil {
+		t.Fatal("nil input should be nil")
+	}
+}

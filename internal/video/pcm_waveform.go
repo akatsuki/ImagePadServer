@@ -55,3 +55,63 @@ func PCMToWaveformQ16(pcm []int16, channels, sampleRate, frameRate, frameIndex, 
 	}
 	return out
 }
+
+// SignedPCMToWaveformQ16 converts interleaved PCM to a signed, centre-biased
+// Q16 envelope. The returned uint16 values are wire-encoded int16 samples:
+// 32768 is the centre line, 0 and 65535 are the negative/positive limits.
+// Keeping the wire type uint16 preserves the existing JSON contract while the
+// GPU experiment can decode the centre bias explicitly.
+func SignedPCMToWaveformQ16(pcm []int16, channels, sampleRate, frameRate, frameIndex, maxSamples int) []uint16 {
+	if channels <= 0 || sampleRate <= 0 || frameRate <= 0 || frameIndex < 0 || maxSamples <= 0 || len(pcm) < channels {
+		return nil
+	}
+	totalFrames := len(pcm) / channels
+	first := (int64(frameIndex) * int64(sampleRate)) / int64(frameRate)
+	if first >= int64(totalFrames) {
+		return nil
+	}
+	available := (int64(totalFrames)*int64(frameRate)+int64(sampleRate)-1)/int64(sampleRate) - int64(frameIndex)
+	if available <= 0 {
+		return nil
+	}
+	count := available
+	if count > int64(maxSamples) {
+		count = int64(maxSamples)
+	}
+	out := make([]uint16, int(count))
+	for i := int64(0); i < count; i++ {
+		start := (int64(frameIndex) + i) * int64(sampleRate) / int64(frameRate)
+		end := ((int64(frameIndex)+i+1)*int64(sampleRate) + int64(frameRate) - 1) / int64(frameRate)
+		if end > int64(totalFrames) {
+			end = int64(totalFrames)
+		}
+		if end <= start {
+			continue
+		}
+		var lo, hi int64
+		lo, hi = 32767, -32768
+		for sample := start; sample < end; sample++ {
+			base := sample * int64(channels)
+			for ch := 0; ch < channels; ch++ {
+				v := int64(pcm[base+int64(ch)])
+				if v < lo {
+					lo = v
+				}
+				if v > hi {
+					hi = v
+				}
+			}
+		}
+		// showwaves' centre-line waveform is represented by the midpoint of
+		// the observed signed range, normalized to the int16 domain.
+		v := (lo + hi) / 2
+		if v < -32768 {
+			v = -32768
+		}
+		if v > 32767 {
+			v = 32767
+		}
+		out[i] = uint16(v + 32768)
+	}
+	return out
+}
