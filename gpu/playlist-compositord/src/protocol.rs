@@ -69,6 +69,10 @@ pub enum Response {
     YuvFrame {
         frame: Yuv420pFrame,
     },
+    /// GPU-owned planar output. No CPU plane payload is serialized.
+    GpuYuvHandle {
+        frame: crate::gpu_yuv_transport::GpuYuvFrameHandle,
+    },
 }
 
 pub fn encode<T: Serialize>(value: &T) -> Result<String, serde_json::Error> {
@@ -264,5 +268,22 @@ mod tests {
         let encoded = encode(&v2).unwrap();
         assert!(encoded.contains(r#""type":"render_v2""#));
         assert_eq!(decode_request(&encoded).unwrap(), v2);
+
+        let gpu_yuv = Response::GpuYuvHandle {
+            frame: crate::gpu_yuv_transport::GpuYuvFrameHandle {
+                sequence: 1,
+                pts_ns: 0,
+                width: 1279,
+                height: 719,
+                y_stride: 1279,
+                u_stride: 640,
+                v_stride: 640,
+                adapter: "test".into(),
+                backend: "vulkan".into(),
+            },
+        };
+        let encoded = encode(&gpu_yuv).unwrap();
+        assert!(encoded.contains(r#""type":"gpu_yuv_handle""#));
+        assert_eq!(serde_json::from_str::<Response>(&encoded).unwrap(), gpu_yuv);
     }
 }

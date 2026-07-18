@@ -1,7 +1,9 @@
+use serde::{Deserialize, Serialize};
+
 /// GPU-owned YUV resources passed to an encoder bridge without CPU mapping.
 /// The handle is opaque to the compositor; backend-specific external-memory
 /// export is supplied by the platform adapter.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct GpuYuvFrameHandle {
     pub sequence: u64,
     pub pts_ns: i64,
