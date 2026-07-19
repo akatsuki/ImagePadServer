@@ -1,6 +1,7 @@
 # GPU-only music renderer execution plan
 
-Status: preparation; GO gate is intentionally closed.
+Status: GO gate passed on the available Windows hardware lanes; unavailable
+platform lanes remain recorded explicitly in `PLAYLIST_GPU_COMPATIBILITY.md`.
 
 The production music path may use CPU for audio decoding, feature analysis,
 font selection/atlas preparation, metadata, and muxing. It must not use CPU
@@ -55,5 +56,17 @@ rasterization or CPU color conversion for the rendered picture.
   RGBA-to-YUV call;
 - no-GPU startup fails explicitly; no silent CPU renderer is allowed.
 
-Current evidence does not satisfy this gate: the latest cache compare matched
-16/16 frames and PTS but measured max MAE 2.42 and RMSE 11.81.
+## Current acceptance evidence
+
+- `artifacts/strict-v84-final-150/report.json`: cached server audio, 1280x720,
+  150/150 CPU-reference and NativeGPU frames, nine comparison points, maximum
+  all-frame MAE `0.265865`, maximum all-frame RMSE `1.235736`, duration delta
+  `0.033334s`, NVIDIA RTX 5070 Ti through wgpu/Vulkan; gate `pass: true`.
+- AMD Radeon integrated graphics negotiated wgpu/DX12 YUV420P output and passed
+  the real playlist MP4 render/ffprobe smoke.
+- Production static guards reject CPU base/spectrum/waveform/ASS/RGBA-to-YUV
+  calls in both the single-track and playlist GPU routes.
+- `go test ./...`, Rust `cargo test` (53 passed, 1 ignored), GPU-required
+  fail-closed tests, NVIDIA playlist smoke, and AMD playlist smoke pass.
+- CPU composition remains callable only through explicitly named reference and
+  comparison APIs; production rendering fails closed without a hardware GPU.

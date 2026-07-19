@@ -2,6 +2,7 @@ package video
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -683,6 +684,92 @@ func RenderVisualizerBaseCPUWithFallback(ctx context.Context, ffmpeg, artworkPat
 		return nil, ForegroundMode{}, err
 	}
 	return toRGBA(img), mode, nil
+}
+
+// RenderVisualizerBlurredBackgroundCPU returns the exact FFmpeg cover-scale
+// and gblur=sigma=64 background used by the CPU reference before any other
+// static layer is composited. It is comparison-only diagnostic evidence.
+func RenderVisualizerBlurredBackgroundCPU(ctx context.Context, ffmpeg, artworkPath string, fallback *image.RGBA, layout VisualizerLayout) (*image.RGBA, error) {
+	canvasW := int(math.Round(float64(layout.Artwork.W) * 1280.0 / 288.0))
+	canvasH := int(math.Round(float64(layout.Artwork.H) * 720.0 / 288.0))
+	if canvasW <= 0 || canvasH <= 0 {
+		return nil, fmt.Errorf("invalid blur canvas %dx%d", canvasW, canvasH)
+	}
+	tmpDir, err := os.MkdirTemp("", "imagepad-visualizer-blur-reference-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmpDir)
+	sourcePath := artworkPath
+	if sourcePath == "" {
+		if fallback == nil {
+			return nil, errors.New("missing fallback artwork for blur reference")
+		}
+		sourcePath = filepath.Join(tmpDir, "fallback.png")
+		if err := savePNG(sourcePath, fallback); err != nil {
+			return nil, err
+		}
+	}
+	outPath := filepath.Join(tmpDir, "blurred.png")
+	filter := fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d,gblur=sigma=64", canvasW, canvasH, canvasW, canvasH)
+	cmd := exec.CommandContext(ctx, ffmpeg, "-y", "-i", sourcePath, "-vf", filter, "-frames:v", "1", outPath)
+	hideWindow(cmd)
+	if output, err := CombinedOutputTrackedFFmpeg(cmd); err != nil {
+		return nil, fmt.Errorf("blur reference: %w\n%s", err, string(output))
+	}
+	img, err := loadPNG(outPath)
+	if err != nil {
+		return nil, err
+	}
+	return toRGBA(img), nil
+}
+
+// AnalyzeVisualizerForeground runs only the reference colour/readability
+// analysis. It never produces a renderable video frame: the returned palette
+// metadata is consumed by the GPU compositor, which owns every output pixel.
+func AnalyzeVisualizerForeground(ctx context.Context, ffmpeg, artworkPath string, fallback *image.RGBA, layout VisualizerLayout) (ForegroundMode, error) {
+	canvasW := int(math.Round(float64(layout.Artwork.W) * 1280.0 / 288.0))
+	canvasH := int(math.Round(float64(layout.Artwork.H) * 720.0 / 288.0))
+	if canvasW <= 0 || canvasH <= 0 {
+		return ForegroundMode{}, fmt.Errorf("invalid analysis canvas %dx%d", canvasW, canvasH)
+	}
+	tmpDir, err := os.MkdirTemp("", "imagepad-visualizer-color-*")
+	if err != nil {
+		return ForegroundMode{}, err
+	}
+	defer os.RemoveAll(tmpDir)
+	sourcePath := artworkPath
+	if sourcePath == "" {
+		if fallback == nil {
+			return ForegroundMode{}, errors.New("missing fallback artwork for colour analysis")
+		}
+		sourcePath = filepath.Join(tmpDir, "fallback.png")
+		if err := savePNG(sourcePath, fallback); err != nil {
+			return ForegroundMode{}, err
+		}
+	}
+	blurredPath := filepath.Join(tmpDir, "blurred.png")
+	filter := fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d,gblur=sigma=64", canvasW, canvasH, canvasW, canvasH)
+	cmd := exec.CommandContext(ctx, ffmpeg, "-y", "-i", sourcePath, "-vf", filter, "-frames:v", "1", blurredPath)
+	hideWindow(cmd)
+	if output, err := CombinedOutputTrackedFFmpeg(cmd); err != nil {
+		return ForegroundMode{}, fmt.Errorf("foreground analysis blur: %w\n%s", err, string(output))
+	}
+	bg, err := loadPNG(blurredPath)
+	if err != nil {
+		return ForegroundMode{}, err
+	}
+	var fgSrc image.Image = fallback
+	if artworkPath != "" {
+		fgSrc, err = loadAnyPNG(artworkPath)
+		if err != nil {
+			return ForegroundMode{}, err
+		}
+	}
+	accentSource := scaleCover(fgSrc, canvasW, canvasH)
+	primaryRects := []image.Rectangle{layoutImageRect(layout.Title), layoutImageRect(layout.Artist), layoutImageRect(layout.Album), layoutImageRect(layout.Time)}
+	accentRects := []image.Rectangle{layoutImageRect(layout.Spectrum), layoutImageRect(layout.Loudness), layoutImageRect(layout.Progress), layoutImageRect(layout.Time)}
+	return AdaptiveForeground(toRGBA(bg), accentSource, primaryRects, accentRects), nil
 }
 
 func prepareVisualizerBase(ctx context.Context, ffmpeg, artworkPath string, fallback *image.RGBA, fallbackRenderer func(color.RGBA) (*image.RGBA, error), layout VisualizerLayout, outPath string) (ForegroundMode, error) {

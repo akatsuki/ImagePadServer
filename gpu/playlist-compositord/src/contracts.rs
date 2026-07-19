@@ -1,5 +1,13 @@
 use serde::{Deserialize, Serialize};
 
+fn deserialize_null_vec_default<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// Go's encoding/json marshals []byte as a base64 JSON string, while a plain
 /// serde Vec<u8> is an array of numbers. Accept both wire forms so sidecars
 /// can interoperate with existing Go producers, but always emit Go-compatible
@@ -41,7 +49,7 @@ pub const MUSIC_MAX_FEATURE_BINS: usize = 256;
 /// Maximum per-frame waveform samples accepted on the JSON control plane.
 /// Q0.16 values keep the contract bounded while allowing the GPU shader to
 /// reconstruct the canonical waveform without a CPU-rasterized texture.
-pub const MUSIC_MAX_WAVEFORM_SAMPLES: usize = 4096;
+pub const MUSIC_MAX_WAVEFORM_SAMPLES: usize = 16_384;
 pub const MUSIC_MAX_ARTWORK_DIMENSION: u32 = 4096;
 pub const MUSIC_MAX_ARTWORK_BYTES: usize = 16 * 1024 * 1024;
 pub const MUSIC_MAX_GLYPHS: u32 = 4096;
@@ -55,6 +63,8 @@ pub struct MusicScenePayload {
     pub feature: AudioFeatureFrame,
     #[serde(default)]
     pub artwork: Option<ArtworkMetadata>,
+    #[serde(default)]
+    pub background_artwork: Option<ArtworkMetadata>,
     #[serde(default)]
     pub base_texture: Option<BaseTextureMetadata>,
     #[serde(default)]
@@ -152,6 +162,8 @@ pub struct MusicScenePalette {
     pub background: [u8; 4],
     pub overlay: [u8; 4],
     #[serde(default)]
+    pub fallback_end: [u8; 4],
+    #[serde(default)]
     pub blur_strength: u16,
     #[serde(default)]
     pub readability: u16,
@@ -208,6 +220,10 @@ pub struct GlyphAtlasMetadata {
     pub glyphs: Vec<GlyphEntry>,
     #[serde(default)]
     pub text_runs: Vec<TextRun>,
+    /// Bounded libass run rasters. These are source glyph textures, never a
+    /// CPU-composited screen image; final placement and blending stay on GPU.
+    #[serde(default)]
+    pub bitmap_runs: Vec<GlyphBitmapRun>,
     #[serde(default)]
     pub asset_hash: String,
 }
@@ -235,6 +251,16 @@ pub struct TextRun {
     pub font_family: String,
     #[serde(default)]
     pub font_weight: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GlyphBitmapRun {
+    pub id: String,
+    pub atlas_rect: SceneRect,
+    pub screen_rect: SceneRect,
+    pub rgba: [u8; 4],
+    #[serde(default)]
+    pub opacity: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -276,12 +302,21 @@ pub struct AudioFeatureFrame {
     pub frame_index: u64,
     pub pts_ns: i64,
     /// Little-endian wire values, quantized to unsigned Q0.16.
+    #[serde(default, deserialize_with = "deserialize_null_vec_default")]
     pub spectrum_q16: Vec<u16>,
     /// Optional bounded Q0.16 waveform samples.  Omitted by legacy producers.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "deserialize_null_vec_default"
+    )]
     pub waveform_q16: Vec<u16>,
     /// Optional bounded Q0.16 fingerprint bands for GPU fallback artwork.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "deserialize_null_vec_default"
+    )]
     pub fingerprint_q16: Vec<u16>,
     pub rms_q15: u16,
     pub peak_q15: u16,
@@ -517,6 +552,9 @@ impl MusicScenePayload {
         if let Some(artwork) = &self.artwork {
             artwork.validate()?;
         }
+        if let Some(artwork) = &self.background_artwork {
+            artwork.validate()?;
+        }
         if let Some(atlas) = &self.glyph_atlas {
             atlas.validate()?;
         }
@@ -641,6 +679,7 @@ impl GlyphAtlasMetadata {
             || self.glyph_count > MUSIC_MAX_GLYPHS
             || self.glyphs.len() > MUSIC_MAX_GLYPHS as usize
             || self.text_runs.len() > MUSIC_MAX_GLYPH_RUNS
+            || self.bitmap_runs.len() > MUSIC_MAX_GLYPHS as usize
             || self.font_family.len() + self.missing_glyph_id.len() > MUSIC_MAX_TEXT_BYTES
             || self.fallback_order.iter().any(|name| name.is_empty())
             || self
@@ -675,6 +714,20 @@ impl GlyphAtlasMetadata {
                     || !r.size_px.is_finite()
                     || r.size_px <= 0.0
                     || !r.opacity.is_finite()
+            })
+            || self.bitmap_runs.iter().any(|r| {
+                r.id.is_empty()
+                    || r.atlas_rect.x < 0
+                    || r.atlas_rect.y < 0
+                    || r.atlas_rect.w <= 0
+                    || r.atlas_rect.h <= 0
+                    || r.screen_rect.w <= 0
+                    || r.screen_rect.h <= 0
+                    || r.atlas_rect.x.saturating_add(r.atlas_rect.w) > self.width as i32
+                    || r.atlas_rect.y.saturating_add(r.atlas_rect.h) > self.height as i32
+                    || !r.opacity.is_finite()
+                    || r.opacity < 0.0
+                    || r.opacity > 1.0
             })
         {
             return Err(ContractError::InvalidGlyphAtlas);
@@ -883,6 +936,15 @@ mod tests {
         oversized.waveform_q16 = vec![0; MUSIC_MAX_WAVEFORM_SAMPLES + 1];
         assert_eq!(oversized.validate(), Err(ContractError::InvalidAudio));
     }
+
+    #[test]
+    fn go_nil_feature_vectors_decode_as_empty() {
+        let json = r#"{"schema":1,"sample_rate_hz":48000,"frame_index":0,"pts_ns":0,"spectrum_q16":null,"waveform_q16":null,"fingerprint_q16":null,"rms_q15":0,"peak_q15":0}"#;
+        let decoded: AudioFeatureFrame = serde_json::from_str(json).unwrap();
+        assert!(decoded.spectrum_q16.is_empty());
+        assert!(decoded.waveform_q16.is_empty());
+        assert!(decoded.fingerprint_q16.is_empty());
+    }
     #[test]
     fn serde_round_trip_preserves_format_and_order() {
         let s = SceneSnapshot {
@@ -921,6 +983,7 @@ mod tests {
             payload: Vec::new(),
             glyphs: Vec::new(),
             text_runs: Vec::new(),
+            bitmap_runs: Vec::new(),
             asset_hash: String::new(),
         };
         assert!(atlas.validate().is_ok());

@@ -36,7 +36,7 @@ non-empty `reason`; it must never be rewritten as a successful smoke test.
 
 | Lane | Backend target | Hardware evidence | Status |
 | --- | --- | --- | --- |
-| Windows | D3D12 (Vulkan fallback) | RTX 5070 Ti adapter, sidecar render, music FFmpeg smoke, fallback frame smoke; AMD Radeon(TM) Graphics 1800s soak (`output/gpu-acceptance-amd-1800s.json`, 2,165,455 frames) | `PASS_SHORT_SMOKE; AMD_SOAK_PASS` |
+| Windows | D3D12 (Vulkan fallback) | RTX 5070 Ti strict 150-frame all-frame parity (`artifacts/strict-v84-final-150/report.json`, MAE 0.265865/RMSE 1.235736); AMD Radeon(TM) Graphics DX12 YUV420P playlist smoke and 1800s soak (`output/gpu-acceptance-amd-1800s.json`, 2,165,455 frames) | `NVIDIA_PARITY_PASS; AMD_SOAK_PASS` |
 | macOS | Metal | No macOS runner available in this workspace; no unsupported pass claimed | `BLOCKED_ENVIRONMENT` |
 | Linux | Vulkan | Docker contract build and software-adapter negative probe PASS (`docs/PLAYLIST_GPU_LINUX_CONTRACT.md`); no hardware Vulkan runner | `CONTRACT_PASS; HARDWARE_BLOCKED` |
 | Headless CI | no software adapter allowed | negative probe only | `BLOCKED` unless a labeled GPU runner is attached |

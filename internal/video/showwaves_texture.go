@@ -19,11 +19,12 @@ func StreamAudioWaveFrames(ctx context.Context, ffmpeg, audioPath string, width,
 	if color == "" {
 		color = "#FFFFFF@0.55"
 	}
-	wave := fmt.Sprintf("showwaves=s=%dx%d:rate=30:mode=line:colors=%s,format=rgba[out]", width, height, color)
-	args := []string{"-hide_banner", "-loglevel", "error", "-i", audioPath}
+	wavePrefix := "[0:a]"
 	if audioFilter != "" {
-		args = append(args, "-af", audioFilter)
+		wavePrefix += audioFilter + ","
 	}
+	wave := fmt.Sprintf("%sshowwaves=s=%dx%d:rate=30:mode=line:colors=%s,format=rgba[out]", wavePrefix, width, height, color)
+	args := []string{"-hide_banner", "-loglevel", "error", "-i", audioPath}
 	args = append(args, "-filter_complex", wave, "-map", "[out]", "-frames:v", strconv.Itoa(frames), "-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1")
 	cmd := exec.CommandContext(ctx, ffmpeg, args...)
 	hideWindow(cmd)

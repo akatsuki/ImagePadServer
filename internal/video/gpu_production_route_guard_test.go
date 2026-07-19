@@ -31,16 +31,29 @@ func TestGPUProductionRoutesDoNotReintroduceCPUComposition(t *testing.T) {
 				t.Errorf("%s contains CPU composition filter %q", name, banned)
 			}
 		}
+		for _, bannedCall := range []string{
+			"RenderVisualizerBaseCPUWithFallback",
+			"RenderVisualizerBaseCPU",
+			"RenderVisualizerReferenceFrameCPU",
+			"RenderSpectrumMaskCPU",
+			"RenderSpectrumCompositeTextureCPU",
+			"RenderCanonicalASSOverlay",
+			"BuildVisualizerASS",
+			"StreamAudioWaveFrames",
+			"rgbaToYUV420p",
+		} {
+			if strings.Contains(source, bannedCall) {
+				t.Errorf("%s contains forbidden CPU full-frame call %q", name, bannedCall)
+			}
+		}
 		if !strings.Contains(source, "CanonicalMusicScene") {
 			t.Errorf("%s does not use CanonicalMusicScene", name)
 		}
 	}
 }
 
-// TestGPULoudnessShaderOwnsTheProductionLayer guards the migration seam: the
-// opt-in GPU loudness route must not eagerly rasterize/upload the CPU graph,
-// and must leave the scene texture nil so the sidecar's dynamics shader is
-// enabled by the absence of a canonical texture.
+// TestGPULoudnessShaderOwnsTheProductionLayer guards the mandatory native
+// route: no opt-in or CPU-raster alternative may remain in production.
 func TestGPULoudnessShaderOwnsTheProductionLayer(t *testing.T) {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
@@ -48,13 +61,14 @@ func TestGPULoudnessShaderOwnsTheProductionLayer(t *testing.T) {
 	}
 	source := readRouteSource(t, filepath.Join(filepath.Dir(file), "audio_visualizer.go"))
 	body := routeBody(sourceBetween(source, "func runAudioVisualizerHLSGPU", "func writeGPUFrame"))
-	for _, want := range []string{
-		`IMAGEPAD_GPU_LOUDNESS_SHADER`,
-		`if !useGPULoudness`,
-		`scene.LoudnessTexture = nil`,
-	} {
+	for _, want := range []string{`scene.LoudnessTexture = nil`} {
 		if !strings.Contains(body, want) {
-			t.Errorf("GPU loudness route missing migration guard %q", want)
+			t.Errorf("GPU loudness route missing mandatory native ownership %q", want)
+		}
+	}
+	for _, banned := range []string{`IMAGEPAD_GPU_LOUDNESS_SHADER`, `useGPULoudness`, `buildLoudnessLayer`} {
+		if strings.Contains(body, banned) {
+			t.Errorf("GPU loudness route retains legacy branch %q", banned)
 		}
 	}
 }
@@ -66,16 +80,14 @@ func TestGPUDynamicShaderOwnsWaveformAndSpectrum(t *testing.T) {
 	}
 	source := readRouteSource(t, filepath.Join(filepath.Dir(file), "audio_visualizer.go"))
 	body := routeBody(sourceBetween(source, "func runAudioVisualizerHLSGPU", "func writeGPUFrame"))
-	for _, want := range []string{
-		`IMAGEPAD_GPU_DYNAMIC_SHADER`,
-		`if !useGPUDynamic`,
-		`useGPUWaveform = true`,
-		`useSpectrumCanonical = false`,
-		`wave = make([]byte, waveW*waveH*4)`,
-		`scene.WaveformTexture = nil`,
-	} {
+	for _, want := range []string{`StreamWaveformPCMHistoryFrames`, `scene.WaveformTexture = nil`, `scene.SpectrumTexture = nil`} {
 		if !strings.Contains(body, want) {
-			t.Errorf("dynamic GPU route missing %q", want)
+			t.Errorf("mandatory dynamic GPU route missing %q", want)
+		}
+	}
+	for _, banned := range []string{`IMAGEPAD_GPU_DYNAMIC_SHADER`, `useGPUDynamic`, `StreamAudioWaveFrames`, `RenderSpectrumMaskCPU`, `RenderSpectrumCompositeTextureCPU`} {
+		if strings.Contains(body, banned) {
+			t.Errorf("dynamic GPU route retains legacy branch %q", banned)
 		}
 	}
 }
@@ -87,27 +99,34 @@ func TestGPUYUVRequiredRouteFailsClosed(t *testing.T) {
 	}
 	source := readRouteSource(t, filepath.Join(filepath.Dir(file), "audio_visualizer.go"))
 	body := routeBody(sourceBetween(source, "func runAudioVisualizerHLSGPU", "func writeGPUFrame"))
-	for _, want := range []string{
-		`IMAGEPAD_GPU_YUV_REQUIRED`,
-		`sidecar.RequireYUV420Output()`,
-		`sidecar YUV420P output required`,
-	} {
+	for _, want := range []string{`sidecar.RequireYUV420Output()`, `sidecar YUV420P output required`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("GPU YUV-required route missing fail-closed guard %q", want)
 		}
 	}
-	if !strings.Contains(body, `== "1"`) {
-		t.Error("GPU YUV-required guard must remain opt-in")
+	for _, banned := range []string{`IMAGEPAD_GPU_YUV_REQUIRED`, `yuvRequired`} {
+		if strings.Contains(body, banned) {
+			t.Errorf("GPU YUV route must be mandatory, found legacy opt-in %q", banned)
+		}
 	}
 }
 
 func TestGPUYUVRequiredRouteUsesNativeYUVFrame(t *testing.T) {
 	_, file, _, ok := runtime.Caller(0)
-	if !ok { t.Fatal("runtime.Caller failed") }
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
 	source := readRouteSource(t, filepath.Join(filepath.Dir(file), "audio_visualizer.go"))
 	body := routeBody(sourceBetween(source, "func runAudioVisualizerHLSGPU", "func writeGPUFrame"))
-	for _, want := range []string{`sidecar.RenderSceneYUV`, `yuvFrame.PackedBytes`, `if yuvRequired`} {
-		if !strings.Contains(body, want) { t.Errorf("GPU YUV route missing native transport %q", want) }
+	for _, want := range []string{`sidecar.RenderSceneYUV`, `yuvFrame.PackedBytes`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("GPU YUV route missing native transport %q", want)
+		}
+	}
+	for _, banned := range []string{`sidecar.RenderScene(ctx`, `rgbaToYUV420p`} {
+		if strings.Contains(body, banned) {
+			t.Errorf("GPU YUV route retains CPU fallback %q", banned)
+		}
 	}
 }
 
@@ -118,18 +137,15 @@ func TestGPUTextShaderOwnsGlyphComposition(t *testing.T) {
 	}
 	source := readRouteSource(t, filepath.Join(filepath.Dir(file), "audio_visualizer.go"))
 	body := routeBody(sourceBetween(source, "func runAudioVisualizerHLSGPU", "func writeGPUFrame"))
-	for _, want := range []string{
-		`IMAGEPAD_GPU_TEXT_SHADER`,
-		`if !useGPUText`,
-		`scene.GlyphAtlas = nil`,
-		`else {`,
-	} {
+	for _, want := range []string{`scene.TextOverlay = nil`} {
 		if !strings.Contains(body, want) {
-			t.Errorf("GPU text route missing migration guard %q", want)
+			t.Errorf("GPU text route missing native ownership %q", want)
 		}
 	}
-	if strings.Contains(body, `postYUVFilter {`) && !strings.Contains(body, `postYUVFilter && !useGPUText`) {
-		t.Error("GPU text route must not apply the post-YUV ASS filter")
+	for _, banned := range []string{`IMAGEPAD_GPU_TEXT_SHADER`, `useGPUText`, `scene.GlyphAtlas = nil`, `BuildVisualizerASS`, `postYUVFilter`} {
+		if strings.Contains(body, banned) {
+			t.Errorf("GPU text route retains legacy branch %q", banned)
+		}
 	}
 }
 

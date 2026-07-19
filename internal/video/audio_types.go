@@ -94,12 +94,16 @@ type AcquiredAudio struct {
 }
 
 type AudioRenderInput struct {
-	SourcePath      string
-	Kind            SourceKind
-	Metadata        AudioMetadata
-	ArtworkPath     string
-	BaseTexture     *BaseTextureMetadata
-	WaveformTexture *BaseTextureMetadata
-	TextOverlay     *TextOverlayMetadata
-	Analysis        AudioAnalysis
+	SourcePath               string
+	Kind                     SourceKind
+	Metadata                 AudioMetadata
+	ArtworkPath              string
+	ArtworkTexture           *ArtworkMetadata
+	BackgroundArtworkTexture *ArtworkMetadata
+	PreparedForeground       *ForegroundMode
+	BaseTexture              *BaseTextureMetadata
+	WaveformTexture          *BaseTextureMetadata
+	TextOverlay              *TextOverlayMetadata
+	PreparedGlyphAtlas       *PreparedGlyphAtlas
+	Analysis                 AudioAnalysis
 }

@@ -97,6 +97,23 @@ func TestStreamAnalyzerBuildsWaveformFramesFromPCM(t *testing.T) {
 	}
 }
 
+func TestBuildShowwavesRawHistoryQ16UsesPreviousAndCurrentTicks(t *testing.T) {
+	const tickValues = sampleRate / 30 * 2
+	frames := [][]uint16{make([]uint16, tickValues), make([]uint16, tickValues)}
+	for i := 0; i < tickValues; i++ {
+		frames[0][i] = uint16(32768 - 100)
+		frames[1][i] = uint16(32768 + 200)
+	}
+	first := buildShowwavesRawHistoryQ16(frames, 0)
+	if len(first) != tickValues*2 || first[0] != 32768 || first[tickValues] != uint16(32768-100) {
+		t.Fatalf("first history does not contain zero/current ticks: len=%d first=%d current=%d", len(first), first[0], first[tickValues])
+	}
+	second := buildShowwavesRawHistoryQ16(frames, 1)
+	if len(second) != tickValues*2 || second[0] != uint16(32768-100) || second[tickValues] != uint16(32768+200) {
+		t.Fatalf("second history does not contain previous/current ticks: len=%d previous=%d current=%d", len(second), second[0], second[tickValues])
+	}
+}
+
 func generateClickTrack(bpm float64, durationSec float64, sampleRate int) []int16 {
 	totalSamples := int(durationSec * float64(sampleRate))
 	pcm := make([]int16, totalSamples*2) // stereo interleaved

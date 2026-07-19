@@ -1,20 +1,22 @@
-# V2 YUV transport acceptance contract
+# V2 YUV rendering and transport contract
 
-The GPU compositor must expose Y, U, and V as GPU-owned storage resources to
-the encoder bridge. The production path must not create `MAP_READ` buffers or
-copy the planes into a CPU byte slice before encoding.
+The GPU compositor must perform RGBA-to-YUV420 pixel conversion on the GPU.
+Readback into staging memory is permitted solely to cross the sidecar/FFmpeg
+process boundary; it is transport, not CPU rendering. CPU-side color matrix,
+chroma resampling, compositing, or other pixel generation is forbidden.
 
 Required evidence for the direct path:
 
 - resource receipts identify the adapter, backend, buffer IDs, strides, and
   frame sequence;
-- the encoder bridge consumes the same GPU resources or an external-memory
-  handle without a readback;
+- the production receipt records `OwnedByTransport` after GPU compute;
 - CPU reference mode remains available only for golden comparison;
-- a diagnostic build may read back planes, but its receipt must be marked
-  `DiagnosticOnly` and cannot satisfy the NativeGPU GO gate;
+- the readback stage may only pack the computed plane bytes; it must not alter
+  pixel values;
 - odd width/height uses `(width+1)/2` and `(height+1)/2` chroma dimensions;
 - the final stream is `yuv420p`, BT.709, limited range, with matching PTS.
 
-The current experimental implementation is intentionally not accepted: it
-still allocates `MAP_READ` staging buffers and returns CPU-owned plane vectors.
+External-memory zero-copy into NVENC/AMF/VideoToolbox is a later optimization.
+It is not part of the visual-parity GO gate because FFmpeg currently runs as a
+separate process and the product requirement is GPU rendering, not mandatory
+zero-copy encoding.
