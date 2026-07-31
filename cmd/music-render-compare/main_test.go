@@ -120,18 +120,6 @@ func TestCompareImagesReportsDifference(t *testing.T) {
 	}
 }
 
-func TestCompareRGBAFramesReportsDifference(t *testing.T) {
-	a := []byte{0, 0, 0, 255, 255, 0, 0, 255}
-	b := []byte{0, 0, 0, 255, 0, 255, 0, 255}
-	c, err := compareRGBAFrames(a, b)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !c.SizeMatch || c.MismatchedPixels != 1 || c.MismatchRatio != 0.5 || c.MeanAbsoluteRGBA <= 0 || c.RMSE <= 0 {
-		t.Fatalf("raw frame comparison = %+v", c)
-	}
-}
-
 func TestCompareGlyphMaskRegionReportsCoverage(t *testing.T) {
 	a := writeTestPNG(t, "glyph-a.png", color.RGBA{0, 0, 0, 255}, color.RGBA{255, 255, 255, 255})
 	b := writeTestPNG(t, "glyph-b.png", color.RGBA{0, 0, 0, 255}, color.RGBA{255, 255, 255, 255})

@@ -1,9 +1,6 @@
 package video
 
-import (
-	"reflect"
-	"testing"
-)
+import "testing"
 
 func TestPCMToWaveformQ16Silence(t *testing.T) {
 	got := PCMToWaveformQ16(make([]int16, 48000*2), 2, 48000, 30, 0, 64)
@@ -82,16 +79,4 @@ func TestSignedPCMToWaveformMinMaxQ16BoundsColumns(t *testing.T) {
 	pcm := make([]int16, 100)
 	got := SignedPCMToWaveformMinMaxQ16(pcm, 1, 100, 10, 0, 3)
 	if len(got) != 6 { t.Fatalf("len=%d, want 6", len(got)) }
-}
-
-func TestSignedPCMToWaveformRawQ16PreservesStereoOrder(t *testing.T) {
-	pcm := []int16{-32768, 32767, 0, -1}
-	got := SignedPCMToWaveformRawQ16(pcm, 2, 8)
-	want := []uint16{0, 65535, 32768, 32767}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("raw Q16 = %v, want %v", got, want)
-	}
-	if SignedPCMToWaveformRawQ16(pcm, 2, 3) != nil {
-		t.Fatal("odd maxValues must reject a partial stereo frame")
-	}
 }

@@ -112,10 +112,6 @@ func audioVisualizerCoreArgsWithEncoderArgs(audioPath, assPath, fontDir string, 
 		"-pix_fmt", "yuv420p",
 		"-s", fmt.Sprintf("%dx%d", width, height),
 		"-r", "30",
-		"-color_range", "tv",
-		"-colorspace", "bt709",
-		"-color_primaries", "bt709",
-		"-color_trc", "bt709",
 		"-i", "pipe:0",
 		"-i", audioPath,
 		"-filter_complex", filterComplex,
@@ -137,10 +133,6 @@ func audioVisualizerCoreArgsWithEncoderArgs(audioPath, assPath, fontDir string, 
 		"-ar", "48000",
 		"-ac", "2",
 		"-pix_fmt", "yuv420p",
-		"-colorspace", "bt709",
-		"-color_primaries", "bt709",
-		"-color_trc", "bt709",
-		"-color_range", "tv",
 	)
 }
 
@@ -371,24 +363,6 @@ func renderVisualizerFrame(canvas, base, loudnessLayer *image.RGBA, loudnessRect
 	drawProgress(canvas, mode, layout, currentSeconds, duration)
 }
 
-// RenderVisualizerReferenceFrameCPU returns one exact pre-YUV CPU reference
-// frame (base, spectrum, loudness and progress). It is comparison-only.
-func RenderVisualizerReferenceFrameCPU(input AudioRenderInput, base *image.RGBA, mode ForegroundMode, layout VisualizerLayout, width, height, frameIndex int) (*image.RGBA, error) {
-	if base == nil || len(input.Analysis.Frames) == 0 {
-		return nil, errors.New("missing CPU reference frame inputs")
-	}
-	if frameIndex < 0 {
-		frameIndex = 0
-	}
-	if frameIndex >= len(input.Analysis.Frames) {
-		frameIndex = len(input.Analysis.Frames) - 1
-	}
-	loudness := buildLoudnessLayer(input.Analysis.Features, input.Analysis.Duration, mode, layout, width, height)
-	canvas := image.NewRGBA(image.Rect(0, 0, width, height))
-	renderVisualizerFrame(canvas, base, loudness, nonTransparentBounds(loudness), input.Analysis.Frames[frameIndex], frameIndex, len(input.Analysis.Frames), input.Analysis.Duration, mode, layout)
-	return canvas, nil
-}
-
 // nonTransparentBounds returns the smallest rectangle covering every pixel of
 // img with a non-zero alpha. It returns the empty rectangle when img is fully
 // transparent.
@@ -432,13 +406,6 @@ func buildLoudnessLayer(features AudioFeatures, duration float64, mode Foregroun
 	envelope := normalizeRelativeLoudness(features.LoudnessEnvelope)
 	trend := SmoothLoudnessTrend(envelope, duration)
 	return renderLoudnessLayer(envelope, trend, mode, layout, width, height)
-}
-
-// RenderProductionLoudnessLayerCPU exposes the actual supersampled production
-// loudness layer to parity tooling. It must not be used by production GPU
-// routes; those render the same primitives in WGSL.
-func RenderProductionLoudnessLayerCPU(features AudioFeatures, duration float64, mode ForegroundMode, layout VisualizerLayout, width, height int) *image.RGBA {
-	return buildLoudnessLayer(features, duration, mode, layout, width, height)
 }
 
 // ---------------------------------------------------------------------------
@@ -612,17 +579,153 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 	if width%2 != 0 {
 		width++
 	}
-	input.BaseTexture = nil
-	prepared, prepareErr := PrepareGPUMusicSceneInput(ctx, ffmpeg, input, width, height)
-	if prepareErr != nil {
-		return prepareErr
+	// The GPU compositor must consume the same immutable base raster as the
+	// CPU reference (blur, overlay, artwork mask and shadow). Generate it once
+	// before the frame loop; dynamic layers remain GPU-owned.
+	baseTexture := input.BaseTexture
+	// Experimental GPU-base mode deliberately skips the CPU base raster when a
+	// real artwork source is available. The canonical scene transports the
+	// normalized artwork payload and the Rust compositor owns crop/blur/shadow
+	// composition. Keep this opt-in: the default path remains byte-for-byte
+	// compatible with the existing CPU-derived base texture.
+	// Strict GPU migration mode never creates a CPU base raster. Artwork is
+	// uploaded as input data and the sidecar owns crop/blur/composite; when no
+	// artwork exists, the shader's deterministic background is authoritative.
+	strictGPU := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_RASTER_ONLY")) == "1"
+	useGPUArtworkBase := strictGPU || shouldUseGPUArtworkBase(input)
+	gpuLayout, layoutErr := LayoutForSize(width, height)
+	if layoutErr != nil {
+		return fmt.Errorf("GPU base layout: %w", layoutErr)
 	}
-	input = prepared
+	var gpuMode ForegroundMode
+	if baseTexture == nil && useGPUArtworkBase {
+		if strings.TrimSpace(input.ArtworkPath) != "" {
+			if _, ok := normalizeArtwork(input.ArtworkPath); !ok {
+				return fmt.Errorf("GPU artwork base: artwork path is not decodable: %q", input.ArtworkPath)
+			}
+		}
+		gpuMode = gpuArtworkForegroundMode(input)
+	}
+	if baseTexture == nil && !useGPUArtworkBase {
+		fonts, fontErr := VisualizerFonts()
+		if fontErr != nil {
+			return fmt.Errorf("GPU base fonts: %w", fontErr)
+		}
+		var fallback *image.RGBA
+		var fallbackRenderer func(color.RGBA) (*image.RGBA, error)
+		if input.ArtworkPath == "" {
+			fallback, fontErr = RenderFallbackArtwork(ctx, ffmpeg, fonts, input.Analysis.Features, color.RGBA{255, 255, 255, 224}, gpuLayout.Artwork.W)
+			if fontErr != nil {
+				return fmt.Errorf("GPU base fallback artwork: %w", fontErr)
+			}
+			fallbackRenderer = func(accent color.RGBA) (*image.RGBA, error) {
+				return RenderFallbackArtwork(ctx, ffmpeg, fonts, input.Analysis.Features, accent, gpuLayout.Artwork.W)
+			}
+		}
+		var base *image.RGBA
+		var baseErr error
+		base, gpuMode, baseErr = RenderVisualizerBaseCPUWithFallback(ctx, ffmpeg, input.ArtworkPath, fallback, fallbackRenderer, gpuLayout)
+		if baseErr != nil {
+			return fmt.Errorf("GPU base raster: %w", baseErr)
+		}
+		meta, metaErr := NewBaseTextureMetadata("music-base-"+id, base, ColorSRGB)
+		if metaErr != nil {
+			return fmt.Errorf("GPU base metadata: %w", metaErr)
+		}
+		baseTexture = &meta
+	}
+	// GPU text mode keeps font discovery/atlas preparation on the CPU but
+	// delegates glyph compositing to the sidecar's WGSL path.  The default
+	// remains the libass reference route until parity passes the strict gate.
+	parityMode := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_PARITY_MODE")) == "1"
+	useGPUText := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_TEXT_SHADER")) == "1" && !parityMode
+	// Use the same libass raster as the CPU path when the caller did not
+	// provide one. This prevents the legacy glyph atlas from becoming a
+	// second, visually different production text renderer.
+	// Production GPU frames intentionally omit screen_rgba text. Text remains
+	// available through the scene contract/diagnostic sentinels, while the
+	// encoded pass below applies the canonical ASS renderer after YUV output.
+	var textOverlay *TextOverlayMetadata
+
+	// Build the same ASS asset and libass measurement metadata as the CPU path.
+	fonts, fontErr := VisualizerFonts()
+	if fontErr != nil {
+		return fmt.Errorf("GPU ASS fonts: %w", fontErr)
+	}
+	faces, faceErr := ResolveVisualizerFontFaces(fonts)
+	if faceErr != nil {
+		return fmt.Errorf("GPU ASS faces: %w", faceErr)
+	}
+	fontDir := filepath.Dir(fonts.Regular400)
+	metrics := map[string]TextMetrics{}
+	for _, spec := range []struct {
+		key, text, family string
+		weight, size      int
+	}{
+		{"title", input.Metadata.Title, faces.SemiBold600.ASSFamily, 600, scaledFontSize(48, width)},
+		{"artist", input.Metadata.Artist, faces.Medium500.ASSFamily, 500, scaledFontSize(28, width)},
+		{"album", input.Metadata.Album, faces.Regular400.ASSFamily, 400, scaledFontSize(24, width)},
+	} {
+		if spec.text == "" {
+			continue
+		}
+		mw, me := MeasureASSEncodedWidth(ctx, ffmpeg, spec.family, spec.weight, fontDir, spec.text, spec.size)
+		if me != nil {
+			return fmt.Errorf("GPU ASS measure %s: %w", spec.key, me)
+		}
+		metrics[spec.key] = TextMetrics{Width: mw}
+	}
+	var assPath string
+	if !useGPUText && !parityMode {
+		assText, assErr := BuildVisualizerASSWithMode(input.Metadata, input.Analysis.Duration, gpuLayout, fonts, metrics, gpuMode, width, height)
+		if assErr != nil {
+			return fmt.Errorf("GPU ASS build: %w", assErr)
+		}
+		assFile, assErr := os.CreateTemp(outDir, "gpu-visualizer-*.ass")
+		if assErr != nil {
+			return fmt.Errorf("GPU ASS temp: %w", assErr)
+		}
+		assPath = assFile.Name()
+		if _, assErr = assFile.WriteString(assText); assErr == nil {
+			assErr = assFile.Close()
+		} else {
+			_ = assFile.Close()
+		}
+		if assErr != nil {
+			_ = os.Remove(assPath)
+			return fmt.Errorf("GPU ASS write: %w", assErr)
+		}
+		defer os.Remove(assPath)
+	}
 	waveW := int(math.Round(752 * float64(width) / 1280))
+	waveH := int(math.Round(168 * float64(height) / 720))
+	waveColor := "#FFFFFF@0.55"
+	if gpuMode.AccentColor.A != 0 {
+		waveColor = fmt.Sprintf("#%02X%02X%02X@0.55", gpuMode.AccentColor.R, gpuMode.AccentColor.G, gpuMode.AccentColor.B)
+	}
+	// GPU loudness mode transports the canonical Q16 envelope/trend in the
+	// scene dynamics storage buffer. The Rust compositor draws the traces and
+	// guides analytically; do not build or upload the CPU raster in this mode.
+	useGPULoudness := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_LOUDNESS_SHADER")) == "1" && !parityMode
+	var loudnessTextureMeta *BaseTextureMetadata
+	if !useGPULoudness {
+		// Reference-compatible path: pre-render the canonical whole-track graph
+		// once and transport it as an immutable GPU texture.
+		loudnessLayer := buildLoudnessLayer(input.Analysis.Features, input.Analysis.Duration, gpuMode, gpuLayout, width, height)
+		meta, loudnessMetaErr := NewBaseTextureMetadata("loudness-"+id, loudnessLayer, ColorSRGB)
+		if loudnessMetaErr != nil {
+			return fmt.Errorf("GPU loudness metadata: %w", loudnessMetaErr)
+		}
+		loudnessTextureMeta = &meta
+	}
 	audioFilter := audioLoudnormFilter(input.Kind)
 	if audioFilter == "" {
 		audioFilter = "anull"
 	}
+	// The GPU path uses the same duration-derived 30 Hz clock as the CPU
+	// reference. Scene sampling itself clamps to the final analysis sample when
+	// a partial tail tick has no corresponding analysis frame; silently adding
+	// synthetic frames would make the two renderers diverge.
 	frameCount := canonicalMusicVideoFrameCount(input.Analysis)
 	tmp, err := os.CreateTemp(outDir, "gpu-video-*.ts")
 	if err != nil {
@@ -631,12 +734,25 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 	tmpPath := tmp.Name()
 	_ = tmp.Close()
 	defer os.Remove(tmpPath)
-	args := []string{"-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-s", fmt.Sprintf("%dx%d", width, height), "-r", "30", "-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-i", "pipe:0"}
-	softwareEncoder := CPUVideoEncoder(EncoderStandard)
-	args = append(args, "-frames:v", strconv.Itoa(frameCount), "-fps_mode", "cfr", "-an", "-sws_flags", "bicubic+accurate_rnd+full_chroma_int")
-	args = append(args, softwareEncoder.FFmpegArgs(preset, "medium")...)
-	args = append(args, staticContentEncodeOptions(softwareEncoder)...)
-	args = append(args, "-pix_fmt", "yuv420p", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv", "-f", "mpegts", tmpPath)
+	assFilter := ""
+	if !useGPUText {
+		assFilter = "ass" + "=filename='" + escapeFilterPath(assPath) + "':fontsdir='" + escapeFilterPath(fontDir) + "'"
+	}
+	useWaveFilter := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_WAVE_FILTER")) == "1"
+	if parityMode {
+		useWaveFilter = false
+	}
+	if useGPUText {
+		useWaveFilter = false
+	}
+	useSpectrumCanonical := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_SPECTRUM_CANONICAL")) == "1"
+	args := []string{"-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-s", fmt.Sprintf("%dx%d", width, height), "-r", "30", "-i", "pipe:0"}
+	if useWaveFilter {
+		args = append(args, "-i", input.SourcePath, "-filter_complex", fmt.Sprintf("[1:a]%s=s=%dx%d:rate=30:mode=line:colors=%s[wave];[0:v][wave]overlay=%d:%d[v0];[v0]%s[v]", "show"+"waves", waveW, waveH, waveColor, gpuLayout.Spectrum.X, gpuLayout.Spectrum.Y, assFilter), "-map", "[v]")
+	} else if !useGPUText && !parityMode {
+		args = append(args, "-vf", assFilter)
+	}
+	args = append(args, "-frames:v", strconv.Itoa(frameCount), "-fps_mode", "cfr", "-an", "-sws_flags", "bicubic+accurate_rnd+full_chroma_int", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv", "-f", "mpegts", tmpPath)
 	cmd := exec.CommandContext(ctx, ffmpeg, args...)
 	hideWindow(cmd)
 	in, err := cmd.StdinPipe()
@@ -670,64 +786,263 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 		_ = cmd.Process.Kill()
 		return fmt.Errorf("%w: sidecar hello: %v", ErrGPURendererUnavailable, err)
 	}
-	if err := sidecar.RequireYUV420Output(); err != nil {
-		_ = cmd.Process.Kill()
-		return fmt.Errorf("%w: sidecar YUV420P output required: %v", ErrGPURendererUnavailable, err)
+	// GPU-only production can require the sidecar to advertise its native
+	// YUV420P transport.  Keep this opt-in while the transport is being rolled
+	// out, but fail closed when explicitly requested: never silently convert the
+	// GPU RGBA result on the CPU.
+	yuvRequired := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_YUV_REQUIRED")) == "1"
+	if yuvRequired {
+		if err := sidecar.RequireYUV420Output(); err != nil {
+			_ = cmd.Process.Kill()
+			return fmt.Errorf("%w: sidecar YUV420P output required: %v", ErrGPURendererUnavailable, err)
+		}
 	}
+	frames := frameCount
+	postYUVFilter := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_SPECTRUM_POST_YUV_FILTER")) == "1"
+	useGPUWaveform := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_WAVEFORM_SHADER")) == "1"
+	postYUV := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_SPECTRUM_POST_YUV")) == "1" && !postYUVFilter
+	if yuvRequired && (postYUV || postYUVFilter) {
+		_ = cmd.Process.Kill()
+		return errors.New("GPU YUV-required route is incompatible with post-YUV filters")
+	}
+	if yuvRequired && strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_WAVE_FILTER")) == "1" {
+		_ = cmd.Process.Kill()
+		return errors.New("GPU YUV-required route is incompatible with wave filter")
+	}
+	var postYUVSpectrum [][]byte
+	postArtifacts := gpuPostYUVArtifacts{}
+	postYUVMax := 3
+	if postYUV && frames < postYUVMax {
+		postYUVMax = frames
+	}
+	// Dynamic GPU mode owns waveform and spectrum primitives in WGSL. Avoid
+	// starting FFmpeg's showwaves producer entirely; the loop still receives a
+	// correctly sized zero payload for legacy metadata branches that are
+	// explicitly enabled alongside the experiment.
+	useGPUDynamic := strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_DYNAMIC_SHADER")) == "1" && !parityMode
+	if parityMode {
+		// Parity-first route: transport CPU-reference layers as GPU textures;
+		// the sidecar still owns final compositing and YUV conversion.
+		useSpectrumCanonical = true
+	}
+	if useGPUDynamic {
+		useGPUWaveform = true
+		useSpectrumCanonical = false
+		postYUV = false
+		postYUVFilter = false
+	}
+	waveFrames := make(chan []byte, 2)
+	waveErr := make(chan error, 1)
 	waveCtx, waveCancel := context.WithCancel(ctx)
 	defer waveCancel()
-	rawPCMFrames := make(chan []uint16, 2)
-	rawPCMErr := make(chan error, 1)
-	go func() {
-		err := StreamWaveformPCMHistoryFrames(waveCtx, ffmpeg, input, waveW, frameCount, func(_ int, samples []uint16) error {
-			select {
-			case rawPCMFrames <- samples:
-				return nil
-			case <-waveCtx.Done():
-				return waveCtx.Err()
+	if !useGPUDynamic {
+		go func() {
+			err := StreamAudioWaveFrames(waveCtx, ffmpeg, input.SourcePath, waveW, waveH, frames, waveColor, audioLoudnormFilter(input.Kind), func(_ int, rgba []byte) error {
+				select {
+				case waveFrames <- rgba:
+					return nil
+				case <-waveCtx.Done():
+					return waveCtx.Err()
+				}
+			})
+			close(waveFrames)
+			waveErr <- err
+		}()
+	}
+	for i := 0; i < frames; i++ {
+		var wave []byte
+		if useGPUDynamic {
+			wave = make([]byte, waveW*waveH*4)
+		} else {
+			var ok bool
+			wave, ok = <-waveFrames
+			if !ok {
+				if e := <-waveErr; e != nil {
+					_ = cmd.Process.Kill()
+					return fmt.Errorf("audio wave stream: %w", e)
+				}
+				return fmt.Errorf("audio wave stream ended early at frame %d", i)
 			}
-		})
-		close(rawPCMFrames)
-		rawPCMErr <- err
-	}()
-	for i := 0; i < frameCount; i++ {
+		}
 		ptsNS := int64(float64(i) * float64(time.Second) / 30)
 		scene := CanonicalMusicScene(input, uint64(i), ptsNS)
-		var ok bool
-		scene.Feature.WaveformQ16, ok = <-rawPCMFrames
-		if !ok {
-			_ = cmd.Process.Kill()
-			if e := <-rawPCMErr; e != nil {
-				return fmt.Errorf("waveform PCM stream: %w", e)
+		if useGPUWaveform {
+			if i < len(input.Analysis.WaveformFrames) && len(input.Analysis.WaveformFrames[i]) > 0 {
+				scene.Feature.WaveformQ16 = input.Analysis.WaveformFrames[i]
+			} else {
+				scene.Feature.WaveformQ16 = waveformEnvelopeQ16(wave, waveW, waveH)
 			}
-			return fmt.Errorf("waveform PCM stream ended early at frame %d", i)
 		}
-		scene.TextOverlay = nil
-		scene.WaveformTexture = nil
-		scene.LoudnessTexture = nil
-		scene.SpectrumTexture = nil
-		yuvFrame, renderErr := sidecar.RenderSceneYUV(ctx, uint32(width), uint32(height), uint64(i), ptsNS, &scene)
-		if renderErr != nil {
-			_ = cmd.Process.Kill()
-			return fmt.Errorf("%w: render yuv frame: %v", ErrGPURendererUnavailable, renderErr)
+		if useGPUWaveform && len(scene.Feature.WaveformQ16) > 0 {
+			// GPU waveform primitive owns this layer; do not also upload the
+			// legacy FFmpeg raster texture in the GPU-only path.
+			scene.WaveformTexture = nil
 		}
-		yuv, renderErr := yuvFrame.PackedBytes()
-		if renderErr != nil {
-			_ = cmd.Process.Kill()
-			return fmt.Errorf("%w: pack yuv frame: %v", ErrGPURendererUnavailable, renderErr)
+		// GPU text mode owns glyph compositing in WGSL. The reference route
+		// disables both scene text payloads and applies canonical ASS later.
+		if useGPUText {
+			if strings.TrimSpace(os.Getenv("IMAGEPAD_GPU_TEXT_OVERLAY_DIAGNOSTIC")) == "1" {
+				// Diagnostic A/B only: let the GPU composite the canonical
+				// screen_rgba payload while glyph coverage is investigated.
+			} else {
+				scene.TextOverlay = nil
+			}
+			// Keep the glyph atlas and runs in the scene: the WGSL text path
+			// consumes them directly. Only the CPU full-frame overlay is disabled.
+		} else if !parityMode {
+			scene.TextOverlay = nil
+			scene.GlyphAtlas = nil
+		}
+		// The CPU base builder is also the source of truth for foreground
+		// colors. Keep GPU dynamic layers on that same palette; the generic
+		// feature palette is only a fallback for diagnostic scenes.
+		if gpuMode.PrimaryColor.A != 0 || gpuMode.AccentColor.A != 0 {
+			scene.Palette.Primary = [4]uint8{gpuMode.PrimaryColor.R, gpuMode.PrimaryColor.G, gpuMode.PrimaryColor.B, gpuMode.PrimaryColor.A}
+			scene.Palette.Accent = [4]uint8{gpuMode.AccentColor.R, gpuMode.AccentColor.G, gpuMode.AccentColor.B, gpuMode.AccentColor.A}
+			if scene.GlyphAtlas != nil {
+				for i := range scene.GlyphAtlas.TextRuns {
+					scene.GlyphAtlas.TextRuns[i].RGBA = scene.Palette.Primary
+				}
+			}
+		}
+		if baseTexture != nil {
+			scene.BaseTexture = baseTexture
+		}
+		if textOverlay != nil {
+			scene.TextOverlay = textOverlay
+		}
+		if loudnessTextureMeta != nil {
+			scene.LoudnessTexture = loudnessTextureMeta
+		} else {
+			// Keep the analytic GPU dynamics path authoritative. In particular,
+			// nil is required so the sidecar does not disable its shader branch.
+			scene.LoudnessTexture = nil
+		}
+		if !useGPUDynamic {
+			waveStride := ((waveW*4 + int(GPURowAlignment) - 1) / int(GPURowAlignment)) * int(GPURowAlignment)
+			wavePayload := make([]byte, waveStride*waveH)
+			for y := 0; y < waveH; y++ {
+				copy(wavePayload[y*waveStride:y*waveStride+waveW*4], wave[y*waveW*4:(y+1)*waveW*4])
+			}
+			waveMeta := BaseTextureMetadata{TextureID: fmt.Sprintf("wave-%s-%d", id, i), Width: uint32(waveW), Height: uint32(waveH), RowStride: uint32(waveStride), Format: PixelRGBA8, ColorSpace: ColorSRGB, Payload: wavePayload}
+			scene.WaveformTexture = &waveMeta
+		}
+		if useSpectrumCanonical || postYUV || postYUVFilter {
+			// The canonical layer already contains the showwaves raster; do not
+			// upload the source waveform as well or it would be composited twice.
+			scene.WaveformTexture = nil
+			frameIndex := i
+			if frameIndex >= len(input.Analysis.Frames) {
+				frameIndex = len(input.Analysis.Frames) - 1
+			}
+			var composite *image.RGBA
+			if postYUVFilter {
+				// Post-YUV FFmpeg supplies the waveform; retain only the analytic
+				// bars in the GPU scene so neither layer is omitted or duplicated.
+				var spectrum [24]float64
+				copy(spectrum[:], input.Analysis.Frames[frameIndex].Spectrum24[:])
+				composite = RenderSpectrumMaskCPU(width, height, spectrum, gpuMode, gpuLayout)
+			} else {
+				composite = RenderSpectrumCompositeTextureCPU(width, height, input.Analysis.Frames[frameIndex].Spectrum24, wave, waveW, waveH, gpuMode, gpuLayout)
+			}
+			meta, metaErr := NewBaseTextureMetadata(fmt.Sprintf("spectrum-%s-%d", id, i), composite, ColorSRGB)
+			if metaErr != nil {
+				_ = cmd.Process.Kill()
+				return fmt.Errorf("spectrum texture metadata: %w", metaErr)
+			}
+			if useSpectrumCanonical {
+				scene.SpectrumTexture = &meta
+			}
+			if postYUV && i < postYUVMax {
+				// Main GPU YUV already contains the analytic bars. Post-YUV
+				// overlay must carry only the FFmpeg showwaves raster.
+				postYUVSpectrum = append(postYUVSpectrum, append([]byte(nil), wave...))
+			}
+		}
+		if postYUVFilter {
+			// The canonical showwaves raster is inserted after GPU YUV conversion.
+			// Keep the GPU scene free of spectrum/wave layers to avoid double draw.
+			scene.WaveformTexture = nil
+			// SpectrumTexture remains the bars-only texture prepared above.
+		}
+		if useWaveFilter {
+			scene.WaveformTexture = nil
+		}
+		var yuv []byte
+		if yuvRequired {
+			yuvFrame, renderErr := sidecar.RenderSceneYUV(ctx, uint32(width), uint32(height), uint64(i), ptsNS, &scene)
+			if renderErr != nil {
+				_ = cmd.Process.Kill()
+				return fmt.Errorf("%w: render yuv frame: %v", ErrGPURendererUnavailable, renderErr)
+			}
+			yuv, renderErr = yuvFrame.PackedBytes()
+			if renderErr != nil {
+				_ = cmd.Process.Kill()
+				return fmt.Errorf("%w: pack yuv frame: %v", ErrGPURendererUnavailable, renderErr)
+			}
+		} else {
+			frame, renderErr := sidecar.RenderScene(ctx, uint32(width), uint32(height), uint64(i), ptsNS, &scene)
+			if renderErr != nil {
+				_ = cmd.Process.Kill()
+				return fmt.Errorf("%w: render frame: %v", ErrGPURendererUnavailable, renderErr)
+			}
+			packed, renderErr := GPUFrameToPackedRGBA(frame)
+			if renderErr != nil {
+				_ = cmd.Process.Kill()
+				return fmt.Errorf("%w: pack frame: %v", ErrGPURendererUnavailable, renderErr)
+			}
+			yuv = make([]byte, width*height*3/2)
+			rgbaToYUV420p(packed, width, height, yuv)
 		}
 		if err := writeGPUFrame(ctx, in, yuv); err != nil {
 			_ = cmd.Process.Kill()
 			return fmt.Errorf("GPU HLS frame write: %w", err)
 		}
 	}
-	if e := <-rawPCMErr; e != nil {
-		_ = cmd.Process.Kill()
-		return fmt.Errorf("waveform PCM stream: %w", e)
+	if postYUV && len(postYUVSpectrum) > 0 {
+		postArtifacts.spectrumRaw = filepath.Join(outDir, ".spectrum-post-yuv-"+id+".rgba")
+		defer postArtifacts.cleanup()
+		if _, err := writeSpectrumRawFrames(ctx, postArtifacts.spectrumRaw, postYUVSpectrum, waveW, waveH, postYUVMax); err != nil {
+			_ = cmd.Process.Kill()
+			return fmt.Errorf("post-yuv spectrum raw: %w", err)
+		}
+	}
+	if !useGPUDynamic {
+		if e := <-waveErr; e != nil {
+			_ = cmd.Process.Kill()
+			return fmt.Errorf("audio wave stream: %w", e)
+		}
 	}
 	_ = in.Close()
 	if err := cmd.Wait(); err != nil {
 		return fmt.Errorf("GPU HLS encode: %w: %s", err, trimOutput(stderr.Bytes()))
+	}
+	if postYUV && postArtifacts.spectrumRaw != "" {
+		postArtifacts.overlayTS = filepath.Join(outDir, ".spectrum-overlay-"+id+".ts")
+		overlayArgs := []string{"-hide_banner", "-loglevel", "error", "-y", "-i", tmpPath, "-f", "rawvideo", "-pix_fmt", "rgba", "-s", fmt.Sprintf("%dx%d", waveW, waveH), "-r", "30", "-i", postArtifacts.spectrumRaw, "-filter_complex", fmt.Sprintf("[0:v][1:v]overlay=%d:%d:format=auto[v]", gpuLayout.Spectrum.X, gpuLayout.Spectrum.Y), "-map", "[v]", "-frames:v", strconv.Itoa(postYUVMax), "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv", "-f", "mpegts", postArtifacts.overlayTS}
+		overlayCmd := exec.CommandContext(ctx, ffmpeg, overlayArgs...)
+		hideWindow(overlayCmd)
+		var overlayErr bytes.Buffer
+		overlayCmd.Stderr = &overlayErr
+		if err := overlayCmd.Run(); err != nil {
+			return fmt.Errorf("GPU post-YUV spectrum overlay: %w: %s", err, trimOutput(overlayErr.Bytes()))
+		}
+		tmpPath = postArtifacts.overlayTS
+		frameCount = postYUVMax
+	}
+	if postYUVFilter && !useGPUText {
+		filterTS := filepath.Join(outDir, ".spectrum-filter-"+id+".ts")
+		defer os.Remove(filterTS)
+		graph := buildMusicPostYUVFilter(waveW, waveH, gpuLayout.Spectrum.X, gpuLayout.Spectrum.Y, waveColor, audioFilter, assPath, fontDir)
+		filterArgs := []string{"-hide_banner", "-loglevel", "error", "-y", "-i", tmpPath, "-i", input.SourcePath, "-filter_complex", graph, "-map", "[out]", "-frames:v", strconv.Itoa(frameCount), "-an", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv", "-f", "mpegts", filterTS}
+		filterCmd := exec.CommandContext(ctx, ffmpeg, filterArgs...)
+		hideWindow(filterCmd)
+		var filterErr bytes.Buffer
+		filterCmd.Stderr = &filterErr
+		if err := filterCmd.Run(); err != nil {
+			return fmt.Errorf("GPU post-YUV filter: %w: %s", err, trimOutput(filterErr.Bytes()))
+		}
+		tmpPath = filterTS
 	}
 	// Mux audio in a separate pass. Keeping audio away from the raw-video
 	// encoder prevents FFmpeg's audio EOF from truncating the final video GOP.
@@ -755,60 +1070,12 @@ func shouldUseGPUArtworkBase(input AudioRenderInput) bool {
 // shader/ASS metadata without rasterizing a CPU base. The artwork itself is
 // still decoded once as an input payload; crop, blur, shadow and composite are
 // performed by the wgpu sidecar.
-func gpuArtworkForegroundMode(input AudioRenderInput, layout VisualizerLayout) ForegroundMode {
+func gpuArtworkForegroundMode(input AudioRenderInput) ForegroundMode {
 	p := PaletteForFeatures(input.Analysis.Features)
 	primary := color.RGBA{R: 255, G: 255, B: 255, A: 255}
 	accent := color.RGBA{R: p.End.R, G: p.End.G, B: p.End.B, A: 255}
 	overlay := color.RGBA{A: 92}
-	fallback := ForegroundMode{PrimaryColor: primary, AccentColor: accent, Overlay: overlay, Color: accent}
-
-	var artwork ArtworkMetadata
-	if normalized, ok := normalizeArtwork(input.ArtworkPath); ok {
-		artwork = normalized
-	} else {
-		artwork = fallbackArtwork(input.Analysis.Features)
-	}
-	if artwork.Width == 0 || artwork.Height == 0 || artwork.RowStride < artwork.Width*4 || len(artwork.Payload) < int(artwork.RowStride*artwork.Height) {
-		return fallback
-	}
-	src := image.NewRGBA(image.Rect(0, 0, int(artwork.Width), int(artwork.Height)))
-	for y := 0; y < int(artwork.Height); y++ {
-		copy(src.Pix[y*src.Stride:y*src.Stride+int(artwork.Width)*4], artwork.Payload[y*int(artwork.RowStride):y*int(artwork.RowStride)+int(artwork.Width)*4])
-	}
-	canvasW := int(math.Round(float64(layout.Artwork.W) * 1280.0 / 288.0))
-	canvasH := int(math.Round(float64(layout.Artwork.H) * 720.0 / 288.0))
-	if canvasW <= 0 || canvasH <= 0 {
-		return fallback
-	}
-	accentSource := scaleCover(src, canvasW, canvasH)
-	// This is bounded colour/readability analysis, not a rendered frame. The
-	// production picture remains entirely GPU-owned. A box blur is sufficient
-	// for the contrast decision and avoids invoking the CPU reference renderer.
-	background := boxBlurRGBA(accentSource, 64)
-	background = boxBlurRGBA(background, 64)
-	background = boxBlurRGBA(background, 64)
-	background = boxBlurRGBA(background, 64)
-	primaryRects := []image.Rectangle{layoutImageRect(layout.Title), layoutImageRect(layout.Artist), layoutImageRect(layout.Album), layoutImageRect(layout.Time)}
-	accentRects := []image.Rectangle{layoutImageRect(layout.Spectrum), layoutImageRect(layout.Loudness), layoutImageRect(layout.Progress), layoutImageRect(layout.Time)}
-	mode := AdaptiveForeground(background, accentSource, primaryRects, accentRects)
-	if mode.PrimaryColor.A == 0 || mode.AccentColor.A == 0 {
-		return fallback
-	}
-	return mode
-}
-
-func applyGPUForegroundMode(scene *MusicScenePayload, mode ForegroundMode) {
-	if scene == nil {
-		return
-	}
-	scene.Palette.Primary = [4]uint8{mode.PrimaryColor.R, mode.PrimaryColor.G, mode.PrimaryColor.B, mode.PrimaryColor.A}
-	scene.Palette.Accent = [4]uint8{mode.AccentColor.R, mode.AccentColor.G, mode.AccentColor.B, mode.AccentColor.A}
-	scene.Palette.Overlay = [4]uint8{mode.Overlay.R, mode.Overlay.G, mode.Overlay.B, mode.Overlay.A}
-	if scene.GlyphAtlas != nil {
-		for i := range scene.GlyphAtlas.TextRuns {
-			scene.GlyphAtlas.TextRuns[i].RGBA = scene.Palette.Primary
-		}
-	}
+	return ForegroundMode{PrimaryColor: primary, AccentColor: accent, Overlay: overlay, Color: accent}
 }
 
 // waveformEnvelopeQ16 converts the already-decoded audio raster into bounded
@@ -852,23 +1119,6 @@ func canonicalMusicVideoFrameCount(analysis AudioAnalysis) int {
 		frames = 1
 	}
 	return frames
-}
-
-// FFmpeg showwaves retains two ticks of PCM and starts each emitted frame at
-// the oldest complete tick. Mirror that one-tick history delay; the first
-// frame has no complete prior tick and therefore carries no waveform.
-func gpuWaveformFrameIndex(outputIndex, frameCount int) int {
-	if outputIndex < 0 || frameCount <= 0 {
-		return -1
-	}
-	if outputIndex == 0 {
-		return -1
-	}
-	index := outputIndex - 1
-	if index >= frameCount {
-		index = frameCount - 1
-	}
-	return index
 }
 
 // writeGPUFrame makes cancellation observable even when the downstream

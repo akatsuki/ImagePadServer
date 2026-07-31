@@ -1,7 +1,8 @@
 # GPU-only music renderer execution plan
 
-Status: GO gate passed on the available Windows hardware lanes; unavailable
-platform lanes remain recorded explicitly in `PLAYLIST_GPU_COMPATIBILITY.md`.
+Status: ARCHIVED — the large parity implementation was rolled back to the
+pre-`029ef5f` shader-rebuild baseline. The acceptance evidence below is
+historical and must not be treated as proof of the current working tree.
 
 The production music path may use CPU for audio decoding, feature analysis,
 font selection/atlas preparation, metadata, and muxing. It must not use CPU

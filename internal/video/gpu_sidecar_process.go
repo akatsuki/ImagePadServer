@@ -20,7 +20,7 @@ func validateGlyphAtlasReceipt(atlas *GlyphAtlasMetadata, receipt *GlyphAtlasRec
 	}
 	sum := sha256.Sum256(atlas.Payload)
 	want := fmt.Sprintf("%x", sum[:])
-	if receipt.SHA256 != want || receipt.Width != atlas.Width || receipt.Height != atlas.Height || receipt.RowStride != atlas.RowStride || receipt.GlyphCount != atlas.GlyphCount || receipt.TextRunCount != uint32(len(atlas.TextRuns)+len(atlas.BitmapRuns)) || receipt.Format != string(PixelRGBA8) {
+	if receipt.SHA256 != want || receipt.Width != atlas.Width || receipt.Height != atlas.Height || receipt.RowStride != atlas.RowStride || receipt.GlyphCount != uint32(len(atlas.Glyphs)) || receipt.TextRunCount != uint32(len(atlas.TextRuns)) || receipt.Format != string(PixelRGBA8) {
 		return fmt.Errorf("sidecar glyph atlas receipt mismatch: got=%+v want_sha256=%s", *receipt, want)
 	}
 	return nil
@@ -202,48 +202,6 @@ func ProbeGPUSceneFlatBackground(ctx context.Context, executable string, width, 
 	return p.RenderScene(ctx, width, height, 0xfffffffc, 0, scene)
 }
 
-// ProbeGPUSceneNativeBase renders the GPU-owned static music base before any
-// spectrum, waveform, loudness, progress or text layer is composited.
-func ProbeGPUSceneNativeBase(ctx context.Context, executable string, width, height uint32, scene *MusicScenePayload) (GpuFrame, error) {
-	p, err := StartSidecar(ctx, executable, "compare-native-static-base")
-	if err != nil {
-		return GpuFrame{}, err
-	}
-	defer p.Close()
-	if err := p.Hello(ctx, "compare-native-static-base"); err != nil {
-		return GpuFrame{}, err
-	}
-	return p.RenderScene(ctx, width, height, 0xffffffdf, 0, scene)
-}
-
-// ProbeGPUSceneComposite renders a normal scene frame for raw pre-encode
-// compositor diagnostics. Callers control which layers are present in scene.
-func ProbeGPUSceneComposite(ctx context.Context, executable string, width, height uint32, scene *MusicScenePayload) (GpuFrame, error) {
-	p, err := StartSidecar(ctx, executable, "compare-native-composite")
-	if err != nil {
-		return GpuFrame{}, err
-	}
-	defer p.Close()
-	if err := p.Hello(ctx, "compare-native-composite"); err != nil {
-		return GpuFrame{}, err
-	}
-	return p.RenderScene(ctx, width, height, 0, 0, scene)
-}
-
-// ProbeGPUSceneBlurredBackground renders only the GPU cover-scale plus gblur
-// result, before readability, shadow and foreground artwork composition.
-func ProbeGPUSceneBlurredBackground(ctx context.Context, executable string, width, height uint32, scene *MusicScenePayload) (GpuFrame, error) {
-	p, err := StartSidecar(ctx, executable, "compare-native-blurred-background")
-	if err != nil {
-		return GpuFrame{}, err
-	}
-	defer p.Close()
-	if err := p.Hello(ctx, "compare-native-blurred-background"); err != nil {
-		return GpuFrame{}, err
-	}
-	return p.RenderScene(ctx, width, height, 0xffffffdd, 0, scene)
-}
-
 // ProbeGPUSceneBaseTexture renders the uploaded immutable CPU compositor base
 // through the reserved diagnostic branch. It is evidence-only; production
 // frames continue to use the normal scene sequence.
@@ -352,21 +310,6 @@ func ProbeGPUSceneWaveform(ctx context.Context, executable string, width, height
 		return GpuFrame{}, err
 	}
 	return p.RenderScene(ctx, width, height, 0xfffffff7, 0, scene)
-}
-
-// ProbeGPUSceneRawWaveform isolates the GPU-native waveform generated from
-// bounded PCM history. The reserved sequence is diagnostic-only and bypasses
-// every background, spectrum, text, and progress contribution.
-func ProbeGPUSceneRawWaveform(ctx context.Context, executable string, width, height uint32, scene *MusicScenePayload) (GpuFrame, error) {
-	p, err := StartSidecar(ctx, executable, "compare-native-waveform")
-	if err != nil {
-		return GpuFrame{}, err
-	}
-	defer p.Close()
-	if err := p.Hello(ctx, "compare-native-waveform"); err != nil {
-		return GpuFrame{}, err
-	}
-	return p.RenderScene(ctx, width, height, 0xffffffde, 0, scene)
 }
 
 // ProbeGPUSceneSpectrumTexture reads back the canonical bars+wave texture

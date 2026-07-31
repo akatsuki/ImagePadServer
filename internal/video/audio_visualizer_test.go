@@ -39,33 +39,12 @@ func TestShouldUseGPUArtworkBaseIsStrictlyOptIn(t *testing.T) {
 }
 
 func TestGPUArtworkForegroundModeHasStableRoles(t *testing.T) {
-	layout, err := LayoutForSize(1280, 720)
-	if err != nil {
-		t.Fatal(err)
-	}
-	m := gpuArtworkForegroundMode(AudioRenderInput{}, layout)
-	t.Logf("GPU artwork foreground mode: primary=%#v accent=%#v overlay=%#v", m.PrimaryColor, m.AccentColor, m.Overlay)
+	m := gpuArtworkForegroundMode(AudioRenderInput{})
 	if m.PrimaryColor != (color.RGBA{255, 255, 255, 255}) {
 		t.Fatalf("primary = %#v", m.PrimaryColor)
 	}
-	if m.Overlay.A > uint8(math.Round(maxOverlayOpacity*255)) {
-		t.Fatalf("overlay alpha exceeds readability cap: %d", m.Overlay.A)
-	}
-}
-
-func TestApplyGPUForegroundModeTransportsReadabilityOverlay(t *testing.T) {
-	scene := MusicScenePayload{GlyphAtlas: &GlyphAtlasMetadata{TextRuns: []TextRun{{}}}}
-	mode := ForegroundMode{
-		PrimaryColor: color.RGBA{1, 2, 3, 4},
-		AccentColor:  color.RGBA{5, 6, 7, 8},
-		Overlay:      color.RGBA{9, 10, 11, 64},
-	}
-	applyGPUForegroundMode(&scene, mode)
-	if scene.Palette.Overlay != ([4]uint8{9, 10, 11, 64}) {
-		t.Fatalf("overlay metadata was not transported: %v", scene.Palette.Overlay)
-	}
-	if scene.GlyphAtlas.TextRuns[0].RGBA != scene.Palette.Primary {
-		t.Fatalf("glyph primary role was not transported: %v", scene.GlyphAtlas.TextRuns[0].RGBA)
+	if m.Overlay.A != 92 {
+		t.Fatalf("overlay alpha = %d, want 92", m.Overlay.A)
 	}
 }
 
@@ -500,15 +479,6 @@ func TestCanonicalMusicVideoFrameCountIncludesPartialTailTick(t *testing.T) {
 	}
 	if got := canonicalMusicVideoFrameCount(AudioAnalysis{Frames: make([]AudioFrame, 4)}); got != 4 {
 		t.Fatalf("fallback frame count = %d, want 4", got)
-	}
-}
-
-func TestGPUWaveformFrameIndexMatchesShowwavesHistory(t *testing.T) {
-	if got := gpuWaveformFrameIndex(13, 30); got != 12 {
-		t.Fatalf("frame 13 maps to %d, want 12", got)
-	}
-	if got := gpuWaveformFrameIndex(0, 30); got != -1 {
-		t.Fatalf("first frame maps to %d, want empty history", got)
 	}
 }
 

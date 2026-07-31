@@ -1,44 +1,5 @@
 package video
 
-// SignedPCMToWaveformRawQ16 preserves bounded interleaved PCM for the GPU
-// showwaves-compatible shader. Values use the existing centre-biased uint16
-// wire representation: -32768 maps to 0 and 32767 maps to 65535.
-func SignedPCMToWaveformRawQ16(pcm []int16, channels, maxValues int) []uint16 {
-	if channels <= 0 || len(pcm) < channels || maxValues < channels || maxValues%channels != 0 {
-		return nil
-	}
-	count := len(pcm)
-	if count > maxValues {
-		count = maxValues
-		count -= count % channels
-	}
-	out := make([]uint16, count)
-	for i := range out {
-		out[i] = uint16(int32(pcm[i]) + 32768)
-	}
-	return out
-}
-
-// buildShowwavesRawHistoryQ16 reconstructs the two-tick circular history used
-// by FFmpeg showwaves. Each analyzed frame stores one 1600-sample stereo tick;
-// the scene transports previous+current without duplicating that storage for
-// the entire track. Frame zero uses a silent previous tick.
-func buildShowwavesRawHistoryQ16(frames [][]uint16, frameIndex int) []uint16 {
-	const tickValues = sampleRate / 30 * 2
-	if frameIndex < 0 || frameIndex >= len(frames) {
-		return nil
-	}
-	out := make([]uint16, tickValues*2)
-	for i := range out {
-		out[i] = 32768
-	}
-	if frameIndex > 0 {
-		copy(out[:tickValues], frames[frameIndex-1])
-	}
-	copy(out[tickValues:], frames[frameIndex])
-	return out
-}
-
 // PCMToWaveformQ16 converts interleaved signed PCM into a bounded, per-video
 // frame peak envelope. Values are unsigned Q16 amplitudes (0..65535), where
 // 65535 represents full-scale PCM. frameIndex is the first video-frame tick

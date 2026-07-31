@@ -4,52 +4,18 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"image"
 	"image/color"
-	"image/draw"
 	_ "image/png"
 	"math"
 	"os"
-	"strconv"
 	"strings"
-	"sync"
 
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/gofont/goregular"
 	"golang.org/x/image/font/opentype"
 	"golang.org/x/image/math/fixed"
 )
-
-var (
-	musicAtlasFontsOnce sync.Once
-	musicAtlasFonts     map[uint16]*opentype.Font
-)
-
-// The 48px Noto raster is stored in a padded 64px cell. A 72px layout em
-// matches libass/FreeType's hinted small-size ink and advances; treating the
-// cell width itself as the em made the 22px time label about 17% too wide.
-const musicAtlasLayoutEm float32 = 72
-
-func parsedMusicAtlasFonts() map[uint16]*opentype.Font {
-	musicAtlasFontsOnce.Do(func() {
-		musicAtlasFonts = make(map[uint16]*opentype.Font, 3)
-		for weight, path := range map[uint16]string{
-			400: "fonts/NotoSansJP-Regular.ttf",
-			500: "fonts/NotoSansJP-Medium.ttf",
-			600: "fonts/NotoSansJP-SemiBold.ttf",
-		} {
-			data, err := embeddedFonts.ReadFile(path)
-			if err != nil {
-				continue
-			}
-			if parsed, err := opentype.Parse(data); err == nil {
-				musicAtlasFonts[weight] = parsed
-			}
-		}
-	})
-	return musicAtlasFonts
-}
 
 // CanonicalMusicScene is the sole normalization boundary for both single HLS
 // and playlist rendering. It intentionally does not mutate AudioRenderInput.
@@ -97,32 +63,22 @@ func CanonicalMusicScene(input AudioRenderInput, frameIndex uint64, ptsNS int64)
 		fingerprint[i] = uint16(math.Round(sceneClamp01(v) * 65535))
 	}
 	scene := MusicScenePayload{Schema: MusicSceneSchema, Feature: AudioFeatureFrame{Schema: GPUContractVersion, SampleRateHz: 48000, FrameIndex: frameIndex, PTSNs: ptsNS, SpectrumQ16: spectrum, FingerprintQ16: fingerprint, RMSQ15: uint16(math.Round(sceneClamp01(rms) * 32767)), PeakQ15: uint16(math.Round(sceneClamp01(peak) * 32767))}, Layout: musicSceneLayout(layout), Dynamics: musicSceneDynamics(input.Analysis.Features, current, duration, ratio), Palette: palette}
-	if input.ArtworkTexture != nil {
-		a := *input.ArtworkTexture
-		a.Payload = append([]byte(nil), input.ArtworkTexture.Payload...)
+	if a, ok := normalizeArtwork(input.ArtworkPath); ok {
 		scene.Artwork = &a
-	} else if a, ok := normalizeArtwork(input.ArtworkPath); ok {
+	} else {
+		// Keep the fallback tile explicit in the canonical scene so GPU and CPU
+		// routes both render an artwork element when the source has no cover.
+		a := fallbackArtwork(input.Analysis.Features)
 		scene.Artwork = &a
 	}
-	if input.BackgroundArtworkTexture != nil {
-		a := *input.BackgroundArtworkTexture
-		a.Payload = append([]byte(nil), input.BackgroundArtworkTexture.Payload...)
-		scene.BackgroundArtwork = &a
-	}
-	if input.PreparedGlyphAtlas == nil {
-		scene.GlyphAtlas = normalizeGlyphs(input.Metadata, layout, palette.Primary, current, duration)
-	}
+	scene.GlyphAtlas = normalizeGlyphs(input.Metadata, layout, palette.Primary, current, duration)
 	if input.TextOverlay != nil {
 		scene.TextOverlay = input.TextOverlay
+	} else {
+		scene.TextOverlay = RenderCanonicalTextOverlay(input.Metadata, layout, 1280, 720)
 	}
 	if input.WaveformTexture != nil {
 		scene.WaveformTexture = input.WaveformTexture
-	}
-	if input.PreparedForeground != nil {
-		applyGPUForegroundMode(&scene, *input.PreparedForeground)
-	}
-	if input.PreparedGlyphAtlas != nil {
-		scene.GlyphAtlas = input.PreparedGlyphAtlas.atlasAt(current, scene.Palette.Primary)
 	}
 	scene.Fingerprint = musicSceneFingerprint(scene)
 	return scene
@@ -146,31 +102,37 @@ func RenderCanonicalTextOverlay(meta AudioMetadata, layout VisualizerLayout, wid
 func fallbackArtwork(features AudioFeatures) ArtworkMetadata {
 	const w, h = 128, 128
 	p := PaletteForFeatures(features)
-	img := image.NewRGBA(image.Rect(0, 0, w, h))
-	fillGradient(img, p.Start, p.End)
-	foreground := color.RGBA{255, 255, 255, 224}
-	drawFingerprint(img, features.Fingerprint64, color.RGBA{255, 255, 255, uint8(math.Round(0.26 * 255))}, w)
-	if glyph, err := renderGlyphWithGo(FontSet{}, foreground, w); err == nil {
-		draw.Draw(img, img.Bounds(), glyph, image.Point{}, draw.Over)
+	payload := make([]byte, w*h*4)
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			i := (y*w + x) * 4
+			t := uint32(y * 255 / (h - 1))
+			payload[i] = uint8((uint32(p.Start.R)*(255-t) + uint32(p.End.R)*t) / 255)
+			payload[i+1] = uint8((uint32(p.Start.G)*(255-t) + uint32(p.End.G)*t) / 255)
+			payload[i+2] = uint8((uint32(p.Start.B)*(255-t) + uint32(p.End.B)*t) / 255)
+			payload[i+3] = 255
+		}
 	}
-	payload := img.Pix
+	// Deterministic music-note silhouette, matching the CPU fallback's central
+	// icon without introducing a font dependency into the GPU scene producer.
+	for y := 38; y < 98; y++ {
+		for x := 62; x < 72; x++ {
+			if y < 78 || x < 68 {
+				i := (y*w + x) * 4
+				payload[i], payload[i+1], payload[i+2] = 255, 255, 255
+			}
+		}
+	}
+	for y := 86; y < 104; y++ {
+		for x := 42; x < 70; x++ {
+			if ((x-56)*(x-56))/196+((y-95)*(y-95))/81 <= 1 {
+				i := (y*w + x) * 4
+				payload[i], payload[i+1], payload[i+2] = 255, 255, 255
+			}
+		}
+	}
 	sum := sha256.Sum256(payload)
 	return ArtworkMetadata{TextureID: "fallback-artwork-" + hex.EncodeToString(sum[:8]), Width: w, Height: h, RowStride: w * 4, Format: PixelRGBA8, ColorSpace: ColorSRGB, Alpha: true, Payload: payload, AssetHash: hex.EncodeToString(sum[:])}
-}
-
-func artworkMetadataFromRGBA(textureID string, img *image.RGBA) (ArtworkMetadata, error) {
-	if img == nil || img.Bounds().Dx() <= 0 || img.Bounds().Dy() <= 0 {
-		return ArtworkMetadata{}, errors.New("invalid artwork image")
-	}
-	w, h := img.Bounds().Dx(), img.Bounds().Dy()
-	rowStride := ((uint32(w*4) + GPURowAlignment - 1) / GPURowAlignment) * GPURowAlignment
-	payload := make([]byte, int(rowStride)*h)
-	for y := 0; y < h; y++ {
-		dst := y * int(rowStride)
-		copy(payload[dst:dst+w*4], img.Pix[y*img.Stride:y*img.Stride+w*4])
-	}
-	sum := sha256.Sum256(payload)
-	return ArtworkMetadata{TextureID: textureID, Width: uint32(w), Height: uint32(h), RowStride: rowStride, Format: PixelRGBA8, ColorSpace: ColorSRGB, Alpha: true, Payload: payload, AssetHash: hex.EncodeToString(sum[:])}, nil
 }
 
 // canonicalScenePalette keeps GPU colors tied to the same feature palette used
@@ -196,7 +158,7 @@ func canonicalScenePalette(input AudioRenderInput) MusicScenePalette {
 			background = [4]uint8{uint8(r / n / 3), uint8(g / n / 3), uint8(b / n / 3), 255}
 		}
 	}
-	return MusicScenePalette{Primary: primary, Accent: accent, Background: background, Overlay: [4]uint8{0, 0, 0, 92}, FallbackEnd: [4]uint8{p.End.R, p.End.G, p.End.B, 255}, BlurStrength: 220, Readability: 220}
+	return MusicScenePalette{Primary: primary, Accent: accent, Background: background, Overlay: [4]uint8{0, 0, 0, 92}, BlurStrength: 220, Readability: 220}
 }
 
 func musicSceneLayout(l VisualizerLayout) MusicSceneLayout {
@@ -206,13 +168,9 @@ func musicSceneLayout(l VisualizerLayout) MusicSceneLayout {
 
 func musicSceneDynamics(features AudioFeatures, current, duration, ratio float64) MusicSceneDynamics {
 	toQ := func(v float64) uint16 { v = sceneClamp01(v); return uint16(math.Round(v * 65535)) }
-	// drawLoudness renders the within-track dB-normalized envelope, not the raw
-	// RMS values. Transport that same canonical curve so the GPU uses identical
-	// sample heights instead of a visually flatter raw-amplitude graph.
-	normalized := normalizeRelativeLoudness(features.LoudnessEnvelope)
-	env := make([]uint16, len(normalized))
-	trend := SmoothLoudnessTrend(normalized, duration)
-	for i, v := range normalized {
+	env := make([]uint16, len(features.LoudnessEnvelope))
+	trend := SmoothLoudnessTrend(features.LoudnessEnvelope, duration)
+	for i, v := range features.LoudnessEnvelope {
 		env[i] = toQ(v)
 	}
 	trendQ := make([]uint16, len(trend))
@@ -298,90 +256,63 @@ func normalizeGlyphs(meta AudioMetadata, layout VisualizerLayout, primary [4]uin
 		{strings.TrimSpace(meta.Album), layout.Album, 24, 400, false},
 		{FormatMediaTime(int(math.Max(0, math.Floor(current)))) + " / " + FormatMediaTime(int(math.Max(0, math.Floor(duration)))), layout.Time, 22, 500, true},
 	}
-	type glyphKey struct {
-		r      rune
-		weight uint16
-	}
-	var all []glyphKey
+	var all []rune
 	for _, f := range fields {
-		for _, r := range f.text {
-			all = append(all, glyphKey{r: r, weight: f.weight})
+		all = append(all, []rune(f.text)...)
+		if f.text != "" {
+			all = append(all, '·')
 		}
+	}
+	if len(all) > 0 && all[len(all)-1] == '·' {
+		all = all[:len(all)-1]
 	}
 	if len(all) == 0 {
 		return nil
 	}
-	// Rasterize the exact embedded Noto faces used by the CPU/libass path. A
-	// glyph ID includes its weight because the same rune can occur in title,
-	// artist and album runs with different faces.
+	// Use a real, deterministic embedded font for glyph coverage. The atlas
+	// remains fixed-cell and bounded so the Rust side needs no protocol change;
+	// unsupported runes use the existing deterministic placeholder pattern.
 	const gw, gh, cols = 64, 64, 16
-	keys := make([]glyphKey, 0, min(len(all)+1, 256))
-	seen := make(map[glyphKey]bool, min(len(all)+1, 256))
-	for _, key := range all {
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		keys = append(keys, key)
-		// Reserve one cell for the weight-independent missing glyph.
-		if len(keys) == 255 {
-			break
-		}
+	runes := all
+	if len(runes) > 256 {
+		runes = runes[:256]
 	}
-	keys = append(keys, glyphKey{r: '?', weight: 0})
 	w := cols * gw
-	h := ((len(keys) + cols - 1) / cols) * gh
+	h := gh
 	stride := (w*4 + 255) &^ 255
 	payload := make([]byte, stride*h)
-	parsedFonts := parsedMusicAtlasFonts()
-	faces := make(map[uint16]font.Face, 3)
-	defer func() {
-		for _, face := range faces {
-			_ = face.Close()
+	face, faceErr := opentype.Parse(goregular.TTF)
+	var fontFace font.Face
+	if faceErr == nil {
+		fontFace, faceErr = opentype.NewFace(face, &opentype.FaceOptions{Size: 48, DPI: 72, Hinting: font.HintingNone})
+		if faceErr != nil {
+			fontFace = nil
 		}
-	}()
-	faceForWeight := func(weight uint16) font.Face {
-		if weight == 0 {
-			weight = 400
-		}
-		if face := faces[weight]; face != nil {
-			return face
-		}
-		parsed := parsedFonts[weight]
-		if parsed == nil {
-			parsed, _ = opentype.Parse(goregular.TTF)
-		}
-		// libass's 48pt title occupies roughly a 48px em at the canonical
-		// 1280x720 canvas. Keep the raster face at 48px inside the bounded 64px
-		// cell; the consumer scales the cell by run_size/64.
-		face, err := opentype.NewFace(parsed, &opentype.FaceOptions{Size: 48, DPI: 72, Hinting: font.HintingNone})
-		if err != nil {
-			return nil
-		}
-		faces[weight] = face
-		return face
 	}
-	glyphs := make([]GlyphEntry, 0, len(keys))
-	advanceByID := make(map[string]float32, len(keys))
-	for i, key := range keys {
+	if fontFace != nil {
+		defer fontFace.Close()
+	}
+	glyphs := make([]GlyphEntry, 0, len(runes))
+	seen := map[rune]bool{}
+	for i, r := range runes {
+		if seen[r] {
+			continue
+		}
+		seen[r] = true
 		x := uint32((i % cols) * gw)
-		y := uint32((i / cols) * gh)
 		advance := float32(gw)
 		rasterized := false
-		fontFace := faceForWeight(key.weight)
 		if fontFace != nil {
-			_, _, ok := fontFace.GlyphBounds(key.r)
+			_, _, ok := fontFace.GlyphBounds(r)
 			if ok {
-				dst := image.NewRGBA(image.Rect(0, 0, gw, gh))
+				dst := image.NewRGBA(image.Rect(int(x), 0, int(x)+gw, gh))
 				d := &font.Drawer{Dst: dst, Src: image.NewUniform(color.White), Face: fontFace,
-					Dot: fixed.Point26_6{X: fixed.I(4), Y: fixed.I(52)}}
-				d.DrawString(string(key.r))
+					Dot: fixed.Point26_6{X: fixed.I(int(x) + 4), Y: fixed.I(52)}}
+				d.DrawString(string(r))
 				for yy := 0; yy < gh; yy++ {
-					dstOff := yy * dst.Stride
-					payloadOff := (int(y)+yy)*stride + int(x)*4
-					copy(payload[payloadOff:payloadOff+gw*4], dst.Pix[dstOff:dstOff+gw*4])
+					copy(payload[yy*stride+int(x)*4:yy*stride+(int(x)+gw)*4], dst.Pix[yy*dst.Stride:yy*dst.Stride+gw*4])
 				}
-				adv, ok := fontFace.GlyphAdvance(key.r)
+				adv, ok := fontFace.GlyphAdvance(r)
 				if ok && adv > 0 {
 					advance = float32(adv) / 64
 					if advance > gw {
@@ -397,15 +328,13 @@ func normalizeGlyphs(meta AudioMetadata, layout VisualizerLayout, primary [4]uin
 			for yy := 4; yy < gh-4; yy++ {
 				for xx := 4; xx < gw-4; xx++ {
 					if xx == 4 || xx == gw-5 || yy == 4 || yy == gh-5 || (xx+yy)%11 < 2 {
-						off := (int(y)+yy)*stride + (int(x)+xx)*4
+						off := yy*stride + (int(x)+xx)*4
 						payload[off], payload[off+1], payload[off+2], payload[off+3] = 255, 255, 255, 255
 					}
 				}
 			}
 		}
-		id := musicGlyphID(key.weight, key.r)
-		glyphs = append(glyphs, GlyphEntry{ID: id, X: x, Y: y, Width: gw, Height: gh, Advance: advance})
-		advanceByID[id] = advance
+		glyphs = append(glyphs, GlyphEntry{ID: string(r), X: x, Y: 0, Width: gw, Height: gh, Advance: advance})
 	}
 	sum := sha256.Sum256(payload)
 	runs := make([]TextRun, 0, len(fields))
@@ -415,27 +344,15 @@ func normalizeGlyphs(meta AudioMetadata, layout VisualizerLayout, primary [4]uin
 		}
 		x := float32(f.rect.X)
 		if f.center {
-			var textWidth float32
-			for _, r := range f.text {
-				textWidth += advanceByID[musicGlyphID(f.weight, r)] * f.size / musicAtlasLayoutEm
-			}
-			x += (float32(f.rect.W) - textWidth) / 2
+			// The GPU atlas uses a bounded monospace advance. Center the time
+			// label in the same canonical rect as ASS alignment 5.
+			approxWidth := float32(len([]rune(f.text))) * f.size * 0.6
+			x += (float32(f.rect.W) - approxWidth) / 2
 		}
 		// TextRun coordinates are top-left screen bounds; CPU ASS positions
 		// title/artist/album at the vertical center of each rect.
 		y := float32(f.rect.Y) + (float32(f.rect.H)-f.size)/2
-		if f.center {
-			// Align the atlas ink with libass's small-font baseline.
-			y += 2
-		}
 		runs = append(runs, TextRun{Text: f.text, X: x, Y: y, SizePx: f.size, RGBA: primary, Opacity: 1, FontFamily: "Noto Sans JP", FontWeight: f.weight})
 	}
-	return &GlyphAtlasMetadata{TextureID: "glyphs-" + hex.EncodeToString(sum[:8]), FontFamily: "Noto Sans JP", FontWeight: 400, FallbackOrder: []string{"Noto Sans CJK JP", "Segoe UI", "sans-serif"}, Width: uint32(w), Height: uint32(h), RowStride: uint32(stride), GlyphCount: uint32(len(glyphs)), MissingGlyphID: "?", Payload: payload, AssetHash: hex.EncodeToString(sum[:]), Glyphs: glyphs, TextRuns: runs}
-}
-
-func musicGlyphID(weight uint16, r rune) string {
-	if weight == 0 {
-		return string(r)
-	}
-	return strconv.Itoa(int(weight)) + ":" + string(r)
+	return &GlyphAtlasMetadata{TextureID: "glyphs-" + hex.EncodeToString(sum[:8]), FontFamily: "Go Regular", FontWeight: 400, FallbackOrder: []string{"Noto Sans CJK JP", "Segoe UI", "sans-serif"}, Width: uint32(w), Height: uint32(h), RowStride: uint32(stride), GlyphCount: uint32(len(glyphs)), MissingGlyphID: "?", Payload: payload, AssetHash: hex.EncodeToString(sum[:]), Glyphs: glyphs, TextRuns: runs}
 }

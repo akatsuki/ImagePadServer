@@ -17,7 +17,7 @@ const MusicMaxFeatureBins = 256
 
 // MusicMaxWaveformSamples bounds the optional per-frame Q0.16 waveform
 // payload sent to the GPU sidecar. Empty remains valid for legacy requests.
-const MusicMaxWaveformSamples = 16384
+const MusicMaxWaveformSamples = 4096
 const MusicMaxArtworkDimension uint32 = 4096
 const MusicMaxArtworkBytes = 16 * 1024 * 1024
 const MusicMaxGlyphs = 4096
@@ -30,11 +30,10 @@ const MusicMaxLayoutRects = 8
 // an unbounded texture or glyph upload. Existing Render requests omit this
 // field and remain valid.
 type MusicScenePayload struct {
-	Schema            uint16               `json:"schema"`
-	Feature           AudioFeatureFrame    `json:"feature"`
-	Artwork           *ArtworkMetadata     `json:"artwork,omitempty"`
-	BackgroundArtwork *ArtworkMetadata     `json:"background_artwork,omitempty"`
-	BaseTexture       *BaseTextureMetadata `json:"base_texture,omitempty"`
+	Schema      uint16               `json:"schema"`
+	Feature     AudioFeatureFrame    `json:"feature"`
+	Artwork     *ArtworkMetadata     `json:"artwork,omitempty"`
+	BaseTexture *BaseTextureMetadata `json:"base_texture,omitempty"`
 	// WaveformTexture is a per-frame FFmpeg showwaves raster. It reuses the
 	// bounded RGBA contract while the GPU binding is being introduced.
 	WaveformTexture *BaseTextureMetadata `json:"waveform_texture,omitempty"`
@@ -142,7 +141,6 @@ type MusicScenePalette struct {
 	Accent       [4]uint8 `json:"accent"`
 	Background   [4]uint8 `json:"background"`
 	Overlay      [4]uint8 `json:"overlay"`
-	FallbackEnd  [4]uint8 `json:"fallback_end"`
 	BlurStrength float32  `json:"blur_strength"`
 	Readability  float32  `json:"readability"`
 }
@@ -173,10 +171,6 @@ type GlyphAtlasMetadata struct {
 	AssetHash      string       `json:"asset_hash,omitempty"`
 	Glyphs         []GlyphEntry `json:"glyphs,omitempty"`
 	TextRuns       []TextRun    `json:"text_runs,omitempty"`
-	// BitmapRuns are bounded libass-rasterized text runs. The CPU supplies only
-	// glyph-local alpha texels and placement metadata; the GPU remains the sole
-	// owner of full-frame composition and YUV conversion.
-	BitmapRuns []GlyphBitmapRun `json:"bitmap_runs,omitempty"`
 }
 
 type GlyphEntry struct {
@@ -200,14 +194,6 @@ type TextRun struct {
 	FontWeight uint16 `json:"font_weight,omitempty"`
 }
 
-type GlyphBitmapRun struct {
-	ID         string    `json:"id"`
-	AtlasRect  SceneRect `json:"atlas_rect"`
-	ScreenRect SceneRect `json:"screen_rect"`
-	RGBA       [4]uint8  `json:"rgba"`
-	Opacity    float32   `json:"opacity,omitempty"`
-}
-
 func (s MusicScenePayload) Validate() error {
 	if s.Schema != MusicSceneSchema {
 		return errors.New("invalid music scene schema")
@@ -227,11 +213,6 @@ func (s MusicScenePayload) Validate() error {
 	if s.Artwork != nil {
 		if err := s.Artwork.Validate(); err != nil {
 			return fmt.Errorf("scene artwork: %w", err)
-		}
-	}
-	if s.BackgroundArtwork != nil {
-		if err := s.BackgroundArtwork.Validate(); err != nil {
-			return fmt.Errorf("scene background artwork: %w", err)
 		}
 	}
 	if s.BaseTexture != nil {
@@ -355,14 +336,6 @@ func (g GlyphAtlasMetadata) Validate() error {
 	}
 	if len(g.FontFamily)+len(g.MissingGlyphID) > MusicMaxTextBytes {
 		return errors.New("glyph metadata too large")
-	}
-	if len(g.BitmapRuns) > MusicMaxGlyphs {
-		return errors.New("too many glyph bitmap runs")
-	}
-	for _, run := range g.BitmapRuns {
-		if run.ID == "" || run.AtlasRect.W <= 0 || run.AtlasRect.H <= 0 || run.ScreenRect.W <= 0 || run.ScreenRect.H <= 0 || run.AtlasRect.X < 0 || run.AtlasRect.Y < 0 || run.AtlasRect.X+run.AtlasRect.W > int(g.Width) || run.AtlasRect.Y+run.AtlasRect.H > int(g.Height) || math.IsNaN(float64(run.Opacity)) || run.Opacity < 0 || run.Opacity > 1 {
-			return errors.New("invalid glyph bitmap run")
-		}
 	}
 	return nil
 }

@@ -40,31 +40,6 @@ func TestSelectForegroundModeDark(t *testing.T) {
 	}
 }
 
-func TestAnalyzeVisualizerForegroundMatchesReferencePreparation(t *testing.T) {
-	ffmpeg, err := ffmpegPath()
-	if err != nil {
-		t.Skipf("ffmpeg unavailable: %v", err)
-	}
-	layout, err := LayoutForSize(640, 360)
-	if err != nil {
-		t.Fatal(err)
-	}
-	fallback := image.NewRGBA(image.Rect(0, 0, layout.Artwork.W, layout.Artwork.H))
-	fillGradient(fallback, color.RGBA{122, 29, 79, 255}, color.RGBA{255, 107, 53, 255})
-	got, err := AnalyzeVisualizerForeground(context.Background(), ffmpeg, "", fallback, layout)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantPath := filepath.Join(t.TempDir(), "reference.png")
-	want, err := PrepareVisualizerBase(context.Background(), ffmpeg, "", fallback, layout, wantPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != want {
-		t.Fatalf("analysis mode=%#v, reference mode=%#v", got, want)
-	}
-}
-
 func TestSelectForegroundModeLight(t *testing.T) {
 	// Solid light background → dark foreground (black text, light overlay).
 	bg := image.NewRGBA(image.Rect(0, 0, 1280, 720))
@@ -627,16 +602,4 @@ func TestPrepareVisualizerBaseMixedLuminance(t *testing.T) {
 	// TestComplementaryForeground* unit tests above.
 	_ = mode
 	_ = outPath
-}
-
-func TestBlackReadabilityOverlayMatchesByteFormula(t *testing.T) {
-	for v := 0; v < 256; v++ {
-		img := image.NewRGBA(image.Rect(0, 0, 1, 1))
-		img.SetRGBA(0, 0, color.RGBA{uint8(v), uint8(v), uint8(v), 255})
-		draw.Draw(img, img.Bounds(), &image.Uniform{color.NRGBA{A: 64}}, image.Point{}, draw.Over)
-		want := uint8((v * 257 * (65535 - 64*257) / 65535) >> 8)
-		if got := img.RGBAAt(0, 0).R; got != want {
-			t.Fatalf("v=%d got=%d want=%d", v, got, want)
-		}
-	}
 }

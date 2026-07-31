@@ -18,7 +18,6 @@ type GlyphSyntheticEvidence struct {
 	CPUAlphaSHA256    string                          `json:"cpuAlphaSha256"`
 	GPUAlphaSHA256    string                          `json:"gpuAlphaSha256"`
 	CPUVisibleBounds  [4]int                          `json:"cpuVisibleBounds"`
-	CPUScreenBounds   [4]int                          `json:"cpuScreenBounds"`
 	GPUVisibleBounds  [4]int                          `json:"gpuVisibleBounds"`
 	CPUScreenCoverage int                             `json:"cpuScreenCoverage"`
 	GPUScreenCoverage int                             `json:"gpuScreenCoverage"`
@@ -99,15 +98,6 @@ func CompareSyntheticGlyph(atlas *GlyphAtlasMetadata, manifest GlyphInstanceMani
 		cpuScreenMask[p] = struct{}{}
 	}
 	e.CPUScreenCoverage = len(cpuScreenMask)
-	if len(cpuScreenMask) > 0 {
-		minX, minY, maxX, maxY := int(width), int(height), -1, -1
-		for p := range cpuScreenMask {
-			x, y := p%int(width), p/int(width)
-			minX, minY = minIntGlyph(minX, x), minIntGlyph(minY, y)
-			maxX, maxY = maxIntGlyph(maxX, x), maxIntGlyph(maxY, y)
-		}
-		e.CPUScreenBounds = [4]int{minX, minY, maxX + 1, maxY + 1}
-	}
 	gpuScreenMask := make(map[int]struct{})
 	gpuScreenMasks := make(map[uint8]map[int]struct{})
 	for _, t := range []uint8{1, 8, 16, 32, 64, 128} {
@@ -219,21 +209,12 @@ func ExpandMusicGlyphManifest(scene *MusicScenePayload, width, height uint32) Gl
 			if len(m.Instances) >= 256 {
 				break
 			}
-			id := musicGlyphID(run.FontWeight, ch)
+			id := string(ch)
 			var g *GlyphEntry
 			for i := range a.Glyphs {
 				if a.Glyphs[i].ID == id {
 					g = &a.Glyphs[i]
 					break
-				}
-			}
-			if g == nil {
-				legacyID := string(ch)
-				for i := range a.Glyphs {
-					if a.Glyphs[i].ID == legacyID {
-						g = &a.Glyphs[i]
-						break
-					}
 				}
 			}
 			if g == nil {
@@ -247,7 +228,7 @@ func ExpandMusicGlyphManifest(scene *MusicScenePayload, width, height uint32) Gl
 			if g == nil {
 				continue
 			}
-			const atlasFaceSize float32 = musicAtlasLayoutEm
+			const atlasFaceSize float32 = 48
 			const atlasInkTop float32 = 7
 			scale := run.SizePx / atlasFaceSize
 			sw := float32(g.Width) * scale
@@ -264,12 +245,16 @@ func ExpandMusicGlyphManifest(scene *MusicScenePayload, width, height uint32) Gl
 			}
 			rgba := [4]float32{float32(run.RGBA[0]) / 255, float32(run.RGBA[1]) / 255, float32(run.RGBA[2]) / 255, float32(run.RGBA[3]) / 255 * clampGlyph(run.Opacity)}
 			m.Instances = append(m.Instances, GlyphInstanceDiagnostic{
-				ID: g.ID, Screen: [4]float32{cursor / float32(width), screenY * sy / float32(height), sw * sx / float32(width), sh / float32(height)},
+				ID: id, Screen: [4]float32{cursor / float32(width), screenY * sy / float32(height), sw * sx / float32(width), sh / float32(height)},
 				Atlas: [4]float32{float32(g.X) / float32(a.Width), float32(g.Y) / float32(a.Height), float32(g.Width) / float32(a.Width), float32(g.Height) / float32(a.Height)},
 				Color: rgba, Scale: scale, Baseline: run.Y * sy, InkTop: atlasInkTop * scale * sy,
 				CellPadding: [4]float32{maxf(0, 64-float32(g.Width)), maxf(0, 64-float32(g.Height)), 0, 0},
 			})
-			cursor += maxf(g.Advance, 1) * scale * sx
+			adv := g.Advance
+			if adv < float32(g.Width) {
+				adv = float32(g.Width)
+			}
+			cursor += adv * scale * sx
 		}
 	}
 	m.Count = len(m.Instances)

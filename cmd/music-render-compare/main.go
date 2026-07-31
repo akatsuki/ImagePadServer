@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -11,7 +10,7 @@ import (
 	"image"
 	"image/color"
 	_ "image/jpeg"
-	"image/png"
+	_ "image/png"
 	"io"
 	"math"
 	"os"
@@ -48,19 +47,6 @@ type renderResult struct {
 	ScreenshotSHA256  map[string]string       `json:"screenshotSha256,omitempty"`
 	ScreenshotMetrics map[string]imageMetrics `json:"screenshotMetrics,omitempty"`
 }
-
-func writePNG(path string, img image.Image) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return png.Encode(f, img)
-}
-
 type imageBounds struct {
 	MinX int `json:"minX"`
 	MinY int `json:"minY"`
@@ -80,16 +66,6 @@ type imageComparison struct {
 	RMSE             float64 `json:"rmse"`
 	MismatchedPixels int     `json:"mismatchedPixels"`
 	MismatchRatio    float64 `json:"mismatchRatio"`
-}
-
-type frameSequenceComparison struct {
-	FramesCompared int64   `json:"framesCompared"`
-	ExpectedFrames int64   `json:"expectedFrames"`
-	MaxMAE         float64 `json:"maxMae"`
-	MaxRMSE        float64 `json:"maxRmse"`
-	WorstMAEFrame  int64   `json:"worstMaeFrame"`
-	WorstRMSEFrame int64   `json:"worstRmseFrame"`
-	Error          string  `json:"error,omitempty"`
 }
 
 // glyphMaskComparison compares a luminance-derived foreground mask in a text
@@ -136,7 +112,6 @@ type report struct {
 	GPU                     renderResult                              `json:"gpu"`
 	FrameContract           frameContract                             `json:"frameContract"`
 	ScreenshotComparisons   map[string]imageComparison                `json:"screenshotComparisons,omitempty"`
-	FrameSequenceComparison frameSequenceComparison                   `json:"frameSequenceComparison"`
 	StaticRegionComparisons map[string]regionComparison               `json:"staticRegionComparisons,omitempty"`
 	GlyphMaskComparisons    map[string]map[string]glyphMaskComparison `json:"glyphMaskComparisons,omitempty"`
 	ComparisonGate          comparisonGate                            `json:"comparisonGate"`
@@ -170,13 +145,6 @@ type sceneEvidence struct {
 	FlatBackgroundCPUHash         string                                           `json:"flatBackgroundCpuHash,omitempty"`
 	FlatBackgroundGPUHash         string                                           `json:"flatBackgroundGpuHash,omitempty"`
 	FlatBackgroundParity          *video.OverlayParityMetric                       `json:"flatBackgroundParity,omitempty"`
-	NativeBaseCPUHash             string                                           `json:"nativeBaseCpuHash,omitempty"`
-	NativeBaseGPUHash             string                                           `json:"nativeBaseGpuHash,omitempty"`
-	NativeBaseParity              *video.OverlayParityMetric                       `json:"nativeBaseParity,omitempty"`
-	PreYUVCompositeParity         *video.OverlayParityMetric                       `json:"preYuvCompositeParity,omitempty"`
-	BlurredBackgroundCPUHash      string                                           `json:"blurredBackgroundCpuHash,omitempty"`
-	BlurredBackgroundGPUHash      string                                           `json:"blurredBackgroundGpuHash,omitempty"`
-	BlurredBackgroundParity       *video.OverlayParityMetric                       `json:"blurredBackgroundParity,omitempty"`
 	BaseTextureCPUHash            string                                           `json:"baseTextureCpuHash,omitempty"`
 	BaseTextureGPUHash            string                                           `json:"baseTextureGpuHash,omitempty"`
 	BaseTextureParity             *video.OverlayParityMetric                       `json:"baseTextureParity,omitempty"`
@@ -202,8 +170,6 @@ type sceneEvidence struct {
 	Title                         string                                           `json:"title,omitempty"`
 	Artist                        string                                           `json:"artist,omitempty"`
 	Album                         string                                           `json:"album,omitempty"`
-	Palette                       video.MusicScenePalette                          `json:"palette"`
-	ReferenceForeground           video.ForegroundMode                             `json:"referenceForeground"`
 	SpectrumQ16                   [24]uint16                                       `json:"spectrumQ16,omitempty"`
 	SpectrumQ16Points             [3][24]uint16                                    `json:"spectrumQ16Points,omitempty"`
 }
@@ -491,8 +457,6 @@ type comparisonGate struct {
 	MaxVisualRMSE        float64 `json:"maxVisualRmse"`
 	ExpectedVisualPoints int     `json:"expectedVisualPoints"`
 	ObservedVisualPoints int     `json:"observedVisualPoints"`
-	ExpectedVisualFrames int64   `json:"expectedVisualFrames"`
-	ObservedVisualFrames int64   `json:"observedVisualFrames"`
 	NativeGPURequired    bool    `json:"nativeGpuRequired"`
 	DiagnosticMode       bool    `json:"diagnosticMode"`
 }
@@ -644,134 +608,6 @@ func compareImages(aPath, bPath string) (imageComparison, error) {
 	c.MismatchedPixels = mism
 	c.MismatchRatio = float64(mism) / float64(ab.Dx()*ab.Dy())
 	return c, nil
-}
-
-func compareRGBAFrames(a, b []byte) (imageComparison, error) {
-	c := imageComparison{SizeMatch: len(a) == len(b)}
-	if !c.SizeMatch || len(a) == 0 || len(a)%4 != 0 {
-		return c, fmt.Errorf("invalid RGBA frame sizes %d/%d", len(a), len(b))
-	}
-	var sum, sq float64
-	mismatched := 0
-	for pixel := 0; pixel < len(a); pixel += 4 {
-		pixelDiff := false
-		for channel := 0; channel < 4; channel++ {
-			d := math.Abs(float64(a[pixel+channel]) - float64(b[pixel+channel]))
-			sum += d
-			sq += d * d
-			if d > 8 {
-				pixelDiff = true
-			}
-		}
-		if pixelDiff {
-			mismatched++
-		}
-	}
-	c.MeanAbsoluteRGBA = sum / float64(len(a))
-	c.RMSE = math.Sqrt(sq / float64(len(a)))
-	c.MismatchedPixels = mismatched
-	c.MismatchRatio = float64(mismatched) / float64(len(a)/4)
-	return c, nil
-}
-
-type rawFrameDecoder struct {
-	cmd    *exec.Cmd
-	stdout io.ReadCloser
-	stderr bytes.Buffer
-}
-
-func startRawFrameDecoder(ctx context.Context, ffmpeg, input string) (*rawFrameDecoder, error) {
-	d := &rawFrameDecoder{}
-	d.cmd = exec.CommandContext(ctx, ffmpeg, "-hide_banner", "-loglevel", "error", "-i", input, "-map", "0:v:0", "-an", "-pix_fmt", "rgba", "-f", "rawvideo", "pipe:1")
-	d.cmd.Stderr = &d.stderr
-	stdout, err := d.cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-	d.stdout = stdout
-	if err := d.cmd.Start(); err != nil {
-		return nil, err
-	}
-	return d, nil
-}
-
-func (d *rawFrameDecoder) stop() {
-	if d != nil && d.cmd != nil && d.cmd.Process != nil {
-		_ = d.cmd.Process.Kill()
-		_ = d.cmd.Wait()
-	}
-}
-
-func compareVideoFrames(ctx context.Context, ffmpeg, cpuPath, gpuPath string, width, height int, expected int64) frameSequenceComparison {
-	result := frameSequenceComparison{ExpectedFrames: expected, WorstMAEFrame: -1, WorstRMSEFrame: -1}
-	if width <= 0 || height <= 0 || expected <= 0 {
-		result.Error = "invalid all-frame comparison dimensions or frame count"
-		return result
-	}
-	cpu, err := startRawFrameDecoder(ctx, ffmpeg, cpuPath)
-	if err != nil {
-		result.Error = "start CPU frame decoder: " + err.Error()
-		return result
-	}
-	gpu, err := startRawFrameDecoder(ctx, ffmpeg, gpuPath)
-	if err != nil {
-		cpu.stop()
-		result.Error = "start GPU frame decoder: " + err.Error()
-		return result
-	}
-	completed := false
-	defer func() {
-		if !completed {
-			cpu.stop()
-			gpu.stop()
-		}
-	}()
-	frameBytes := width * height * 4
-	cpuFrame, gpuFrame := make([]byte, frameBytes), make([]byte, frameBytes)
-	for frameIndex := int64(0); frameIndex < expected; frameIndex++ {
-		if _, err := io.ReadFull(cpu.stdout, cpuFrame); err != nil {
-			result.Error = fmt.Sprintf("decode CPU frame %d: %v", frameIndex, err)
-			return result
-		}
-		if _, err := io.ReadFull(gpu.stdout, gpuFrame); err != nil {
-			result.Error = fmt.Sprintf("decode GPU frame %d: %v", frameIndex, err)
-			return result
-		}
-		comparison, err := compareRGBAFrames(cpuFrame, gpuFrame)
-		if err != nil {
-			result.Error = fmt.Sprintf("compare frame %d: %v", frameIndex, err)
-			return result
-		}
-		result.FramesCompared++
-		if comparison.MeanAbsoluteRGBA > result.MaxMAE {
-			result.MaxMAE, result.WorstMAEFrame = comparison.MeanAbsoluteRGBA, frameIndex
-		}
-		if comparison.RMSE > result.MaxRMSE {
-			result.MaxRMSE, result.WorstRMSEFrame = comparison.RMSE, frameIndex
-		}
-	}
-	var extra [1]byte
-	if n, readErr := cpu.stdout.Read(extra[:]); n != 0 || readErr != io.EOF {
-		result.Error = fmt.Sprintf("CPU decoder emitted data beyond %d frames", expected)
-		return result
-	}
-	if n, readErr := gpu.stdout.Read(extra[:]); n != 0 || readErr != io.EOF {
-		result.Error = fmt.Sprintf("GPU decoder emitted data beyond %d frames", expected)
-		return result
-	}
-	if err := cpu.cmd.Wait(); err != nil {
-		result.Error = fmt.Sprintf("CPU frame decoder: %v: %s", err, strings.TrimSpace(cpu.stderr.String()))
-		gpu.stop()
-		completed = true
-		return result
-	}
-	if err := gpu.cmd.Wait(); err != nil {
-		result.Error = fmt.Sprintf("GPU frame decoder: %v: %s", err, strings.TrimSpace(gpu.stderr.String()))
-		completed = true
-		return result
-	}
-	completed = true
-	return result
 }
 
 func sha256File(path string) (string, error) {
@@ -1020,11 +856,6 @@ func main() {
 		fatal(err)
 	}
 	p := video.ResolveQuality(strconv.Itoa(*height), 100)
-	// Renderer parity must measure compositor/YUV differences, not divergent
-	// lossy x264 decisions caused by the CPU and GPU filter graphs. CRF 0 keeps
-	// both comparison videos reversible while production presets remain
-	// unchanged and are covered by their own encoder tests.
-	p.CRF = 0
 	inputSpec := video.AudioRenderInput{SourcePath: *input, Kind: video.SourceMusic, Analysis: analysis,
 		Metadata: video.AudioMetadata{Title: *title, Artist: *artist, Album: *album}, ArtworkPath: *artwork}
 	id := "compare"
@@ -1049,13 +880,6 @@ func main() {
 	rep.FrameContract.ExpectedFrames = int64(math.Max(1, math.Ceil(analysis.Duration*30)))
 	rep.FrameContract.SharedMuxPolicy = "raw:30fps,cfr,frames:v;hls:passthrough,video-copy"
 	compareW := int(math.Round(float64(p.Height) * 16.0 / 9.0))
-	if !*cpuOnly {
-		prepared, prepareErr := video.PrepareGPUMusicSceneInput(ctx, ff, inputSpec, compareW, p.Height)
-		if prepareErr != nil {
-			fatal(prepareErr)
-		}
-		inputSpec = prepared
-	}
 	scene := video.CanonicalMusicScene(inputSpec, 0, 0)
 	// For GPU diagnostics, inject one canonical FFmpeg showwaves frame into the
 	// scene. This keeps the compare path representative without changing the
@@ -1106,14 +930,24 @@ func main() {
 			fmt.Fprintf(os.Stderr, "warning: libass screen overlay unavailable: %v\n", oe)
 		}
 	}
-	var referenceForeground video.ForegroundMode
-	var referenceBase *image.RGBA
-	if base, mode, be := video.RenderVisualizerReferenceBaseForInput(ctx, ff, inputSpec, compareW, p.Height); be == nil {
-		referenceBase = base
-		referenceForeground = mode
-		if bm, me := video.NewBaseTextureMetadata("compare-base", base, video.ColorSRGB); me == nil {
-			scene.BaseTexture = &bm
-			rep.SceneEvidence.BaseTextureCPUHash = bm.AssetHash
+	if scene.Artwork != nil {
+		aw, ah := int(scene.Artwork.Width), int(scene.Artwork.Height)
+		src := image.NewRGBA(image.Rect(0, 0, aw, ah))
+		for y := 0; y < ah; y++ {
+			for x := 0; x < aw; x++ {
+				off := y*int(scene.Artwork.RowStride) + x*4
+				if off+3 < len(scene.Artwork.Payload) {
+					src.SetRGBA(x, y, color.RGBA{scene.Artwork.Payload[off], scene.Artwork.Payload[off+1], scene.Artwork.Payload[off+2], scene.Artwork.Payload[off+3]})
+				}
+			}
+		}
+		if layout, le := video.LayoutForSize(int(math.Round(float64(p.Height)*16.0/9.0)), p.Height); le == nil {
+			if base, _, be := video.RenderVisualizerBaseCPU(ctx, ff, *artwork, src, layout); be == nil {
+				if bm, me := video.NewBaseTextureMetadata("compare-base", base, video.ColorSRGB); me == nil {
+					scene.BaseTexture = &bm
+					rep.SceneEvidence.BaseTextureCPUHash = bm.AssetHash
+				}
+			}
 		}
 	}
 	// Let the production GPU route build the canonical base itself. The
@@ -1133,7 +967,7 @@ func main() {
 			}
 		}
 	}
-	rep.SceneEvidence = sceneEvidence{Fingerprint: scene.Fingerprint, Title: inputSpec.Metadata.Title, Artist: inputSpec.Metadata.Artist, Album: inputSpec.Metadata.Album, Palette: scene.Palette, ReferenceForeground: referenceForeground, SpectrumQ16: spectrumQ16, SpectrumQ16Points: spectrumPoints}
+	rep.SceneEvidence = sceneEvidence{Fingerprint: scene.Fingerprint, Title: inputSpec.Metadata.Title, Artist: inputSpec.Metadata.Artist, Album: inputSpec.Metadata.Album, SpectrumQ16: spectrumQ16, SpectrumQ16Points: spectrumPoints}
 	if scene.BaseTexture != nil {
 		rep.SceneEvidence.BaseTextureCPUHash = scene.BaseTexture.AssetHash
 	}
@@ -1333,71 +1167,6 @@ func main() {
 		}
 		bcancel()
 	}
-	if !*cpuOnly && referenceBase != nil {
-		nativeScene := scene
-		nativeScene.BaseTexture = nil
-		bctx, bcancel := context.WithTimeout(ctx, 10*time.Second)
-		if bf, be := video.ProbeGPUSceneNativeBase(bctx, strings.TrimSpace(os.Getenv("IMAGEPAD_PLAYLIST_COMPOSITORD")), uint32(compareW), uint32(p.Height), &nativeScene); be == nil {
-			gpu := image.NewRGBA(image.Rect(0, 0, int(bf.Width), int(bf.Height)))
-			for y := 0; y < int(bf.Height); y++ {
-				copy(gpu.Pix[y*gpu.Stride:y*gpu.Stride+int(bf.Width)*4], bf.Payload[y*int(bf.RowStride):y*int(bf.RowStride)+int(bf.Width)*4])
-			}
-			cpuHash := sha256.Sum256(referenceBase.Pix)
-			gpuHash := sha256.Sum256(gpu.Pix)
-			rep.SceneEvidence.NativeBaseCPUHash = fmt.Sprintf("%x", cpuHash[:])
-			rep.SceneEvidence.NativeBaseGPUHash = fmt.Sprintf("%x", gpuHash[:])
-			m := video.CompareOverlayParityCPUImageGPUImage(referenceBase, gpu, referenceBase.Bounds())
-			rep.SceneEvidence.NativeBaseParity = &m
-			_ = writePNG(filepath.Join(*output, "diagnostics", "native-base-cpu.png"), referenceBase)
-			_ = writePNG(filepath.Join(*output, "diagnostics", "native-base-gpu.png"), gpu)
-		}
-		bcancel()
-	}
-	if !*cpuOnly && referenceBase != nil {
-		layout, _ := video.LayoutForSize(compareW, p.Height)
-		if cpu, ce := video.RenderVisualizerReferenceFrameCPU(inputSpec, referenceBase, referenceForeground, layout, compareW, p.Height, 0); ce == nil {
-			probeScene := scene
-			probeScene.BaseTexture = nil
-			probeScene.GlyphAtlas = nil
-			probeScene.TextOverlay = nil
-			probeScene.WaveformTexture = nil
-			probeScene.Feature.WaveformQ16 = nil
-			bctx, bcancel := context.WithTimeout(ctx, 10*time.Second)
-			if bf, be := video.ProbeGPUSceneComposite(bctx, strings.TrimSpace(os.Getenv("IMAGEPAD_PLAYLIST_COMPOSITORD")), uint32(compareW), uint32(p.Height), &probeScene); be == nil {
-				gpu := image.NewRGBA(image.Rect(0, 0, int(bf.Width), int(bf.Height)))
-				for y := 0; y < int(bf.Height); y++ {
-					copy(gpu.Pix[y*gpu.Stride:y*gpu.Stride+int(bf.Width)*4], bf.Payload[y*int(bf.RowStride):y*int(bf.RowStride)+int(bf.Width)*4])
-				}
-				m := video.CompareOverlayParityCPUImageGPUImage(cpu, gpu, cpu.Bounds())
-				rep.SceneEvidence.PreYUVCompositeParity = &m
-				_ = writePNG(filepath.Join(*output, "diagnostics", "pre-yuv-composite-cpu.png"), cpu)
-				_ = writePNG(filepath.Join(*output, "diagnostics", "pre-yuv-composite-gpu.png"), gpu)
-			}
-			bcancel()
-		}
-	}
-	if !*cpuOnly {
-		if referenceBlur, re := video.RenderVisualizerReferenceBlurredForInput(ctx, ff, inputSpec, compareW, p.Height); re == nil {
-			blurScene := scene
-			blurScene.BaseTexture = nil
-			bctx, bcancel := context.WithTimeout(ctx, 10*time.Second)
-			if bf, be := video.ProbeGPUSceneBlurredBackground(bctx, strings.TrimSpace(os.Getenv("IMAGEPAD_PLAYLIST_COMPOSITORD")), uint32(compareW), uint32(p.Height), &blurScene); be == nil {
-				gpu := image.NewRGBA(image.Rect(0, 0, int(bf.Width), int(bf.Height)))
-				for y := 0; y < int(bf.Height); y++ {
-					copy(gpu.Pix[y*gpu.Stride:y*gpu.Stride+int(bf.Width)*4], bf.Payload[y*int(bf.RowStride):y*int(bf.RowStride)+int(bf.Width)*4])
-				}
-				cpuHash := sha256.Sum256(referenceBlur.Pix)
-				gpuHash := sha256.Sum256(gpu.Pix)
-				rep.SceneEvidence.BlurredBackgroundCPUHash = fmt.Sprintf("%x", cpuHash[:])
-				rep.SceneEvidence.BlurredBackgroundGPUHash = fmt.Sprintf("%x", gpuHash[:])
-				m := video.CompareOverlayParityCPUImageGPUImage(referenceBlur, gpu, referenceBlur.Bounds())
-				rep.SceneEvidence.BlurredBackgroundParity = &m
-				_ = writePNG(filepath.Join(*output, "diagnostics", "blurred-background-cpu.png"), referenceBlur)
-				_ = writePNG(filepath.Join(*output, "diagnostics", "blurred-background-gpu.png"), gpu)
-			}
-			bcancel()
-		}
-	}
 	if !*cpuOnly && scene.BaseTexture != nil {
 		bctx, bcancel := context.WithTimeout(ctx, 5*time.Second)
 		if bf, be := video.ProbeGPUSceneBaseTexture(bctx, strings.TrimSpace(os.Getenv("IMAGEPAD_PLAYLIST_COMPOSITORD")), scene.BaseTexture.Width, scene.BaseTexture.Height, &scene); be == nil {
@@ -1522,7 +1291,7 @@ func main() {
 		if lf, le := video.ProbeGPUSceneLoudness(lctx, strings.TrimSpace(os.Getenv("IMAGEPAD_PLAYLIST_COMPOSITORD")), uint32(math.Round(float64(p.Height)*16.0/9.0)), uint32(p.Height), &scene); le == nil {
 			layout, _ := video.LayoutForSize(int(math.Round(float64(p.Height)*16.0/9.0)), p.Height)
 			mode := video.ForegroundMode{AccentColor: color.RGBA{scene.Palette.Accent[0], scene.Palette.Accent[1], scene.Palette.Accent[2], 255}}
-			cpu := video.RenderProductionLoudnessLayerCPU(inputSpec.Analysis.Features, inputSpec.Analysis.Duration, mode, layout, int(lf.Width), int(lf.Height))
+			cpu := video.RenderLoudnessMaskCPU(int(lf.Width), int(lf.Height), inputSpec.Analysis.Features.LoudnessEnvelope, mode, layout)
 			gpu := image.NewRGBA(image.Rect(0, 0, int(lf.Width), int(lf.Height)))
 			for y := 0; y < int(lf.Height); y++ {
 				for x := 0; x < int(lf.Width); x++ {
@@ -1534,8 +1303,6 @@ func main() {
 			}
 			m := video.CompareOverlayParityCPUImageGPUImage(cpu, gpu, cpu.Bounds())
 			rep.SceneEvidence.LoudnessParity = &m
-			_ = writePNG(filepath.Join(*output, "diagnostics", "loudness-cpu.png"), cpu)
-			_ = writePNG(filepath.Join(*output, "diagnostics", "loudness-gpu.png"), gpu)
 		}
 		lcancel()
 	}
@@ -1572,18 +1339,12 @@ func main() {
 	rep.CPU = render(ctx, false, filepath.Join(*output, "cpu"), ff, inputSpec, id, p)
 	if !*cpuOnly {
 		rep.GPU = render(ctx, true, filepath.Join(*output, "gpu"), ff, inputSpec, id, p)
-		if rep.CPU.Error == "" && rep.GPU.Error == "" && rep.CPU.Output != "" && rep.GPU.Output != "" {
-			outputWidth := int(math.Round(float64(p.Height) * 16.0 / 9.0))
-			rep.FrameSequenceComparison = compareVideoFrames(ctx, ff, rep.CPU.Output, rep.GPU.Output, outputWidth, p.Height, rep.FrameContract.ExpectedFrames)
-		} else {
-			rep.FrameSequenceComparison = frameSequenceComparison{ExpectedFrames: rep.FrameContract.ExpectedFrames, WorstMAEFrame: -1, WorstRMSEFrame: -1, Error: "render output unavailable"}
-		}
 	}
 	rep.ScreenshotComparisons = map[string]imageComparison{}
 	rep.StaticRegionComparisons = map[string]regionComparison{}
 	rep.GlyphMaskComparisons = map[string]map[string]glyphMaskComparison{}
-	for name, a := range rep.CPU.Screenshots {
-		if a != "" {
+	for _, name := range []string{"start", "mid", "end"} {
+		if a, ok := rep.CPU.Screenshots[name]; ok {
 			if b, ok := rep.GPU.Screenshots[name]; ok {
 				if c, e := compareImages(a, b); e == nil {
 					rep.ScreenshotComparisons[name] = c
@@ -1643,10 +1404,8 @@ func main() {
 			FrameDelta:           rep.CPU.Probe.Frames - rep.GPU.Probe.Frames,
 			ExpectedVisualPoints: len(rep.CPU.Screenshots),
 			ObservedVisualPoints: len(rep.ScreenshotComparisons),
-			ExpectedVisualFrames: rep.FrameSequenceComparison.ExpectedFrames,
-			ObservedVisualFrames: rep.FrameSequenceComparison.FramesCompared,
 			NativeGPURequired:    os.Getenv("IMAGEPAD_COMPARE_REQUIRE_NATIVE_GPU") == "1",
-			DiagnosticMode:       os.Getenv("IMAGEPAD_GPU_PARITY_MODE") == "1",
+			DiagnosticMode:       os.Getenv("IMAGEPAD_GPU_PARITY_MODE") == "1" || os.Getenv("IMAGEPAD_GPU_RASTER_ONLY") == "1",
 		}
 	}
 	if !*cpuOnly {
@@ -1664,14 +1423,8 @@ func main() {
 				rep.ComparisonGate.MaxVisualRMSE = c.RMSE
 			}
 		}
-		if rep.FrameSequenceComparison.MaxMAE > rep.ComparisonGate.MaxVisualMAE {
-			rep.ComparisonGate.MaxVisualMAE = rep.FrameSequenceComparison.MaxMAE
-		}
-		if rep.FrameSequenceComparison.MaxRMSE > rep.ComparisonGate.MaxVisualRMSE {
-			rep.ComparisonGate.MaxVisualRMSE = rep.FrameSequenceComparison.MaxRMSE
-		}
 		// GO requires the final rendered pixels, not just mux/PTS parity.
-		rep.ComparisonGate.VisualParityPass = rep.FrameSequenceComparison.Error == "" && rep.ComparisonGate.ObservedVisualFrames == rep.ComparisonGate.ExpectedVisualFrames && rep.ComparisonGate.ObservedVisualPoints == rep.ComparisonGate.ExpectedVisualPoints && rep.ComparisonGate.MaxVisualMAE <= 1.0 && rep.ComparisonGate.MaxVisualRMSE <= 2.0
+		rep.ComparisonGate.VisualParityPass = rep.ComparisonGate.ObservedVisualPoints == rep.ComparisonGate.ExpectedVisualPoints && rep.ComparisonGate.MaxVisualMAE <= 1.0 && rep.ComparisonGate.MaxVisualRMSE <= 2.0
 		nativePass := nativeGatePass(rep.ComparisonGate.NativeGPURequired, rep.ComparisonGate.DiagnosticMode)
 		rep.ComparisonGate.Pass = nativePass && rep.ComparisonGate.DurationMatch && rep.ComparisonGate.FrameCountMatch && rep.ComparisonGate.FingerprintRecorded && rep.ComparisonGate.VisualParityPass
 	}

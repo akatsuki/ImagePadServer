@@ -425,12 +425,7 @@ func (a *streamAnalyzer) Finish() (AudioAnalysis, error) {
 		if end > len(a.waveformPCM) {
 			end = len(a.waveformPCM)
 		}
-		if os.Getenv("IMAGEPAD_GPU_WAVEFORM_RAW") == "1" {
-			// One 30 Hz stereo tick is 3200 int16 values at 48 kHz, which
-			// fits the bounded 4096-value scene contract. Preserving the
-			// interleaved samples lets WGSL reproduce FFmpeg showwaves mode=line.
-			waveformFrames[i] = SignedPCMToWaveformRawQ16(a.waveformPCM[start:end], 2, 4096)
-		} else if os.Getenv("IMAGEPAD_GPU_WAVEFORM_MINMAX") == "1" {
+		if os.Getenv("IMAGEPAD_GPU_WAVEFORM_MINMAX") == "1" {
 			waveformFrames[i] = SignedPCMToWaveformMinMaxQ16(a.waveformPCM[start:end], 2, sampleRate, 30*waveformColumns, 0, waveformColumns)
 		} else if os.Getenv("IMAGEPAD_GPU_WAVEFORM_SIGNED") == "1" {
 			waveformFrames[i] = SignedPCMToWaveformQ16(a.waveformPCM[start:end], 2, sampleRate, 30*waveformColumns, 0, waveformColumns)

@@ -122,7 +122,6 @@ mod tests {
                     peak_q15: 2,
                 },
                 artwork: None,
-                background_artwork: None,
                 base_texture: None,
                 waveform_texture: None,
                 loudness_texture: None,
