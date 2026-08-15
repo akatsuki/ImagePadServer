@@ -2576,20 +2576,13 @@ func (s *Server) handlePubItem(w http.ResponseWriter, r *http.Request) {
 		id = u
 	}
 	path, item, ok := s.store.HistoryPath(id)
-	if !ok || !item.Published {
+	if !ok {
 		s.serveInactivePlaceholder(w, r)
 		return
 	}
-	// 動画の HLS 配信は後続タスク。現時点では動画プレースホルダへフォールバック
-	// し、生成不能なら画像プレースホルダへ。
-	if item.Kind == "video" {
-		if mp4 := inactiveVideoBytes(); len(mp4) > 0 {
-			w.Header().Set("Content-Type", "video/mp4")
-			w.Header().Set("Cache-Control", "no-store, max-age=0")
-			w.Write(mp4)
-			return
-		}
-		s.serveInactivePlaceholder(w, r)
+	// 非公開、および動画（HLS 配信は後続タスクのため）はプレースホルダへ。
+	if !item.Published || item.Kind == "video" {
+		s.serveInactiveForKind(w, r, item.Kind)
 		return
 	}
 	file, err := os.Open(path)
@@ -2605,6 +2598,21 @@ func (s *Server) handlePubItem(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "no-store, max-age=0")
 	http.ServeContent(w, r, safeFileName(item.PublicName), item.UpdatedAt, file)
+}
+
+// serveInactiveForKind は非公開・動画項目向けに ERROR INACTIVE ADDRESS
+// プレースホルダを返す。動画は動画プレースホルダ（MP4）、それ以外は画像
+// プレースホルダ。動画プレースホルダ生成不能なら画像へフォールバックする。
+func (s *Server) serveInactiveForKind(w http.ResponseWriter, r *http.Request, kind string) {
+	if kind == "video" {
+		if mp4 := inactiveVideoBytes(); len(mp4) > 0 {
+			w.Header().Set("Content-Type", "video/mp4")
+			w.Header().Set("Cache-Control", "no-store, max-age=0")
+			w.Write(mp4)
+			return
+		}
+	}
+	s.serveInactivePlaceholder(w, r)
 }
 
 func (s *Server) serveInactivePlaceholder(w http.ResponseWriter, r *http.Request) {

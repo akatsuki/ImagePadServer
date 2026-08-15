@@ -140,3 +140,39 @@ func TestSetPublishedSyncsCurrentFlag(t *testing.T) {
 		t.Fatalf("current.Published = %v after republish, want true", got)
 	}
 }
+
+// TestHandlePubItemVideoServesVideoPlaceholder は非公開の動画項目が /pub/{id}
+// で動画プレースホルダ（video/mp4）を返すことを検証する。ffmpeg が無い環境
+// では画像プレースホルダへフォールバックする。
+func TestHandlePubItemVideoServesVideoPlaceholder(t *testing.T) {
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+
+	src := filepath.Join(t.TempDir(), "pub.mp4")
+	if err := os.WriteFile(src, []byte("fake-video-bytes"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.AddHistory(src, library.CurrentImage{Kind: "video", PublicName: "pub.mp4", ContentType: "video/mp4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8080/pub/"+item.ID, nil)
+	req.RemoteAddr = "127.0.0.1:50000"
+	rec := httptest.NewRecorder()
+	srv.handlePubItem(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unpublished video status = %d, want 200; body=%q", rec.Code, rec.Body.String())
+	}
+	ct := rec.Header().Get("Content-Type")
+	if strings.TrimSpace(os.Getenv("IMAGEPAD_FFMPEG")) != "" {
+		if ct != "video/mp4" {
+			t.Fatalf("unpublished video content-type = %q, want video/mp4", ct)
+		}
+	} else if ct != "image/jpeg" && ct != "image/png" {
+		t.Fatalf("unpublished video fallback content-type = %q, want image", ct)
+	}
+}
