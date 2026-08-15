@@ -2,6 +2,12 @@
 set -eu
 
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+# git-bash/MSYS exposes POSIX-style paths (/c/Users/...) that the Windows go
+# toolchain rejects ("empty path element"). Convert to the mixed form
+# (C:/Users/...) when cygpath is available; native shells are unaffected.
+if command -v cygpath >/dev/null 2>&1; then
+  ROOT_DIR="$(cygpath -m "$ROOT_DIR")"
+fi
 DIST_DIR="$ROOT_DIR/dist"
 APP_NAME="imagepadserver"
 VERSION="$(sed -n 's/.*Version[[:space:]]*=[[:space:]]*"\(v[^"]*\)".*/\1/p' "$ROOT_DIR/internal/about/about.go" | head -n 1)"
@@ -63,7 +69,13 @@ pack_windows_zip() {
   fi
   echo "packing $archive"
   rm -f "$archive"
-  zip -q -j -X "$archive" "$exe"
+  if command -v zip >/dev/null 2>&1; then
+    zip -q -j -X "$archive" "$exe"
+  elif command -v powershell >/dev/null 2>&1; then
+    powershell -NoProfile -Command "Compress-Archive -Path '$exe' -DestinationPath '$archive' -Force"
+  else
+    echo "warning: neither zip nor powershell available; skipping $archive"
+  fi
 }
 
 build_macos_app() {
