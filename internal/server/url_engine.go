@@ -227,19 +227,27 @@ func withResolvedShareURLs(state map[string]interface{}) map[string]interface{} 
 	if state == nil {
 		return nil
 	}
-	targets := map[string]interface{}{}
-	for _, mode := range []string{"file", "link", "obs", "obs_rtsp", "obs_hls"} {
-		shareURL, shareURLLabel := shareURLForMode(state, mode)
-		targets[mode] = map[string]interface{}{
-			"shareURL":      shareURL,
-			"shareURLLabel": shareURLLabel,
-		}
-	}
-	state["shareTargets"] = targets
-	shareURL, shareURLLabel := primaryShareURL(state)
+	ctx := shareContextFromState(state)
+	state["shareTargets"] = shareTargetsFromContext(ctx)
+	shareURL, shareURLLabel := primaryShareURLForContext(state, ctx)
 	state["shareURL"] = shareURL
 	state["shareURLLabel"] = shareURLLabel
 	return state
+}
+
+// primaryShareURLForContext は shareModeFromState で主モードを決め、
+// ShareContext で解決する。空モードは Source から既定モードへフォールバック
+// （現行 urlRequestForShareMode の default ケースと同等）。
+func primaryShareURLForContext(state map[string]interface{}, ctx ShareContext) (string, string) {
+	mode := NormalizeShareMode(shareModeFromState(state))
+	if !mode.Valid() {
+		mode = defaultShareModeForSource(ctx.Source())
+	}
+	view := ctx.Resolve(mode)
+	if view.URL != "" || view.Label != "" {
+		return view.URL, view.Label
+	}
+	return "", "URL"
 }
 
 func shareModeFromState(state map[string]interface{}) string {

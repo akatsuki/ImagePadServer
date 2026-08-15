@@ -2843,9 +2843,8 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 	publicImageURL := ""
 	publicVideoURL := ""
 	publicHLSURL := ""
-	var currentMedia *library.CurrentImage
-	if current := s.store.Current(); current != nil {
-		currentMedia = current
+	current := s.store.Current() // 単一読取（torn read 解消: Task 4a）
+	if current != nil {
 		videoPlayer := s.videoPlayerStateForID(current.ID)
 		if current.Kind != "video" {
 			imagePath := imageURLPath(current)
@@ -2883,13 +2882,13 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 			"obsLatency":    s.obsLatencyProfile(),
 		}
 		shareURL, shareURLLabel := primaryShareURL(state)
-		return withResolvedShareURLs(s.stateWithMedia(r, upnpResult, tunnelStatus, videoPlayer, obsStatus, imageURL, videoURL, hlsURL, shareURL, shareURLLabel, publicImageURL, publicVideoURL, publicHLSURL, localImageURL, previewImageURL))
+		return withResolvedShareURLs(s.stateWithMedia(r, current, upnpResult, tunnelStatus, videoPlayer, obsStatus, imageURL, videoURL, hlsURL, shareURL, shareURLLabel, publicImageURL, publicVideoURL, publicHLSURL, localImageURL, previewImageURL))
 	}
 	if imageURL == "" {
 		imageURL = ""
 	}
 	videoPlayer := s.videoPlayerStateForID("")
-	if current := s.store.Current(); current != nil {
+	if current != nil {
 		videoPlayer = s.videoPlayerStateForID(current.ID)
 	}
 	shareURL, shareURLLabel := primaryShareURL(map[string]interface{}{
@@ -2900,7 +2899,7 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 		"videoPlayer":   videoPlayer,
 		"obs":           obsStatus,
 		"obsLatency":    s.obsLatencyProfile(),
-		"current":       currentMedia,
+		"current":       current,
 	})
 
 	return withResolvedShareURLs(map[string]interface{}{
@@ -2933,13 +2932,13 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 		"ytdlpAuth":       ytdlpauth.Status(),
 		"ingest":          s.ingestState(),
 		"toolInstall":     video.ToolInstallStatus(),
-		"current":         s.store.Current(),
+		"current":         current,
 		"history":         s.historyState(),
 		"remoteAddr":      r.RemoteAddr,
 	})
 }
 
-func (s *Server) stateWithMedia(r *http.Request, upnpResult upnp.Result, tunnelStatus map[string]interface{}, videoPlayer map[string]interface{}, obsStatus obsrtmp.Status, imageURL, videoURL, hlsURL, shareURL, shareURLLabel, publicImageURL, publicVideoURL, publicHLSURL, localImageURL, previewImageURL string) map[string]interface{} {
+func (s *Server) stateWithMedia(r *http.Request, current *library.CurrentImage, upnpResult upnp.Result, tunnelStatus map[string]interface{}, videoPlayer map[string]interface{}, obsStatus obsrtmp.Status, imageURL, videoURL, hlsURL, shareURL, shareURLLabel, publicImageURL, publicVideoURL, publicHLSURL, localImageURL, previewImageURL string) map[string]interface{} {
 	return withResolvedShareURLs(map[string]interface{}{
 		"appName":         about.AppName,
 		"version":         about.Version,
@@ -2970,7 +2969,7 @@ func (s *Server) stateWithMedia(r *http.Request, upnpResult upnp.Result, tunnelS
 		"ytdlpAuth":       ytdlpauth.Status(),
 		"ingest":          s.ingestState(),
 		"toolInstall":     video.ToolInstallStatus(),
-		"current":         s.store.Current(),
+		"current":         current,
 		"history":         s.historyState(),
 		"remoteAddr":      r.RemoteAddr,
 	})
