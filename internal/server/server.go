@@ -102,18 +102,45 @@ type Server struct {
 	lastStateEvent   time.Time
 	stateEventDue    bool
 
-	musicQueue            *playlist.Queue
-	playlistStore         *playlist.Store
-	radio                 musicRadioController
-	startMusicRadio       func() error
-	musicJobs             chan func()
-	musicPendingMu        sync.Mutex
-	musicPendingTrack     string
-	musicPendingOffset    int
-	musicPaused           bool
-	musicPausedTrack      string
-	musicPausedOffset     int
-	activeCanonicalHeight int
+	musicQueue                      *playlist.Queue
+	playlistStore                   *playlist.Store
+	radio                           musicRadioController
+	startMusicRadio                 func() error
+	musicJobs                       chan func()
+	musicPendingMu                  sync.Mutex
+	musicPendingTrack               string
+	musicPendingOffset              int
+	musicPaused                     bool
+	musicPausedTrack                string
+	musicPausedOffset               int
+	musicRadioStartMu               sync.Mutex
+	musicTimelineMu                 sync.Mutex
+	playlistGPUEvaluationArmed      bool
+	musicTimelineEpoch              uint64
+	musicNextSequence               uint64
+	musicActiveTrackID              string
+	musicActiveBaseSeq              uint64
+	musicActiveTailSeq              uint64
+	musicActiveStartedAt            time.Time
+	musicTransitionReservedNextSeq  uint64
+	musicPlaylistGPUTransitionSink  func(video.TransitionPlan) error
+	musicPlaylistGPUFrameSink       func(video.EncodedH264Frame) error
+	musicPlaylistPublisherSink      io.Writer
+	musicPlaylistPublisherMu        sync.RWMutex
+	musicPlaylistGPUWorker          *video.PlaylistGPUWorker
+	musicPlaylistGPUController      *video.PlaylistGPUTransitionController
+	musicPlaylistGPUSessionCtx      context.Context
+	musicPlaylistGPUSessionCancel   context.CancelFunc
+	musicPlaylistGPUExecutionMu     sync.Mutex
+	musicPlaylistGPUActiveOutput    *playlistGPUOutputSession
+	musicPlaylistGPUContinuousReady bool
+	musicPlaylistGPUContinuousSink  func(video.TrackAssets, video.TrackTimeline, video.TransitionPlan) error
+	musicPlaylistGPUAssets          map[string]video.TrackAssets
+	musicPlaylistGPUTimelines       map[string]video.TrackTimeline
+	musicPlaylistGPUHandledTrackID  string
+	musicPlaylistGPUHandledEpoch    uint64
+	musicPlaylistGPUOutputTelemetry video.PlaylistGPUOutputTelemetry
+	activeCanonicalHeight           int
 }
 
 type rtspMappingHandle interface {
@@ -249,6 +276,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/music/playlist/remove", s.admin(s.handleMusicPlaylistRemove))
 	mux.HandleFunc("/api/music/playlist/reorder", s.admin(s.handleMusicPlaylistReorder))
 	mux.HandleFunc("/api/music/playlist/start", s.admin(s.handleMusicPlaylistStart))
+	mux.HandleFunc("/api/music/playlist/gpu-evaluation/start", s.admin(s.handleMusicPlaylistGPUEvaluationStart))
 	mux.HandleFunc("/api/music/playlist/play", s.admin(s.handleMusicPlaylistPlay))
 	mux.HandleFunc("/api/music/playlist/pause", s.admin(s.handleMusicPlaylistPause))
 	mux.HandleFunc("/api/music/playlist/seek", s.admin(s.handleMusicPlaylistSeek))

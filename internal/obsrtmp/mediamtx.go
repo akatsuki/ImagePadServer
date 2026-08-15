@@ -410,7 +410,8 @@ func (r *mediaMTXRuntime) publishURL() string {
 }
 
 // rtmpPublishURL is the loopback RTMP target for the playlist radio's
-// persistent publisher, carrying the per-session credential as query params.
+// persistent publisher (pushes FLV there). MediaMTX's RTMP authentication
+// reads the credentials from the user/pass query parameters.
 func (r *mediaMTXRuntime) rtmpPublishURL() string {
 	return fmt.Sprintf("rtmp://127.0.0.1:%d/%s?user=%s&pass=%s",
 		r.cfg.Ports.RTMP, r.cfg.Path, r.cfg.PublishUser, r.cfg.PublishPass)
@@ -1043,6 +1044,9 @@ func mediaMTXCredential() (string, string, error) {
 }
 
 func mediaMTXDebugLogPath() string {
+	if path := strings.TrimSpace(os.Getenv("IMAGEPAD_MEDIAMTX_DEBUG_LOG")); path != "" {
+		return path
+	}
 	if strings.HasSuffix(strings.ToLower(filepath.Base(os.Args[0])), ".test.exe") ||
 		strings.HasSuffix(strings.ToLower(filepath.Base(os.Args[0])), ".test") {
 		return ""

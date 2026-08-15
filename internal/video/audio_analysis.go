@@ -433,7 +433,7 @@ func (a *streamAnalyzer) Finish() (AudioAnalysis, error) {
 			waveformFrames[i] = PCMToWaveformQ16(a.waveformPCM[start:end], 2, sampleRate, 30*waveformColumns, 0, waveformColumns)
 		}
 	}
-	return AudioAnalysis{FPS: 30, Duration: duration, Frames: frames, WaveformFrames: waveformFrames, Features: features}, nil
+	return AudioAnalysis{FPS: 30, Duration: duration, Frames: frames, PCMInterleavedS16: append([]int16(nil), a.waveformPCM...), WaveformFrames: waveformFrames, Features: features}, nil
 }
 
 // finalizeSpectrumFrames converts the raw per-frame band magnitudes collected

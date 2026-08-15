@@ -60,6 +60,10 @@ type AudioAnalysis struct {
 	FPS      int
 	Duration float64
 	Frames   []AudioFrame
+	// PCMInterleavedS16 is the same resampled stereo PCM stream used to derive
+	// spectrum and waveform frames. It is retained for the canonical GPU scene
+	// handoff so the shader receives real audio windows rather than a fixture.
+	PCMInterleavedS16 []int16
 	// WaveformFrames contains the bounded Q16 peak envelope generated from
 	// the same decoded PCM stream as Frames. Each entry corresponds to one
 	// video tick and is kept separate from AudioFrame for wire compatibility.

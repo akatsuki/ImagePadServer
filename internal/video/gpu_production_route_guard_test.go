@@ -9,11 +9,10 @@ import (
 	"testing"
 )
 
-// TestGPUProductionRoutesDoNotReintroduceCPUComposition is a narrow migration
-// guard. CPU ASS/showwaves composition remains available only through the
-// explicitly named reference helpers; production single-track and playlist
-// paths must feed the same canonical scene into the GPU sidecar.
-func TestGPUProductionRoutesDoNotReintroduceCPUComposition(t *testing.T) {
+// TestGPUExperimentalRoutesDoNotReintroduceCPUComposition is a narrow
+// diagnostic guard. The GPU route is retained only for explicit experiments;
+// if it is used, CPU ASS/showwaves composition must not be mixed into it.
+func TestGPUExperimentalRoutesDoNotReintroduceCPUComposition(t *testing.T) {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("runtime.Caller failed")
@@ -34,6 +33,25 @@ func TestGPUProductionRoutesDoNotReintroduceCPUComposition(t *testing.T) {
 		if !strings.Contains(source, "CanonicalMusicScene") {
 			t.Errorf("%s does not use CanonicalMusicScene", name)
 		}
+	}
+}
+
+func TestProductionRenderEntrypointsAreCPUOwned(t *testing.T) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	root := filepath.Dir(file)
+	audioSource := readRouteSource(t, filepath.Join(root, "audio_visualizer.go"))
+	radioSource := readRouteSource(t, filepath.Join(root, "radio_render.go"))
+
+	hls := routeBody(sourceBetween(audioSource, "func RunAudioVisualizerHLS(", "func RunAudioVisualizerHLSCPUReference"))
+	if !strings.Contains(hls, "RunAudioVisualizerHLSCPUReference") || strings.Contains(hls, "IMAGEPAD_PLAYLIST_COMPOSITORD") {
+		t.Fatalf("production HLS entrypoint is not CPU-owned: %s", hls)
+	}
+	radio := routeBody(sourceBetween(radioSource, "func RenderRadioTrack(", "func renderRadioTrackCPU"))
+	if !strings.Contains(radio, "renderRadioTrackCPU") || strings.Contains(radio, "ErrGPURequired") || strings.Contains(radio, "IMAGEPAD_PLAYLIST_COMPOSITORD") {
+		t.Fatalf("production radio entrypoint is not CPU-owned: %s", radio)
 	}
 }
 
@@ -103,11 +121,15 @@ func TestGPUYUVRequiredRouteFailsClosed(t *testing.T) {
 
 func TestGPUYUVRequiredRouteUsesNativeYUVFrame(t *testing.T) {
 	_, file, _, ok := runtime.Caller(0)
-	if !ok { t.Fatal("runtime.Caller failed") }
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
 	source := readRouteSource(t, filepath.Join(filepath.Dir(file), "audio_visualizer.go"))
 	body := routeBody(sourceBetween(source, "func runAudioVisualizerHLSGPU", "func writeGPUFrame"))
 	for _, want := range []string{`sidecar.RenderSceneYUV`, `yuvFrame.PackedBytes`, `if yuvRequired`} {
-		if !strings.Contains(body, want) { t.Errorf("GPU YUV route missing native transport %q", want) }
+		if !strings.Contains(body, want) {
+			t.Errorf("GPU YUV route missing native transport %q", want)
+		}
 	}
 }
 

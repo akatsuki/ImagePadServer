@@ -35,11 +35,37 @@ pub struct Job {
     pub layers: Vec<LayerReceipt>,
 }
 
+pub const REQUIRED_LOGICAL_LAYERS: [&str; 8] = [
+    "background",
+    "artwork",
+    "spectrum",
+    "waveform",
+    "loudness",
+    "text",
+    "progress",
+    "fade",
+];
+
 pub fn validate_production(job: &Job) -> Result<(), String> {
     if job.width == 0 || job.height == 0 || job.fps == 0 {
         return Err("invalid output geometry or fps".into());
     }
+    if job.layers.len() != REQUIRED_LOGICAL_LAYERS.len() {
+        return Err(format!(
+            "expected exactly {} logical layers, got {}",
+            REQUIRED_LOGICAL_LAYERS.len(),
+            job.layers.len()
+        ));
+    }
+    let mut seen = Vec::with_capacity(job.layers.len());
     for layer in &job.layers {
+        if !REQUIRED_LOGICAL_LAYERS.contains(&layer.name.as_str()) {
+            return Err(format!("unknown logical layer {}", layer.name));
+        }
+        if seen.iter().any(|name| name == &layer.name) {
+            return Err(format!("duplicate logical layer {}", layer.name));
+        }
+        seen.push(layer.name.clone());
         if layer.name == "screen_rgba" {
             return Err(format!(
                 "CPU final raster is forbidden for layer {}",
@@ -70,6 +96,23 @@ mod tests {
             layers: vec![LayerReceipt {
                 name: "screen_rgba".into(),
                 provider: Provider::GoldenUpload,
+                input_hash: String::new(),
+                shader_hash: String::new(),
+            }],
+        };
+        assert!(validate_production(&job).is_err());
+    }
+
+    #[test]
+    fn rejects_partial_native_layer_manifest() {
+        let job = Job {
+            width: 1280,
+            height: 720,
+            fps: 30,
+            artwork_mode: ArtworkMode::Source,
+            layers: vec![LayerReceipt {
+                name: "background".into(),
+                provider: Provider::NativeGpu,
                 input_hash: String::new(),
                 shader_hash: String::new(),
             }],

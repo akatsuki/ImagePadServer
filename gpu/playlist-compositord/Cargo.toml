@@ -7,8 +7,16 @@ edition = "2021"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 wgpu = "0.20"
+naga = { version = "0.20", features = ["wgsl-in"] }
 pollster = "0.3"
 memmap2 = "0.9"
 bytemuck = "1"
 base64 = "0.22"
+fontdue = "0.9.4"
 sha2 = "0.10"
+
+[target.'cfg(windows)'.dependencies]
+d3d12 = "0.20"
+libloading = "0.9"
+moq-nvenc = "0.0.3"
+winapi = { version = "0.3", features = ["d3d12", "dxgi", "dxgi1_4", "handleapi", "synchapi", "winbase", "winnt"] }

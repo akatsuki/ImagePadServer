@@ -35,6 +35,16 @@ func TestRadioRenderRecipeCanonicalJSONAndFingerprintAreDeterministic(t *testing
 	}
 }
 
+func TestRadioRenderRecipeEmitsBT709LimitedColorMetadata(t *testing.T) {
+	recipe := testRadioRecipe(CPUVideoEncoder(EncoderLowLatency))
+	args := strings.Join(recipe.FFmpegArgs(nil), "\x00")
+	for _, want := range []string{"-colorspace\x00bt709", "-color_primaries\x00bt709", "-color_trc\x00bt709", "-color_range\x00tv", "colour_primaries=1", "transfer_characteristics=1", "matrix_coefficients=1", "video_full_range_flag=0"} {
+		if !strings.Contains(args, want) {
+			t.Fatalf("FFmpeg args missing %q: %s", want, args)
+		}
+	}
+}
+
 func TestRadioRenderRecipeFingerprintCoversEveryReceiverVisibleField(t *testing.T) {
 	base := testRadioRecipe(CPUVideoEncoder(EncoderLowLatency)).NormalizedEncodingContract()
 	mutations := map[string]func(*RadioEncodingContract){

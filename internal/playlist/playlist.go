@@ -55,6 +55,8 @@ type Queue struct {
 	sequentialLastID     string
 	sequentialGeneration uint64
 	sequentialPlayed     map[string]uint64
+	previewID            string
+	previewGeneration    uint64
 }
 
 func NewQueue() *Queue {
@@ -99,6 +101,7 @@ func (q *Queue) Remove(id string) bool {
 			if q.currentID == id {
 				q.currentID = ""
 			}
+			q.clearPreview()
 			if q.sequentialLastID == id {
 				q.sequentialLastID = ""
 			}
@@ -130,6 +133,7 @@ func (q *Queue) SetOrder(ids []string) bool {
 		next = append(next, t)
 	}
 	q.tracks = next
+	q.clearPreview()
 	return true
 }
 
@@ -191,6 +195,7 @@ func (q *Queue) ReplaceAll(tracks []Track) (previous []Track) {
 	q.currentID = ""
 	q.resetPlaybackCycle()
 	q.sequentialPlayed = map[string]uint64{}
+	q.clearPreview()
 	return previous
 }
 
@@ -209,6 +214,7 @@ func (q *Queue) SetCurrent(id string) bool {
 		return false
 	}
 	q.markPlayed(id)
+	q.clearPreview()
 	return true
 }
 
@@ -216,6 +222,7 @@ func (q *Queue) ClearCurrent() {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.currentID = ""
+	q.clearPreview()
 }
 
 // ResetPlaybackCycle starts a fresh playback generation. Automatic wakes do
@@ -224,6 +231,7 @@ func (q *Queue) ResetPlaybackCycle() {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.resetPlaybackCycle()
+	q.clearPreview()
 }
 
 func (q *Queue) MarkReady(id, mediaPath string, durationSeconds int) bool {
@@ -278,6 +286,7 @@ func (q *Queue) SetShuffle(on bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.shuffle = on
+	q.clearPreview()
 }
 
 func (q *Queue) Shuffle() bool {
@@ -290,6 +299,7 @@ func (q *Queue) SetLoop(on bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.loop = on
+	q.clearPreview()
 }
 
 func (q *Queue) Loop() bool {
@@ -300,20 +310,77 @@ func (q *Queue) Loop() bool {
 
 // Next advances to the next playable track and marks it current. It returns
 // ok=false when the playlist is exhausted (and loop is off) or when no track
-// is ready; in that case the current track is cleared.
+// is ready; in that case the current track is cleared. A prior PreviewNext
+// reservation is committed when it is still valid.
 func (q *Queue) Next() (Track, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	var next *Track
-	if q.shuffle {
-		next = q.nextShuffled()
-	} else {
-		next = q.nextSequential()
+	if q.previewID != "" && q.previewGeneration == q.sequentialGeneration {
+		next = q.find(q.previewID)
+		if next == nil || next.Status != TrackReady || next.ID == q.currentID {
+			next = nil
+		}
+	}
+	q.clearPreview()
+	if next == nil {
+		if q.shuffle {
+			next = q.nextShuffled()
+		} else {
+			next = q.nextSequential()
+		}
 	}
 	if next == nil {
 		q.currentID = ""
 		return Track{}, false
 	}
+	q.markPlayed(next.ID)
+	return *next, true
+}
+
+// PreviewNext reserves the next playable track without changing currentID,
+// played state, playback-cycle generation, or queue order. The following Next
+// call commits the same reserved track, including shuffle/loop selection. Any
+// queue mutation invalidates the reservation.
+func (q *Queue) PreviewNext() (Track, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.previewID != "" && q.previewGeneration == q.sequentialGeneration {
+		if next := q.find(q.previewID); next != nil && next.Status == TrackReady && next.ID != q.currentID {
+			return *next, true
+		}
+		q.clearPreview()
+	}
+	var next *Track
+	if q.shuffle {
+		next = q.nextShuffledPreview()
+	} else {
+		next = q.nextSequentialPreview()
+	}
+	if next == nil {
+		return Track{}, false
+	}
+	q.previewID = next.ID
+	q.previewGeneration = q.sequentialGeneration
+	return *next, true
+}
+
+// CommitPreviewNext consumes the current PreviewNext reservation and marks
+// that exact track current. It does not perform a new shuffle/sequential
+// selection, so callers can validate an external contract before advancing
+// queue playback state.
+func (q *Queue) CommitPreviewNext() (Track, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.previewID == "" || q.previewGeneration != q.sequentialGeneration {
+		return Track{}, false
+	}
+	next := q.find(q.previewID)
+	if next == nil || next.Status != TrackReady || next.ID == q.currentID {
+		q.clearPreview()
+		return Track{}, false
+	}
+	q.clearPreview()
 	q.markPlayed(next.ID)
 	return *next, true
 }
@@ -328,6 +395,24 @@ func (q *Queue) nextSequential() *Track {
 	}
 	q.resetPlaybackCycle()
 	return q.nextUnplayedSequential(start)
+}
+
+func (q *Queue) nextSequentialPreview() *Track {
+	start := q.sequentialStart()
+	if next := q.nextUnplayedSequential(start); next != nil {
+		return next
+	}
+	if !q.loop || len(q.tracks) == 0 {
+		return nil
+	}
+	for offset := range q.tracks {
+		i := (start + offset) % len(q.tracks)
+		t := q.tracks[i]
+		if t.Status == TrackReady {
+			return t
+		}
+	}
+	return nil
 }
 
 func (q *Queue) sequentialStart() int {
@@ -355,6 +440,22 @@ func (q *Queue) nextShuffled() *Track {
 	if len(candidates) == 0 && q.loop {
 		q.resetPlaybackCycle()
 		candidates = q.shuffleCandidates()
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	return candidates[randIntn(len(candidates))]
+}
+
+func (q *Queue) nextShuffledPreview() *Track {
+	candidates := q.shuffleCandidates()
+	if len(candidates) == 0 && q.loop {
+		candidates = make([]*Track, 0, len(q.tracks))
+		for _, t := range q.tracks {
+			if t.Status == TrackReady && t.ID != q.currentID {
+				candidates = append(candidates, t)
+			}
+		}
 	}
 	if len(candidates) == 0 {
 		return nil
@@ -395,4 +496,9 @@ func randIntn(n int) int {
 		return int(time.Now().UnixNano()) % n
 	}
 	return int(v.Int64())
+}
+
+func (q *Queue) clearPreview() {
+	q.previewID = ""
+	q.previewGeneration = 0
 }

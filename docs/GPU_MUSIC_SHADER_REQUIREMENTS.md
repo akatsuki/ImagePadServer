@@ -1,4 +1,10 @@
-# GPU音楽映像生成シェーダー 要件定義
+# GPU音楽映像生成シェーダー 要件定義（歴史資料・凍結）
+
+> **Status (2026-08-11):** These are the requirements for a possible future
+> GPU production restart, not the current production contract. The current
+> production renderer is CPU-first; `production_ready=false` remains in force.
+> The measured decision and GPU evidence are recorded in
+> [`CPU_MUSIC_RENDERER_PRODUCTION.md`](CPU_MUSIC_RENDERER_PRODUCTION.md).
 
 ## 1. 最上位原則
 
@@ -83,17 +89,113 @@ GPU-owned planeをGPU対応エンコーダーへ直接渡す。
 | CPU glyph atlas生成 | `prepareExactGlyphAtlas`等で実行 | 未達 |
 | CPU fallback note mask生成 | `fallbackNoteMaskMetadata`で実行 | 未達 |
 | CPU palette/dynamics生成 | `canonicalScenePalette` / `musicSceneDynamics` | 未達 |
-| `RenderV2` pass graph | validation後 `not_implemented` | 未達 |
+| `RenderV2` pass graph | job/descriptor validation後にshader readiness gateまで到達 | native execution未達 |
+| GPU shader host boundary | binding layout、uniform packing、resource binding、dispatch planを実装 | sidecar execution未接続 |
 | GPU-owned YUV encoder sink | 型・境界のみ | 未達 |
+| Draft 2 shader/pass implementation | module interface経由で差し替え可能、diagnostic exporterで実GPU実行 | production未接続 |
+
+### Draft 2の位置づけ
+
+`gpu/playlist-compositord/src/music_v2_shader_draft.rs` は、シェーダーデザインを
+修正しやすくするための**未接続Draft 2**である。production rendererや
+`RenderV2` dispatchからは呼ばれないが、diagnostic exporterでは実GPUで実行される。
+CPU版に寄せる最初のparity sliceとして、hostからCPU-like scene payloadを受け、
+canonical layout/palette/24-band/loudness/progressを描画する。
+
+Draft 2で固定するのは実装完成度ではなく、差し替え可能な境界だけである。
+
+- PCMを`var<storage, read>`で受けるresource binding
+- Scene uniform
+- GPU-owned luma/chroma storage output
+- wgpu portable storage physical formatはluma/chromaとも`Rgba8Unorm`。lumaはR、chromaはR/Gへ格納する
+- `CANONICAL_ORDER`と一致する9 passの実処理
+- CPU readback/`PackedBytes`/RGBA transportをshader契約へ持ち込まないこと
+
+Draft 2で実装した処理:
+
+- bounded PCM windowからのRMS/peak算出
+- CPU canonical layout（artwork/title/artist/album/spectrum/loudness/progress/time rect）
+- CPU-like paletteとfallback artwork（gradient/fingerprint/note）のGPU描画
+- host payloadの24-band spectrum barと固定bottom fade
+- PCM waveformをcanonical spectrum rect内へ描画
+- host payloadの1000-point loudness graphと4本のguide line
+- metadata領域のuniform codepoint列とfontdue由来metricsをGPU-readableなNoto Sans JP RGBA8 glyph atlasへlookupして描画（title=SemiBold、artist/time=Medium、album=Regular）、filtering samplerでalphaを合成、progress rail/thumb、vignette/fade
+- luma pixelのRGB描画と2x2平均によるchroma生成
+
+Draft V2のfont resource bindingは次の順序で固定する。
+
+| Binding | Resource |
+|---:|---|
+| 0 | resident PCM storage |
+| 1 | scene uniform（codepoint列・rect・palette・timing） |
+| 2 | Noto Sans JP RGBA8 glyph atlas |
+| 3 | fontdue glyph advance Q16 storage（style×codepoint） |
+| 4 | glyph filtering sampler |
+| 5 | luma output |
+| 6 | chroma output |
+
+CPU parity sliceはまだdiagnostic用の決定的fixtureであり、実曲sceneの完全接続ではない。
+以下はまだ未完成で、次の設計修正対象である。
+
+- 実artwork texture samplingとGPU asset upload
+- production用のGPU FFT/24-band spectrum、GPU loudness normalization/trend
+- Go側`CanonicalMusicScene`から渡される実title/artist/album/time、Unicode shaping、scroll、clip、missing glyph
+- Go側`CanonicalMusicScene`からRust sidecarへのscene payload接続
+- shader本文のvisual/numerical parity
+- sidecarでのnative pass executionとGPU PCM resource upload
+- GPU-owned完成planeからencoder sinkへのproduction接続
+
+`R8Unorm`/`Rg8Unorm`は実GPU backendによってstorage textureとして拒否されるため、
+physical storage formatは`Rgba8Unorm`に固定する。logical Y/U/V planeの契約は維持し、
+diagnostic exporterだけがR/RG channelからpacked YUV420Pへ変換してMP4化する。
+
+CPU parity sliceの実GPU確認例:
+
+```text
+GPU: NVIDIA GeForce RTX 5070 Ti
+Backend: Vulkan
+Resolution: 1280x720 (canonical 1:1 diagnostic output)
+FPS: 12
+Frames: 12
+Pixel format: yuv420p
+```
+
+確認artifact: `artifacts/draft-shader-cpu-parity-slice.mp4` と
+`artifacts/draft-shader-cpu-parity-slice-contact-sheet.png`。
+これはCPU referenceとの差分計測完了を意味せず、canonical region構成が
+shaderで描画可能になったことのdiagnostic evidenceである。
+
+### Diagnostic MP4 export
+
+サーバーを起動せず、Draft WGSLだけを実GPUでdispatchしてMP4と確認用frameを生成する。
+
+```bash
+python3 gpu/playlist-compositord/scripts/render_draft_shader_mp4.py \
+  --width 640 --height 360 --fps 30 --duration 4 \
+  --output artifacts/draft-shader-preview.mp4
+```
+
+このスクリプトは次を生成する。
+
+- `draft-shader-preview.mp4`: FFmpegでmuxしたYUV420P MP4
+- `draft-shader-preview_frames/`: 肉眼確認用PNG frame群
+- `draft-shader-preview.json`: shader module、GPU実行、解像度、FPS、frame数、ffprobe結果
+- `--keep-yuv`指定時のみ、diagnostic用packed YUV420P中間ファイル
+
+Rust側の`--export-draft-shader-yuv`は、production rendererや常駐serverを通らず、
+`DRAFT_SHADER_MODULE`をwgpuで直接コンパイル・dispatchする。readbackとCPU YUV packingは
+このdiagnostic exportに限定し、本番GPU経路の完成条件とは別に扱う。
 
 根拠:
 
-- Go側のCPU scene生成: `internal/video/music_scene.go:54-128, 176-231`
-- CPU音声解析: `internal/video/audio_analysis.go:62-82`
-- CPU glyph/fallback準備: `internal/video/gpu_scene_prepare.go:8-79`
-- GPU compositor: `gpu/playlist-compositord/src/gpu_render.rs:2534-3039`
-- GPU YUV computeとtransport readback: `gpu/playlist-compositord/src/gpu_render.rs:2266-2532`
-- `RenderV2`未実装: `gpu/playlist-compositord/src/main.rs:121-135`
+- Go側のCPU scene生成: `internal/video/music_scene.go:22-85, 169-190, 246-358`
+- CPU音声解析: `internal/video/audio_analysis.go`
+- GPU compositor: `gpu/playlist-compositord/src/gpu_render.rs:13-647, 1016-1827`
+- GPU YUV compute: `gpu/playlist-compositord/src/gpu_render.rs:666-685, 1393-1456`
+- `RenderV2` shader readiness gate: `gpu/playlist-compositord/src/main.rs:120-165`
+- shader module interface: `gpu/playlist-compositord/src/music_v2_shader_module.rs`
+- shader host boundary: `gpu/playlist-compositord/src/music_v2_shader_host.rs`
+- Draft 2 shader: `gpu/playlist-compositord/src/music_v2_shader_draft.rs`
 
 ## 3. 対象範囲
 
@@ -303,8 +405,9 @@ shapeとして生成するか、GPUが解釈できる非ラスタdescriptorで�
 - sRGB/linearの境界を明示する
 - artwork textureとglyph textureでsampler policyを混同しない
 
-現行実装ではartworkはlinear sampling、glyph atlasはnearest samplingを使用している。
-この区別を維持する。根拠: `gpu/playlist-compositord/src/gpu_render.rs:2797-2817`
+現行実装ではartworkはlinear sampling、Draft V2のglyph atlasもfiltering samplerで
+alphaをlinear samplingする。glyph cell境界のpaddingを維持し、atlas隣接glyphの
+bleedingを避ける。根拠: `gpu/playlist-compositord/src/gpu_render.rs:2797-2817`
 
 ### R4: Spectrum
 

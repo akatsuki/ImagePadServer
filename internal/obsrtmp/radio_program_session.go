@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"time"
 
 	"imagepadserver/internal/video"
@@ -16,24 +15,23 @@ type programFailure struct {
 	err   error
 }
 
+type radioProgramOutputWriter struct {
+	write func([]byte) (int, error)
+}
+
+func (w radioProgramOutputWriter) Write(payload []byte) (int, error) {
+	return w.write(payload)
+}
+
 func (m *RadioManager) runProgramSession(ctx, sessionParent context.Context, done chan struct{}, publisher radioPublisher, encoder ProgramEncoder, contract RadioActiveSessionContract, sessionGeneration uint64) *RadioError {
 	width, height := radioProgramOutputSize(contract.FallbackPreset)
 	overlayRenderer := NewOverlayRenderer()
 	pipeline := NewProgramPipeline(width, height, encoder, func(width, height int, elapsed time.Duration, snapshot OverlaySnapshot) ([]byte, error) {
 		return overlayRenderer.RenderRGBA(width, height, elapsed, snapshot), nil
 	})
-	var gpuSidecar *video.SidecarProcess
-	if executable := os.Getenv("IMAGEPAD_PLAYLIST_COMPOSITORD"); executable != "" {
-		var err error
-		gpuSidecar, err = video.StartSidecar(ctx, executable, fmt.Sprintf("program-%d", sessionGeneration))
-		if err != nil { radioErr := newRadioError(RadioErrorStageEncoder, fmt.Errorf("start GPU compositor: %w", err), false); return &radioErr }
-		if err := gpuSidecar.Hello(ctx, fmt.Sprintf("program-%d", sessionGeneration)); err != nil { gpuSidecar.Close(); radioErr := newRadioError(RadioErrorStageEncoder, fmt.Errorf("GPU compositor preflight: %w", err), false); return &radioErr }
-		pipeline.SetGPUFrameRenderer(func(frameWidth, frameHeight int, tick ProgramTick, _ ProgramSourceFrame) ([]byte, error) {
-			frame, err := gpuSidecar.Render(ctx, uint32(frameWidth), uint32(frameHeight), uint64(tick.VideoPTS/(time.Second/programVideoFrameRate)), tick.VideoPTS.Nanoseconds()); if err != nil { return nil, err }
-			return video.GPUFrameToPackedRGBA(frame)
-		})
-		defer gpuSidecar.Close()
-	}
+	pipeline.SetAudioTee(func(samples []byte, pts time.Duration) error {
+		return m.writePlaylistAudioTee(samples, pts)
+	})
 	pipeline.onOverlayFail = func(err error) {
 		m.recordProgramOverlayFailure(sessionGeneration, RadioErrorStageOverlay, err, 1)
 	}
@@ -57,7 +55,9 @@ func (m *RadioManager) runProgramSession(ctx, sessionParent context.Context, don
 		}
 	}()
 	go func() {
-		_, err := io.Copy(publisher.sink(), encoder.Output())
+		_, err := io.Copy(radioProgramOutputWriter{write: func(payload []byte) (int, error) {
+			return m.writeProgramOutput(publisher.sink(), payload)
+		}}, encoder.Output())
 		if ctx.Err() != nil {
 			return
 		}
@@ -79,10 +79,14 @@ func (m *RadioManager) runProgramSession(ctx, sessionParent context.Context, don
 			return nil
 		}
 
-		mediaPath, trackID, startSeconds, trackGeneration, pushCtx, cancelPush, ok := m.claimProgramTrack(ctx, sessionParent, done, sessionGeneration)
+		mediaPath, trackID, startSeconds, trackGeneration, claimMode, claimErr, pushCtx, cancelPush, ok := m.claimProgramTrack(ctx, sessionParent, done, sessionGeneration)
 		if !ok {
 			if cancelPush != nil {
 				cancelPush()
+			}
+			if claimErr != nil {
+				radioErr := newRadioError(RadioErrorStageTrack, fmt.Errorf("resolve program track ownership: %w", claimErr), false)
+				return &radioErr
 			}
 			if ctx.Err() != nil {
 				return nil
@@ -100,11 +104,18 @@ func (m *RadioManager) runProgramSession(ctx, sessionParent context.Context, don
 				continue
 			}
 		}
-
 		snapshot := m.overlaySnapshotAtBoundary()
 		pipeline.SetOverlay(snapshot)
 		if m.cb.OnTrackStart != nil {
 			m.cb.OnTrackStart(trackID)
+		}
+		if claimMode == RadioTrackClaimHandled {
+			cancelPush()
+			m.completeTrack(sessionGeneration, trackGeneration)
+			if m.cb.OnTrackEnd != nil {
+				m.cb.OnTrackEnd(trackID, nil)
+			}
+			continue
 		}
 
 		var trackErr error
@@ -233,20 +244,50 @@ func relayProgramFrames(ctx context.Context, source <-chan ProgramSourceFrame, s
 	return drained
 }
 
-func (m *RadioManager) claimProgramTrack(ctx, sessionParent context.Context, done chan struct{}, sessionGeneration uint64) (mediaPath, trackID string, startSeconds int, generation uint64, pushCtx context.Context, cancelPush context.CancelFunc, ok bool) {
+func (m *RadioManager) claimProgramTrack(ctx, sessionParent context.Context, done chan struct{}, sessionGeneration uint64) (mediaPath, trackID string, startSeconds int, generation uint64, claimMode RadioTrackClaimMode, claimErr error, pushCtx context.Context, cancelPush context.CancelFunc, ok bool) {
 	pushCtx, cancelPush = context.WithCancel(ctx)
+	claimMode = RadioTrackClaimCPU
 	m.mu.Lock()
 	if !m.ownsActiveGenerationLocked(sessionGeneration) {
 		m.mu.Unlock()
-		return "", "", 0, 0, pushCtx, cancelPush, false
+		return "", "", 0, 0, claimMode, nil, pushCtx, cancelPush, false
 	}
+	m.claimDone = make(chan struct{})
+	m.mu.Unlock()
+	// next is a server callback and may synchronously inspect radio state or
+	// submit an explicit playlist GPU transition; it must run outside m.mu.
 	mediaPath, trackID, startSeconds, ok = m.next()
+	if ok {
+		claimMode, claimErr = m.resolveTrackClaim(mediaPath, trackID, startSeconds)
+		if claimErr != nil {
+			m.mu.Lock()
+			if m.claimDone != nil {
+				close(m.claimDone)
+				m.claimDone = nil
+			}
+			m.mu.Unlock()
+			return mediaPath, trackID, startSeconds, 0, RadioTrackClaimCPU, claimErr, pushCtx, cancelPush, false
+		}
+	}
+	m.mu.Lock()
+	if !m.ownsActiveGenerationLocked(sessionGeneration) {
+		if m.claimDone != nil {
+			close(m.claimDone)
+			m.claimDone = nil
+		}
+		m.mu.Unlock()
+		return "", "", 0, 0, RadioTrackClaimCPU, nil, pushCtx, cancelPush, false
+	}
 	if !ok {
 		m.status.CurrentTrackID = ""
 		m.status.TrackStartedAt = time.Time{}
 		m.status.BaseOffsetSeconds = 0
+		if m.claimDone != nil {
+			close(m.claimDone)
+			m.claimDone = nil
+		}
 		m.mu.Unlock()
-		return "", "", 0, 0, pushCtx, cancelPush, false
+		return "", "", 0, 0, RadioTrackClaimCPU, nil, pushCtx, cancelPush, false
 	}
 	m.skipPush = cancelPush
 	m.skipped = false
@@ -263,8 +304,12 @@ func (m *RadioManager) claimProgramTrack(ctx, sessionParent context.Context, don
 	m.status.TrackStartedAt = time.Now()
 	m.status.BaseOffsetSeconds = startSeconds
 	generation = m.trackGeneration
+	if m.claimDone != nil {
+		close(m.claimDone)
+		m.claimDone = nil
+	}
 	m.mu.Unlock()
-	return mediaPath, trackID, startSeconds, generation, pushCtx, cancelPush, true
+	return mediaPath, trackID, startSeconds, generation, claimMode, nil, pushCtx, cancelPush, true
 }
 
 func (m *RadioManager) overlaySnapshotAtBoundary() OverlaySnapshot {

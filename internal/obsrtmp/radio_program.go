@@ -105,6 +105,7 @@ type ProgramCompositor struct {
 	lastVideo        []byte
 	fadeFrame        int
 	gpuFrameRender   func(width, height int, tick ProgramTick, source ProgramSourceFrame) ([]byte, error)
+	audioTee         func(samples []byte, pts time.Duration) error
 }
 
 // SetGPUFrameRenderer routes program video composition through the GPU bridge.
@@ -112,7 +113,17 @@ type ProgramCompositor struct {
 // ownership remain in ProgramCompositor. A nil callback preserves the
 // compatibility path for tests and explicitly disabled GPU rendering.
 func (c *ProgramCompositor) SetGPUFrameRenderer(render func(width, height int, tick ProgramTick, source ProgramSourceFrame) ([]byte, error)) {
-	c.mu.Lock(); c.gpuFrameRender = render; c.mu.Unlock()
+	c.mu.Lock()
+	c.gpuFrameRender = render
+	c.mu.Unlock()
+}
+
+// SetAudioTee installs an explicit evaluation-only PCM/PTS tee. It is nil by
+// default, so the normal CPU program route remains unchanged.
+func (c *ProgramCompositor) SetAudioTee(tee func(samples []byte, pts time.Duration) error) {
+	c.mu.Lock()
+	c.audioTee = tee
+	c.mu.Unlock()
 }
 
 func NewProgramCompositor(width, height int, encoder ProgramFrameWriter, renderOverlay ProgramOverlayRender) *ProgramCompositor {
@@ -152,13 +163,22 @@ func (c *ProgramCompositor) WriteTick(tick ProgramTick, source ProgramSourceFram
 	}
 	videoBytes := c.width * c.height * 4
 	videoFrame := make([]byte, videoBytes)
-	c.mu.Lock(); gpuRender := c.gpuFrameRender; c.mu.Unlock()
+	c.mu.Lock()
+	gpuRender := c.gpuFrameRender
+	c.mu.Unlock()
 	if gpuRender != nil {
 		gpu, err := gpuRender(c.width, c.height, tick, source)
-		if err != nil { return fmt.Errorf("gpu program render: %w", err) }
-		if len(gpu) != videoBytes { return fmt.Errorf("gpu program render returned %d bytes, want %d", len(gpu), videoBytes) }
+		if err != nil {
+			return fmt.Errorf("gpu program render: %w", err)
+		}
+		if len(gpu) != videoBytes {
+			return fmt.Errorf("gpu program render returned %d bytes, want %d", len(gpu), videoBytes)
+		}
 		copy(videoFrame, gpu)
-		c.mu.Lock(); c.lastVideo = append(c.lastVideo[:0], gpu...); c.fadeFrame = 0; c.mu.Unlock()
+		c.mu.Lock()
+		c.lastVideo = append(c.lastVideo[:0], gpu...)
+		c.fadeFrame = 0
+		c.mu.Unlock()
 	} else if len(source.VideoRGBA) == videoBytes {
 		copy(videoFrame, source.VideoRGBA)
 		c.mu.Lock()
@@ -206,6 +226,14 @@ func (c *ProgramCompositor) WriteTick(tick ProgramTick, source ProgramSourceFram
 	}
 	if err := c.encoder.WriteVideoRGBA(videoFrame, tick.VideoPTS); err != nil {
 		return fmt.Errorf("program video encoder: %w", err)
+	}
+	c.mu.Lock()
+	audioTee := c.audioTee
+	c.mu.Unlock()
+	if audioTee != nil {
+		if err := audioTee(audioFrame, tick.AudioPTS); err != nil {
+			return fmt.Errorf("program audio tee: %w", err)
+		}
 	}
 	if err := c.encoder.WriteAudioPCM(audioFrame, tick.AudioPTS); err != nil {
 		return fmt.Errorf("program audio encoder: %w", err)
@@ -256,6 +284,12 @@ func (p *ProgramPipeline) SetOverlay(snapshot OverlaySnapshot) {
 // remain the control path until runtime acceptance enables the GPU lane.
 func (p *ProgramPipeline) SetGPUFrameRenderer(render func(width, height int, tick ProgramTick, source ProgramSourceFrame) ([]byte, error)) {
 	p.compositor.SetGPUFrameRenderer(render)
+}
+
+// SetAudioTee forwards the explicit evaluation-only PCM/PTS tee to the
+// compositor. Nil preserves the normal CPU path.
+func (p *ProgramPipeline) SetAudioTee(tee func(samples []byte, pts time.Duration) error) {
+	p.compositor.SetAudioTee(tee)
 }
 
 func (p *ProgramPipeline) DisableOverlay() {

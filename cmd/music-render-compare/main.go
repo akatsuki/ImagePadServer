@@ -830,6 +830,7 @@ func main() {
 	artist := flag.String("artist", "", "metadata artist to include in the canonical scene")
 	album := flag.String("album", "", "metadata album to include in the canonical scene")
 	artwork := flag.String("artwork", "", "artwork image path to include in the canonical scene")
+	sceneInput := flag.String("scene-input", "", "shared canonical music scene JSON input")
 	flag.Parse()
 	if *output == "" {
 		*output = filepath.Join(settings.Dir(), "diagnostics", "music-render-compare", time.Now().Format("20060102-150405"))
@@ -858,6 +859,22 @@ func main() {
 	p := video.ResolveQuality(strconv.Itoa(*height), 100)
 	inputSpec := video.AudioRenderInput{SourcePath: *input, Kind: video.SourceMusic, Analysis: analysis,
 		Metadata: video.AudioMetadata{Title: *title, Artist: *artist, Album: *album}, ArtworkPath: *artwork}
+	if strings.TrimSpace(*sceneInput) != "" {
+		payload, readErr := os.ReadFile(*sceneInput)
+		if readErr != nil {
+			fatal(fmt.Errorf("read scene input: %w", readErr))
+		}
+		var document video.MusicSceneDocument
+		if unmarshalErr := json.Unmarshal(payload, &document); unmarshalErr != nil {
+			fatal(fmt.Errorf("parse scene input: %w", unmarshalErr))
+		}
+		var applyErr error
+		inputSpec, applyErr = video.ApplyMusicSceneDocument(inputSpec, document)
+		if applyErr != nil {
+			fatal(fmt.Errorf("apply scene input: %w", applyErr))
+		}
+		analysis = inputSpec.Analysis
+	}
 	id := "compare"
 	ctx := context.Background()
 	inputHash, _ := sha256File(*input)

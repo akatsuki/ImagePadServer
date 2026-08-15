@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"time"
 
@@ -73,14 +72,11 @@ func (f *RadioFallbackFeeder) Run(ctx context.Context, timestampOffset float64, 
 		encoder = f.selectEncoder(ctx, ffmpeg, video.EncoderLowLatency)
 	}
 	var renderer radioFallbackRenderer
-	gpuExecutable := os.Getenv("IMAGEPAD_PLAYLIST_COMPOSITORD")
-	if gpuExecutable == "" {
-		renderer, err = f.newRenderer(renderWidth, renderHeight, logoPath, fonts.SemiBold600, fonts.Medium500)
-		if err != nil {
-			return 0, err
-		}
-		defer renderer.Close()
+	renderer, err = f.newRenderer(renderWidth, renderHeight, logoPath, fonts.SemiBold600, fonts.Medium500)
+	if err != nil {
+		return 0, err
 	}
+	defer renderer.Close()
 
 	procCtx, stopProc := context.WithCancel(context.Background())
 	defer stopProc()
@@ -131,11 +127,7 @@ func (f *RadioFallbackFeeder) Run(ctx context.Context, timestampOffset float64, 
 	go func() {
 		var frames int
 		var err error
-		if gpuExecutable != "" {
-			frames, err = writeGPURadioFallbackFrames(ctx, stdin, gpuExecutable, renderWidth, renderHeight)
-		} else {
-			frames, err = f.writeFrames(ctx, stdin, renderer)
-		}
+		frames, err = f.writeFrames(ctx, stdin, renderer)
 		renderErr <- renderResult{frames: frames, err: err}
 		_ = stdin.Close()
 	}()

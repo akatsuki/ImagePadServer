@@ -1005,7 +1005,9 @@ fn waveform_sample_words(scene: Option<&MusicScenePayload>) -> Vec<u32> {
 }
 
 fn scene_fingerprint_words(scene: Option<&MusicScenePayload>) -> Vec<u32> {
-    let Some(scene) = scene else { return vec![0; 64] };
+    let Some(scene) = scene else {
+        return vec![0; 64];
+    };
     let mut out = vec![0u32; 64];
     for (i, value) in scene.feature.fingerprint_q16.iter().take(64).enumerate() {
         out[i] = *value as u32;
@@ -1194,6 +1196,25 @@ impl Renderer {
             },
         );
         Ok(texture)
+    }
+
+    /// Select the runtime adapter without requesting a device or compiling any
+    /// renderer pipelines. Hello/capability negotiation must not cold-start
+    /// the legacy renderer when the caller will use direct H.264.
+    pub fn runtime_fingerprint() -> Result<adapter::RuntimeFingerprint, String> {
+        Self::runtime_fingerprint_with_backends(wgpu::Backends::all())
+    }
+
+    pub fn runtime_fingerprint_with_backends(
+        backends: wgpu::Backends,
+    ) -> Result<adapter::RuntimeFingerprint, String> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends,
+            ..Default::default()
+        });
+        let selected = adapter::select_with_backends(&instance, backends)
+            .map_err(|error| format!("gpu adapter: {error}"))?;
+        Ok(selected.fingerprint())
     }
 
     pub fn new() -> Result<Self, String> {
@@ -1388,10 +1409,48 @@ impl Renderer {
         });
         let yuv_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("yuv-layout"),
-            entries: &(0..4).map(|binding| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: binding == 0 }, has_dynamic_offset: false, min_binding_size: None }, count: None }).chain(std::iter::once(wgpu::BindGroupLayoutEntry { binding: 4, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None })).collect::<Vec<_>>(),
+            entries: &(0..4)
+                .map(|binding| wgpu::BindGroupLayoutEntry {
+                    binding,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage {
+                            read_only: binding == 0,
+                        },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                })
+                .chain(std::iter::once(wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }))
+                .collect::<Vec<_>>(),
         });
-        let yuv_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("rgba-to-yuv420"), source: wgpu::ShaderSource::Wgsl(YUV_SHADER.into()) });
-        let yuv_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("yuv-pipeline"), layout: Some(&device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("yuv-pipeline-layout"), bind_group_layouts: &[&yuv_layout], push_constant_ranges: &[] })), module: &yuv_shader, entry_point: "main", compilation_options: Default::default() });
+        let yuv_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("rgba-to-yuv420"),
+            source: wgpu::ShaderSource::Wgsl(YUV_SHADER.into()),
+        });
+        let yuv_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("yuv-pipeline"),
+            layout: Some(
+                &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("yuv-pipeline-layout"),
+                    bind_group_layouts: &[&yuv_layout],
+                    push_constant_ranges: &[],
+                }),
+            ),
+            module: &yuv_shader,
+            entry_point: "main",
+            compilation_options: Default::default(),
+        });
         Ok(Self {
             device,
             queue,
@@ -1436,23 +1495,142 @@ impl Renderer {
         pts_ns: i64,
         scene: Option<&MusicScenePayload>,
     ) -> Result<Yuv420pFrame, String> {
-        if width == 0 || height == 0 { return Err("invalid render dimensions".into()); }
+        if width == 0 || height == 0 {
+            return Err("invalid render dimensions".into());
+        }
         let rgba = self.render_with_scene(width, height, sequence, pts_ns, scene)?;
-        let cw=(width+1)/2; let ch=(height+1)/2;
-        let y_len=width as usize*height as usize; let c_len=cw as usize*ch as usize;
-        let src=self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("yuv-rgba-src"), contents: &rgba.payload[..rgba.payload.len()/4*4], usage: wgpu::BufferUsages::STORAGE });
-        let y=self.device.create_buffer(&wgpu::BufferDescriptor { label: Some("y"), size: y_len as u64*4, usage: wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC, mapped_at_creation:false });
-        let u=self.device.create_buffer(&wgpu::BufferDescriptor { label: Some("u"), size: c_len as u64*4, usage: wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC, mapped_at_creation:false });
-        let v=self.device.create_buffer(&wgpu::BufferDescriptor { label: Some("v"), size: c_len as u64*4, usage: wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC, mapped_at_creation:false });
-        let ys=self.device.create_buffer(&wgpu::BufferDescriptor { label: Some("ys"), size: y_len as u64*4, usage: wgpu::BufferUsages::MAP_READ|wgpu::BufferUsages::COPY_DST, mapped_at_creation:false });
-        let us=self.device.create_buffer(&wgpu::BufferDescriptor { label: Some("us"), size: c_len as u64*4, usage: wgpu::BufferUsages::MAP_READ|wgpu::BufferUsages::COPY_DST, mapped_at_creation:false });
-        let vs=self.device.create_buffer(&wgpu::BufferDescriptor { label: Some("vs"), size: c_len as u64*4, usage: wgpu::BufferUsages::MAP_READ|wgpu::BufferUsages::COPY_DST, mapped_at_creation:false });
-        let p=self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label:Some("yuv-params"), contents:bytemuck::cast_slice(&[width,height,(rgba.row_stride/4) as u32,0]), usage:wgpu::BufferUsages::UNIFORM });
-        let bind=self.device.create_bind_group(&wgpu::BindGroupDescriptor { label:Some("yuv-bind"), layout:&self.yuv_layout, entries:&[wgpu::BindGroupEntry{binding:0,resource:src.as_entire_binding()},wgpu::BindGroupEntry{binding:1,resource:y.as_entire_binding()},wgpu::BindGroupEntry{binding:2,resource:u.as_entire_binding()},wgpu::BindGroupEntry{binding:3,resource:v.as_entire_binding()},wgpu::BindGroupEntry{binding:4,resource:p.as_entire_binding()}] });
-        let mut e=self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label:Some("yuv")}); { let mut pass=e.begin_compute_pass(&wgpu::ComputePassDescriptor{label:Some("yuv"),timestamp_writes:None}); pass.set_pipeline(&self.yuv_pipeline); pass.set_bind_group(0,&bind,&[]); pass.dispatch_workgroups((width+7)/8,(height+7)/8,1); }
-        e.copy_buffer_to_buffer(&y,0,&ys,0,y_len as u64*4); e.copy_buffer_to_buffer(&u,0,&us,0,c_len as u64*4); e.copy_buffer_to_buffer(&v,0,&vs,0,c_len as u64*4); self.queue.submit(Some(e.finish()));
-        let read=|b:&wgpu::Buffer,n:usize| -> Result<Vec<u8>,String> { let s=b.slice(..); let(tx,rx)=channel(); s.map_async(wgpu::MapMode::Read,move|r|{let _=tx.send(r);}); self.device.poll(wgpu::Maintain::Wait); rx.recv().map_err(|_|"map channel".to_string())?.map_err(|e|format!("map: {e}"))?; let out={ let d=s.get_mapped_range(); let mut out=Vec::with_capacity(n); for i in 0..n { out.push(d[i*4]); } out }; b.unmap(); Ok(out) };
-        Ok(Yuv420pFrame{schema:CONTRACT_VERSION,sequence,pts_ns,width,height,y_stride:width,u_stride:cw,v_stride:cw,color_space:ColorSpace::Srgb,ownership:Ownership::OwnedByTransport,y:read(&ys,y_len)?,u:read(&us,c_len)?,v:read(&vs,c_len)?})
+        let cw = (width + 1) / 2;
+        let ch = (height + 1) / 2;
+        let y_len = width as usize * height as usize;
+        let c_len = cw as usize * ch as usize;
+        let src = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("yuv-rgba-src"),
+                contents: &rgba.payload[..rgba.payload.len() / 4 * 4],
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+        let y = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("y"),
+            size: y_len as u64 * 4,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let u = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("u"),
+            size: c_len as u64 * 4,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let v = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("v"),
+            size: c_len as u64 * 4,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let ys = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ys"),
+            size: y_len as u64 * 4,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let us = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("us"),
+            size: c_len as u64 * 4,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let vs = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("vs"),
+            size: c_len as u64 * 4,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let p = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("yuv-params"),
+                contents: bytemuck::cast_slice(&[width, height, (rgba.row_stride / 4) as u32, 0]),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("yuv-bind"),
+            layout: &self.yuv_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: src.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: y.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: u.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: v.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: p.as_entire_binding(),
+                },
+            ],
+        });
+        let mut e = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("yuv") });
+        {
+            let mut pass = e.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("yuv"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.yuv_pipeline);
+            pass.set_bind_group(0, &bind, &[]);
+            pass.dispatch_workgroups((width + 7) / 8, (height + 7) / 8, 1);
+        }
+        e.copy_buffer_to_buffer(&y, 0, &ys, 0, y_len as u64 * 4);
+        e.copy_buffer_to_buffer(&u, 0, &us, 0, c_len as u64 * 4);
+        e.copy_buffer_to_buffer(&v, 0, &vs, 0, c_len as u64 * 4);
+        self.queue.submit(Some(e.finish()));
+        let read = |b: &wgpu::Buffer, n: usize| -> Result<Vec<u8>, String> {
+            let s = b.slice(..);
+            let (tx, rx) = channel();
+            s.map_async(wgpu::MapMode::Read, move |r| {
+                let _ = tx.send(r);
+            });
+            self.device.poll(wgpu::Maintain::Wait);
+            rx.recv()
+                .map_err(|_| "map channel".to_string())?
+                .map_err(|e| format!("map: {e}"))?;
+            let out = {
+                let d = s.get_mapped_range();
+                let mut out = Vec::with_capacity(n);
+                for i in 0..n {
+                    out.push(d[i * 4]);
+                }
+                out
+            };
+            b.unmap();
+            Ok(out)
+        };
+        Ok(Yuv420pFrame {
+            schema: CONTRACT_VERSION,
+            sequence,
+            pts_ns,
+            width,
+            height,
+            y_stride: width,
+            u_stride: cw,
+            v_stride: cw,
+            color_space: ColorSpace::Srgb,
+            ownership: Ownership::OwnedByTransport,
+            y: read(&ys, y_len)?,
+            u: read(&us, c_len)?,
+            v: read(&vs, c_len)?,
+        })
     }
 
     pub fn render_with_scene(
@@ -1677,11 +1855,13 @@ impl Renderer {
                 contents: bytemuck::cast_slice(&waveform_sample_words(scene)),
                 usage: wgpu::BufferUsages::STORAGE,
             });
-        let fingerprint_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("fingerprint-samples-q16"),
-            contents: bytemuck::cast_slice(&scene_fingerprint_words(scene)),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
+        let fingerprint_buffer =
+            self.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("fingerprint-samples-q16"),
+                    contents: bytemuck::cast_slice(&scene_fingerprint_words(scene)),
+                    usage: wgpu::BufferUsages::STORAGE,
+                });
         let stride = ((width * 4 + ROW_ALIGNMENT - 1) / ROW_ALIGNMENT) * ROW_ALIGNMENT;
         let bytes = stride as usize * height as usize;
         let output = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -1853,6 +2033,7 @@ mod tests {
                 rms_q15: 123,
                 peak_q15: 456,
             },
+            pcm_f32le: vec![],
             artwork: None,
             base_texture: None,
             waveform_texture: None,
@@ -1887,6 +2068,7 @@ mod tests {
                 rms_q15: 0,
                 peak_q15: 0,
             },
+            pcm_f32le: vec![],
             artwork: None,
             base_texture: None,
             waveform_texture: None,

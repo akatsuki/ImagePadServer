@@ -124,6 +124,9 @@ func TestMediaMTXRuntimeURLs(t *testing.T) {
 	if got, want := rt.publishURL(), "rtsp://pub:secret@127.0.0.1:8554/obs_session"; got != want {
 		t.Fatalf("publishURL = %q, want %q", got, want)
 	}
+	if got, want := rt.rtmpPublishURL(), "rtmp://127.0.0.1:0/obs_session?user=pub&pass=secret"; got != want {
+		t.Fatalf("rtmpPublishURL = %q, want query-credentialed RTMP URL", got)
+	}
 	if got, want := rt.hlsBaseURL(), "http://127.0.0.1:8888/obs_session"; got != want {
 		t.Fatalf("hlsBaseURL = %q, want %q", got, want)
 	}

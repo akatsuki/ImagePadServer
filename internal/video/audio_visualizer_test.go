@@ -420,7 +420,10 @@ func TestRunAudioVisualizerHLS_TitleOnlyNoArtwork(t *testing.T) {
 	if err := os.MkdirAll(hlsDir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := RunAudioVisualizerHLSCPUReference(ctx, hlsDir, ffmpeg, input, "title-only-test", preset); err != nil {
+	// Production must stay on the CPU path even if a stale/invalid GPU sidecar
+	// environment variable is present.
+	t.Setenv("IMAGEPAD_PLAYLIST_COMPOSITORD", filepath.Join(dir, "must-not-start.exe"))
+	if err := RunAudioVisualizerHLS(ctx, hlsDir, ffmpeg, input, "title-only-test", preset); err != nil {
 		t.Fatalf("RunAudioVisualizerHLS with title-only/no-artwork failed: %v", err)
 	}
 

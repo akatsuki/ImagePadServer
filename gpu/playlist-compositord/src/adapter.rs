@@ -40,10 +40,20 @@ fn fingerprint_from_info(i: &AdapterInfo) -> RuntimeFingerprint {
 /// Select a real hardware adapter. Discrete GPUs are preferred, while
 /// integrated GPUs are accepted. Software/CPU adapters are never selected.
 pub fn select(instance: &Instance) -> Result<Selection, String> {
+    select_with_backends(instance, wgpu::Backends::all())
+}
+
+/// Select a hardware adapter from an explicit backend set. Production
+/// surface/encoder interop must not silently fall back to Vulkan or a software
+/// adapter, so the D3D12 path uses this function with `Backends::DX12`.
+pub fn select_with_backends(
+    instance: &Instance,
+    backends: wgpu::Backends,
+) -> Result<Selection, String> {
     let preferred = std::env::var("IMAGEPAD_GPU_ADAPTER").ok();
     let mut integrated: Option<Selection> = None;
     let mut preferred_match: Option<Selection> = None;
-    for adapter in instance.enumerate_adapters(wgpu::Backends::all()) {
+    for adapter in instance.enumerate_adapters(backends) {
         let info = adapter.get_info();
         let is_hardware = matches!(
             info.device_type,

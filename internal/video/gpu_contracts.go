@@ -12,12 +12,56 @@ const GPUContractVersion uint16 = 1
 const GPURowAlignment uint32 = 256
 const GPUMaxDimension uint32 = 16384
 const GPUMaxPayload = 256 * 1024 * 1024
+const GPUH264MaxBatchFrames = 64
+
+// Playlist GPU concurrent-frame sizing contract (dynamic headroom).
+//
+// The compositord shares the GPU with the user's foreground workload (games
+// such as VRChat), so the available encode/render throughput is a dynamic,
+// not static, budget. The concurrent-frame count for each bounded window is
+// therefore determined at render time, not baked in:
+//
+//  1. Probe: before sizing the remaining windows, the runner submits exactly
+//     PlaylistGPUProbeBatchFrames frames and measures their wall-clock cost.
+//     That yields the current per-frame encode cost under the present load.
+//  2. Decide: batch = clamp(round(PlaylistGPUFixedRPCSeconds / per_frame),
+//     PlaylistGPUProbeBatchFrames, GPUH264MaxBatchFrames). A larger window
+//     amortizes the fixed submit+drain round-trip but consumes more in-flight
+//     ring slots and VRAM.
+//  3. Bounds: the window is capped at GPUH264MaxBatchFrames, the ring/surface
+//     pool capacity shared with the Rust sidecar.
+//  4. Fail-closed: if the probe's per-frame cost cannot sustain the real-time
+//     budget, the render fails closed rather than dropping frames or starving
+//     the foreground workload.
+//  5. Re-evaluate: the headroom is re-probed at the start of every track and
+//     on explicit transition signals; mid-render drain-latency degradation may
+//     trigger a downsize.
+const PlaylistGPUProbeBatchFrames = 8
+
+// PlaylistGPUWarmupWindows is the number of initial windows whose timing is
+// discarded before the probe. The first window pays the remaining one-time
+// surface/texture initialization and must not be mistaken for steady-state
+// per-frame cost.
+const PlaylistGPUWarmupWindows = 1
+
+// PlaylistGPUFixedRPCSeconds is the measured submit+drain JSONL round-trip cost
+// each bounded window pays regardless of its frame count. It is the constant
+// the probe amortizes when sizing the window (≈45 ms on this host).
+const PlaylistGPUFixedRPCSeconds = 0.045
+
+// GPUH264MaxBatchRequestBytes bounds the serialized JSONL batch, including
+// base64 expansion. The bound is intentionally below the per-asset aggregate
+// worst case so a malformed batch cannot allocate an unbounded request.
+const GPUH264MaxBatchRequestBytes = 128 * 1024 * 1024
+const GPUH264MaxBatchResponseBytes = 128 * 1024 * 1024
 const MusicSceneSchema uint16 = 1
 const MusicMaxFeatureBins = 256
 
 // MusicMaxWaveformSamples bounds the optional per-frame Q0.16 waveform
 // payload sent to the GPU sidecar. Empty remains valid for legacy requests.
 const MusicMaxWaveformSamples = 4096
+const MusicPCMWindowSamples = 4096
+const MusicMaxPCMBytes = MusicPCMWindowSamples * 4
 const MusicMaxArtworkDimension uint32 = 4096
 const MusicMaxArtworkBytes = 16 * 1024 * 1024
 const MusicMaxGlyphs = 4096
@@ -30,8 +74,12 @@ const MusicMaxLayoutRects = 8
 // an unbounded texture or glyph upload. Existing Render requests omit this
 // field and remain valid.
 type MusicScenePayload struct {
-	Schema      uint16               `json:"schema"`
-	Feature     AudioFeatureFrame    `json:"feature"`
+	Schema  uint16            `json:"schema"`
+	Feature AudioFeatureFrame `json:"feature"`
+	// PCMF32LE is one bounded, mono float32 window from the analyzed PCM
+	// stream. It is optional for legacy scene producers but required by the
+	// direct H.264 renderer.
+	PCMF32LE    []byte               `json:"pcm_f32le,omitempty"`
 	Artwork     *ArtworkMetadata     `json:"artwork,omitempty"`
 	BaseTexture *BaseTextureMetadata `json:"base_texture,omitempty"`
 	// WaveformTexture is a per-frame FFmpeg showwaves raster. It reuses the
@@ -203,6 +251,9 @@ func (s MusicScenePayload) Validate() error {
 	}
 	if len(s.Feature.SpectrumQ16) > MusicMaxFeatureBins {
 		return errors.New("too many feature bins")
+	}
+	if len(s.PCMF32LE) > MusicMaxPCMBytes || len(s.PCMF32LE)%4 != 0 {
+		return errors.New("invalid scene PCM float32 payload")
 	}
 	if err := s.validateDynamics(); err != nil {
 		return err

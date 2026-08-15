@@ -290,7 +290,17 @@ func (r RadioRenderRecipe) FFmpegArgs(mode *ForegroundMode) []string {
 	encodePreset := QualityPreset{Height: c.Video.Height, VideoBitrate: c.Video.RateControl.Bitrate, MaxRate: c.Video.RateControl.MaxRate, BufferSize: c.Video.RateControl.BufferSize, AudioBitrate: c.Audio.Bitrate, RadioLatency: r.DeliveryProfile}
 	args = append(args, radioRTSPVideoEncoderArgs(r.Encoder, encodePreset)...)
 	args = append(args, r.encodeOptions(r.Encoder)...)
-	args = append(args, "-c:a", c.Audio.Codec, "-b:a", c.Audio.Bitrate, "-ar", strconv.Itoa(c.Audio.SampleRate), "-ac", strconv.Itoa(c.Audio.Channels), "-pix_fmt", c.Video.PixelFormat)
+	args = append(args,
+		"-c:a", c.Audio.Codec,
+		"-b:a", c.Audio.Bitrate,
+		"-ar", strconv.Itoa(c.Audio.SampleRate),
+		"-ac", strconv.Itoa(c.Audio.Channels),
+		"-pix_fmt", c.Video.PixelFormat,
+		"-colorspace", "bt709",
+		"-color_primaries", "bt709",
+		"-color_trc", "bt709",
+		"-color_range", "tv",
+	)
 	return append(args, "-movflags", "+faststart", "-f", "mp4", "-y", r.OutputPath)
 }
 
@@ -302,9 +312,9 @@ func (r RadioRenderRecipe) encodeOptions(encoder VideoEncoderProfile) []string {
 		"-force_key_frames", "expr:gte(t,n_forced*" + strconv.FormatFloat(c.Video.ForcedKeyframeSeconds, 'f', -1, 64) + ")",
 	}
 	if !encoder.Hardware {
-		args = append(args, "-sc_threshold", "0", "-x264-params", "aud=1:repeat-headers=1")
+		args = append(args, "-sc_threshold", "0", "-x264-params", "aud=1:repeat-headers=1:colorprim=bt709:transfer=bt709:colormatrix=bt709")
 	}
-	args = append(args, "-bsf:v", "h264_metadata=aud="+parameterValue(c.PrivateParameters, "h264-aud")+",dump_extra=freq="+parameterValue(c.PrivateParameters, "repeat-headers"))
+	args = append(args, "-bsf:v", "h264_metadata=aud="+parameterValue(c.PrivateParameters, "h264-aud")+":colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1:video_full_range_flag=0,dump_extra=freq="+parameterValue(c.PrivateParameters, "repeat-headers"))
 	return args
 }
 

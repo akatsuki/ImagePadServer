@@ -191,6 +191,40 @@ func TestRadioProgramModeKeepsSinglePublisherEncoderAndEndpointIdentity(t *testi
 	}
 }
 
+func TestRadioProgramHandledTrackSkipsCPUFeeder(t *testing.T) {
+	claimed := false
+	m, h := newRadioHarness(t, func() (string, string, bool) {
+		if claimed {
+			return "", "", false
+		}
+		claimed = true
+		return "gpu-owned.ts", "gpu-owned", true
+	}, nil, nil)
+	encoder := newFakePersistentProgramEncoder()
+	configureProgramHarness(t, m, encoder)
+	cpuFeederCalls := 0
+	m.runProgramFeeder = func(context.Context, string, int, int, int, chan<- ProgramSourceFrame) error {
+		cpuFeederCalls++
+		return errors.New("handled GPU track must not invoke the CPU feeder")
+	}
+	m.SetTrackClaimResolver(func(mediaPath, trackID string, startSeconds int) (RadioTrackClaimMode, error) {
+		if mediaPath != "gpu-owned.ts" || trackID != "gpu-owned" || startSeconds != 0 {
+			t.Fatalf("unexpected handled-track claim: media=%q track=%q start=%d", mediaPath, trackID, startSeconds)
+		}
+		return RadioTrackClaimHandled, nil
+	})
+
+	if err := m.Start(); err != nil {
+		t.Fatal(err)
+	}
+	h.waitEvent(t, "start")
+	h.waitEvent(t, "end")
+	h.waitEvent(t, "idle")
+	if cpuFeederCalls != 0 {
+		t.Fatalf("handled GPU track invoked CPU feeder %d times", cpuFeederCalls)
+	}
+}
+
 func TestRadioProgramDecoderFailureRetriesOnceThenContinuesFallback(t *testing.T) {
 	claimed := false
 	m, h := newRadioHarness(t, func() (string, string, bool) {

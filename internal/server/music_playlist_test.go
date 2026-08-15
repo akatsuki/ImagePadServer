@@ -88,6 +88,16 @@ func (r *barrierMusicRadio) ProxyLLHLS(http.ResponseWriter, *http.Request, strin
 
 func (r *barrierMusicRadio) Running() bool { return false }
 
+type runningMusicRadio struct {
+	barrierMusicRadio
+	status obsrtmp.RadioStatus
+	skips  int
+}
+
+func (r *runningMusicRadio) Status() obsrtmp.RadioStatus { return r.status }
+func (r *runningMusicRadio) Running() bool               { return true }
+func (r *runningMusicRadio) SkipCurrent()                { r.skips++ }
+
 func (r *barrierMusicRadio) CurrentTrackGeneration() obsrtmp.TrackGeneration {
 	if r.entered != nil {
 		r.once.Do(func() { close(r.entered) })
@@ -1053,6 +1063,307 @@ func TestMusicPlaylistPlaySpecificTrackPreservesSequentialHistory(t *testing.T) 
 	}
 }
 
+func TestMusicPlaylistExplicitGPUPlayFailsClosedBeforePendingMutation(t *testing.T) {
+	srv, _ := testServer(t, true)
+	defer cleanupTestServer(srv)
+	enableMusicMode(t)
+	t.Setenv("IMAGEPAD_GPU_PLAYLIST_TIMELINE", "1")
+
+	current := srv.musicQueue.Add(playlist.Track{Title: "Current", Status: playlist.TrackReady, MediaPath: "current.ts"})
+	target := srv.musicQueue.Add(playlist.Track{Title: "Target", Status: playlist.TrackReady, MediaPath: "target.ts"})
+	if !srv.musicQueue.SetCurrent(current.ID) {
+		t.Fatal("SetCurrent(Current) failed")
+	}
+	startedAt := time.Now()
+	srv.radio = &runningMusicRadio{status: obsrtmp.RadioStatus{
+		Running:        true,
+		CurrentTrackID: current.ID,
+		TrackStartedAt: startedAt,
+		ActiveSession: &obsrtmp.RadioActiveSessionContract{
+			PublisherProfile: obsrtmp.RadioPublisherProfilePlaylistGPUEvaluation,
+		},
+	}}
+	srv.setPlaylistGPUEvaluationArmed(true)
+	srv.musicTimelineMu.Lock()
+	srv.musicTimelineEpoch = 1
+	srv.musicActiveTrackID = current.ID
+	srv.musicActiveBaseSeq = 0
+	srv.musicActiveTailSeq = 0
+	srv.musicActiveStartedAt = startedAt
+	srv.musicTimelineMu.Unlock()
+
+	rec := httptest.NewRecorder()
+	srv.handleMusicPlaylistPlay(rec, httptest.NewRequest(http.MethodPost, "/api/music/playlist/play", strings.NewReader(`{"id":"`+target.ID+`"}`)))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("explicit GPU play without executor = %d: %s", rec.Code, rec.Body.String())
+	}
+	srv.musicPendingMu.Lock()
+	pendingTrack := srv.musicPendingTrack
+	srv.musicPendingMu.Unlock()
+	if pendingTrack != "" {
+		t.Fatalf("failed explicit GPU play must not leave pending track %q", pendingTrack)
+	}
+	if radio, ok := srv.radio.(*runningMusicRadio); !ok || radio.skips != 0 {
+		t.Fatalf("failed explicit GPU play must not skip current track: %#v", srv.radio)
+	}
+}
+
+func setupExplicitGPUTransitionFailureTest(t *testing.T) (*Server, *runningMusicRadio, playlist.Track) {
+	t.Helper()
+	srv, _ := testServer(t, true)
+	t.Cleanup(func() { cleanupTestServer(srv) })
+	enableMusicMode(t)
+	t.Setenv("IMAGEPAD_GPU_PLAYLIST_TIMELINE", "1")
+	current := srv.musicQueue.Add(playlist.Track{Title: "Current", Status: playlist.TrackReady, MediaPath: "current.ts"})
+	if !srv.musicQueue.SetCurrent(current.ID) {
+		t.Fatal("SetCurrent(Current) failed")
+	}
+	startedAt := time.Now()
+	radio := &runningMusicRadio{status: obsrtmp.RadioStatus{
+		Running:        true,
+		CurrentTrackID: current.ID,
+		TrackStartedAt: startedAt,
+		ActiveSession: &obsrtmp.RadioActiveSessionContract{
+			PublisherProfile: obsrtmp.RadioPublisherProfilePlaylistGPUEvaluation,
+		},
+	}}
+	srv.radio = radio
+	srv.setPlaylistGPUEvaluationArmed(true)
+	srv.musicTimelineMu.Lock()
+	srv.musicTimelineEpoch = 1
+	srv.musicActiveTrackID = current.ID
+	srv.musicActiveBaseSeq = 0
+	srv.musicActiveTailSeq = 0
+	srv.musicActiveStartedAt = startedAt
+	srv.musicTimelineMu.Unlock()
+	return srv, radio, current
+}
+
+func TestMusicPlaylistExplicitGPUTransitionPlanUsesAuthoritativeHeadAndTail(t *testing.T) {
+	srv, _, current := setupExplicitGPUTransitionFailureTest(t)
+	target := srv.musicQueue.Add(playlist.Track{Title: "Target", Status: playlist.TrackReady, MediaPath: "target.ts"})
+	srv.musicTimelineMu.Lock()
+	srv.musicPlaylistGPUAssets = map[string]video.TrackAssets{
+		target.ID: {TrackID: target.ID},
+	}
+	srv.musicPlaylistGPUTimelines = map[string]video.TrackTimeline{
+		target.ID: {TrackID: target.ID},
+	}
+	srv.musicTimelineMu.Unlock()
+	var got video.TransitionPlan
+	srv.SetPlaylistGPUContinuousTrackSink(func(_ video.TrackAssets, _ video.TrackTimeline, plan video.TransitionPlan) error {
+		got = plan
+		return nil
+	})
+	if err := srv.prepareExplicitPlaylistGPUTransitionTo(video.PlaylistTransitionTrackChange, target.ID); err != nil {
+		t.Fatalf("prepare explicit GPU transition = %v", err)
+	}
+	if got.Epoch != 1 || got.SourceTrackID != current.ID || got.TargetTrackID != target.ID {
+		t.Fatalf("transition identity = %#v", got)
+	}
+	if got.PlaybackHeadSequence != 0 || got.QueuedTailSequence != 0 || got.FadeStartSequence <= got.QueuedTailSequence || got.FadeEndSequence < got.FadeStartSequence {
+		t.Fatalf("transition sequence range = %#v", got)
+	}
+	if got.PlaybackHeadPTSNs != 0 || got.QueuedTailPTSNs != 0 || got.AudioFadePlan.StartPTSNs != got.FadeStartPTSNs || got.AudioFadePlan.DurationNS <= 0 {
+		t.Fatalf("transition PTS/audio plan = %#v", got)
+	}
+	srv.musicTimelineMu.Lock()
+	reserved := srv.musicTransitionReservedNextSeq
+	srv.musicTimelineMu.Unlock()
+	if reserved != got.FadeEndSequence+1 {
+		t.Fatalf("reserved next sequence = %d, want %d", reserved, got.FadeEndSequence+1)
+	}
+}
+
+func TestMusicPlaylistExplicitTargetTrackChangeUsesCompleteContinuousExecutor(t *testing.T) {
+	srv, _, current := setupExplicitGPUTransitionFailureTest(t)
+	target := srv.musicQueue.Add(playlist.Track{Title: "Target", Status: playlist.TrackReady})
+	srv.musicTimelineMu.Lock()
+	srv.musicPlaylistGPUAssets = map[string]video.TrackAssets{
+		target.ID: {TrackID: target.ID},
+	}
+	srv.musicPlaylistGPUTimelines = map[string]video.TrackTimeline{
+		target.ID: {TrackID: target.ID},
+	}
+	srv.musicTimelineMu.Unlock()
+
+	transitionCalls := 0
+	continuousCalls := 0
+	srv.SetPlaylistGPUTransitionSink(func(video.TransitionPlan) error {
+		transitionCalls++
+		return nil
+	})
+	srv.SetPlaylistGPUContinuousTrackSink(func(assets video.TrackAssets, timeline video.TrackTimeline, plan video.TransitionPlan) error {
+		continuousCalls++
+		if assets.TrackID != target.ID || timeline.TrackID != target.ID || plan.TargetTrackID != target.ID {
+			t.Fatalf("continuous executor received target assets/timeline/plan mismatch: %q %q %q", assets.TrackID, timeline.TrackID, plan.TargetTrackID)
+		}
+		return nil
+	})
+
+	if err := srv.prepareExplicitPlaylistGPUTransitionTo(video.PlaylistTransitionTrackChange, target.ID); err != nil {
+		t.Fatalf("explicit target GPU transition = %v", err)
+	}
+	if continuousCalls != 1 || transitionCalls != 0 {
+		t.Fatalf("explicit target executor calls: continuous=%d transition=%d, want 1/0 (current=%s)", continuousCalls, transitionCalls, current.ID)
+	}
+}
+
+func TestMusicPlaylistContinuousSinkReceivesLocalTargetTimelineForWorkerRebase(t *testing.T) {
+	srv, _, _ := setupExplicitGPUTransitionFailureTest(t)
+	target := srv.musicQueue.Add(playlist.Track{Title: "Target", Status: playlist.TrackReady, MediaPath: "target.ts"})
+	localTimeline := video.TrackTimeline{
+		TrackID:    target.ID,
+		FrameCount: 1,
+		Frames:     []video.FrameDirective{{Sequence: 0, FrameIndex: 0, PTSNs: 0}},
+	}
+	localAssets := video.TrackAssets{TrackID: target.ID}
+	srv.musicTimelineMu.Lock()
+	if srv.musicPlaylistGPUAssets == nil {
+		srv.musicPlaylistGPUAssets = make(map[string]video.TrackAssets)
+	}
+	if srv.musicPlaylistGPUTimelines == nil {
+		srv.musicPlaylistGPUTimelines = make(map[string]video.TrackTimeline)
+	}
+	srv.musicPlaylistGPUAssets[target.ID] = localAssets
+	srv.musicPlaylistGPUTimelines[target.ID] = localTimeline
+	srv.musicTimelineMu.Unlock()
+	var got video.TrackTimeline
+	srv.SetPlaylistGPUContinuousTrackSink(func(_ video.TrackAssets, timeline video.TrackTimeline, _ video.TransitionPlan) error {
+		got = timeline
+		return nil
+	})
+	if err := srv.prepareExplicitPlaylistGPUTransition(video.PlaylistTransitionTrackChange); err != nil {
+		t.Fatalf("prepare automatic GPU transition = %v", err)
+	}
+	if got.TrackID != target.ID || len(got.Frames) != 1 || got.Frames[0].Sequence != 0 || got.Frames[0].PTSNs != 0 {
+		t.Fatalf("continuous sink received pre-rebased target timeline: %#v", got)
+	}
+}
+
+func TestMusicPlaylistExplicitGPUNextFailsClosedWithoutAdvancingQueue(t *testing.T) {
+	srv, _, current := setupExplicitGPUTransitionFailureTest(t)
+	target := srv.musicQueue.Add(playlist.Track{Title: "Target", Status: playlist.TrackReady, MediaPath: "target.ts"})
+	if _, id, _, ok := srv.nextRadioTrack(); ok || id != "" {
+		t.Fatalf("explicit GPU next without target timeline = id %q ok=%v, want fail-closed", id, ok)
+	}
+	if got := srv.musicQueue.CurrentID(); got != current.ID {
+		t.Fatalf("failed explicit GPU next advanced queue current to %q, want %q", got, current.ID)
+	}
+	if preview, ok := srv.musicQueue.PreviewNext(); !ok || preview.ID != target.ID {
+		t.Fatalf("failed explicit GPU next consumed queue reservation: %#v ok=%v", preview, ok)
+	}
+}
+
+func TestMusicPlaylistExplicitGPUHandledClaimDoesNotRequireCPUMediaPath(t *testing.T) {
+	srv, _, _ := setupExplicitGPUTransitionFailureTest(t)
+	target := srv.musicQueue.Add(playlist.Track{Title: "Target", Status: playlist.TrackReady})
+	if err := srv.markPlaylistGPUHandledTrack(target.ID, 1); err != nil {
+		t.Fatalf("mark handled GPU track = %v", err)
+	}
+
+	mode, err := srv.resolvePlaylistGPUTrackClaim("", target.ID, 0)
+	if err != nil {
+		t.Fatalf("resolve handled GPU track without CPU media path = %v", err)
+	}
+	if mode != obsrtmp.RadioTrackClaimHandled {
+		t.Fatalf("handled GPU claim mode = %q, want %q", mode, obsrtmp.RadioTrackClaimHandled)
+	}
+}
+
+func TestMusicPlaylistExplicitGPUNextWithContinuousReadyStillRequiresTargetTimeline(t *testing.T) {
+	srv, _, current := setupExplicitGPUTransitionFailureTest(t)
+	target := srv.musicQueue.Add(playlist.Track{Title: "Target", Status: playlist.TrackReady, MediaPath: "target.ts"})
+	srv.SetPlaylistGPUContinuousPlaybackReady(true)
+	if _, id, _, ok := srv.nextRadioTrack(); ok || id != "" {
+		t.Fatalf("explicit GPU next without target timeline = id %q ok=%v, want fail-closed", id, ok)
+	}
+	if got := srv.musicQueue.CurrentID(); got != current.ID {
+		t.Fatalf("failed explicit GPU next advanced queue current to %q, want %q", got, current.ID)
+	}
+	if preview, ok := srv.musicQueue.PreviewNext(); !ok || preview.ID != target.ID {
+		t.Fatalf("failed explicit GPU next consumed queue reservation: %#v ok=%v", preview, ok)
+	}
+}
+
+func TestMusicPlaylistExplicitGPUContinuousRouteRequiresRuntimeOwnership(t *testing.T) {
+	srv, _, _ := setupExplicitGPUTransitionFailureTest(t)
+	srv.SetPlaylistGPUContinuousPlaybackReady(true)
+	if srv.playlistGPUContinuousRouteAvailable() {
+		t.Fatal("continuous GPU route became available without worker/controller/output ownership")
+	}
+	worker, err := video.NewPlaylistGPUTransitionController(1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.musicTimelineMu.Lock()
+	srv.musicPlaylistGPUController = worker
+	srv.musicTimelineMu.Unlock()
+	if srv.playlistGPUContinuousRouteAvailable() {
+		t.Fatal("continuous GPU route became available without worker/output ownership")
+	}
+}
+
+func TestMusicPlaylistAutomaticGPUTransitionRequiresCompleteTrackSink(t *testing.T) {
+	srv, _, _ := setupExplicitGPUTransitionFailureTest(t)
+	srv.SetPlaylistGPUContinuousPlaybackReady(true)
+	srv.SetPlaylistGPUTransitionSink(func(video.TransitionPlan) error { return nil })
+	if srv.playlistGPUContinuousRouteAvailable() {
+		t.Fatal("fade-tail transition sink must not arm complete automatic route")
+	}
+	srv.SetPlaylistGPUContinuousTrackSink(func(video.TrackAssets, video.TrackTimeline, video.TransitionPlan) error { return nil })
+	if srv.playlistGPUContinuousRouteAvailable() {
+		t.Fatal("complete automatic track sink must not arm route without runtime output ownership")
+	}
+	controller, err := video.NewPlaylistGPUTransitionController(1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.SetPlaylistGPUEncodedFrameSink(func(video.EncodedH264Frame) error { return nil })
+	srv.SetPlaylistGPUContinuousRuntime(&video.PlaylistGPUWorker{}, controller)
+	if !srv.playlistGPUContinuousRouteAvailable() {
+		t.Fatal("complete automatic track sink plus runtime ownership did not arm explicit route")
+	}
+}
+
+func TestMusicPlaylistExplicitGPUPauseFailsClosedBeforePausedMutation(t *testing.T) {
+	srv, radio, _ := setupExplicitGPUTransitionFailureTest(t)
+	rec := httptest.NewRecorder()
+	srv.handleMusicPlaylistPause(rec, httptest.NewRequest(http.MethodPost, "/api/music/playlist/pause", nil))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("explicit GPU pause without executor = %d: %s", rec.Code, rec.Body.String())
+	}
+	srv.musicPendingMu.Lock()
+	paused := srv.musicPaused
+	srv.musicPendingMu.Unlock()
+	if paused {
+		t.Fatal("failed explicit GPU pause must not set paused state")
+	}
+	if radio.skips != 0 {
+		t.Fatalf("failed explicit GPU pause must not skip current track: %d", radio.skips)
+	}
+}
+
+func TestMusicPlaylistExplicitGPUSeekFailsClosedBeforePendingMutation(t *testing.T) {
+	srv, radio, current := setupExplicitGPUTransitionFailureTest(t)
+	rec := httptest.NewRecorder()
+	body := strings.NewReader(`{"seconds":12}`)
+	srv.handleMusicPlaylistSeek(rec, httptest.NewRequest(http.MethodPost, "/api/music/playlist/seek", body))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("explicit GPU seek without executor = %d: %s", rec.Code, rec.Body.String())
+	}
+	srv.musicPendingMu.Lock()
+	pendingTrack := srv.musicPendingTrack
+	pendingOffset := srv.musicPendingOffset
+	srv.musicPendingMu.Unlock()
+	if pendingTrack != "" || pendingOffset != 0 {
+		t.Fatalf("failed explicit GPU seek must not leave pending request: track=%q offset=%d", pendingTrack, pendingOffset)
+	}
+	if radio.skips != 0 {
+		t.Fatalf("failed explicit GPU seek must not skip current track %q: %d", current.ID, radio.skips)
+	}
+}
+
 func TestMusicPlaylistPlaySpecificTrackPreservesShuffleHistory(t *testing.T) {
 	srv, _ := testServer(t, true)
 	defer cleanupTestServer(srv)
@@ -1129,6 +1440,340 @@ func TestMusicPlaylistStopClearsPendingRequest(t *testing.T) {
 	}
 }
 
+type sessionContextMusicRadio struct {
+	barrierMusicRadio
+	running bool
+	starts  int
+}
+
+func (r *sessionContextMusicRadio) Start() error {
+	r.running = true
+	r.status.Running = true
+	r.starts++
+	return nil
+}
+
+func (r *sessionContextMusicRadio) Running() bool { return r.running }
+
+func (r *sessionContextMusicRadio) Stop(time.Duration) {
+	r.running = false
+	r.status.Running = false
+}
+
+func (r *sessionContextMusicRadio) Status() obsrtmp.RadioStatus { return r.status }
+
+func TestMusicPlaylistGPUSessionContextIsScopedAndCancelledOnCleanup(t *testing.T) {
+	srv, _ := testServer(t, true)
+	defer cleanupTestServer(srv)
+	enableMusicMode(t)
+	t.Setenv("IMAGEPAD_GPU_PLAYLIST_TIMELINE", "1")
+
+	radio := &sessionContextMusicRadio{}
+	srv.radio = radio
+	srv.startMusicRadio = radio.Start
+	if err := srv.startMusicRadioSession(obsrtmp.RadioPublisherProfilePlaylistGPUEvaluation); err != nil {
+		t.Fatal(err)
+	}
+	srv.musicTimelineMu.Lock()
+	gpuCtx := srv.musicPlaylistGPUSessionCtx
+	gpuCancel := srv.musicPlaylistGPUSessionCancel
+	srv.musicTimelineMu.Unlock()
+	if gpuCtx == nil || gpuCancel == nil {
+		t.Fatal("explicit GPU session did not create a cancellable worker context")
+	}
+	select {
+	case <-gpuCtx.Done():
+		t.Fatal("GPU worker context was cancelled before session cleanup")
+	default:
+	}
+
+	srv.closePlaylistGPUEvaluationSession()
+	select {
+	case <-gpuCtx.Done():
+	default:
+		t.Fatal("GPU worker context was not cancelled during session cleanup")
+	}
+	srv.musicTimelineMu.Lock()
+	if srv.musicPlaylistGPUSessionCtx != nil || srv.musicPlaylistGPUSessionCancel != nil {
+		srv.musicTimelineMu.Unlock()
+		t.Fatal("GPU session context was not cleared after cleanup")
+	}
+	srv.musicTimelineMu.Unlock()
+
+	radio.running = false
+	srv.setPlaylistGPUEvaluationArmed(false)
+	if err := srv.startMusicRadioSession(obsrtmp.RadioPublisherProfileCPUDefault); err != nil {
+		t.Fatal(err)
+	}
+	srv.musicTimelineMu.Lock()
+	cpuCtx := srv.musicPlaylistGPUSessionCtx
+	srv.musicTimelineMu.Unlock()
+	if cpuCtx != nil {
+		t.Fatal("normal CPU session created a GPU worker context")
+	}
+	if radio.starts != 2 {
+		t.Fatalf("radio starts = %d, want 2", radio.starts)
+	}
+}
+
+func TestMusicPlaylistContinuousRuntimeStartsWithExplicitSessionContext(t *testing.T) {
+	srv, _, _ := setupExplicitGPUTransitionFailureTest(t)
+	t.Setenv("IMAGEPAD_PLAYLIST_COMPOSITORD", "playlist-compositord-test")
+	srv.SetPlaylistGPUEncodedFrameSink(func(video.EncodedH264Frame) error { return nil })
+
+	sessionCtx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	srv.musicTimelineMu.Lock()
+	srv.musicPlaylistGPUSessionCtx = sessionCtx
+	srv.musicTimelineEpoch = 1
+	srv.musicActiveBaseSeq = 0
+	srv.musicTimelineMu.Unlock()
+
+	var gotCtx context.Context
+	oldStart := startPlaylistGPUWorker
+	t.Cleanup(func() { startPlaylistGPUWorker = oldStart })
+	startPlaylistGPUWorker = func(ctx context.Context, _, _ string) (*video.PlaylistGPUWorker, error) {
+		gotCtx = ctx
+		return nil, errors.New("test worker start stop")
+	}
+
+	if err := srv.ensurePlaylistGPUContinuousRuntime(); err == nil {
+		t.Fatal("worker start failure must remain fail-closed")
+	}
+	if gotCtx == nil {
+		t.Fatal("continuous runtime did not invoke the worker starter")
+	}
+	if gotCtx != sessionCtx {
+		t.Fatal("continuous runtime did not pass the explicit GPU session context to the worker")
+	}
+}
+
+func TestMusicPlaylistContinuousRuntimeDoesNotReplaceNonRunningSessionWorker(t *testing.T) {
+	srv, _, _ := setupExplicitGPUTransitionFailureTest(t)
+	t.Setenv("IMAGEPAD_PLAYLIST_COMPOSITORD", "playlist-compositord-test")
+	srv.SetPlaylistGPUEncodedFrameSink(func(video.EncodedH264Frame) error { return nil })
+
+	sessionCtx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	staleWorker := &video.PlaylistGPUWorker{}
+	srv.musicTimelineMu.Lock()
+	srv.musicPlaylistGPUSessionCtx = sessionCtx
+	srv.musicPlaylistGPUWorker = staleWorker
+	srv.musicTimelineEpoch = 1
+	srv.musicActiveBaseSeq = 0
+	srv.musicTimelineMu.Unlock()
+
+	starts := 0
+	oldStart := startPlaylistGPUWorker
+	t.Cleanup(func() { startPlaylistGPUWorker = oldStart })
+	startPlaylistGPUWorker = func(_ context.Context, _, _ string) (*video.PlaylistGPUWorker, error) {
+		starts++
+		return nil, errors.New("replacement worker must not be started")
+	}
+
+	if err := srv.ensurePlaylistGPUContinuousRuntime(); err == nil {
+		t.Fatal("non-running session worker must fail closed")
+	}
+	if starts != 0 {
+		t.Fatalf("non-running session worker was replaced by %d new worker starts", starts)
+	}
+}
+
+func TestMusicPlaylistContinuousSuccessRetainsSessionWorker(t *testing.T) {
+	srv, _, _ := setupExplicitGPUTransitionFailureTest(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	worker := &video.PlaylistGPUWorker{}
+	controller, err := video.NewPlaylistGPUTransitionController(1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	telemetry := video.PlaylistGPUOutputTelemetry{ExpectedFrames: 1, AcceptedFrames: 1}
+	srv.musicTimelineMu.Lock()
+	srv.musicPlaylistGPUSessionCtx = ctx
+	srv.musicTimelineMu.Unlock()
+
+	if err := srv.commitPlaylistGPUContinuousSuccess(worker, controller, telemetry); err != nil {
+		t.Fatal(err)
+	}
+	srv.musicTimelineMu.Lock()
+	gotWorker := srv.musicPlaylistGPUWorker
+	gotController := srv.musicPlaylistGPUController
+	srv.musicTimelineMu.Unlock()
+	if gotWorker != worker || gotController != controller {
+		t.Fatalf("continuous success replaced session ownership: worker=%p/%p controller=%p/%p", gotWorker, worker, gotController, controller)
+	}
+}
+
+func TestMusicPlaylistTransitionSuccessRetainsSessionWorker(t *testing.T) {
+	srv, _, _ := setupExplicitGPUTransitionFailureTest(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	worker := &video.PlaylistGPUWorker{}
+	controller, err := video.NewPlaylistGPUTransitionController(1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := video.CompilePlaylistTransition(video.TransitionRequest{
+		Schema:               video.GPUPlaylistTimelineSchema,
+		Epoch:                1,
+		Reason:               video.PlaylistTransitionStop,
+		SourceTrackID:        "current",
+		PlaybackHeadSequence: 0,
+		PlaybackHeadPTSNs:    0,
+	}, "", 0, 0, 2, 2, 33_333_333, video.AudioFadePlan{Curve: "linear", DurationNS: 66_666_666})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range []func() error{
+		func() error { return controller.Request(plan) },
+		controller.StopNormalSubmit,
+		controller.BeginDrainInFlight,
+		controller.BeginFadeTailRendering,
+		controller.BeginFlushOutput,
+		func() error { return controller.CompleteTransition(plan.FadeEndSequence) },
+	} {
+		if err := step(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if controller.State() != video.PlaylistGPUStateTransitionComplete {
+		t.Fatalf("stop transition state = %q", controller.State())
+	}
+	telemetry := video.PlaylistGPUOutputTelemetry{ExpectedFrames: 1, AcceptedFrames: 1}
+	srv.musicTimelineMu.Lock()
+	srv.musicPlaylistGPUSessionCtx = ctx
+	srv.musicTimelineMu.Unlock()
+
+	if err := srv.commitPlaylistGPUTransitionSuccess(worker, controller, telemetry); err != nil {
+		t.Fatal(err)
+	}
+	srv.musicTimelineMu.Lock()
+	gotWorker := srv.musicPlaylistGPUWorker
+	gotController := srv.musicPlaylistGPUController
+	srv.musicTimelineMu.Unlock()
+	if gotWorker != worker || gotController != controller {
+		t.Fatalf("stop transition success released session ownership: worker=%p/%p controller=%p/%p", gotWorker, worker, gotController, controller)
+	}
+}
+
+func TestMusicPlaylistTransitionSuccessDoesNotResumeCancelledSession(t *testing.T) {
+	srv, _, _ := setupExplicitGPUTransitionFailureTest(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	worker := &video.PlaylistGPUWorker{}
+	controller, err := video.NewPlaylistGPUTransitionController(1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := video.CompilePlaylistTransition(video.TransitionRequest{
+		Schema:               video.GPUPlaylistTimelineSchema,
+		Epoch:                1,
+		Reason:               video.PlaylistTransitionStop,
+		SourceTrackID:        "current",
+		PlaybackHeadSequence: 0,
+		PlaybackHeadPTSNs:    0,
+	}, "", 0, 0, 1, 1, 33_333_333, video.AudioFadePlan{Curve: "linear", DurationNS: 33_333_333})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range []func() error{
+		func() error { return controller.Request(plan) },
+		controller.StopNormalSubmit,
+		controller.BeginDrainInFlight,
+		controller.BeginFadeTailRendering,
+		controller.BeginFlushOutput,
+		func() error { return controller.CompleteTransition(plan.FadeEndSequence) },
+	} {
+		if err := step(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cancel()
+	srv.musicTimelineMu.Lock()
+	srv.musicPlaylistGPUSessionCtx = ctx
+	srv.musicTimelineMu.Unlock()
+	oldResume := resumePlaylistGPUWorkerAfterStop
+	resumes := 0
+	resumePlaylistGPUWorkerAfterStop = func(*video.PlaylistGPUWorker) error {
+		resumes++
+		return nil
+	}
+	t.Cleanup(func() { resumePlaylistGPUWorkerAfterStop = oldResume })
+
+	if err := srv.commitPlaylistGPUTransitionSuccess(worker, controller, video.PlaylistGPUOutputTelemetry{ExpectedFrames: 1, AcceptedFrames: 1}); err == nil {
+		t.Fatal("cancelled GPU session transition was accepted")
+	}
+	if resumes != 0 {
+		t.Fatalf("cancelled GPU session attempted worker resume %d times", resumes)
+	}
+	if controller.State() != video.PlaylistGPUStateTransitionComplete {
+		t.Fatalf("cancelled session changed controller state to %q", controller.State())
+	}
+}
+
+func TestMusicPlaylistContinuousExecutionUsesFrozenSessionContext(t *testing.T) {
+	for _, wantOperation := range []string{"prepare", "execute"} {
+		t.Run(wantOperation, func(t *testing.T) {
+			srv, _, current := setupExplicitGPUTransitionFailureTest(t)
+			target := srv.musicQueue.Add(playlist.Track{Title: "Target", Status: playlist.TrackReady})
+			sessionCtx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			worker := &video.PlaylistGPUWorker{}
+			controller, err := video.NewPlaylistGPUTransitionController(1, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			srv.musicTimelineMu.Lock()
+			srv.musicPlaylistGPUSessionCtx = sessionCtx
+			srv.musicPlaylistGPUWorker = worker
+			srv.musicPlaylistGPUController = controller
+			srv.musicPlaylistGPUFrameSink = func(video.EncodedH264Frame) error { return nil }
+			srv.musicPlaylistGPUAssets = map[string]video.TrackAssets{
+				current.ID: {TrackID: current.ID},
+				target.ID:  {TrackID: target.ID},
+			}
+			srv.musicPlaylistGPUTimelines = map[string]video.TrackTimeline{
+				current.ID: {TrackID: current.ID},
+				target.ID:  {TrackID: target.ID, FPS: 30, FrameCount: 1},
+			}
+			srv.musicTimelineMu.Unlock()
+			plan, err := video.CompilePlaylistTransition(video.TransitionRequest{
+				Schema: video.GPUPlaylistTimelineSchema, Epoch: 1, Reason: video.PlaylistTransitionTrackChange,
+				SourceTrackID: current.ID, PlaybackHeadSequence: 0, PlaybackHeadPTSNs: 0,
+			}, target.ID, 2, 66_666_666, 1, 1, 33_333_333, video.AudioFadePlan{Curve: "linear", DurationNS: 33_333_333})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var gotCtx context.Context
+			oldPrepare := preparePlaylistGPUTrack
+			oldExecute := executePlaylistGPUContinuousTrack
+			t.Cleanup(func() {
+				preparePlaylistGPUTrack = oldPrepare
+				executePlaylistGPUContinuousTrack = oldExecute
+			})
+			preparePlaylistGPUTrack = func(ctx context.Context, _ *video.PlaylistGPUWorker, _ uint64, _ video.TrackAssets) error {
+				gotCtx = ctx
+				if wantOperation == "prepare" {
+					return errors.New("stop after prepare context capture")
+				}
+				return nil
+			}
+			executePlaylistGPUContinuousTrack = func(ctx context.Context, _ *video.PlaylistGPUWorker, _ video.TrackAssets, _ video.TrackTimeline, _ video.TrackAssets, _ video.TrackTimeline, _ video.TransitionPlan, _ uint64, _ func(video.EncodedH264Frame) error) error {
+				gotCtx = ctx
+				return errors.New("stop after execute context capture")
+			}
+
+			if err := srv.submitPlaylistGPUContinuousTrack(video.TrackAssets{TrackID: current.ID}, video.TrackTimeline{TrackID: current.ID}, plan); err == nil {
+				t.Fatal("continuous execution unexpectedly succeeded")
+			}
+			if gotCtx != sessionCtx {
+				t.Fatalf("%s received context %p, want frozen session context %p", wantOperation, gotCtx, sessionCtx)
+			}
+		})
+	}
+}
+
 func TestRadioHLSNotFoundWhileStopped(t *testing.T) {
 	srv, mux := testServer(t, true)
 	defer cleanupTestServer(srv)
@@ -1138,5 +1783,37 @@ func TestRadioHLSNotFoundWhileStopped(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("radio HLS while stopped = %d, want 404", rec.Code)
+	}
+}
+
+func TestMusicTimelineCommitAllocatesAuthoritativeEpochAndSequence(t *testing.T) {
+	srv, _ := testServer(t, false)
+	defer cleanupTestServer(srv)
+
+	first := playlist.Track{ID: "first", DurationSeconds: 2, Status: playlist.TrackReady}
+	if !srv.commitMusicTimelineTrack(first) {
+		t.Fatal("first timeline commit failed")
+	}
+	srv.musicTimelineMu.Lock()
+	firstEpoch := srv.musicTimelineEpoch
+	firstBase := srv.musicActiveBaseSeq
+	firstTail := srv.musicActiveTailSeq
+	srv.musicTimelineMu.Unlock()
+	if firstEpoch != 1 || firstBase != 0 || firstTail != 59 {
+		t.Fatalf("first timeline state = epoch %d base %d tail %d", firstEpoch, firstBase, firstTail)
+	}
+
+	second := playlist.Track{ID: "second", DurationSeconds: 1, Status: playlist.TrackReady}
+	if !srv.commitMusicTimelineTrack(second) {
+		t.Fatal("second timeline commit failed")
+	}
+	srv.musicTimelineMu.Lock()
+	secondEpoch := srv.musicTimelineEpoch
+	secondBase := srv.musicActiveBaseSeq
+	secondTail := srv.musicActiveTailSeq
+	activeID := srv.musicActiveTrackID
+	srv.musicTimelineMu.Unlock()
+	if secondEpoch != 2 || secondBase != 60 || secondTail != 89 || activeID != second.ID {
+		t.Fatalf("second timeline state = epoch %d base %d tail %d active %q", secondEpoch, secondBase, secondTail, activeID)
 	}
 }

@@ -1,4 +1,10 @@
-# GPU-only Music Renderer Plan
+# GPU-only Music Renderer Plan (Historical / Frozen)
+
+> **Status (2026-08-11):** This document describes the superseded GPU
+> production proposal. GPU direct H.264, RenderV2, and surface-ring work is
+> frozen as diagnostic/technical evidence. It is not the current production
+> plan. See [`CPU_MUSIC_RENDERER_PRODUCTION.md`](CPU_MUSIC_RENDERER_PRODUCTION.md)
+> for the active decision and completion criteria.
 
 ## Goal
 
@@ -8,10 +14,14 @@ encoding, and parity verification. FFmpeg `showwaves` and ASS are diagnostic-onl
 
 ## Current contract gap
 
-`MusicFeature` currently carries `spectrum_q16`, `rms_q15`, and `peak_q15`, but no
-bounded waveform sample/envelope payload. A GPU waveform cannot be reconstructed
-from those fields without changing the visual result. The contract must therefore
-add a bounded, deterministic waveform input with an explicit frame clock and PTS.
+The Go scene contract now carries a bounded `waveform_q16` sample/envelope payload
+alongside `spectrum_q16`, `rms_q15`, and `peak_q15`. The production `RenderV2`
+route is still not connected to the native shader dispatch, so the payload is not
+yet a production GPU-renderer guarantee.
+
+The remaining production contract requirement is to carry this bounded,
+deterministic waveform input with an explicit frame clock and PTS through the
+versioned sidecar request.
 
 ## Contract extension
 
@@ -40,3 +50,20 @@ parity report before becoming the production default.
 - No production FFmpeg `showwaves`, `showfreqs`, or ASS filters.
 - CPU-generated visual textures are absent from the production GPU route.
 - Diagnostic CPU/FFmpeg routes remain explicitly opt-in and mutually exclusive.
+
+## Draft V2 waveform slice
+
+The diagnostic Draft V2 path now exercises the waveform contract end to end:
+
+- binding 2 is a read-only `waveform_q16` storage buffer;
+- the scene uniform reuses its reserved header words for waveform flags and
+  logical column count;
+- signed min/max pairs are interpolated in WGSL and drawn around the spectrum
+  center line, preserving narrow transients;
+- missing waveform payloads retain the raw-PCM fallback for Draft compatibility;
+- the diagnostic exporter derives a deterministic 752-column min/max payload
+  from its PCM fixture before GPU dispatch.
+
+This is diagnostic evidence only. The exporter still performs GPU readback and
+CPU YUV420P packing, and `production_ready` remains false until the native
+RenderV2 pass graph and GPU-owned encoder consumer are connected.

@@ -9,17 +9,20 @@ import (
 	"testing"
 )
 
-func TestGPUMusicPreRenderFFmpegSmoke(t *testing.T) {
-	sidecar := os.Getenv("IMAGEPAD_PLAYLIST_COMPOSITORD")
+func TestMusicPreRenderFFmpegSmokeUsesCPUProduction(t *testing.T) {
 	ffmpeg := os.Getenv("IMAGEPAD_FFMPEG")
-	if sidecar == "" || ffmpeg == "" {
-		t.Skip("set IMAGEPAD_PLAYLIST_COMPOSITORD and IMAGEPAD_FFMPEG for hardware smoke")
+	if ffmpeg == "" {
+		t.Skip("set IMAGEPAD_FFMPEG for the CPU production smoke")
 	}
 	audio := filepath.Join(t.TempDir(), "tone.wav")
 	if err := exec.Command(ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=0.5", audio).Run(); err != nil {
 		t.Fatal(err)
 	}
-	out, err := RenderRadioTrack(context.Background(), t.TempDir(), ffmpeg, AudioRenderInput{SourcePath: audio, Kind: SourceMusic, Analysis: AudioAnalysis{Duration: 0.5}}, "gpu-smoke", QualityPreset{Height: 360, VideoBitrate: "800k", MaxRate: "1000k", BufferSize: "1600k", AudioBitrate: "96k", RadioLatency: "rtsp-ultra"}, nil)
+	analysis, err := AnalyzeAudio(context.Background(), ffmpeg, audio)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := RenderRadioTrack(context.Background(), t.TempDir(), ffmpeg, AudioRenderInput{SourcePath: audio, Kind: SourceMusic, Analysis: analysis}, "cpu-smoke", QualityPreset{Height: 360, VideoBitrate: "800k", MaxRate: "1000k", BufferSize: "1600k", AudioBitrate: "96k", RadioLatency: "rtsp-ultra"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

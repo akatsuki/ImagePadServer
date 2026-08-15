@@ -2,8 +2,8 @@ package video
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
-	"encoding/json"
 	"image"
 	"image/color"
 	_ "image/png"
@@ -17,17 +17,71 @@ import (
 	"golang.org/x/image/math/fixed"
 )
 
-// CanonicalMusicScene is the sole normalization boundary for both single HLS
-// and playlist rendering. It intentionally does not mutate AudioRenderInput.
-func CanonicalMusicScene(input AudioRenderInput, frameIndex uint64, ptsNS int64) MusicScenePayload {
+// CanonicalMusicSceneBuilder keeps immutable scene assets resident for the
+// lifetime of one render job. The old per-frame normalization path decoded the
+// artwork file, parsed/rasterized the font, recomputed the palette, rebuilt the
+// loudness envelope, and hashed a large JSON scene for every frame.
+type CanonicalMusicSceneBuilder struct {
+	input         AudioRenderInput
+	artwork       *ArtworkMetadata
+	glyphTemplate *GlyphAtlasMetadata
+	textOverlay   *TextOverlayMetadata
+	palette       MusicScenePalette
+	layout        MusicSceneLayout
+	baseDynamics  MusicSceneDynamics
+	fps           int
+	duration      float64
+}
+
+// NewCanonicalMusicSceneBuilder prepares the immutable part of a canonical
+// scene once. The returned builder is not safe for concurrent use; a render
+// job owns one builder and calls Scene in frame order.
+func NewCanonicalMusicSceneBuilder(input AudioRenderInput) *CanonicalMusicSceneBuilder {
+	duration := input.Analysis.Duration
+	if duration < 0 || math.IsNaN(duration) {
+		duration = 0
+	}
+	fps := input.Analysis.FPS
+	if fps <= 0 {
+		fps = 30
+	}
+	layout, _ := LayoutForSize(1280, 720)
+	var artwork ArtworkMetadata
+	if normalized, ok := normalizeArtwork(input.ArtworkPath); ok {
+		artwork = normalized
+	} else {
+		artwork = fallbackArtwork(input.Analysis.Features)
+	}
+	palette := canonicalScenePaletteForArtwork(input, &artwork)
+	glyphTemplate := normalizeGlyphs(input.Metadata, layout, palette.Primary, 0, duration)
+	textOverlay := input.TextOverlay
+	if textOverlay == nil && glyphTemplate != nil {
+		textOverlay = canonicalTextOverlayFromAtlas(input.Metadata, glyphTemplate)
+	}
+	return &CanonicalMusicSceneBuilder{
+		input:         input,
+		artwork:       &artwork,
+		glyphTemplate: glyphTemplate,
+		textOverlay:   textOverlay,
+		palette:       palette,
+		layout:        musicSceneLayout(layout),
+		baseDynamics:  musicSceneDynamics(input.Analysis.Features, 0, duration, 0),
+		fps:           fps,
+		duration:      duration,
+	}
+}
+
+// Scene constructs only the frame-varying portion of the canonical scene.
+// Immutable raster assets are shared by pointer and are never mutated.
+func (b *CanonicalMusicSceneBuilder) Scene(frameIndex uint64, ptsNS int64) MusicScenePayload {
 	var spectrum []uint16
 	var rms, peak float64
-	if len(input.Analysis.Frames) > 0 {
+	if len(b.input.Analysis.Frames) > 0 {
 		idx := int(frameIndex)
-		if idx >= len(input.Analysis.Frames) {
-			idx = len(input.Analysis.Frames) - 1
+		if idx >= len(b.input.Analysis.Frames) {
+			idx = len(b.input.Analysis.Frames) - 1
 		}
-		f := input.Analysis.Frames[idx]
+		f := b.input.Analysis.Frames[idx]
 		spectrum = make([]uint16, len(f.Spectrum24))
 		for i, v := range f.Spectrum24 {
 			if v < 0 || math.IsNaN(v) {
@@ -43,45 +97,84 @@ func CanonicalMusicScene(input AudioRenderInput, frameIndex uint64, ptsNS int64)
 		}
 		rms = peak * 0.707
 	}
-	duration := input.Analysis.Duration
-	if duration < 0 || math.IsNaN(duration) {
-		duration = 0
-	}
-	fps := input.Analysis.FPS
-	if fps <= 0 {
-		fps = 30
-	}
-	current := float64(frameIndex) / float64(fps)
+	current := float64(frameIndex) / float64(b.fps)
 	ratio := 0.0
-	if duration > 0 {
-		ratio = sceneClamp01(current / duration)
+	if b.duration > 0 {
+		ratio = sceneClamp01(current / b.duration)
 	}
-	layout, _ := LayoutForSize(1280, 720)
-	palette := canonicalScenePalette(input)
-	fingerprint := make([]uint16, len(input.Analysis.Features.Fingerprint64))
-	for i, v := range input.Analysis.Features.Fingerprint64 {
+	fingerprint := make([]uint16, len(b.input.Analysis.Features.Fingerprint64))
+	for i, v := range b.input.Analysis.Features.Fingerprint64 {
 		fingerprint[i] = uint16(math.Round(sceneClamp01(v) * 65535))
 	}
-	scene := MusicScenePayload{Schema: MusicSceneSchema, Feature: AudioFeatureFrame{Schema: GPUContractVersion, SampleRateHz: 48000, FrameIndex: frameIndex, PTSNs: ptsNS, SpectrumQ16: spectrum, FingerprintQ16: fingerprint, RMSQ15: uint16(math.Round(sceneClamp01(rms) * 32767)), PeakQ15: uint16(math.Round(sceneClamp01(peak) * 32767))}, Layout: musicSceneLayout(layout), Dynamics: musicSceneDynamics(input.Analysis.Features, current, duration, ratio), Palette: palette}
-	if a, ok := normalizeArtwork(input.ArtworkPath); ok {
-		scene.Artwork = &a
-	} else {
-		// Keep the fallback tile explicit in the canonical scene so GPU and CPU
-		// routes both render an artwork element when the source has no cover.
-		a := fallbackArtwork(input.Analysis.Features)
-		scene.Artwork = &a
+	dynamics := b.baseDynamics
+	dynamics.CurrentSeconds = current
+	dynamics.DurationSeconds = b.duration
+	dynamics.ProgressRatio = ratio
+	dynamics.EdgeFadeAlpha, dynamics.EndFadeAlpha = musicSceneFadeAlpha(current, b.duration)
+	scene := MusicScenePayload{Schema: MusicSceneSchema, Feature: AudioFeatureFrame{Schema: GPUContractVersion, SampleRateHz: 48000, FrameIndex: frameIndex, PTSNs: ptsNS, SpectrumQ16: spectrum, FingerprintQ16: fingerprint, RMSQ15: uint16(math.Round(sceneClamp01(rms) * 32767)), PeakQ15: uint16(math.Round(sceneClamp01(peak) * 32767))}, PCMF32LE: canonicalScenePCMWindow(b.input.Analysis.PCMInterleavedS16, frameIndex, b.fps), Layout: b.layout, Dynamics: dynamics, Palette: b.palette, Artwork: b.artwork, TextOverlay: b.textOverlay}
+	if b.glyphTemplate != nil {
+		glyph := *b.glyphTemplate
+		glyph.TextRuns = canonicalGlyphTextRuns(b.input.Metadata, layoutFromScene(b.layout), b.palette.Primary, current, b.duration)
+		scene.GlyphAtlas = &glyph
 	}
-	scene.GlyphAtlas = normalizeGlyphs(input.Metadata, layout, palette.Primary, current, duration)
-	if input.TextOverlay != nil {
-		scene.TextOverlay = input.TextOverlay
-	} else {
-		scene.TextOverlay = RenderCanonicalTextOverlay(input.Metadata, layout, 1280, 720)
+	if len(b.input.Analysis.WaveformFrames) > 0 {
+		waveformIndex := int(frameIndex)
+		if waveformIndex >= len(b.input.Analysis.WaveformFrames) {
+			waveformIndex = len(b.input.Analysis.WaveformFrames) - 1
+		}
+		if waveformIndex >= 0 && len(b.input.Analysis.WaveformFrames[waveformIndex]) > 0 {
+			scene.Feature.WaveformQ16 = normalizeSceneWaveformQ16(b.input.Analysis.WaveformFrames[waveformIndex])
+		}
 	}
-	if input.WaveformTexture != nil {
-		scene.WaveformTexture = input.WaveformTexture
+	if b.input.WaveformTexture != nil {
+		scene.WaveformTexture = b.input.WaveformTexture
 	}
 	scene.Fingerprint = musicSceneFingerprint(scene)
 	return scene
+}
+
+// CanonicalMusicScene is the one-shot compatibility wrapper. Hot render loops
+// should create one CanonicalMusicSceneBuilder and reuse it.
+func CanonicalMusicScene(input AudioRenderInput, frameIndex uint64, ptsNS int64) MusicScenePayload {
+	return NewCanonicalMusicSceneBuilder(input).Scene(frameIndex, ptsNS)
+}
+
+func layoutFromScene(layout MusicSceneLayout) VisualizerLayout {
+	toRect := func(r SceneRect) Rect { return Rect{X: r.X, Y: r.Y, W: r.W, H: r.H} }
+	return VisualizerLayout{Artwork: toRect(layout.Artwork), Title: toRect(layout.Title), Artist: toRect(layout.Artist), Album: toRect(layout.Album), Spectrum: toRect(layout.Spectrum), Loudness: toRect(layout.Loudness), Progress: toRect(layout.Progress), Time: toRect(layout.Time)}
+}
+
+func musicSceneFadeAlpha(current, duration float64) (float32, float32) {
+	alphaIn, alphaOut := float32(1), float32(1)
+	if current < radioEdgeFadeSeconds {
+		alphaIn = float32(sceneClamp01(current / radioEdgeFadeSeconds))
+	}
+	if duration > 0 && duration-current < radioEdgeFadeSeconds {
+		alphaOut = float32(sceneClamp01((duration - current) / radioEdgeFadeSeconds))
+	}
+	return alphaIn, alphaOut
+}
+
+func canonicalScenePCMWindow(pcm []int16, frameIndex uint64, fps int) []byte {
+	if len(pcm) < 2 {
+		return nil
+	}
+	if fps <= 0 {
+		fps = 30
+	}
+	startFrame := int(math.Round(float64(frameIndex) * float64(sampleRate) / float64(fps)))
+	startSample := startFrame * 2
+	out := make([]byte, MusicMaxPCMBytes)
+	for i := 0; i < MusicPCMWindowSamples; i++ {
+		position := startSample + i*2
+		var sample float32
+		if position+1 < len(pcm) {
+			mono := (int32(pcm[position]) + int32(pcm[position+1])) / 2
+			sample = float32(mono) / 32768.0
+		}
+		binary.LittleEndian.PutUint32(out[i*4:], math.Float32bits(sample))
+	}
+	return out
 }
 
 // RenderCanonicalTextOverlay emits the bounded RGBA overlay raster and its
@@ -139,19 +232,27 @@ func fallbackArtwork(features AudioFeatures) ArtworkMetadata {
 // by the CPU visualizer. Artwork contributes a restrained darkened average for
 // the background, preserving readability while avoiding a fixed cyan scene.
 func canonicalScenePalette(input AudioRenderInput) MusicScenePalette {
+	var artwork *ArtworkMetadata
+	if normalized, ok := normalizeArtwork(input.ArtworkPath); ok {
+		artwork = &normalized
+	}
+	return canonicalScenePaletteForArtwork(input, artwork)
+}
+
+func canonicalScenePaletteForArtwork(input AudioRenderInput, artwork *ArtworkMetadata) MusicScenePalette {
 	p := PaletteForFeatures(input.Analysis.Features)
 	primary := [4]uint8{255, 255, 255, 255}
 	accent := [4]uint8{p.End.R, p.End.G, p.End.B, 255}
 	background := [4]uint8{p.Start.R, p.Start.G, p.Start.B, 255}
-	if a, ok := normalizeArtwork(input.ArtworkPath); ok && len(a.Payload) >= 4 {
+	if artwork != nil && len(artwork.Payload) >= 4 {
 		var r, g, b, n uint64
-		for i := 0; i+3 < len(a.Payload); i += 4 {
-			if a.Payload[i+3] < 16 {
+		for i := 0; i+3 < len(artwork.Payload); i += 4 {
+			if artwork.Payload[i+3] < 16 {
 				continue
 			}
-			r += uint64(a.Payload[i])
-			g += uint64(a.Payload[i+1])
-			b += uint64(a.Payload[i+2])
+			r += uint64(artwork.Payload[i])
+			g += uint64(artwork.Payload[i+1])
+			b += uint64(artwork.Payload[i+2])
 			n++
 		}
 		if n > 0 {
@@ -190,10 +291,66 @@ func musicSceneDynamics(features AudioFeatures, current, duration, ratio float64
 }
 
 func musicSceneFingerprint(scene MusicScenePayload) string {
-	scene.Fingerprint = ""
-	b, _ := json.Marshal(scene)
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])
+	// Hash the canonical values and content hashes without serializing the
+	// immutable artwork/glyph/text rasters into a new JSON document for every
+	// frame. AssetHash already commits those byte payloads; PCM is the only
+	// large frame-local byte payload and is hashed directly.
+	h := sha256.New()
+	writeU64 := func(value uint64) {
+		var bytes [8]byte
+		binary.LittleEndian.PutUint64(bytes[:], value)
+		_, _ = h.Write(bytes[:])
+	}
+	writeString := func(value string) {
+		writeU64(uint64(len(value)))
+		_, _ = h.Write([]byte(value))
+	}
+	writeU64(uint64(scene.Schema))
+	writeU64(scene.Feature.FrameIndex)
+	writeU64(uint64(scene.Feature.PTSNs))
+	writeU64(uint64(scene.Feature.RMSQ15))
+	writeU64(uint64(scene.Feature.PeakQ15))
+	for _, value := range scene.Feature.SpectrumQ16 {
+		writeU64(uint64(value))
+	}
+	for _, value := range scene.Feature.WaveformQ16 {
+		writeU64(uint64(value))
+	}
+	for _, value := range scene.Feature.FingerprintQ16 {
+		writeU64(uint64(value))
+	}
+	for _, value := range scene.Dynamics.LoudnessEnvelope {
+		writeU64(uint64(value))
+	}
+	for _, value := range scene.Dynamics.LoudnessTrend {
+		writeU64(uint64(value))
+	}
+	writeString(scene.ArtworkHash())
+	writeString(scene.GlyphHash())
+	writeString(scene.TextOverlayHash())
+	_, _ = h.Write(scene.PCMF32LE)
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func (s MusicScenePayload) ArtworkHash() string {
+	if s.Artwork == nil {
+		return ""
+	}
+	return s.Artwork.AssetHash
+}
+
+func (s MusicScenePayload) GlyphHash() string {
+	if s.GlyphAtlas == nil {
+		return ""
+	}
+	return s.GlyphAtlas.AssetHash
+}
+
+func (s MusicScenePayload) TextOverlayHash() string {
+	if s.TextOverlay == nil {
+		return ""
+	}
+	return s.TextOverlay.AssetHash
 }
 
 func sceneClamp01(v float64) float64 {
@@ -266,6 +423,10 @@ func normalizeGlyphs(meta AudioMetadata, layout VisualizerLayout, primary [4]uin
 	if len(all) > 0 && all[len(all)-1] == '·' {
 		all = all[:len(all)-1]
 	}
+	// Keep the atlas asset hash stable while the clock text changes. The
+	// previous implementation added only the digits visible in the current
+	// timestamp, which could trigger a needless GPU atlas rebuild mid-track.
+	all = append(all, []rune("0123456789")...)
 	if len(all) == 0 {
 		return nil
 	}
@@ -337,6 +498,23 @@ func normalizeGlyphs(meta AudioMetadata, layout VisualizerLayout, primary [4]uin
 		glyphs = append(glyphs, GlyphEntry{ID: string(r), X: x, Y: 0, Width: gw, Height: gh, Advance: advance})
 	}
 	sum := sha256.Sum256(payload)
+	runs := canonicalGlyphTextRuns(meta, layout, primary, current, duration)
+	return &GlyphAtlasMetadata{TextureID: "glyphs-" + hex.EncodeToString(sum[:8]), FontFamily: "Go Regular", FontWeight: 400, FallbackOrder: []string{"Noto Sans CJK JP", "Segoe UI", "sans-serif"}, Width: uint32(w), Height: uint32(h), RowStride: uint32(stride), GlyphCount: uint32(len(glyphs)), MissingGlyphID: "?", Payload: payload, AssetHash: hex.EncodeToString(sum[:]), Glyphs: glyphs, TextRuns: runs}
+}
+
+func canonicalGlyphTextRuns(meta AudioMetadata, layout VisualizerLayout, primary [4]uint8, current, duration float64) []TextRun {
+	fields := []struct {
+		text   string
+		rect   Rect
+		size   float32
+		weight uint16
+		center bool
+	}{
+		{strings.TrimSpace(meta.Title), layout.Title, 48, 600, false},
+		{strings.TrimSpace(meta.Artist), layout.Artist, 28, 500, false},
+		{strings.TrimSpace(meta.Album), layout.Album, 24, 400, false},
+		{FormatMediaTime(int(math.Max(0, math.Floor(current)))) + " / " + FormatMediaTime(int(math.Max(0, math.Floor(duration)))), layout.Time, 22, 500, true},
+	}
 	runs := make([]TextRun, 0, len(fields))
 	for _, f := range fields {
 		if f.text == "" {
@@ -344,15 +522,19 @@ func normalizeGlyphs(meta AudioMetadata, layout VisualizerLayout, primary [4]uin
 		}
 		x := float32(f.rect.X)
 		if f.center {
-			// The GPU atlas uses a bounded monospace advance. Center the time
-			// label in the same canonical rect as ASS alignment 5.
 			approxWidth := float32(len([]rune(f.text))) * f.size * 0.6
 			x += (float32(f.rect.W) - approxWidth) / 2
 		}
-		// TextRun coordinates are top-left screen bounds; CPU ASS positions
-		// title/artist/album at the vertical center of each rect.
 		y := float32(f.rect.Y) + (float32(f.rect.H)-f.size)/2
 		runs = append(runs, TextRun{Text: f.text, X: x, Y: y, SizePx: f.size, RGBA: primary, Opacity: 1, FontFamily: "Noto Sans JP", FontWeight: f.weight})
 	}
-	return &GlyphAtlasMetadata{TextureID: "glyphs-" + hex.EncodeToString(sum[:8]), FontFamily: "Go Regular", FontWeight: 400, FallbackOrder: []string{"Noto Sans CJK JP", "Segoe UI", "sans-serif"}, Width: uint32(w), Height: uint32(h), RowStride: uint32(stride), GlyphCount: uint32(len(glyphs)), MissingGlyphID: "?", Payload: payload, AssetHash: hex.EncodeToString(sum[:]), Glyphs: glyphs, TextRuns: runs}
+	return runs
+}
+
+func canonicalTextOverlayFromAtlas(meta AudioMetadata, atlas *GlyphAtlasMetadata) *TextOverlayMetadata {
+	if atlas == nil {
+		return nil
+	}
+	sum := sha256.Sum256(atlas.Payload)
+	return &TextOverlayMetadata{Kind: "atlas", Title: strings.TrimSpace(meta.Title), Artist: strings.TrimSpace(meta.Artist), Album: strings.TrimSpace(meta.Album), FontFamily: "Go Regular", FontWeight: 400, SizePx: 48, RGBA: [4]uint8{255, 255, 255, 255}, Opacity: 1, Width: atlas.Width, Height: atlas.Height, RowStride: atlas.RowStride, Format: PixelRGBA8, ColorSpace: ColorSRGB, Premultiplied: true, Payload: atlas.Payload, AssetHash: hex.EncodeToString(sum[:]), RendererID: "imagepad-canonical-overlay", RendererVersion: "1"}
 }

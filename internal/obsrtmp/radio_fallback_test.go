@@ -27,6 +27,7 @@ func (r *fakeFallbackRenderer) RenderReusableRGBA(float64) []byte {
 }
 
 func TestRadioFallbackFeederRunsInjectedPipeline(t *testing.T) {
+	t.Setenv("IMAGEPAD_PLAYLIST_COMPOSITORD", "must-not-change-normal-fallback")
 	renderer := &fakeFallbackRenderer{}
 	var gotArgs []string
 	var gotRenderWidth, gotRenderHeight int

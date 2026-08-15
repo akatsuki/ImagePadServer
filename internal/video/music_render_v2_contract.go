@@ -19,6 +19,17 @@ const (
 	MusicRenderV2ArtworkFallback MusicRenderV2ArtworkMode = "Fallback"
 )
 
+var requiredMusicRenderV2Layers = [...]string{
+	"background",
+	"artwork",
+	"spectrum",
+	"waveform",
+	"loudness",
+	"text",
+	"progress",
+	"fade",
+}
+
 type MusicRenderV2LayerReceipt struct {
 	Name       string                `json:"name"`
 	Provider   MusicRenderV2Provider `json:"provider"`
@@ -40,7 +51,7 @@ type MusicRenderV2Job struct {
 func NewMusicRenderV2Job(input AudioRenderInput, width, height, fps uint32, artworkMode MusicRenderV2ArtworkMode) MusicRenderV2Job {
 	_ = input
 	layers := make([]MusicRenderV2LayerReceipt, 0, 8)
-	for _, name := range []string{"background", "artwork", "spectrum", "waveform", "loudness", "text", "progress", "fade"} {
+	for _, name := range requiredMusicRenderV2Layers {
 		layers = append(layers, MusicRenderV2LayerReceipt{Name: name, Provider: MusicRenderV2NativeGPU})
 	}
 	return MusicRenderV2Job{Width: width, Height: height, FPS: fps, ArtworkMode: artworkMode, Layers: layers}
@@ -55,7 +66,22 @@ func (j MusicRenderV2Job) ValidateProduction() error {
 	if j.ArtworkMode != MusicRenderV2ArtworkSource && j.ArtworkMode != MusicRenderV2ArtworkFallback {
 		return fmt.Errorf("music render v2: artwork mode must be explicit")
 	}
+	if len(j.Layers) != len(requiredMusicRenderV2Layers) {
+		return fmt.Errorf("music render v2: expected exactly %d logical layers, got %d", len(requiredMusicRenderV2Layers), len(j.Layers))
+	}
+	required := make(map[string]struct{}, len(requiredMusicRenderV2Layers))
+	for _, name := range requiredMusicRenderV2Layers {
+		required[name] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(j.Layers))
 	for _, layer := range j.Layers {
+		if _, ok := required[layer.Name]; !ok {
+			return fmt.Errorf("music render v2: unknown logical layer %q", layer.Name)
+		}
+		if _, duplicate := seen[layer.Name]; duplicate {
+			return fmt.Errorf("music render v2: duplicate logical layer %q", layer.Name)
+		}
+		seen[layer.Name] = struct{}{}
 		if layer.Name == "screen_rgba" || layer.Provider == MusicRenderV2GoldenUpload {
 			return fmt.Errorf("music render v2: CPU final raster is forbidden for layer %q", layer.Name)
 		}

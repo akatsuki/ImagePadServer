@@ -20,6 +20,20 @@ func TestRadioTrackFileName(t *testing.T) {
 	}
 }
 
+func TestDirectH264MuxArgsUseCompressedVideoCopyAndAudioMux(t *testing.T) {
+	args := strings.Join(directH264MuxArgs("track.m4a", "out.mp4", 640, 360, 10.25), " ")
+	for _, want := range []string{"-f h264", "-framerate 30", "-c:v copy", "-c:a aac", "-ar 48000", "-ac 2", "-t 10.25"} {
+		if !strings.Contains(args, want) {
+			t.Fatalf("direct H264 mux args missing %q: %s", want, args)
+		}
+	}
+	for _, forbidden := range []string{"rawvideo", "libx264", "-pix_fmt rgba", "yuv420p"} {
+		if strings.Contains(args, forbidden) {
+			t.Fatalf("direct H264 mux args contain forbidden pixel path %q: %s", forbidden, args)
+		}
+	}
+}
+
 func TestAudioVisualizerMP4ArgsWithEdgeFades(t *testing.T) {
 	preset := QualityPreset{Height: 720, AudioBitrate: "192k", VideoBitrate: "4000k", MaxRate: "4500k", BufferSize: "8000k"}
 	args := audioVisualizerMP4ArgsWithEncoder("song.m4a", "sub.ass", "fonts", "out/radio-track-x.mp4", preset, nil, CPUVideoEncoder(EncoderStandard), "", 200)
@@ -211,7 +225,12 @@ func TestRadioPublisherArgs(t *testing.T) {
 	args := RadioPublisherArgs("rtsp://u:p@127.0.0.1:8554/radio")
 	joined := strings.Join(args, " ")
 	for _, want := range []string{
-		"-f mpegts -i pipe:0",
+		"-f mpegts",
+		"-i pipe:0",
+		"-thread_queue_size 512",
+		"-probesize 16k",
+		"-analyzeduration 100000",
+		"-fpsprobesize 2",
 		"-c:v copy",
 		"-c:a copy",
 		"-rtsp_transport tcp",
@@ -243,7 +262,12 @@ func TestRadioPublisherArgsForRTMPIngest(t *testing.T) {
 	args := RadioPublisherArgs("rtmp://127.0.0.1:9999/radio?user=u&pass=p")
 	joined := strings.Join(args, " ")
 	for _, want := range []string{
-		"-f mpegts -i pipe:0",
+		"-f mpegts",
+		"-i pipe:0",
+		"-thread_queue_size 512",
+		"-probesize 16k",
+		"-analyzeduration 100000",
+		"-fpsprobesize 2",
 		"-c:v copy",
 		"-c:a copy",
 		"-f flv",

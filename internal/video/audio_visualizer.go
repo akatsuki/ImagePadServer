@@ -17,8 +17,19 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
+
+func cpuStageTimingEnabled() bool {
+	return strings.TrimSpace(os.Getenv("IMAGEPAD_CPU_STAGE_TIMING")) == "1"
+}
+
+func cpuStageLog(format string, args ...any) {
+	if cpuStageTimingEnabled() {
+		fmt.Fprintf(os.Stderr, "[cpu-stage] "+format+"\n", args...)
+	}
+}
 
 func AudioVisualizerFFmpegArgs(audioPath, assPath, fontDir, id string, preset QualityPreset) []string {
 	return audioVisualizerFFmpegArgs(audioPath, assPath, fontDir, id, preset, nil)
@@ -236,6 +247,7 @@ func writeVisualizerFrames(ctx context.Context, dst io.Writer, input AudioRender
 	// bounding box instead of an expensive whole-frame alpha blend per frame.
 	loudnessLayer := buildLoudnessLayer(input.Analysis.Features, duration, mode, layout, width, height)
 	loudnessRect := nonTransparentBounds(loudnessLayer)
+	frameLoopStarted := time.Now()
 
 	// Frames are independent, so they are rendered concurrently across CPUs and
 	// written to the encoder in order. This keeps a fast (GPU) encoder fed
@@ -265,6 +277,9 @@ func writeVisualizerFrames(ctx context.Context, dst io.Writer, input AudioRender
 	}
 	jobs := make(chan int)
 	results := make(chan rendered, workers)
+	var renderNanos atomic.Int64
+	var renderFrames atomic.Int64
+	var writeNanos atomic.Int64
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -276,6 +291,7 @@ func writeVisualizerFrames(ctx context.Context, dst io.Writer, input AudioRender
 			defer wg.Done()
 			canvas := image.NewRGBA(image.Rect(0, 0, width, height))
 			for fi := range jobs {
+				frameStarted := time.Now()
 				renderVisualizerFrame(canvas, base, loudnessLayer, loudnessRect,
 					input.Analysis.Frames[fi], fi, totalFrames, duration, mode, layout)
 				buf := make([]byte, frameBytes)
@@ -284,6 +300,8 @@ func writeVisualizerFrames(ctx context.Context, dst io.Writer, input AudioRender
 				} else {
 					copy(buf, canvas.Pix)
 				}
+				renderNanos.Add(time.Since(frameStarted).Nanoseconds())
+				renderFrames.Add(1)
 				select {
 				case results <- rendered{fi, buf}:
 				case <-ctx.Done():
@@ -329,10 +347,12 @@ func writeVisualizerFrames(ctx context.Context, dst io.Writer, input AudioRender
 				break
 			}
 			if writeErr == nil {
+				writeStarted := time.Now()
 				if _, err := dst.Write(buf); err != nil {
 					writeErr = err
 					cancel() // stop producers; keep draining their buffers
 				}
+				writeNanos.Add(time.Since(writeStarted).Nanoseconds())
 			}
 			delete(pending, next)
 			<-window
@@ -346,6 +366,7 @@ func writeVisualizerFrames(ctx context.Context, dst io.Writer, input AudioRender
 	if err := ctx.Err(); err != nil && next < totalFrames {
 		return err
 	}
+	cpuStageLog("frame_totals frames=%d workers=%d render_seconds=%.6f write_seconds=%.6f accumulated_seconds=%.6f frame_loop_wall_seconds=%.6f yuv=%t", renderFrames.Load(), workers, float64(renderNanos.Load())/1e9, float64(writeNanos.Load())/1e9, float64(renderNanos.Load()+writeNanos.Load())/1e9, time.Since(frameLoopStarted).Seconds(), yuv)
 	return nil
 }
 
@@ -541,14 +562,13 @@ func drawCircle(canvas *image.RGBA, cx, cy, radius int, c color.RGBA) {
 // ---------------------------------------------------------------------------
 
 func RunAudioVisualizerHLS(ctx context.Context, outDir, ffmpeg string, input AudioRenderInput, id string, preset QualityPreset) error {
-	if executable := strings.TrimSpace(os.Getenv("IMAGEPAD_PLAYLIST_COMPOSITORD")); executable != "" {
-		return runAudioVisualizerHLSGPU(ctx, outDir, ffmpeg, executable, input, id, preset)
-	}
-	return ErrGPURequired
+	return RunAudioVisualizerHLSCPUReference(ctx, outDir, ffmpeg, input, id, preset)
 }
 
-// RunAudioVisualizerHLSCPUReference is retained for deterministic reference
-// tests and migration comparisons. It must not be used by production routes.
+// RunAudioVisualizerHLSCPUReference is the deterministic CPU production
+// renderer. The explicit name is retained for callers that document the
+// reference/golden path, while RunAudioVisualizerHLS is the normal production
+// entrypoint.
 func RunAudioVisualizerHLSCPUReference(ctx context.Context, outDir, ffmpeg string, input AudioRenderInput, id string, preset QualityPreset) error {
 	buildArgs := func(assPath, fontDir string, mode *ForegroundMode, encoder VideoEncoderProfile) []string {
 		args := audioVisualizerFFmpegArgsWithEncoder(input.SourcePath, assPath, fontDir, id, preset, mode, encoder, audioLoudnormFilter(input.Kind))
@@ -565,6 +585,17 @@ func RunAudioVisualizerHLSCPUReference(ctx context.Context, outDir, ffmpeg strin
 		return formatVisualizerOutputArgs(args, outDir)
 	}
 	return runAudioVisualizerEncode(ctx, outDir, ffmpeg, input, id, preset, EncoderStandard, buildArgs, func() { removeHLSForID(outDir, id) }, nil)
+}
+
+// RunAudioVisualizerHLSGPUExperimental keeps the GPU compositor available for
+// explicit diagnostics without allowing a production caller to select it via
+// the general HLS entrypoint. It is not a production fallback and requires a
+// caller-provided sidecar path.
+func RunAudioVisualizerHLSGPUExperimental(ctx context.Context, outDir, ffmpeg, sidecarExe string, input AudioRenderInput, id string, preset QualityPreset) error {
+	if strings.TrimSpace(sidecarExe) == "" {
+		return ErrGPURequired
+	}
+	return runAudioVisualizerHLSGPU(ctx, outDir, ffmpeg, sidecarExe, input, id, preset)
 }
 
 // runAudioVisualizerHLSGPU owns dynamic visuals in the wgpu sidecar and lets
@@ -849,6 +880,7 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 			waveErr <- err
 		}()
 	}
+	sceneBuilder := NewCanonicalMusicSceneBuilder(input)
 	for i := 0; i < frames; i++ {
 		var wave []byte
 		if useGPUDynamic {
@@ -865,7 +897,7 @@ func runAudioVisualizerHLSGPU(ctx context.Context, outDir, ffmpeg, sidecarExe st
 			}
 		}
 		ptsNS := int64(float64(i) * float64(time.Second) / 30)
-		scene := CanonicalMusicScene(input, uint64(i), ptsNS)
+		scene := sceneBuilder.Scene(uint64(i), ptsNS)
 		if useGPUWaveform {
 			if i < len(input.Analysis.WaveformFrames) && len(input.Analysis.WaveformFrames[i]) > 0 {
 				scene.Feature.WaveformQ16 = input.Analysis.WaveformFrames[i]
@@ -1265,7 +1297,10 @@ func runAudioVisualizerEncode(ctx context.Context, outDir, ffmpeg string, input 
 		return fmt.Errorf("write ass: %w", err)
 	}
 
-	selected := SelectVideoEncoder(ctx, ffmpeg, purpose)
+	// This pipeline is the CPU production renderer. Do not consult the
+	// hardware-encoder selector here: GPU capability or encoder-mode settings
+	// must not silently change the production compositor/encode route.
+	selected := CPUVideoEncoder(purpose)
 	attempt := func(encoder VideoEncoderProfile) error {
 		args := buildArgs(assPath, fontDir, &mode, encoder)
 		cmd := exec.CommandContext(ctx, ffmpeg, args...)

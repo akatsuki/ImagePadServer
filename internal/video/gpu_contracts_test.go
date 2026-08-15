@@ -113,6 +113,14 @@ func TestMusicScenePayloadRejectsOversizedData(t *testing.T) {
 	if err := scene.Validate(); err == nil {
 		t.Fatal("expected oversized feature rejection")
 	}
+	scene = MusicScenePayload{Schema: MusicSceneSchema, Feature: AudioFeatureFrame{Schema: GPUContractVersion, SampleRateHz: 48000}, PCMF32LE: make([]byte, MusicMaxPCMBytes+4)}
+	if err := scene.Validate(); err == nil {
+		t.Fatal("expected oversized PCM rejection")
+	}
+	scene.PCMF32LE = []byte{0, 0, 0}
+	if err := scene.Validate(); err == nil {
+		t.Fatal("expected misaligned PCM rejection")
+	}
 }
 
 func TestBaseTextureMetadataValidationAndRoundTrip(t *testing.T) {

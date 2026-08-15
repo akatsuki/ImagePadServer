@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -108,6 +109,8 @@ func sanitizeRadioErrorMessage(message string) string {
 type RadioCallbacks struct {
 	OnTrackStart       func(trackID string)
 	OnTrackEnd         func(trackID string, err error)
+	OnPublisherSink    func(io.Writer)
+	OnPublisherDone    func()
 	OnIdle             func()
 	OnRTSPReady        func(RTSPEndpoint)
 	OnRTSPDone         func(RTSPEndpoint)
@@ -116,17 +119,61 @@ type RadioCallbacks struct {
 	OnStopped          func()
 }
 
+// RadioPublisherProfile is frozen into one radio session before its
+// persistent publisher starts. The zero value is the unchanged CPU
+// production publisher; playlist GPU evaluation is an explicit opt-in only.
+type RadioPublisherProfile string
+
+const (
+	RadioPublisherProfileCPUDefault            RadioPublisherProfile = ""
+	RadioPublisherProfilePlaylistGPUEvaluation RadioPublisherProfile = "playlist-gpu-evaluation"
+)
+
+func normalizeRadioPublisherProfile(profile RadioPublisherProfile) (RadioPublisherProfile, error) {
+	switch profile {
+	case RadioPublisherProfileCPUDefault, RadioPublisherProfilePlaylistGPUEvaluation:
+		return profile, nil
+	default:
+		return "", fmt.Errorf("unsupported radio publisher profile %q", profile)
+	}
+}
+
 // RadioActiveSessionContract freezes the desired settings that define one
 // running radio session. Desired callbacks are read only when Start creates it.
 type RadioActiveSessionContract struct {
-	SessionID          string              `json:"sessionId"`
-	DeliveryProfile    string              `json:"deliveryProfile"`
-	LatencyProfile     LatencyProfile      `json:"latencyProfile"`
-	FallbackPreset     video.QualityPreset `json:"fallbackPreset"`
-	HLSVariant         string              `json:"hlsVariant"`
-	HLSSegmentCount    int                 `json:"hlsSegmentCount"`
-	HLSSegmentDuration string              `json:"hlsSegmentDuration"`
-	OutputMode         RadioOutputMode     `json:"outputMode"`
+	SessionID          string                `json:"sessionId"`
+	DeliveryProfile    string                `json:"deliveryProfile"`
+	LatencyProfile     LatencyProfile        `json:"latencyProfile"`
+	FallbackPreset     video.QualityPreset   `json:"fallbackPreset"`
+	HLSVariant         string                `json:"hlsVariant"`
+	HLSSegmentCount    int                   `json:"hlsSegmentCount"`
+	HLSSegmentDuration string                `json:"hlsSegmentDuration"`
+	OutputMode         RadioOutputMode       `json:"outputMode"`
+	PublisherProfile   RadioPublisherProfile `json:"publisherProfile"`
+}
+
+// RadioTrackClaimMode identifies who owns the media returned by the next-track
+// callback. The zero/CPU mode preserves the normal feeder path; Handled is used
+// only after an explicit evaluation route has synchronously completed ownership
+// of the track. A handled claim must never fall through to a CPU feeder.
+type RadioTrackClaimMode string
+
+const (
+	RadioTrackClaimCPU     RadioTrackClaimMode = "cpu"
+	RadioTrackClaimHandled RadioTrackClaimMode = "handled"
+)
+
+type RadioTrackClaimResolver func(mediaPath, trackID string, startSeconds int) (RadioTrackClaimMode, error)
+
+func normalizeRadioTrackClaimMode(mode RadioTrackClaimMode) (RadioTrackClaimMode, error) {
+	switch mode {
+	case "", RadioTrackClaimCPU:
+		return RadioTrackClaimCPU, nil
+	case RadioTrackClaimHandled:
+		return RadioTrackClaimHandled, nil
+	default:
+		return "", fmt.Errorf("unsupported radio track claim mode %q", mode)
+	}
 }
 
 // RadioStatus is a snapshot of the radio session.
@@ -207,39 +254,50 @@ type RadioManager struct {
 	next   func() (mediaPath, trackID string, startSeconds int, ok bool)
 	cb     RadioCallbacks
 
-	cancel             context.CancelFunc
-	done               chan struct{}
-	starting           bool
-	startingCancel     context.CancelFunc
-	startGeneration    uint64
-	startingGeneration uint64
-	activeGeneration   uint64
-	runtime            radioRuntime
-	status             RadioStatus
-	skipPush           context.CancelFunc
-	fillerCancel       context.CancelFunc
-	wake               chan struct{}
-	skipped            bool
-	pathName           string
-	rtspPublic         RTSPEndpoint
-	activeSession      *RadioActiveSessionContract
-	fallbackPreset     func() video.QualityPreset
-	latencyProfile     func() LatencyProfile
-	outputMode         func() RadioOutputMode
-	overlaySource      func() OverlaySnapshot
-	trackGeneration    uint64
-	activeTrack        TrackGeneration
-	activeTrackDone    chan struct{}
+	cancel                   context.CancelFunc
+	done                     chan struct{}
+	starting                 bool
+	startingCancel           context.CancelFunc
+	startGeneration          uint64
+	startingGeneration       uint64
+	activeGeneration         uint64
+	runtime                  radioRuntime
+	status                   RadioStatus
+	skipPush                 context.CancelFunc
+	fillerCancel             context.CancelFunc
+	wake                     chan struct{}
+	skipped                  bool
+	pathName                 string
+	rtspPublic               RTSPEndpoint
+	activeSession            *RadioActiveSessionContract
+	fallbackPreset           func() video.QualityPreset
+	latencyProfile           func() LatencyProfile
+	outputMode               func() RadioOutputMode
+	publisherProfile         func() RadioPublisherProfile
+	overlaySource            func() OverlaySnapshot
+	trackGeneration          uint64
+	activeTrack              TrackGeneration
+	activeTrackDone          chan struct{}
+	claimDone                chan struct{}
+	trackClaimResolver       RadioTrackClaimResolver
+	activeTrackClaimResolver RadioTrackClaimResolver
 
 	// test seams
-	buildRuntime        func(ctx context.Context, contract RadioActiveSessionContract) (radioRuntime, radioGate, RTSPEndpoint, error)
-	startPublisher      func(ctx context.Context, publishURL string) (radioPublisher, error)
-	runFeeder           func(ctx context.Context, mediaPath string, startSeconds int, loop bool, timestampOffset float64, sink io.Writer) error
-	runFallbackFeeder   func(ctx context.Context, contract RadioActiveSessionContract, timestampOffset float64, sink io.Writer) (float64, error)
-	startProgramEncoder func(ctx context.Context, contract RadioActiveSessionContract) (ProgramEncoder, error)
-	runProgramFeeder    func(ctx context.Context, mediaPath string, startSeconds, width, height int, frames chan<- ProgramSourceFrame) error
-	waitFallbackRetry   func(ctx context.Context, delay time.Duration) bool
-	afterSessionPromote func(uint64)
+	buildRuntime              func(ctx context.Context, contract RadioActiveSessionContract) (radioRuntime, radioGate, RTSPEndpoint, error)
+	startPublisher            func(ctx context.Context, publishURL string) (radioPublisher, error)
+	startPlaylistGPUPublisher func(ctx context.Context, publishURL string) (radioPublisher, error)
+	runFeeder                 func(ctx context.Context, mediaPath string, startSeconds int, loop bool, timestampOffset float64, sink io.Writer) error
+	runFallbackFeeder         func(ctx context.Context, contract RadioActiveSessionContract, timestampOffset float64, sink io.Writer) (float64, error)
+	startProgramEncoder       func(ctx context.Context, contract RadioActiveSessionContract) (ProgramEncoder, error)
+	runProgramFeeder          func(ctx context.Context, mediaPath string, startSeconds, width, height int, frames chan<- ProgramSourceFrame) error
+	waitFallbackRetry         func(ctx context.Context, delay time.Duration) bool
+	afterSessionPromote       func(uint64)
+	playlistAudioTee          func(samples []byte, pts time.Duration) error
+	playlistAudioTeeMu        sync.Mutex
+	playlistAudioTeeCond      *sync.Cond
+	playlistAudioTeeInFlight  int
+	playlistGPUOutputActive   bool
+	playlistOutputMu          sync.RWMutex
 }
 
 // OwnedMediaMTXPIDs reports only the active sidecar process handle owned by
@@ -266,6 +324,7 @@ func NewRadioManager(outDir, host string, next func() (mediaPath, trackID string
 	}
 	m.buildRuntime = m.buildMediaMTX
 	m.startPublisher = m.startFFmpegPublisher
+	m.startPlaylistGPUPublisher = m.startFFmpegPlaylistGPUPublisher
 	m.runFeeder = m.runFFmpegFeeder
 	m.runFallbackFeeder = m.runFFmpegFallbackFeeder
 	m.startProgramEncoder = m.startFFmpegProgramEncoder
@@ -274,6 +333,7 @@ func NewRadioManager(outDir, host string, next func() (mediaPath, trackID string
 	m.fallbackPreset = func() video.QualityPreset { return video.MusicRadioQualityPreset("auto", 0, 0) }
 	m.latencyProfile = func() LatencyProfile { return NormalizeLatencyProfile(LatencyModeRTSPUltra) }
 	m.outputMode = func() RadioOutputMode { return RadioOutputModeCompatibilityCopy }
+	m.publisherProfile = func() RadioPublisherProfile { return RadioPublisherProfileCPUDefault }
 	m.overlaySource = func() OverlaySnapshot { return OverlaySnapshot{Mode: OverlayModeOff} }
 	return m
 }
@@ -288,6 +348,104 @@ func (m *RadioManager) SetOutputMode(fn func() RadioOutputMode) {
 		return
 	}
 	m.outputMode = fn
+}
+
+// SetPublisherProfile selects the persistent publisher only for the next
+// session. A running session never swaps publisher processes. Nil restores the
+// unchanged CPU production profile.
+func (m *RadioManager) SetPublisherProfile(fn func() RadioPublisherProfile) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if fn == nil {
+		m.publisherProfile = func() RadioPublisherProfile { return RadioPublisherProfileCPUDefault }
+		return
+	}
+	m.publisherProfile = fn
+}
+
+// SetTrackClaimResolver installs the session-scoped ownership handoff used by
+// explicit playlist GPU evaluation. A nil resolver preserves the ordinary CPU
+// feeder behavior. The resolver is snapshotted when Start creates a session;
+// changing it while a session is running cannot change ownership mid-stream.
+func (m *RadioManager) SetTrackClaimResolver(fn RadioTrackClaimResolver) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.trackClaimResolver = fn
+}
+
+func (m *RadioManager) resolveTrackClaim(mediaPath, trackID string, startSeconds int) (RadioTrackClaimMode, error) {
+	m.mu.Lock()
+	resolver := m.activeTrackClaimResolver
+	m.mu.Unlock()
+	if resolver == nil {
+		return RadioTrackClaimCPU, nil
+	}
+	mode, err := resolver(mediaPath, trackID, startSeconds)
+	if err != nil {
+		return "", err
+	}
+	return normalizeRadioTrackClaimMode(mode)
+}
+
+// SetPlaylistAudioTee installs an explicit evaluation-only PCM/PTS tee for
+// program sessions. Nil leaves the normal CPU publisher path unchanged.
+func (m *RadioManager) SetPlaylistAudioTee(tee func(samples []byte, pts time.Duration) error) {
+	m.playlistAudioTeeMu.Lock()
+	m.playlistAudioTee = tee
+	if m.playlistAudioTeeCond == nil {
+		m.playlistAudioTeeCond = sync.NewCond(&m.playlistAudioTeeMu)
+	}
+	for m.playlistAudioTeeInFlight > 0 {
+		m.playlistAudioTeeCond.Wait()
+	}
+	m.playlistAudioTeeMu.Unlock()
+}
+
+// writePlaylistAudioTee acquires an in-flight reference before invoking the
+// explicit evaluation tee. Removing or replacing the tee waits for this
+// reference, so GPU mux teardown cannot close the bridge under an active PCM
+// callback. With no tee installed, the normal CPU program route remains a
+// no-op exactly as before.
+func (m *RadioManager) writePlaylistAudioTee(samples []byte, pts time.Duration) (err error) {
+	m.playlistAudioTeeMu.Lock()
+	tee := m.playlistAudioTee
+	if tee == nil {
+		m.playlistAudioTeeMu.Unlock()
+		return nil
+	}
+	m.playlistAudioTeeInFlight++
+	m.playlistAudioTeeMu.Unlock()
+	defer func() {
+		m.playlistAudioTeeMu.Lock()
+		m.playlistAudioTeeInFlight--
+		if m.playlistAudioTeeCond != nil {
+			m.playlistAudioTeeCond.Broadcast()
+		}
+		m.playlistAudioTeeMu.Unlock()
+	}()
+	return tee(samples, pts)
+}
+
+// SetPlaylistGPUOutputActive suppresses the normal CPU program bitstream while
+// the explicit playlist GPU mux owns the active publisher sink.
+func (m *RadioManager) SetPlaylistGPUOutputActive(active bool) {
+	m.playlistOutputMu.Lock()
+	m.mu.Lock()
+	m.playlistGPUOutputActive = active
+	m.mu.Unlock()
+	m.playlistOutputMu.Unlock()
+}
+
+func (m *RadioManager) writeProgramOutput(sink io.Writer, payload []byte) (int, error) {
+	m.playlistOutputMu.RLock()
+	defer m.playlistOutputMu.RUnlock()
+	m.mu.Lock()
+	active := m.playlistGPUOutputActive
+	m.mu.Unlock()
+	if active {
+		return len(payload), nil
+	}
+	return sink.Write(payload)
 }
 
 // SetOverlaySource supplies metadata only. Program sessions sample it at track
@@ -342,6 +500,8 @@ func (m *RadioManager) Start() error {
 	fallbackPreset := m.fallbackPreset
 	latencyProfile := m.latencyProfile
 	outputMode := m.outputMode
+	publisherProfile := m.publisherProfile
+	trackClaimResolver := m.trackClaimResolver
 	m.mu.Unlock()
 
 	contract := RadioActiveSessionContract{
@@ -361,6 +521,22 @@ func (m *RadioManager) Start() error {
 	if outputMode != nil {
 		contract.OutputMode = normalizeRadioOutputMode(outputMode())
 	}
+	contract.PublisherProfile = RadioPublisherProfileCPUDefault
+	if publisherProfile != nil {
+		profile, profileErr := normalizeRadioPublisherProfile(publisherProfile())
+		if profileErr != nil {
+			m.mu.Lock()
+			if m.startingGeneration == startGeneration {
+				m.starting = false
+				m.startingCancel = nil
+				m.startingGeneration = 0
+			}
+			m.mu.Unlock()
+			cancel()
+			return profileErr
+		}
+		contract.PublisherProfile = profile
+	}
 	contract.HLSVariant, contract.HLSSegmentCount, contract.HLSSegmentDuration = radioHLSSettings(contract.LatencyProfile)
 
 	m.mu.Lock()
@@ -376,6 +552,7 @@ func (m *RadioManager) Start() error {
 	}
 	done := make(chan struct{})
 	m.activeSession = &contract
+	m.activeTrackClaimResolver = trackClaimResolver
 	m.activeGeneration = startGeneration
 	m.cancel = cancel
 	m.done = done
@@ -464,6 +641,7 @@ func (m *RadioManager) run(ctx context.Context, done chan struct{}, runtime radi
 		m.cancel = nil
 		m.done = nil
 		m.activeSession = nil
+		m.activeTrackClaimResolver = nil
 		m.activeGeneration = 0
 		m.status.ActiveSession = nil
 		m.mu.Unlock()
@@ -486,7 +664,27 @@ func (m *RadioManager) run(ctx context.Context, done chan struct{}, runtime radi
 		}
 	}
 
-	publisher, err := m.startPublisher(ctx, runtime.rtmpPublishURL())
+	var publisherStarter func(context.Context, string) (radioPublisher, error)
+	switch contract.PublisherProfile {
+	case RadioPublisherProfileCPUDefault:
+		publisherStarter = m.startPublisher
+	case RadioPublisherProfilePlaylistGPUEvaluation:
+		publisherStarter = m.startPlaylistGPUPublisher
+	default:
+		m.recordTerminalErrorForGeneration(generation, newRadioError(RadioErrorStagePublisher, fmt.Errorf("unsupported radio publisher profile %q", contract.PublisherProfile), false))
+		if programEncoder != nil {
+			programEncoder.Close()
+		}
+		return
+	}
+	if publisherStarter == nil {
+		if programEncoder != nil {
+			programEncoder.Close()
+		}
+		m.recordTerminalErrorForGeneration(generation, newRadioError(RadioErrorStagePublisher, errors.New("radio publisher starter is unavailable"), false))
+		return
+	}
+	publisher, err := publisherStarter(ctx, runtime.rtmpPublishURL())
 	if err != nil {
 		if programEncoder != nil {
 			programEncoder.Close()
@@ -495,6 +693,17 @@ func (m *RadioManager) run(ctx context.Context, done chan struct{}, runtime radi
 		return
 	}
 	defer publisher.close()
+	if m.cb.OnPublisherSink != nil {
+		m.cb.OnPublisherSink(publisher.sink())
+		if contract.PublisherProfile == RadioPublisherProfilePlaylistGPUEvaluation {
+			_ = recordPlaylistGPUTrace(playlistGPUTracePathFromEnv(), "gpu_publisher_sink_exposed", nil)
+		}
+	}
+	defer func() {
+		if m.cb.OnPublisherDone != nil {
+			m.cb.OnPublisherDone()
+		}
+	}()
 	if programEncoder != nil {
 		defer programEncoder.Close()
 	}
@@ -593,7 +802,33 @@ func (m *RadioManager) runSession(ctx, sessionParent context.Context, done chan 
 			cancelPush()
 			return nil
 		}
+		m.claimDone = make(chan struct{})
+		m.mu.Unlock()
+		// next is a server callback and may synchronously prepare/submit an
+		// explicit playlist GPU transition. Never call it while holding the
+		// radio mutex: the callback is allowed to inspect RadioStatus.
 		mediaPath, trackID, startSeconds, ok := m.next()
+		claimMode, claimErr := m.resolveTrackClaim(mediaPath, trackID, startSeconds)
+		m.mu.Lock()
+		if !m.ownsActiveGenerationLocked(sessionGeneration) {
+			if m.claimDone != nil {
+				close(m.claimDone)
+				m.claimDone = nil
+			}
+			m.mu.Unlock()
+			cancelPush()
+			return nil
+		}
+		if claimErr != nil {
+			if m.claimDone != nil {
+				close(m.claimDone)
+				m.claimDone = nil
+			}
+			m.mu.Unlock()
+			cancelPush()
+			radioErr := newRadioError(RadioErrorStageTrack, fmt.Errorf("resolve radio track ownership: %w", claimErr), false)
+			return &radioErr
+		}
 		generation := uint64(0)
 		if ok {
 			m.skipPush = cancelPush
@@ -612,6 +847,10 @@ func (m *RadioManager) runSession(ctx, sessionParent context.Context, done chan 
 			m.status.BaseOffsetSeconds = startSeconds
 			generation = m.trackGeneration
 		}
+		if m.claimDone != nil {
+			close(m.claimDone)
+			m.claimDone = nil
+		}
 		m.mu.Unlock()
 		if !ok {
 			cancelPush()
@@ -624,9 +863,16 @@ func (m *RadioManager) runSession(ctx, sessionParent context.Context, done chan 
 			}
 			continue
 		}
-
 		if m.cb.OnTrackStart != nil {
 			m.cb.OnTrackStart(trackID)
+		}
+		if claimMode == RadioTrackClaimHandled {
+			cancelPush()
+			m.completeTrack(sessionGeneration, generation)
+			if m.cb.OnTrackEnd != nil {
+				m.cb.OnTrackEnd(trackID, nil)
+			}
+			continue
 		}
 
 		err := m.runFeeder(pushCtx, mediaPath, startSeconds, false, feederTimestampOffset, publisher.sink())
@@ -732,9 +978,17 @@ func (m *RadioManager) monitorReadiness(ctx context.Context, runtime radioRuntim
 		rtspCtx, cancelRTSP := context.WithTimeout(ctx, 2*time.Second)
 		rtspReady := runtime.pathReady(rtspCtx)
 		cancelRTSP()
-		hlsCtx, cancelHLS := context.WithTimeout(ctx, 2*time.Second)
-		hlsReady := runtime.hlsReady(hlsCtx, contract.LatencyProfile)
-		cancelHLS()
+		if contract.PublisherProfile == RadioPublisherProfilePlaylistGPUEvaluation {
+			_ = recordPlaylistGPUTrace(playlistGPUTracePathFromEnv(), "mediamtx_path_readiness", map[string]any{
+				"ready": rtspReady,
+			})
+		}
+		hlsReady := false
+		if contract.PublisherProfile != RadioPublisherProfilePlaylistGPUEvaluation {
+			hlsCtx, cancelHLS := context.WithTimeout(ctx, 2*time.Second)
+			hlsReady = runtime.hlsReady(hlsCtx, contract.LatencyProfile)
+			cancelHLS()
+		}
 		if rtspReady {
 			rtspFailures = 0
 			rtspKnownReady = true
@@ -925,9 +1179,16 @@ func (m *RadioManager) completeTrack(sessionGeneration, generation uint64) {
 // CurrentTrackGeneration returns the currently active feeder completion.
 // Callers must retain this value before asking the manager to skip a track.
 func (m *RadioManager) CurrentTrackGeneration() TrackGeneration {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.activeTrack
+	for {
+		m.mu.Lock()
+		claimDone := m.claimDone
+		generation := m.activeTrack
+		m.mu.Unlock()
+		if claimDone == nil {
+			return generation
+		}
+		<-claimDone
+	}
 }
 
 // Wake nudges an idle radio to re-query next() (e.g. after a track was added
@@ -1174,19 +1435,32 @@ func radioHLSSettings(profile LatencyProfile) (variant string, segmentCount int,
 // --- real ffmpeg publisher / feeder -----------------------------------------
 
 type ffmpegPublisher struct {
-	cmd  *exec.Cmd
-	in   io.WriteCloser
-	exit chan error
+	cmd       *exec.Cmd
+	in        io.WriteCloser
+	exit      chan error
+	stderr    *bytes.Buffer
+	tracePath string
+	cancel    context.CancelFunc
 }
 
 func (p *ffmpegPublisher) sink() io.Writer    { return p.in }
 func (p *ffmpegPublisher) done() <-chan error { return p.exit }
 func (p *ffmpegPublisher) close() {
+	if p == nil {
+		return
+	}
+	if p.cancel != nil {
+		defer p.cancel()
+	}
+	_ = recordPlaylistGPUTrace(p.tracePath, "gpu_publisher_stdin_close_started", nil)
 	_ = p.in.Close()
+	_ = recordPlaylistGPUTrace(p.tracePath, "gpu_publisher_stdin_closed", nil)
 	select {
 	case <-p.exit:
 	case <-time.After(3 * time.Second):
-		if p.cmd.Process != nil {
+		if p.cancel != nil {
+			p.cancel()
+		} else if p.cmd.Process != nil {
 			_ = p.cmd.Process.Kill()
 		}
 		<-p.exit
@@ -1201,6 +1475,8 @@ func (m *RadioManager) startFFmpegPublisher(ctx context.Context, publishURL stri
 	cmd := exec.CommandContext(ctx, ffmpeg, video.RadioPublisherArgs(publishURL)...)
 	hideWindow(cmd)
 	cmd.Dir = m.outDir
+	stderr := &bytes.Buffer{}
+	cmd.Stderr = stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -1208,14 +1484,44 @@ func (m *RadioManager) startFFmpegPublisher(ctx context.Context, publishURL stri
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
+	if path := strings.TrimSpace(os.Getenv("IMAGEPAD_FFMPEG_PUBLISHER_DEBUG")); path != "" {
+		message := fmt.Sprintf("started pid=%d\npublishURL=%s\nargs=%q\n", cmd.Process.Pid, sanitizeRadioErrorMessage(publishURL), sanitizeRadioArgs(video.RadioPublisherArgs(publishURL)))
+		_ = os.WriteFile(path, []byte(message), 0600)
+	}
 	untrack := video.TrackStartedFFmpeg(cmd)
 	exit := make(chan error, 1)
 	go func() {
 		defer untrack()
-		exit <- cmd.Wait()
+		err := cmd.Wait()
+		if err != nil {
+			detail := strings.TrimSpace(stderr.String())
+			if len(detail) > 800 {
+				detail = detail[len(detail)-800:]
+			}
+			if detail != "" {
+				err = fmt.Errorf("publisher FFmpeg: %w: %s", err, detail)
+			}
+		}
+		if path := strings.TrimSpace(os.Getenv("IMAGEPAD_FFMPEG_PUBLISHER_DEBUG")); path != "" {
+			message := fmt.Sprintf("publishURL=%s\nexit=%v\nstderr=%s\n", sanitizeRadioErrorMessage(publishURL), err, stderr.String())
+			f, openErr := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0600)
+			if openErr == nil {
+				_, _ = f.WriteString(message)
+				_ = f.Close()
+			}
+		}
+		exit <- err
 		close(exit)
 	}()
-	return &ffmpegPublisher{cmd: cmd, in: stdin, exit: exit}, nil
+	return &ffmpegPublisher{cmd: cmd, in: stdin, exit: exit, stderr: stderr}, nil
+}
+
+func sanitizeRadioArgs(args []string) []string {
+	clean := make([]string, len(args))
+	for i, arg := range args {
+		clean[i] = sanitizeRadioErrorMessage(arg)
+	}
+	return clean
 }
 
 func (m *RadioManager) runFFmpegFeeder(ctx context.Context, mediaPath string, startSeconds int, loop bool, timestampOffset float64, sink io.Writer) error {

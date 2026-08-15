@@ -85,9 +85,13 @@ func TestYUV420PFrameValidate(t *testing.T) {
 func TestYUV420PFramePackedBytesCopiesOnlyPlaneRows(t *testing.T) {
 	f := YUV420PFrame{Schema: GPUContractVersion, Width: 3, Height: 3, YStride: 4, UStride: 3, VStride: 3, ColorSpace: ColorSRGB, Ownership: "OwnedByTransport", Y: []byte{1, 2, 3, 99, 4, 5, 6, 99, 7, 8, 9, 99}, U: []byte{10, 11, 88, 12, 13, 88}, V: []byte{20, 21, 77, 22, 23, 77}}
 	got, err := f.PackedBytes()
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	want := []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 20, 21, 22, 23}
-	if !bytes.Equal(got, want) { t.Fatalf("packed=%v want=%v", got, want) }
+	if !bytes.Equal(got, want) {
+		t.Fatalf("packed=%v want=%v", got, want)
+	}
 }
 
 func TestGPUOutputCapabilitiesFailClosed(t *testing.T) {
@@ -101,5 +105,56 @@ func TestGPUOutputCapabilitiesFailClosed(t *testing.T) {
 	c.Formats = []GPUOutputFormat{GPUOutputYUV420P}
 	if err := RequireGPUYUV420Output(&c); err != nil {
 		t.Fatalf("yuv capability rejected: %v", err)
+	}
+}
+
+func TestGPUH264BitstreamContractFailClosed(t *testing.T) {
+	if err := RequireGPUH264Output(nil); !errors.Is(err, ErrGPUH264Unsupported) {
+		t.Fatalf("nil capabilities: %v", err)
+	}
+	c := GPUOutputCapabilities{Schema: GPUContractVersion, Formats: []GPUOutputFormat{GPUOutputYUV420P}}
+	if err := RequireGPUH264Output(&c); !errors.Is(err, ErrGPUH264Unsupported) {
+		t.Fatalf("non-H264 capabilities: %v", err)
+	}
+	c.Formats = []GPUOutputFormat{GPUOutputH264Bitstream}
+	if err := RequireGPUH264Output(&c); err != nil {
+		t.Fatalf("H264 capability rejected: %v", err)
+	}
+
+	frame := EncodedH264Frame{
+		Schema:             GPUContractVersion,
+		Sequence:           1,
+		Width:              640,
+		Height:             360,
+		Codec:              "h264",
+		Profile:            "High",
+		Backend:            "dx12",
+		PixelReadbackBytes: 0,
+		AssetCacheReady:    true,
+		AssetReceipt:       H264AssetReceipt{ArtworkHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", GlyphHash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+		Payload:            []byte{0, 0, 0, 1, 9},
+	}
+	if err := frame.Validate(); err != nil {
+		t.Fatalf("valid encoded frame rejected: %v", err)
+	}
+	bad := frame
+	bad.PixelReadbackBytes = 4
+	if err := bad.Validate(); err == nil {
+		t.Fatal("encoded frame with pixel readback accepted")
+	}
+	bad = frame
+	bad.Backend = "vulkan"
+	if err := bad.Validate(); err == nil {
+		t.Fatal("non-DX12 encoded frame accepted")
+	}
+	bad = frame
+	bad.Payload = nil
+	if err := bad.Validate(); err == nil {
+		t.Fatal("empty encoded payload accepted")
+	}
+	bad = frame
+	bad.AssetCacheReady = false
+	if err := bad.Validate(); err == nil {
+		t.Fatal("encoded frame without asset acknowledgement accepted")
 	}
 }

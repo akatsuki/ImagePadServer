@@ -15,7 +15,11 @@
 coverage.out
 /outputs/
 /output/
+/artifacts/
+/.playwright-mcp/
 /gpu/playlist-compositord/target/
+__pycache__/
+*.pyc
 auto.crt
 auto.key
 *.syso

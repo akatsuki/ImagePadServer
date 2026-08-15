@@ -1,6 +1,7 @@
 package video
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 )
@@ -10,8 +11,9 @@ import (
 type GPUOutputFormat string
 
 const (
-	GPUOutputRGBA8   GPUOutputFormat = "rgba8"
-	GPUOutputYUV420P GPUOutputFormat = "yuv420p"
+	GPUOutputRGBA8         GPUOutputFormat = "rgba8"
+	GPUOutputYUV420P       GPUOutputFormat = "yuv420p"
+	GPUOutputH264Bitstream GPUOutputFormat = "h264_bitstream"
 )
 
 // GPUOutputCapabilities is an additive handshake description. Unknown or
@@ -25,6 +27,7 @@ type GPUOutputCapabilities struct {
 }
 
 var ErrGPUYUVUnsupported = errors.New("gpu yuv420p output unsupported")
+var ErrGPUH264Unsupported = errors.New("gpu h264 bitstream output unsupported")
 
 // RequireGPUYUV420Output validates an advertised output set before a
 // production GPU-only render is selected. Missing capabilities and unknown
@@ -39,6 +42,74 @@ func RequireGPUYUV420Output(c *GPUOutputCapabilities) error {
 		}
 	}
 	return ErrGPUYUVUnsupported
+}
+
+// RequireGPUH264Output validates the compressed-bitstream handoff before a
+// production encoder/mux path is selected. Compressed bytes may cross the CPU
+// control plane; GPU pixel data and CPU YUV packing may not.
+func RequireGPUH264Output(c *GPUOutputCapabilities) error {
+	if c == nil {
+		return ErrGPUH264Unsupported
+	}
+	for _, format := range c.Formats {
+		if format == GPUOutputH264Bitstream {
+			return nil
+		}
+	}
+	return ErrGPUH264Unsupported
+}
+
+// H264AssetReceipt is the session asset acknowledgement carried with each
+// encoded frame. It proves which artwork and glyph hashes the sidecar has
+// accepted for the current renderer session.
+type H264AssetReceipt struct {
+	ArtworkHash string `json:"artwork_hash"`
+	GlyphHash   string `json:"glyph_hash"`
+}
+
+// EncodedH264Frame is the compressed output contract for the direct GPU
+// surface-to-NVENC route. Payload is an elementary H.264 access unit; only
+// compressed bytes cross this boundary.
+type EncodedH264Frame struct {
+	Schema             uint16           `json:"schema"`
+	Sequence           uint64           `json:"sequence"`
+	PTSNs              int64            `json:"pts_ns"`
+	Width              uint32           `json:"width"`
+	Height             uint32           `json:"height"`
+	Codec              string           `json:"codec"`
+	Profile            string           `json:"profile,omitempty"`
+	Backend            string           `json:"backend"`
+	PixelReadbackBytes uint64           `json:"pixel_readback_bytes"`
+	AssetCacheReady    bool             `json:"asset_cache_ready"`
+	AssetReceipt       H264AssetReceipt `json:"asset_receipt"`
+	Payload            []byte           `json:"payload"`
+}
+
+func (f EncodedH264Frame) Validate() error {
+	if f.Schema != GPUContractVersion || f.Width == 0 || f.Height == 0 || f.Width > GPUMaxDimension || f.Height > GPUMaxDimension {
+		return errors.New("invalid encoded h264 dimensions")
+	}
+	if f.Codec != "h264" || f.Backend != "dx12" {
+		return errors.New("encoded h264 frame is not a DX12 H264 bitstream")
+	}
+	if f.PixelReadbackBytes != 0 {
+		return errors.New("encoded h264 frame contains GPU pixel readback")
+	}
+	if !f.AssetCacheReady || !validAssetHash(f.AssetReceipt.ArtworkHash) || !validAssetHash(f.AssetReceipt.GlyphHash) {
+		return errors.New("encoded h264 frame is missing a valid asset cache receipt")
+	}
+	if len(f.Payload) == 0 || len(f.Payload) > GPUMaxPayload {
+		return errors.New("encoded h264 bitstream payload is empty or too large")
+	}
+	return nil
+}
+
+func validAssetHash(hash string) bool {
+	if len(hash) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(hash)
+	return err == nil
 }
 
 // YUV420PFrame is the bounded, CPU-readable transport shape for a future

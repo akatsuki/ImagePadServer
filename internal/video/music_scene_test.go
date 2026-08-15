@@ -1,10 +1,12 @@
 package video
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"image"
 	"image/color"
 	"image/png"
+	"math"
 	"os"
 	"reflect"
 	"testing"
@@ -78,6 +80,55 @@ func TestCanonicalMusicSceneIsStableAcrossRenderRoutes(t *testing.T) {
 	}
 	if !reflect.DeepEqual(a.Feature, b.Feature) {
 		t.Fatalf("single and playlist scene inputs diverged: %#v != %#v", a.Feature, b.Feature)
+	}
+}
+
+func TestCanonicalMusicSceneCarriesAnalyzedWaveformFrame(t *testing.T) {
+	waveform := []uint16{32768, 24576, 40960, 32768}
+	in := AudioRenderInput{Analysis: AudioAnalysis{
+		Frames:         []AudioFrame{{}},
+		WaveformFrames: [][]uint16{waveform},
+	}}
+	scene := CanonicalMusicScene(in, 0, 0)
+	if !reflect.DeepEqual(scene.Feature.WaveformQ16, waveform) {
+		t.Fatalf("canonical waveform = %#v, want %#v", scene.Feature.WaveformQ16, waveform)
+	}
+}
+
+func TestCanonicalMusicScenePadsOddWaveformForMinMaxShader(t *testing.T) {
+	waveform := []uint16{32768, 24576, 40960}
+	in := AudioRenderInput{Analysis: AudioAnalysis{
+		Frames:         []AudioFrame{{}},
+		WaveformFrames: [][]uint16{waveform},
+	}}
+	scene := CanonicalMusicScene(in, 0, 0)
+	want := []uint16{32768, 24576, 40960, 40960}
+	if !reflect.DeepEqual(scene.Feature.WaveformQ16, want) {
+		t.Fatalf("canonical odd waveform = %#v, want %#v", scene.Feature.WaveformQ16, want)
+	}
+}
+
+func TestCanonicalMusicSceneCarriesRealPCMWindowAsF32LE(t *testing.T) {
+	pcm := make([]int16, 48000*2*2)
+	pcm[0], pcm[1] = 16384, 16384
+	// At frame 1 (30 fps), the window starts at sample 1600. This makes the
+	// assertion distinguish a frame-indexed window from a repeated first window.
+	pcm[1600*2], pcm[1600*2+1] = -16384, -16384
+	in := AudioRenderInput{Analysis: AudioAnalysis{
+		FPS:               30,
+		Frames:            []AudioFrame{{}, {}},
+		PCMInterleavedS16: pcm,
+	}}
+	scene := CanonicalMusicScene(in, 1, 0)
+	if len(scene.PCMF32LE) != MusicPCMWindowSamples*4 {
+		t.Fatalf("PCM payload bytes = %d, want %d", len(scene.PCMF32LE), MusicPCMWindowSamples*4)
+	}
+	first := math.Float32frombits(binary.LittleEndian.Uint32(scene.PCMF32LE[:4]))
+	if first != -0.5 {
+		t.Fatalf("first mono PCM sample = %v, want -0.5", first)
+	}
+	if err := scene.Validate(); err != nil {
+		t.Fatal(err)
 	}
 }
 

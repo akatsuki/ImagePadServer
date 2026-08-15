@@ -144,6 +144,43 @@ func TestNextSequential(t *testing.T) {
 	}
 }
 
+func TestPreviewNextReservesSequentialTargetWithoutMutatingPlayback(t *testing.T) {
+	q := NewQueue()
+	addReady(t, q, "A")
+	addReady(t, q, "B")
+	if q.CurrentID() != "" {
+		t.Fatal("preview must not set current track")
+	}
+	first, ok := q.PreviewNext()
+	if !ok || first.ID == "" {
+		t.Fatalf("PreviewNext = %+v ok=%v", first, ok)
+	}
+	second, ok := q.PreviewNext()
+	if !ok || second.ID != first.ID {
+		t.Fatalf("repeated PreviewNext changed reservation: first=%+v second=%+v", first, second)
+	}
+	committed, ok := q.Next()
+	if !ok || committed.ID != first.ID {
+		t.Fatalf("Next did not commit preview: %+v ok=%v", committed, ok)
+	}
+}
+
+func TestPreviewNextCommitsTheShuffleReservation(t *testing.T) {
+	q := NewQueue()
+	addReady(t, q, "A")
+	addReady(t, q, "B")
+	addReady(t, q, "C")
+	q.SetShuffle(true)
+	preview, ok := q.PreviewNext()
+	if !ok {
+		t.Fatal("shuffle PreviewNext returned no track")
+	}
+	committed, ok := q.Next()
+	if !ok || committed.ID != preview.ID {
+		t.Fatalf("shuffle Next did not commit preview: preview=%+v committed=%+v ok=%v", preview, committed, ok)
+	}
+}
+
 func TestSequentialCursor(t *testing.T) {
 	tests := []struct {
 		name string

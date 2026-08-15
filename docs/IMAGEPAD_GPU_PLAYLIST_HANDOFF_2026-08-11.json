@@ -1,0 +1,957 @@
+{
+  "document_type": "ImagePadServer GPU playlist evaluation handoff",
+  "schema_version": 1,
+  "generated_at_utc": "2026-08-11T07:13:55Z",
+  "language": "ja",
+  "purpose": "別セッションでImagePadServerのGPU playlist evaluation mode作業を安全に継続するための包括的な引継ぎ書。通常music modeのCPU production経路を維持することが最優先であり、この文書は実装済み事項、実測結果、設計判断、未解決事項、再開手順を記録する。",
+  "handoff_status": {
+    "requested_by_user": true,
+    "implementation_complete": false,
+    "production_candidate": false,
+    "production_ready": false,
+    "commit_complete": false,
+    "working_tree_clean": false,
+    "last_active_action": "phase0-auditを開始したが、ユーザーが引継ぎ書作成へ切り替えたため、Go/Rust/playlistの読み取り監査途中で停止した。監査中の新規コード変更はない。"
+  },
+  "runtime": {
+    "current_date": "2026-08-11",
+    "generated_at_utc": "2026-08-11T07:13:55Z",
+    "active_model": "gpt-5.6-luna",
+    "provider": "openai-codex",
+    "user_reported_model_label": "luna",
+    "host": "Windows 10",
+    "user_home": "C:\\Users\\masah",
+    "shell": "bash via git-bash/MSYS",
+    "current_workdir": "C:\\Users\\masah\\OneDrive\\ドキュメント\\GitHub\\ImagePadServer"
+  },
+  "repository": {
+    "root": "C:\\Users\\masah\\OneDrive\\ドキュメント\\GitHub\\ImagePadServer",
+    "branch": "feature/music-playlist-v1.6.1",
+    "upstream": "origin/feature/music-playlist-v1.6.1",
+    "branch_relation_at_handoff": "ahead 1",
+    "known_head": "039d50676c2dc82ced18e2df844848a58c2f6888",
+    "working_tree": "変更あり・未commit",
+    "status_observed_by": "git status --short --branch",
+    "observed_modified_files_count": 33,
+    "observed_untracked_paths": [
+      ".hermes/",
+      "cmd/music-scene-export/",
+      "docs/CPU_MUSIC_RENDERER_PRODUCTION.md",
+      "docs/GPU_PLAYLIST_RENDER_MODE.html",
+      "gpu/playlist-compositord/scripts/",
+      "gpu/playlist-compositord/src/music_v2_glyph_atlas.rs",
+      "gpu/playlist-compositord/src/music_v2_h264_sidecar.rs",
+      "gpu/playlist-compositord/src/music_v2_shader_draft.rs",
+      "gpu/playlist-compositord/src/music_v2_shader_export.rs",
+      "gpu/playlist-compositord/src/music_v2_shader_host.rs",
+      "gpu/playlist-compositord/src/music_v2_shader_module.rs",
+      "gpu/playlist-compositord/src/native_nvenc.rs",
+      "internal/video/music_scene_document.go",
+      "internal/video/music_scene_document_test.go"
+    ],
+    "do_not_assume_clean": true,
+    "do_not_commit_without_user_request": true,
+    "project_rules_file": "CLAUDE.md",
+    "project_rules_summary": [
+      "dev buildを作る場合は、go test ./...とgo build ./...を先に通し、version更新・Windows resource再生成・同一stepのcommitまで完了させる。",
+      "artifact、outputs、youtube_cookies.txt、credentialsはcommit対象外。",
+      "通常の編集はpatch、完全新規ファイルはwrite_fileを使う。",
+      "変更後は関連テスト、build、git diff --checkを実行する。"
+    ]
+  },
+  "standing_goal": {
+    "goal": "ImagePadServerの通常music modeのCPU production経路を変更せず、playlist専用の明示的GPU evaluation modeを実装・検証する。CPUは曲単位のimmutable TrackAssets、spectrum、scroll loop、text fade、black fade、sequence/PTSを事前生成し、GPUは最大8 frameのbounded windowで最終surfaceを合成してNVENCへ渡す。停止・曲変更時はGUIのplayback headとqueue tailからepoch付きTransitionPlanを確定し、通常frame投入停止、in-flight drain、GPU fade tail、NVENC drain、PTS順mux、Flush/EOSまで決定論的に完了させる。frame drop・duplicate・reorder・resource reuse violationをすべて0、pixel_readback_bytes=0、video/audio decode成功、BT.709 limited、許容parityを必須とし、release warm benchmark 5回のmedianでCPUよりend-to-endを20%以上短縮するか、wall-clockをCPU比+5%以内に保ちながらCPU process timeを30%以上削減し2本同時処理throughputを25%以上改善した場合のみproduction candidateとする。それまではproduction_ready=falseを維持する。",
+    "subgoals": [
+      "通常music modeはCPU production renderer固定とし、GPU env、capability、sidecar、IMAGEPAD_ENCODER_MODEによって経路を変化させない。playlist GPU modeは明示的入口だけに限定し、契約不成立時はfail-closedする。",
+      "CPUはartwork、fallback、CPU-rasterized text、loudness graph、palette、layout、asset hash、spectrum_q16、scroll loop、text fade、black fade、sequence、PTSを準備し、最終frame画像と毎frame PCMをGPUへ送らない。",
+      "GPUは最大8 slotのbounded surface/output ringを使用し、frame indexからtimelineを参照してspectrum、scroll、clip、text alpha、artwork、loudness、global black fadeを合成する。render(N+1)とNVENC encode/drain(N)の実機overlapをtraceで証明する。",
+      "playlist停止・曲変更はepoch、playback_head_sequence、queued_tail_sequence、fade_start_sequence、fade_end_sequence、audio_fade_planを1つのTransitionPlanとして確定する。新規通常frameの投入を停止し、submit済みslotをdrainし、fade tailを生成して全slot回収後にFlush/EOSする。",
+      "correctness gateはgenerated/decoded frame数一致、drop=0、duplicate=0、reorder=0、PTS violation=0、stale epoch acceptance=0、fence前resource reuse=0、partial success=0、pixel_readback_bytes=0、video/audio decode成功、A/V duration差1 frame以内、BT.709 limitedとする。",
+      "visual parity gateは同一PCM・metadata・artwork・layout・解像度・FPS・frame count・sequence・PTSでCPU/GPUを比較し、SSIM>=0.99、PSNR>=38dB、全frame SSIM>=0.97、位置ずれ1 pixel以内、scroll/text fade/black fadeの開始終了frame完全一致とする。",
+      "performance gateはrelease binaryでcold runを分離しwarm runを各5回行い、GPU median end-to-end<=CPU median×0.80、またはGPU wall-clock<=CPU×1.05かつGPU process CPU time<=CPU×0.70かつ2本同時throughput>=CPU×1.25のどちらかを満たすこととする。",
+      "reliability gateは曲開始直後、batch境界直前、batch境界上、batch途中、曲終了直前、stop、track change、stale epoch、rapid repeated requestを含むseed固定random transitionを合計20回実行し、crash、deadlock、timeout、frame disorder、resource leakをすべて0とする。"
+    ]
+  },
+  "non_negotiable_constraints": [
+    "通常music modeはCPU rendererを正式production経路として維持する。",
+    "GPU playlist modeは明示的diagnostic/evaluation routeとし、暗黙に有効化しない。",
+    "production_ready=falseを維持し、全gateを通るまでproduction callerへ接続しない。",
+    "GPU環境変数、capability probe、sidecarの存在、IMAGEPAD_ENCODER_MODEはCPU production routeを変化させない。",
+    "GPU契約不成立時はfail-closedし、CPU libx264 fallbackをGPU成功として扱わない。",
+    "CPUとGPUの比較条件は同一PCM、analysis、metadata、artwork、scene、layout、解像度、fps、frame count、frame index、PTSにする。",
+    "GPU textureのCPU readbackは禁止し、CPUが取得するのはcompressed H.264 bitstreamのみとする。",
+    "GPU batchは最大8 frame、JSONL requestは128 MiB以下、queueとmemoryはboundedにする。",
+    "NVENCが参照中のD3D12 resource、input surface、output bitstream resourceを再利用しない。",
+    "worker完了時刻ではなくsequence/PTSで出力順序を決定する。",
+    "CPU workerごとにruntime.NumCPU()を無制限使用せず、全体thread budgetとbounded queueで管理する。",
+    "textはCPUでcanonicalにラスタライズし、GPUでフォントを再解釈しない。",
+    "scroll文字は横長textureまたはCPU生成profileを一度作り、GPUにはprofile/frame indexとclip/alphaを渡す。",
+    "loudness graphはCPUで静的texture化し、GPUはsampling、offset、clip、alphaを行う。",
+    "spectrumはCPUでtimeline化し、GPUへ毎frame PCMを送らない。",
+    "scroll、text fade、global black fadeは同一のframe-indexed timelineへ統合する。",
+    "track-local fadeとplaylist random transitionを分離する。",
+    "GUIからGPUへ停止信号を直接送らず、CPU Playlist Controllerがhead、tail、epochを検証してplanを確定する。",
+    "GPUの完全停止はdevice/session破棄ではなく、新規通常frame submit停止を意味する。",
+    "mux単体で圧縮済みH.264映像へfadeを追加できない。映像fadeはGPU compositorまたはdecode/filter/re-encode前段で扱う。音声fadeはaudio filterまたは再encodeで扱う。",
+    "SoundCloud等の素材の権利・規約・license制限を回避しない。既知対象素材はall-rights-reservedとして扱う。",
+    "credentials、API key、token、password、connection stringはこの文書へ保存しない。"
+  ],
+  "production_status": {
+    "normal_music_mode": {
+      "status": "CPU production",
+      "entrypoint": "internal/video/audio_visualizer.go:RunAudioVisualizerHLS",
+      "playlist_entrypoint": "internal/video/radio_render.go:RenderRadioTrack",
+      "encoder_selection": "production path is CPUVideoEncoder(purpose)",
+      "route_guard": "TestProductionRenderEntrypointsAreCPUOwned passes in the recorded verification",
+      "gpu_env_must_not_change_route": true
+    },
+    "playlist_gpu_mode": {
+      "status": "explicit diagnostic/evaluation only",
+      "production_ready": false,
+      "current_state": "legacy direct H264 diagnostic path and protocol exist, but the new TrackAssets/TrackTimeline/TransitionPlan mode is not implemented",
+      "caller_connection": "not connected to normal RenderRadioTrack production caller",
+      "shader_status": "draft-only; production readiness gate remains closed",
+      "fail_closed": true
+    }
+  },
+  "architecture_decisions": {
+    "responsibility_split": {
+      "cpu": [
+        "曲単位のimmutable TrackAssets生成",
+        "artwork normalize/fallback、palette、layout、asset hash/receipt",
+        "CPU-rasterized text/glyph atlas、loudness graph、scroll texture/profile",
+        "PCM analysis、spectrum_q16、waveform、feature timeline",
+        "text alpha、track-local black fade、progress、sequence、PTS timeline",
+        "playlist head/tail/epochを検証しTransitionPlanを発行",
+        "bounded queueとworker/thread budgetを管理"
+      ],
+      "gpu": [
+        "resident immutable assetのupload/cache",
+        "frame indexからtimeline/control bufferを参照",
+        "artwork、text、spectrum、scroll、loudness、global black fadeの最終合成",
+        "最大8 frameのbounded render surface ring",
+        "D3D12 fenceとNVENC input/output ownership",
+        "compressed H.264 bitstreamのみをCPUへ返却"
+      ],
+      "mux": [
+        "sequence/PTS順のordered write",
+        "audio/video streamのmux",
+        "Flush/EOS完了確認"
+      ]
+    },
+    "data_model": {
+      "TrackAssets": [
+        "track_id、asset_hash、artwork/fallback、CPU-rasterized text、glyph metrics/atlas",
+        "loudness graph、palette、layout、clip rect、renderer/version receipt",
+        "immutable session ownership and validation metadata"
+      ],
+      "TrackTimeline": [
+        "fps、frame_count、sequence/PTS",
+        "spectrum_q16、waveform、loudness/progress feature timeline",
+        "ScrollProfileまたはGPU計算可能な等速scroll rule",
+        "text_alpha_q16、black_alpha_q16、transition references",
+        "timeline hash、chunk version、control buffer generation"
+      ],
+      "FrameDirective": [
+        "sequence",
+        "frame_index",
+        "pts_ns",
+        "feature_index",
+        "scroll_phaseまたはprofile index",
+        "layout_variant",
+        "text/black fade alpha references",
+        "flags and timeline generation"
+      ],
+      "TransitionRequest": [
+        "epoch",
+        "reason",
+        "source_track_id",
+        "playback_head_sequence",
+        "playback_head_pts_ns",
+        "observed_buffer_depth"
+      ],
+      "TransitionPlan": [
+        "epoch",
+        "source/target track id",
+        "playback_head_sequence",
+        "queued_tail_sequence",
+        "fade_start_sequence/pts",
+        "fade_end_sequence/pts",
+        "duration_frames",
+        "curve/visual mode",
+        "audio_fade_plan",
+        "plan version and acceptance status"
+      ]
+    },
+    "timeline_policy": [
+      "短いtrackはtimeline全体をGPU storage bufferへ一度uploadする。",
+      "長時間trackまたは多数同時処理では128 frame程度のbounded chunkとdouble bufferingを使う。",
+      "単純等速scrollはGPU式を許可するが、複雑なeasing、pause、ping-pong、厳密parityではCPU生成ScrollProfileを使う。",
+      "text fadeはtexture再生成ではなくtimeline alphaで処理する。",
+      "global black fadeは全layer合成後の最終passで一度だけ適用する。",
+      "playlist random transitionは固定track timelineに埋め込まずTransitionEvent/TransitionPlanとして注入する。",
+      "submit済みbatchを書き換えず、batch境界分割またはcontrol buffer generation切替で適用する。",
+      "offline playlistではrandom seedとevent logをCPUで確定し、GPU側乱数を使わない。"
+    ],
+    "state_machines": {
+      "playlist_transition": [
+        "Running",
+        "TransitionRequested",
+        "StopNormalSubmit",
+        "DrainInFlight",
+        "FadeTailRendering",
+        "FlushOutput",
+        "TransitionComplete",
+        "NextTrack"
+      ],
+      "gpu_slot": [
+        "Free",
+        "RenderSubmitted",
+        "EncodeSubmitted",
+        "BitstreamReady",
+        "Free"
+      ],
+      "fade_start_rule": "max(playback_head + safety_frames, queued_tail + 1)。render tail、encode tail、mux tailも観測してplanを確定する。"
+    },
+    "worker_budget": {
+      "recommended": {
+        "AssetWorker": 1,
+        "AnalysisWorker": "1-2",
+        "TimelineDirectiveWorkers": "2-8",
+        "GPU_NVENC_Control": 1,
+        "OrderedMuxWriter": 1
+      },
+      "rule": "workerごとにruntime.NumCPU()を割り当てず、FFmpeg、OneDrive、Defender、muxのCPU消費を含めた全体budgetとbounded queueを使う。"
+    }
+  },
+  "completed_work_and_findings": {
+    "source_audit": [
+      "Go/Rust/scene/IPC/NVENC/shader/benchmarkを監査し、scene再構築、巨大JSON transport、静的asset再送、Hello初期化、逐次submit、fence/NVENC処理など24仮説を分類した。",
+      "canonical scene builder、artwork decode、palette、glyph atlas、loudness、layout、metadataをframe loop外で再利用する変更を実装した。",
+      "glyph atlas hashを安定化し、時刻数字だけでatlasが再構築されないようにした。",
+      "H.264 compact scene送信、serde default、静的texture省略、Rust asset cache/hash validation、glyph binding再構築条件を実装した。",
+      "Hello/capability negotiation時の重いrenderer/device/pipeline初期化をlegacy render時へ遅延した。",
+      "NVENC runtime availability export、明示DX12 backend選択、H.264 capability probeを追加した。"
+    ],
+    "protocol_and_resource_work": [
+      "Flush/Flushed protocol、Go Flush RPC、Rust renderer/NVENC flush、last output fence検証、EOS unit testを追加した。",
+      "Go/RustへCPU/GPU stage timingを追加した。",
+      "H.264 asset receipt、cache readiness、artwork/glyph hash、pixel readback zero、DX12、backend fail-closed validationを追加した。",
+      "bounded batch契約としてMAX_H264_BATCH_FRAMES=8、RenderBatchFrame{sequence, pts_ns, scene}、EncodedBatch{batch_id, frames}を追加した。",
+      "JSONL batch request byte上限128 MiB、Go marshal結果上限、Rust BatchError response、契約違反後のsession poisoningを追加した。",
+      "current RenderBatchはtransport batch中心であり、Rust内部ではbatch全frameをcommand submission後にNVENC encode/lockするためtrue render/NVENC overlapではない。"
+    ],
+    "production_cutover": [
+      "GPU production継続を中止し、CPU production正式採用、GPU H.264 diagnostic proof凍結を決定した。",
+      "RenderRadioTrackをCPU production routeへ固定した。",
+      "RunAudioVisualizerHLSのproduction encode選択をCPUVideoEncoder(purpose)へ固定した。",
+      "IMAGEPAD_ENCODER_MODE=gpu設定下でもCPU production testがpassすることを確認した。",
+      "GPU関連route guardをdiagnostic route向けに更新し、CPU-owned production entrypoint guardを追加した。",
+      "radio recipeへBT.709 primaries/transfer/matrixとlimited rangeを付与し、H.264 VUIを検証するtestを追加した。"
+    ],
+    "documentation_and_cleanup": [
+      "docs/CPU_MUSIC_RENDERER_PRODUCTION.mdを作成し、CPU production決定、GPU proof、hash、PTS、decode、parity失敗、timing、ROI、再開条件を保存した。",
+      "docs/GPU_ONLY_MUSIC_RENDER_PLAN.mdをHistorical/Frozenへ更新した。",
+      "docs/GPU_MUSIC_SHADER_REQUIREMENTS.mdを凍結された将来再開用資料として整理した。",
+      "docs/GPU_PLAYLIST_RENDER_MODE.htmlを作成し、CPU/GPU境界、Transition state machine、bounded pipeline、責任分担、運用指標、受入れchecklistを図示した。",
+      "HTMLをfile URIで表示し、3つのSVG図、責任分担カード、運用指標カード、checklistのvisual QAを実施した。",
+      "artifact、temporary harness、generated executable、playwright cache等をcleanupしたが、現在のdirty treeにuntracked scripts等があるためcommit前に再確認する。"
+    ],
+    "goal_command_history": [
+      "現行Hermes Agent v0.20.0の/goalは通常テキストを受け取り、JSON専用形式ではないことを確認した。",
+      "goal serviceへ機械的に登録するget_goal/create_goal toolはtool surfaceに公開されていなかった。",
+      "このhandoff JSONは外部管理・別セッション引継ぎ用であり、/goalの内部登録そのものではない。"
+    ]
+  },
+  "verified_commands_and_results": {
+    "go": [
+      {
+        "command": "go test ./internal/video -count=1",
+        "result": "pass; recorded result: ok imagepadserver/internal/video 26.243s"
+      },
+      {
+        "command": "go test ./internal/server -count=1",
+        "result": "pass"
+      },
+      {
+        "command": "go test ./... -count=1 -p 1",
+        "result": "pass; all Go packages passed when run serially"
+      },
+      {
+        "command": "go test ./... -count=1",
+        "result": "parallel run was unstable on Windows because TestRTSPReadyRejectsStaleEndpointAfterReplacement hit a TempDir cleanup file lock"
+      },
+      {
+        "command": "go test ./internal/server -run TestRTSPReadyRejectsStaleEndpointAfterReplacement -count=10",
+        "result": "pass; the isolated test did not reproduce the cleanup race"
+      },
+      {
+        "command": "go test ./internal/server -run TestHandleOBSLatencyNormalizesStorage -count=10",
+        "result": "pass"
+      },
+      {
+        "command": "go test ./internal/video -run 'CPU ownership|GPU experimental|CPU production smoke'",
+        "result": "recorded result: 3 passed in 1 packages"
+      }
+    ],
+    "rust": [
+      {
+        "command": "cargo fmt",
+        "result": "pass"
+      },
+      {
+        "command": "cargo test --release --locked --all-targets",
+        "result": "pass; recorded result: 88 passed, 1 ignored"
+      },
+      {
+        "command": "cargo build --release --locked",
+        "result": "pass; 0 errors, 49 warnings"
+      }
+    ],
+    "repository_checks": [
+      {
+        "command": "git diff --check",
+        "result": "pass at handoff"
+      },
+      {
+        "command": "git status --short --branch",
+        "result": "branch feature/music-playlist-v1.6.1...origin/feature/music-playlist-v1.6.1 [ahead 1], 33 modified paths and 14 untracked paths observed"
+      },
+      {
+        "command": "date -u '+%Y-%m-%dT%H:%M:%SZ'",
+        "result": "2026-08-11T07:13:55Z"
+      }
+    ],
+    "html": [
+      {
+        "verification": "docs/GPU_PLAYLIST_RENDER_MODE.html loaded via file URI and was visually inspected",
+        "result": "3 SVG diagrams, cards, and checklist had no major overlap or rendering defects"
+      },
+      {
+        "limitation": "Go/Rust suites were not rerun solely because of the HTML addition; do not infer a post-HTML full-suite result from the visual QA"
+      }
+    ]
+  },
+  "hardware_gpu_proof": {
+    "hardware": "NVIDIA GeForce RTX 5070 Ti",
+    "driver": "610.47",
+    "vram_mib": 16303,
+    "backend": "DX12",
+    "codec": "h264",
+    "profile": "High",
+    "resolution": "640x360",
+    "pixel_format": "yuv420p",
+    "fps": "30/1",
+    "frames": 301,
+    "first_pts": "0.000000000",
+    "last_pts": "9.999900000",
+    "pixel_readback_bytes": 0,
+    "asset_cache_ready": true,
+    "max_batch_frames": 8,
+    "batch_count": 38,
+    "duration": "approximately 10.033233 seconds",
+    "decode": "FFmpeg video/audio decode succeeded for the diagnostic artifact",
+    "scope_warning": "This proves a bounded diagnostic H.264 path on the tested machine, not production readiness, true async overlap, playlist TransitionPlan correctness, or CPU/GPU parity."
+  },
+  "legacy_gpu_measurements": {
+    "scope": "旧GPU設計の実測値。新しいTrackAssets/TrackTimeline/TransitionPlan/true overlap設計の性能を意味しない。",
+    "cpu_hls_total_seconds": 2.014923,
+    "gpu_direct_sequential_seconds": 4.928091,
+    "gpu_bounded_batch_seconds": 3.8662985,
+    "gpu_latest_diagnostic_draft_seconds": 3.3835253,
+    "rpc_count_before_after_batch": "301 -> 38",
+    "cpu_average_ms_per_frame": 6.69,
+    "gpu_direct_average_ms_per_frame": 16.37,
+    "transfer_estimates_for_640x360x301": {
+      "bgra_mib": 264.6,
+      "yuv420_mib": 99.2
+    },
+    "batch_stage_comparison": {
+      "go_rpc_accumulated_before_seconds": 3.061065,
+      "go_rpc_accumulated_after_seconds": 2.300782,
+      "rust_frame_render_accumulated_before_seconds": 0.434561,
+      "rust_frame_render_accumulated_after_seconds": 0.267433,
+      "nvenc_accumulated_before_seconds": 0.35762,
+      "nvenc_accumulated_after_seconds": 0.203265,
+      "causality_warning": "init variation was included; batch-only causality was not isolated"
+    }
+  },
+  "parity_results": {
+    "scope": "同一入力に対する旧CPU/GPU diagnostic path比較",
+    "cpu_decoded_rgb_sha256": "fd8056a1cb01bdb8e9f49ff807505f24b2be120295b3ea84da13b89a56bb46f6",
+    "gpu_decoded_rgb_sha256": "245ea89e4b127a675a0537cfdf481b9b1a44d4fd30d37b57a33c2f9c860312b7",
+    "gpu_artifact_repeatability_note": "GPU artifact同士のhash一致はGPU再現性の証拠であり、CPU/GPU parity成功を意味しない。",
+    "differing_frames": "301/301",
+    "mae": 135.529303152,
+    "rmse": 145.553927436,
+    "psnr_db": 4.870325041,
+    "max_absolute_error": 255,
+    "interpretation": "parity gateは未達。新設計ではCPU-rasterized assetを共用し、差分を合成、色変換、座標、fade適用に限定して再評価する。"
+  },
+  "color_contract": {
+    "pixel_format": "yuv420p",
+    "color_range": "limited/tv",
+    "color_primaries": "bt709",
+    "transfer": "bt709",
+    "matrix": "bt709",
+    "h264_vui": {
+      "colour_primaries": 1,
+      "transfer_characteristics": 1,
+      "matrix_coefficients": 1,
+      "video_full_range_flag": 0
+    }
+  },
+  "known_blockers": [
+    {
+      "id": "gpu-new-contract-not-implemented",
+      "severity": "blocking",
+      "description": "TrackAssets、TrackTimeline、ScrollProfile、FeatureTimeline、FrameDirective、TransitionRequest、TransitionPlanの新protocol/schema/source/testは設計段階であり、実装されていない。"
+    },
+    {
+      "id": "true-render-nvenc-overlap-unproven",
+      "severity": "blocking",
+      "description": "現行8-slot構造はbatch全frameのrender後にNvEncEncodePictureとLockBitstreamをframeごとに連続実行するため、render(N+1)とNVENC drain(N)のtrue overlapが未実装・未証明。"
+    },
+    {
+      "id": "gpu-parity-failed",
+      "severity": "blocking",
+      "description": "旧GPU diagnostic pathは301/301 frame不一致、PSNR 4.870325041 dBでvisual parity gate未達。"
+    },
+    {
+      "id": "gpu-wire-null-sequence-defect",
+      "severity": "high",
+      "description": "GPU hardware smokeでGo nil sliceのJSON nullとRust empty sequence []の不一致とみられるinvalid type: null, expected a sequenceが発生した。exact fieldは未確定で、修正未実施。"
+    },
+    {
+      "id": "flush-eos-real-proof-missing",
+      "severity": "blocking",
+      "description": "Flush/EOS unit contractは存在するが、全render slot、NVENC delayed output、output fence、resource reuse禁止を含む実機true in-flight drain proofは未完了。"
+    },
+    {
+      "id": "playlist-transition-not-implemented",
+      "severity": "blocking",
+      "description": "GUI/playlist controllerからepoch付きTransitionRequest/TransitionPlan、queue tail、fade tail、current/next scene管理は未接続。"
+    },
+    {
+      "id": "parallel-windows-cleanup-race",
+      "severity": "medium",
+      "description": "parallel go testでTestRTSPReadyRejectsStaleEndpointAfterReplacementのTempDir cleanup中にffmpeg-download.zipのWindows file lockが発生する既存不安定性がある。対象単独10回、server package全体、go test ./... -p 1はpass。"
+    },
+    {
+      "id": "uncommitted-tree",
+      "severity": "blocking-for-release",
+      "description": "変更は未commit。dev buildやrelease artifactを出す場合はCLAUDE.mdの同一step commit規則に従う。ユーザー要求なしにcommitしない。"
+    }
+  ],
+  "known_gpu_source_state": {
+    "go": [
+      "internal/video/gpu_contracts.goにはGPUH264MaxBatchFrames=8、H264RenderBatchFrame、SidecarProcess.RenderSceneH264Batch、request/response size validationがある。",
+      "internal/video/gpu_sidecar_process.goにはsidecar lifecycle、Hello、batch RPC、response ordering、Flushがある。",
+      "internal/video/music_scene.goのCanonicalMusicSceneBuilderはimmutableなartwork/glyph/palette/layoutをjob内で再利用するが、Scene呼び出しではframe-local feature、PCM window、clock text runs等を生成する。",
+      "internal/video/radio_render.goのRenderRadioTrackはCPU route固定。renderRadioTrackGPUとrenderRadioTrackGPUDirectH264は診断用で、通常callerから切離されている。",
+      "internal/video/gpu_production_route_guard_test.goはCPU production ownershipとGPU diagnostic分離をsource guardする。"
+    ],
+    "rust": [
+      "gpu/playlist-compositord/src/protocol.rsのRenderBatchは最大8 frame、request上限128 MiB、EncodedBatch/BatchError/Flushを定義する。",
+      "gpu/playlist-compositord/src/music_v2_h264_sidecar.rsのH264_SURFACE_RING_SLOTSは8。slotはPCM、waveform、uniform、output texture、D3D12 surface、NVENC registrationを所有する。",
+      "同ファイルのrender_batchは複数frameを一つのwgpu command submissionへ記録し、submit後にinput fenceをsignalし、各slotをencode_surface_atしてbitstreamを回収する。これはtransport batchではあるが、NVENC drainと次のrenderの同時進行ではない。",
+      "native_nvenc.rsはD3D12/NVENC registration、input fence wait、EncodePicture、output fence、LockBitstream、Flush/EOSを担当する。"
+    ],
+    "playlist": [
+      "internal/server/music_playlist.goのprepareRadioTrackはanalysisを作り、CPU RenderRadioTrackへ渡してplaylist trackをMP4化する。",
+      "internal/server/music_playlist.goのhandleMusicPlaylistNext/Stop/Pause系は既存のmusicPendingTrack、musicPaused、radio.SkipCurrentを使うが、GPU TransitionPlanのepoch/head/tail契約は未接続。",
+      "internal/obsrtmp/radio.goのRadioStatusはCurrentTrackID、TrackStartedAt、BaseOffsetSeconds、phase、session状態を持つが、sequence/PTS queue tailはGPU playlist contractとしては未定義。",
+      "internal/obsrtmp/radio_program.goにはProgramClock、ProgramPipeline、ProgramCompositorがあるが、これは既存program output pathであり、新GPU playlist TransitionPlan実装とは別に扱う。"
+    ]
+  },
+  "next_steps_ordered": [
+    {
+      "step": 1,
+      "title": "再開時の前提確認",
+      "actions": [
+        "git status --short --branch、git diff --check、git diff --statを再実行する。",
+        "CLAUDE.mdとこのJSONを読み、既存dirty treeをリセットしない。",
+        "生成artifact、target/release executable、temporary outputの状態を確認する。"
+      ],
+      "stop_condition": "既存変更の意図や未commit状態を把握できない場合は編集せずユーザーへ確認する。"
+    },
+    {
+      "step": 2,
+      "title": "Goの最初の縦切りをTDDで実装",
+      "actions": [
+        "新規internal/video/gpu_playlist_timeline.goと対応testを作る。",
+        "TrackAssetsはpayload/hash/receiptをimmutable session assetとして表現し、Validateでサイズ、hash、format、ownershipをfail-closed検証する。",
+        "TrackTimelineはframe_count、fps、sequence/PTS、spectrum_q16、scroll profile、text_alpha_q16、black_alpha_q16、progressをboundedに保持する。",
+        "FrameDirectiveはsequence/frame_index/pts/timeline_generation/feature_index/alpha referencesだけを持つ軽量型にする。",
+        "TransitionRequestとTransitionPlanのvalidationを追加し、epoch stale、head/tail逆転、fade範囲外、PTS非単調、partial planを拒否する。",
+        "通常RenderRadioTrackとRunAudioVisualizerHLSのsource guardを維持し、GPU envでproduction routeが変わらないtestを先に固定する。"
+      ],
+      "expected_tests": [
+        "TrackAssets JSON roundtrip and stable hash",
+        "TrackTimeline sequence/PTS monotonicity",
+        "scroll profile frame lookup deterministic",
+        "text/black fade start/end frame exactness",
+        "TransitionPlan stale epoch and queued tail rejection",
+        "max batch 8 and bounded request validation"
+      ]
+    },
+    {
+      "step": 3,
+      "title": "Rust protocol/session cacheへ接続",
+      "actions": [
+        "protocol.rsへplaylist専用BeginSession/RenderDirectiveBatch/Transition/Flush contractを追加する。",
+        "Go nil sliceをJSON nullにしない。配列フィールドは明示empty sliceまたはserde defaultを使い、null/[]の相互互換をtestする。",
+        "immutable asset receiptをsession開始時に検証し、dynamic directiveではasset payload再送を禁止する。",
+        "contract違反後はsession poisonedとしてpartial successを返さない。"
+      ]
+    },
+    {
+      "step": 4,
+      "title": "frame-indexed compositorへ移行",
+      "actions": [
+        "CPUが毎frame PCMと巨大sceneを送らず、GPUがresident TrackAssetsとtimeline storage bufferを参照する。",
+        "short track全timeline uploadまたはbounded chunk double bufferを実装する。",
+        "global black fadeを最終合成passへ移し、track-local fadeとplaylist transition fadeを別制御にする。",
+        "CPU-rasterized textを再解釈せず、glyph/scroll textureとalpha/clipだけGPUへ渡す。"
+      ]
+    },
+    {
+      "step": 5,
+      "title": "true bounded render/NVENC ring",
+      "actions": [
+        "各slotへrender fence、NVENC input ownership、output bitstream resource、output fence、sequence、PTSを持たせる。",
+        "render(N+1)をfree slotへ記録中に、encode/drain(N)を別slotでpollできるようにする。",
+        "NvEncEncodePictureとLockBitstreamを同一ループで直列化しない。",
+        "ordered writerはsequence/PTSでreorder可能だが、drop/duplicateを受け入れず契約違反としてfailする。",
+        "Flush/EOSで全slotとdelayed outputを回収し、fence前resource reuseをtest/traceで検出する。"
+      ],
+      "proof_required": "実機traceにrender submit(N+1)、input fence signal/wait、encode submit(N)、output fence poll、bitstream lock(N)の重複intervalを記録する。"
+    },
+    {
+      "step": 6,
+      "title": "playlist controller TransitionPlan接続",
+      "actions": [
+        "GUI handlerのstop/next/pause/seekを直接GPUへ送らず、CPU controllerへepoch付きTransitionRequestとして集約する。",
+        "playback head、render tail、encode tail、mux tail、observed buffer depthをsnapshotする。",
+        "fade_start=max(head+safety, queued_tail+1)で決定し、current->black、track changeならblack->next fade-inをplan化する。",
+        "submit済みbatchを変更せず、未submit batchまたは次のcontrol generationからplanを適用する。",
+        "stale epoch、rapid repeated request、batch boundary内外を20回reliability testへ入れる。"
+      ]
+    },
+    {
+      "step": 7,
+      "title": "correctness/parity/performance/reliability gates",
+      "actions": [
+        "同一fixtureのCPU referenceとGPU evaluationをrelease binaryで比較する。",
+        "frame count、drop、duplicate、reorder、PTS、A/V duration、BT.709 limited、decode、resource reuse、readback bytesを収集する。",
+        "SSIM、PSNR、全frame SSIM、位置ずれ、fade開始終了frameを計測する。",
+        "cold runを除外しwarm runを各5回、CPU process timeとwall-clockを別々に記録する。",
+        "2本同時処理でthroughput、peak RAM/VRAM、slot starvation、queue wait、thread oversubscriptionを計測する。"
+      ]
+    },
+    {
+      "step": 8,
+      "title": "production候補判定とcommit",
+      "actions": [
+        "全correctness/parity/reliability gateが0 violationであることを確認する。",
+        "performance gateのspeedまたはcapacity条件を満たすまでproduction_ready=falseを維持する。",
+        "ユーザーの明示許可なくcommit、push、release buildのversion cutはしない。",
+        "dev buildを切る場合はCLAUDE.mdに従い、green gate、version/resource更新、同一step commitを完了する。"
+      ]
+    }
+  ],
+  "acceptance_gates": {
+    "correctness": {
+      "required": true,
+      "conditions": [
+        "generated_frame_count == decoded_frame_count",
+        "drop == 0",
+        "duplicate == 0",
+        "reorder == 0",
+        "PTS violation == 0",
+        "stale epoch acceptance == 0",
+        "fence前resource reuse == 0",
+        "partial success == 0",
+        "pixel_readback_bytes == 0",
+        "video decode success",
+        "audio decode success",
+        "A/V duration difference <= 1 frame",
+        "BT.709 limited metadata present"
+      ]
+    },
+    "visual_parity": {
+      "required": true,
+      "conditions": [
+        "same PCM/analysis/metadata/artwork/layout/resolution/FPS/frame_count/sequence/PTS",
+        "aggregate SSIM >= 0.99",
+        "every-frame SSIM >= 0.97",
+        "PSNR >= 38 dB",
+        "position shift <= 1 pixel",
+        "scroll start/end frame exact match",
+        "text fade start/end frame exact match",
+        "black fade start/end frame exact match"
+      ]
+    },
+    "performance": {
+      "required_for_production_candidate": true,
+      "method": "release binary、cold runとwarm runを分離、warm run各5回のmedian",
+      "speed_gate": "GPU median end-to-end <= CPU median * 0.80",
+      "capacity_gate": "GPU wall-clock <= CPU * 1.05 AND GPU process CPU time <= CPU * 0.70 AND two-job throughput >= CPU * 1.25",
+      "interpretation": "speed_gateまたはcapacity_gateのどちらか一方を満たす必要がある。"
+    },
+    "reliability": {
+      "required": true,
+      "runs": 20,
+      "fixed_seed": true,
+      "coverage": [
+        "track start immediately",
+        "just before batch boundary",
+        "on batch boundary",
+        "inside batch",
+        "just before track end",
+        "stop",
+        "track change",
+        "stale epoch",
+        "rapid repeated request"
+      ],
+      "all_must_be_zero": [
+        "crash",
+        "deadlock",
+        "timeout",
+        "frame disorder",
+        "resource leak"
+      ]
+    }
+  },
+  "operational_metrics_to_collect": {
+    "end_to_end": [
+      "total wall-clock",
+      "startup/init duration",
+      "steady-state duration",
+      "effective fps",
+      "real-time factor",
+      "time to first encoded frame",
+      "last directive to final flush",
+      "mux duration"
+    ],
+    "cpu": [
+      "asset/analysis/scroll/timeline worker time",
+      "queue wait",
+      "process CPU time",
+      "CPU utilization",
+      "thread count and oversubscription",
+      "allocation/GC",
+      "blocked writer time"
+    ],
+    "gpu_render": [
+      "immutable asset upload bytes/session",
+      "timeline upload bytes/chunk",
+      "frame control bytes",
+      "command recording duration",
+      "queue submit duration",
+      "render fence latency",
+      "render duration/frame",
+      "render slot utilization",
+      "render queue depth",
+      "free slot starvation",
+      "batch size distribution"
+    ],
+    "nvenc": [
+      "encode submit latency",
+      "in-flight encode count",
+      "output fence latency",
+      "bitstream drain latency",
+      "output slot utilization",
+      "delayed frame count",
+      "Flush/EOS drain duration",
+      "compressed bytes/frame",
+      "encoder errors/retries",
+      "resource reuse violations"
+    ],
+    "correctness": [
+      "generated/decoded frame count",
+      "first/last PTS",
+      "PTS violations",
+      "sequence reorder",
+      "dropped/duplicate frames",
+      "A/V duration delta",
+      "H.264 profile/pixel format",
+      "BT.709 metadata",
+      "pixel hash/parity",
+      "MAE/RMSE/PSNR/max error",
+      "asset receipt/hash mismatch",
+      "pixel_readback_bytes",
+      "stale epoch acceptance",
+      "transition start/end frame",
+      "fade event version"
+    ],
+    "capacity_backpressure": [
+      "timeline queue capacity/depth",
+      "render/output slots used/free",
+      "max aggregate request bytes",
+      "peak RAM/VRAM",
+      "producer blocked duration",
+      "consumer stalled duration",
+      "partial failure/session poison count"
+    ]
+  },
+  "relevant_files": {
+    "project_rules": [
+      "CLAUDE.md",
+      ".gitignore"
+    ],
+    "production_cpu": [
+      "internal/video/audio_visualizer.go",
+      "internal/video/video_encoder.go",
+      "internal/video/radio_render.go",
+      "internal/video/radio_recipe.go",
+      "internal/video/radio_render_gpu_gate_test.go",
+      "internal/video/gpu_production_route_guard_test.go",
+      "internal/video/gpu_music_render_integration_test.go",
+      "internal/video/radio_recipe_test.go"
+    ],
+    "go_gpu_contract": [
+      "internal/video/gpu_contracts.go",
+      "internal/video/gpu_contracts_test.go",
+      "internal/video/gpu_sidecar_process.go",
+      "internal/video/gpu_sidecar_process_test.go",
+      "internal/video/gpu_yuv_contract.go",
+      "internal/video/gpu_yuv_contract_test.go",
+      "internal/video/music_render_v2_contract.go",
+      "internal/video/music_render_v2_contract_test.go",
+      "internal/video/music_scene.go",
+      "internal/video/music_scene_test.go",
+      "internal/video/music_scene_document.go",
+      "internal/video/music_scene_document_test.go"
+    ],
+    "rust_gpu": [
+      "gpu/playlist-compositord/src/protocol.rs",
+      "gpu/playlist-compositord/src/main.rs",
+      "gpu/playlist-compositord/src/contracts.rs",
+      "gpu/playlist-compositord/src/music_v2_h264_sidecar.rs",
+      "gpu/playlist-compositord/src/music_v2_shader_host.rs",
+      "gpu/playlist-compositord/src/music_v2_shader_draft.rs",
+      "gpu/playlist-compositord/src/music_v2_shader_module.rs",
+      "gpu/playlist-compositord/src/native_nvenc.rs",
+      "gpu/playlist-compositord/src/adapter.rs"
+    ],
+    "playlist_control": [
+      "internal/server/music_playlist.go",
+      "internal/server/music_playlist_test.go",
+      "internal/obsrtmp/radio.go",
+      "internal/obsrtmp/radio_program.go",
+      "internal/server/music_radio_rtsp_acceptance_test.go",
+      "internal/server/music_radio_final_acceptance_test.go",
+      "internal/server/music_radio_e2e_test.go"
+    ],
+    "design_docs": [
+      "docs/CPU_MUSIC_RENDERER_PRODUCTION.md",
+      "docs/GPU_ONLY_MUSIC_RENDER_PLAN.md",
+      "docs/GPU_MUSIC_SHADER_REQUIREMENTS.md",
+      "docs/GPU_PLAYLIST_RENDER_MODE.html",
+      ".hermes/plans/2026-08-11_060204-gpu-to-cpu-production-cutover.md"
+    ]
+  },
+  "do_not_claim": [
+    "GPU diagnostic artifactのdecode成功をproduction readinessと呼ばない。",
+    "GPU artifact同士のhash一致をCPU/GPU parity成功と呼ばない。",
+    "transport batchをtrue GPU/NVENC pipeline overlapと呼ばない。",
+    "GPU readback 0をvisual parity成功と呼ばない。",
+    "unit testのFlush成功を実機true in-flight Flush/EOS proofと呼ばない。",
+    "parallel go testの一度の失敗だけで全Go suiteが壊れていると断定しない。直列結果とWindows file lock raceを分離して報告する。",
+    "dirty treeをclean、未commit変更をcommit済み、GPU modeをproduction-readyとは報告しない。",
+    "CPU production routeにGPU envが影響しないことを壊してまでGPU実験を進めない。"
+  ],
+  "security_and_data_handling": {
+    "credentials_in_document": false,
+    "redaction_token": "[REDACTED]",
+    "never_store": [
+      "API keys",
+      "tokens",
+      "passwords",
+      "connection strings",
+      "cookies",
+      "private media URLs containing credentials"
+    ],
+    "media_rights": "権利保有・利用許諾のない素材を検証用fixtureとして再配布しない。"
+  },
+  "session_restart_recipe": [
+    "このJSONとCLAUDE.mdを読む。",
+    "git status --short --branch、git rev-parse HEAD、git diff --checkを再実行する。",
+    "既存dirty treeを保存し、reset/clean/checkoutで消さない。",
+    "phase0-auditはGo/Rust/playlistの読み取り監査途中で停止した状態から再開する。",
+    "最初の編集はGo TrackAssets/TrackTimeline/FrameDirective/TransitionPlanのtestを先に追加し、通常CPU route guardを確認する。",
+    "同一ファイルを複数agentで同時編集しない。読み取り監査は並列可、編集は依存順に直列化する。",
+    "詰まった場合は、Go contract、Rust NVENC ring、playlist controllerを別agentへ読み取り委譲し、外部side effectはfile:lineまたは実行結果で検証する。",
+    "各phase完了時に関連テストを実行し、最後にrelease build、E2E、benchmark、reliabilityを実行する。",
+    "production candidate gateを満たすまでproduction_ready=falseのままにする。"
+  ],
+  "copyable_goal_text": "/goal ImagePadServerの通常music modeのCPU production経路を変更せず、playlist専用の明示的GPU evaluation modeを実装・検証する。CPUは曲単位のimmutable TrackAssets、spectrum、scroll loop、text fade、black fade、sequence/PTSを事前生成し、GPUは最大8 frameのbounded windowで最終surfaceを合成してNVENCへ渡す。停止・曲変更時はGUIのplayback headとqueue tailからepoch付きTransitionPlanを確定し、通常frame投入停止、in-flight drain、GPU fade tail、NVENC drain、PTS順mux、Flush/EOSまで決定論的に完了させる。frame drop・duplicate・reorder・resource reuse violationをすべて0、pixel_readback_bytes=0、video/audio decode成功、BT.709 limited、許容parityを必須とし、release warm benchmark 5回のmedianでCPUよりend-to-endを20%以上短縮するか、wall-clockをCPU比+5%以内に保ちながらCPU process timeを30%以上削減し2本同時処理throughputを25%以上改善した場合のみproduction candidateとする。それまではproduction_ready=falseを維持する。",
+  "task_list_at_handoff": [
+    {
+      "id": "phase0-audit",
+      "status": "in_progress",
+      "description": "現行CPU/GPU/playlist経路を再監査し、最初の縦切り境界と受入れmatrixを確定する",
+      "handoff_note": "読み取り監査を開始したが、Go/Rust/playlistのsource read途中で停止。新規編集なし。"
+    },
+    {
+      "id": "phase1-go-contract",
+      "status": "pending",
+      "description": "Go側playlist専用TrackAssets/TrackTimeline/TransitionPlan契約をTDDで追加し、通常CPU経路guardを維持する"
+    },
+    {
+      "id": "phase2-rust-contract",
+      "status": "pending",
+      "description": "Rust protocolとsession cacheへimmutable assets/timeline/transition contractをTDDで追加する"
+    },
+    {
+      "id": "phase3-gpu-ring",
+      "status": "pending",
+      "description": "GPU compositorをframe-indexed timeline参照へ移行し、最大8 slotのbounded render/output ringを実装する"
+    },
+    {
+      "id": "phase4-playlist-control",
+      "status": "pending",
+      "description": "GUI/playlist controllerからepoch付き停止・曲変更TransitionPlanを接続する"
+    },
+    {
+      "id": "phase5-gates",
+      "status": "pending",
+      "description": "correctness/parity/reliability harnessと運用telemetryを実装する"
+    },
+    {
+      "id": "phase6-verification",
+      "status": "pending",
+      "description": "release E2E、5-run benchmark、2-job throughput、full suitesを実行しproduction候補gateを判定する"
+    }
+  ],
+  "async_audit_results": {
+    "scope": "直前に実行した3本の読み取り専用subagent監査の統合結果。監査中のソース・ドキュメント編集はなく、結果は現在のdirty working-tree snapshotに対するsource-only findingsである。HEADだけの状態を意味しない。",
+    "go_music_playlist_gpu_audit": {
+      "minimum_vertical_slice": "通常のRenderRadioTrackやRunAudioVisualizerHLSを変更せず、playlist準備処理にだけ明示的なgpu-evaluation分岐を追加する。IMAGEPAD_PLAYLIST_COMPOSITORDは既存のlive program/fallback経路の切替に使われるため、GPU evaluation modeのスイッチとして再利用しない。",
+      "existing_track_assets_mapping": [
+        "internal/playlist/playlist.go:24-46のplaylist TrackはSourcePath、MediaPath、ThumbnailPath、recipeに分散した永続asset情報を持つ。",
+        "internal/video/audio_types.go:100-109のAudioRenderInputはsource、metadata、artwork、texture、analysisを束ねるrender-job inputである。",
+        "internal/video/gpu_contracts.go:41-61および161-187はArtwork、GlyphAtlas、TextOverlay、texture metadataをGPU scene assetとして持つ。",
+        "internal/video/music_scene.go:20-34のCanonicalMusicSceneBuilderはjob lifetimeの静的asset cacheだが、TrackAssetsという単一契約ではない。",
+        "internal/video/music_scene_document.go:9-11は大きなartwork/glyphを含まないため、MusicSceneDocument単独をTrackAssetsとみなしてはならない。"
+      ],
+      "existing_timeline_mapping": [
+        "internal/video/audio_types.go:59-71のanalysis frame列、PCM、waveformがraw timeline相当である。",
+        "internal/video/music_scene_document.go:14-27,29-42,47-112にbounded document/frame contractとcanonical sceneからの生成がある。",
+        "internal/video/gpu_sidecar_process.go:559-564のH264RenderBatchFrameはsequence/PTS/sceneだけの最小transport itemである。",
+        "internal/obsrtmp/radio_program.go:35-71のProgramClockがlive program output clockを所有する。"
+      ],
+      "implementation_boundary": "最初のGo縦切りはTrackAssets、TrackTimeline、FrameDirective、TransitionRequest、TransitionPlanのvalidationとJSON roundtripをplaylist専用diagnostic入口に置き、通常CPU route guardを同時に固定する。既存H264 batch RPCを即production callerへ接続しない。",
+      "audit_tests_observed": [
+        "internal/video focused tests: 15 passed",
+        "internal/obsrtmp focused tests: 3 passed",
+        "internal/server -run TestMusicPlaylist: 36 passed",
+        "full repository suite: this audit did not run it"
+      ]
+    },
+    "rust_gpu_audit": {
+      "classification": {
+        "transport_batch": "implemented: protocol.rs defines max 8 frames and 128 MiB request; main.rs validates H.264, 1..8 frames, intra-batch contiguous sequence and ascending PTS.",
+        "command_batch": "implemented: music_v2_h264_sidecar.rs records all frames into one command encoder and performs one queue.submit.",
+        "surface_resource_ring": "implemented: eight per-slot PCM/waveform/uniform/intermediate/BGRA surface resources and eight persistent NVENC input registrations.",
+        "in_flight_ring": "not implemented: no slot state machine, pending sequence/PTS state, or per-slot NVENC output resource ring exists."
+      },
+      "critical_findings": [
+        "native_nvenc.rs has only one encoder-wide output_resource/output_registered/output_mapped/output_fence; compressed bitstream output is shared rather than slot-owned.",
+        "EncodePicture is followed in the same call by blocking LockBitstream/copy/unlock/fence confirmation at native_nvenc.rs:609-719, so render(N+1) and encode/drain(N) do not overlap.",
+        "The single input fence is signaled after the entire command batch submit, so frame 0 cannot proceed to NVENC before the batch-wide GPU completion point.",
+        "Batch-to-batch PTS validation is missing; last_sequence is tracked but last_pts_ns is not.",
+        "EncodedBatch is documented as atomic, but a failure after some pictures submit can return BatchError without poisoning the session, allowing reuse of advanced GOP/NVENC state.",
+        "pixel_readback_bytes=0 is a fixed receipt value, not an independently measured counter.",
+        "Flush does not send EOS when no frame was submitted; EOS completion has no separate completion observation; Shutdown/stdin EOF does not implicitly flush.",
+        "IDR selection depends on frame_index==0, so a session beginning at nonzero sequence may not mark its first submitted picture as IDR.",
+        "constructor rollback can drop local slots before unregistering already registered NVENC surfaces; completed struct drop order is correct, but partial initialization rollback needs a separate fix."
+      ],
+      "minimum_wire_slice": {
+        "requests": [
+          "PrepareTrack { epoch, track_id, assets: TrackAssets }",
+          "RenderTimelineBatch { batch_id, epoch, assets_hash, timeline_version, timeline: TimelineChunk, transition: Option<TransitionPlan>, output: H264Bitstream }"
+        ],
+        "types": [
+          "TrackAssets: artwork, glyph_atlas, text_overlay, layout, palette, loudness_envelope, duration_frames, assets_hash",
+          "TimelineChunk: frames bounded to at most 8 FrameControl values",
+          "FrameControl: sequence, pts_ns, spectrum_q16, waveform_q16, progress_q16, edge_fade_q16, end_fade_q16; PCM is only a compatibility option",
+          "TransitionPlan: epoch, version, source/target track, effective sequence/PTS, duration, curve, audio fade start/duration"
+        ],
+        "ack_requirements": [
+          "TrackReady { epoch, assets_hash }",
+          "EncodedBatch must include timeline_version and applied_transition_version",
+          "epoch/hash/version mismatch, transition inside already committed sequence, and batch-internal asset switch must fail before GPU submit"
+        ]
+      },
+      "true_overlap_delta": [
+        "Add Free -> RenderSubmitted -> EncoderPending -> BitstreamReady -> Free state, sequence/PTS, and render/output fence values to each H264RenderSlot.",
+        "Split encode_surface_at into submit_surface_at (EncodePicture only) and collect_surface_at (LockBitstream/copy/unlock/fence).",
+        "Replace the shared NVENC output resource with Vec<NvencIoSlot>, each owning input registration, output resource, output fence, and pending metadata.",
+        "Use internal render/output fence counters rather than deriving fence values only from external sequence.",
+        "Poison the session after any post-submit failure; never return a successful prefix as an atomic batch result.",
+        "Flush must collect all occupied slots in sequence order, confirm final fence, send EOS even for zero frames, and ACK only after delayed output drain."
+      ],
+      "audit_verification": [
+        "cargo test result observed by the audit: 88 passed, 1 ignored",
+        "No real-device NVENC probe or runtime H.264 decode/PTS/EOS verification was performed inside this read-only audit."
+      ]
+    },
+    "playlist_controller_audit": {
+      "event_sources": [
+        "GUI playlist state is local in internal/server/ui_script_music_controller.go:4-50.",
+        "stop posts /api/music/playlist/stop and next posts /api/music/playlist/next from internal/server/ui_script_playlist_controller.go:513-520.",
+        "selecting a specific track is also an effective track-change event at ui_script_playlist_controller.go:327-335.",
+        "server routes are registered in internal/server/server.go:247-262."
+      ],
+      "current_server_behavior": [
+        "next clears pause and calls SkipCurrent at internal/server/music_playlist.go:794-806.",
+        "stop clears pending state, calls radio.Stop, and clears current queue state at music_playlist.go:809-818.",
+        "SkipCurrent cancels the active feeder context at internal/obsrtmp/radio.go:942-957; generation-aware cancellation exists at :959-972 but GUI next/stop does not use it.",
+        "playlist initialization fixes output mode to program at music_playlist.go:70-89; output/session settings are snapshotted at Start and not hot-swapped."
+      ],
+      "head_and_tail_gap": [
+        "GUI elapsedSeconds is a wall-clock estimate, not decoded video currentTime or presentedFrames/mediaTime.",
+        "Server head is BaseOffsetSeconds + time.Since(TrackStartedAt), not actual muxed output PTS.",
+        "ProgramClock and radio_program_encoder own actual written video/audio PTS, but last written PTS is private and not exposed to GUI/controller.",
+        "The program decoder has a bounded 15-frame channel and FFmpeg input uses thread_queue_size=16, but queue depth, tail sequence, tail PTS, and in-flight PTS snapshots are not implemented.",
+        "synchronizedBuffer.Tail is FFmpeg stderr diagnostic state, not media queue tail."
+      ],
+      "transition_gap": [
+        "Production code has no TransitionRequest, TransitionPlan, epoch, or transition ID; only design documentation exists in docs/GPU_PLAYLIST_RENDER_MODE.html.",
+        "Current transition can fade video to black while audio becomes silence immediately; there is no shared video/audio fade plan.",
+        "Current stream/mux keeps encoder, publisher, and endpoint across track boundaries; explicit TransitionPlan-driven Flush/EOS or mux hot switch is not implemented."
+      ],
+      "minimum_controller_slice": [
+        "Replace only playlist GUI stop/next with a playlistTransition payload containing kind, sessionId, trackGeneration, epoch, and nullable displayedHead; keep single mode unchanged.",
+        "Add a playlist-only server handler that rejects stale session/generation/epoch and calls exact-generation cancellation rather than unconditional SkipCurrent.",
+        "Under one ProgramPipeline timeline mutex, snapshot successfully written head PTS, source tail PTS, queue depth, and epoch, then calculate fade start/end PTS before feeder cancel/audio-video fade begins.",
+        "Do not connect this controller slice to the ordinary music renderer."
+      ],
+      "recommended_tests": [
+        "single mode sends no transition POST; playlist stop/next sends epoch/head payload",
+        "stale epoch/session/generation returns 409 and cannot cancel the new track",
+        "stop receipt clears pending/current once",
+        "head/frame/PTS/tail/depth snapshot is internally consistent",
+        "video/audio fade start and end PTS agree",
+        "encoder/publisher/endpoint are not recreated by transition",
+        "normal CPU mux contract remains unchanged"
+      ],
+      "audit_verification": [
+        "go test ./internal/playlist: 84 passed",
+        "focused internal/obsrtmp: 5 passed",
+        "focused internal/server: 3 passed",
+        "audit created or edited no files"
+      ]
+    },
+    "updated_priority": [
+      "1. Implement Go playlist-only contract and explicit evaluation route guard.",
+      "2. Implement Rust PrepareTrack/RenderTimelineBatch wire and poisoned-session semantics.",
+      "3. Implement slot-owned NVENC output ring and split submit/collect before claiming overlap.",
+      "4. Implement playlist controller epoch/head/tail snapshot and exact-generation transition handling.",
+      "5. Add runtime trace and reliability/parity gates; only then consider production-candidate evaluation."
+    ]
+  },
+  "final_instruction_to_next_session": "このJSONは実測済み事実と設計判断を含むが、GPU新modeの実装完了を意味しない。通常CPU production routeを守り、まずGo契約のTDD縦切りから開始する。非同期監査で確認された現行Rust pathはsurface resource ringであってtrue in-flight ringではなく、playlist head/tail/PTS/epoch contractも未実装である。実行結果を必ず更新し、未検証事項を推測で埋めず、production_ready=falseを維持する。"
+}

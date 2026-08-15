@@ -42,6 +42,8 @@ pub const MUSIC_MAX_FEATURE_BINS: usize = 256;
 /// Q0.16 values keep the contract bounded while allowing the GPU shader to
 /// reconstruct the canonical waveform without a CPU-rasterized texture.
 pub const MUSIC_MAX_WAVEFORM_SAMPLES: usize = 4096;
+pub const MUSIC_PCM_WINDOW_SAMPLES: usize = 4096;
+pub const MUSIC_PCM_WINDOW_BYTES: usize = MUSIC_PCM_WINDOW_SAMPLES * 4;
 pub const MUSIC_MAX_ARTWORK_DIMENSION: u32 = 4096;
 pub const MUSIC_MAX_ARTWORK_BYTES: usize = 16 * 1024 * 1024;
 pub const MUSIC_MAX_GLYPHS: u32 = 4096;
@@ -53,6 +55,9 @@ pub const MUSIC_MAX_LOUDNESS_SAMPLES: usize = 1000;
 pub struct MusicScenePayload {
     pub schema: u16,
     pub feature: AudioFeatureFrame,
+    /// Optional for legacy scene producers; required by direct H.264.
+    #[serde(default, skip_serializing_if = "Vec::is_empty", with = "base64_bytes")]
+    pub pcm_f32le: Vec<u8>,
     #[serde(default)]
     pub artwork: Option<ArtworkMetadata>,
     #[serde(default)]
@@ -99,7 +104,7 @@ pub struct TextOverlayMetadata {
     pub format: PixelFormat,
     pub color_space: ColorSpace,
     pub premultiplied: bool,
-    #[serde(with = "base64_bytes")]
+    #[serde(default, with = "base64_bytes")]
     pub payload: Vec<u8>,
     pub asset_hash: String,
     pub renderer_id: String,
@@ -300,12 +305,70 @@ pub enum PixelFormat {
 pub enum OutputFormat {
     Rgba8,
     Yuv420p,
+    H264Bitstream,
 }
 
 impl Default for OutputFormat {
     fn default() -> Self {
         Self::Rgba8
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct H264AssetReceipt {
+    pub artwork_hash: String,
+    pub glyph_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EncodedH264Frame {
+    pub schema: u16,
+    pub sequence: u64,
+    pub pts_ns: i64,
+    pub width: u32,
+    pub height: u32,
+    pub codec: String,
+    #[serde(default)]
+    pub profile: String,
+    pub backend: String,
+    pub pixel_readback_bytes: u64,
+    pub asset_cache_ready: bool,
+    pub asset_receipt: H264AssetReceipt,
+    #[serde(with = "base64_bytes")]
+    pub payload: Vec<u8>,
+}
+
+impl EncodedH264Frame {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.schema != CONTRACT_VERSION
+            || self.width == 0
+            || self.height == 0
+            || self.width > MAX_DIMENSION
+            || self.height > MAX_DIMENSION
+        {
+            return Err("invalid encoded H264 dimensions".into());
+        }
+        if self.codec != "h264" || self.backend != "dx12" {
+            return Err("encoded H264 frame is not a DX12 H264 bitstream".into());
+        }
+        if self.pixel_readback_bytes != 0 {
+            return Err("encoded H264 frame contains GPU pixel readback".into());
+        }
+        if !self.asset_cache_ready
+            || !valid_asset_hash(&self.asset_receipt.artwork_hash)
+            || !valid_asset_hash(&self.asset_receipt.glyph_hash)
+        {
+            return Err("encoded H264 frame is missing a valid asset cache receipt".into());
+        }
+        if self.payload.is_empty() || self.payload.len() > MAX_PAYLOAD_BYTES {
+            return Err("encoded H264 payload is empty or too large".into());
+        }
+        Ok(())
+    }
+}
+
+fn valid_asset_hash(hash: &str) -> bool {
+    hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -489,6 +552,8 @@ impl MusicScenePayload {
     pub fn validate(&self) -> Result<(), ContractError> {
         if self.schema != MUSIC_SCENE_SCHEMA
             || self.feature.spectrum_q16.len() > MUSIC_MAX_FEATURE_BINS
+            || self.pcm_f32le.len() > MUSIC_PCM_WINDOW_BYTES
+            || self.pcm_f32le.len() % 4 != 0
         {
             return Err(ContractError::InvalidScene);
         }
@@ -961,5 +1026,72 @@ mod tests {
         assert_eq!(artwork.payload, vec![1, 2, 3]);
         let encoded = serde_json::to_value(&artwork).unwrap();
         assert_eq!(encoded["payload"], "AQID");
+    }
+
+    #[test]
+    fn scene_pcm_payload_round_trips_and_rejects_misaligned_bytes() {
+        let mut scene = MusicScenePayload {
+            schema: MUSIC_SCENE_SCHEMA,
+            feature: AudioFeatureFrame {
+                schema: CONTRACT_VERSION,
+                sample_rate_hz: 48000,
+                frame_index: 1,
+                pts_ns: 33333333,
+                spectrum_q16: vec![0; 24],
+                fingerprint_q16: vec![],
+                waveform_q16: vec![],
+                rms_q15: 0,
+                peak_q15: 0,
+            },
+            artwork: None,
+            base_texture: None,
+            waveform_texture: None,
+            loudness_texture: None,
+            spectrum_texture: None,
+            glyph_atlas: None,
+            text_overlay: None,
+            layout: Default::default(),
+            dynamics: Default::default(),
+            palette: Default::default(),
+            fingerprint: String::new(),
+            pcm_f32le: vec![0; MUSIC_PCM_WINDOW_BYTES],
+        };
+        assert!(scene.validate().is_ok());
+        let encoded = serde_json::to_string(&scene).unwrap();
+        let decoded: MusicScenePayload = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.pcm_f32le, scene.pcm_f32le);
+        scene.pcm_f32le = vec![0; 3];
+        assert!(scene.validate().is_err());
+    }
+
+    #[test]
+    fn encoded_h264_contract_rejects_pixels_and_wrong_backend() {
+        let good = EncodedH264Frame {
+            schema: CONTRACT_VERSION,
+            sequence: 1,
+            pts_ns: 0,
+            width: 640,
+            height: 360,
+            codec: "h264".into(),
+            profile: "High".into(),
+            backend: "dx12".into(),
+            pixel_readback_bytes: 0,
+            asset_cache_ready: true,
+            asset_receipt: H264AssetReceipt {
+                artwork_hash: "a".repeat(64),
+                glyph_hash: "b".repeat(64),
+            },
+            payload: vec![0, 0, 0, 1, 9],
+        };
+        assert!(good.validate().is_ok());
+        let mut bad = good.clone();
+        bad.pixel_readback_bytes = 1;
+        assert!(bad.validate().is_err());
+        bad = good.clone();
+        bad.backend = "vulkan".into();
+        assert!(bad.validate().is_err());
+        bad = good;
+        bad.payload.clear();
+        assert!(bad.validate().is_err());
     }
 }
