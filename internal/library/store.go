@@ -25,6 +25,7 @@ type CurrentImage struct {
 	OriginalName string    `json:"originalName"`
 	Thumbnail    string    `json:"thumbnail,omitempty"`
 	Converted    bool      `json:"converted,omitempty"`
+	Published    bool      `json:"published,omitempty"`
 	UpdatedAt    time.Time `json:"updatedAt"`
 	Title        string    `json:"title,omitempty"`
 	Artist       string    `json:"artist,omitempty"`
@@ -139,6 +140,7 @@ func (s *Store) HistoryThumbnailPath(id string) (string, HistoryItem, bool) {
 func (s *Store) SetCurrent(srcPath string, info CurrentImage) error {
 	info.ID = randomID()
 	info.UpdatedAt = time.Now()
+	info.Published = true
 	if info.Kind == "" {
 		info.Kind = "image"
 	}
@@ -198,6 +200,7 @@ func (s *Store) setCurrentInfo(info CurrentImage) error {
 
 func (s *Store) setCurrentInfoInMemory(info CurrentImage) error {
 	info.UpdatedAt = time.Now()
+	info.Published = true
 	if info.Kind == "" {
 		info.Kind = "image"
 	}
@@ -256,6 +259,7 @@ func (s *Store) SetCurrentFromHistory(id string) error {
 	srcPath := s.historyPath(*item)
 	info := item.CurrentImage
 	info.UpdatedAt = time.Now()
+	info.Published = true
 	if info.Kind == "" {
 		info.Kind = "image"
 	}
