@@ -40,12 +40,13 @@ type HistoryItem struct {
 }
 
 type Store struct {
-	dir          string
-	favoriteDir  string
-	convertedDir string
-	mu           sync.RWMutex
-	current      *CurrentImage
-	history      []HistoryItem
+	dir               string
+	favoriteDir       string
+	convertedDir      string
+	mu                sync.RWMutex
+	current           *CurrentImage
+	history           []HistoryItem
+	publishedRevision int64
 }
 
 // ResetDir removes and recreates the media workspace directory.
@@ -160,6 +161,7 @@ func (s *Store) SetCurrent(srcPath string, info CurrentImage) error {
 
 	s.mu.Lock()
 	s.current = &info
+	s.publishedRevision++
 	_ = s.addHistoryLocked(info, dstPath)
 	s.mu.Unlock()
 	return s.save()
@@ -210,6 +212,7 @@ func (s *Store) setCurrentInfoInMemory(info CurrentImage) error {
 
 	s.mu.Lock()
 	s.current = &info
+	s.publishedRevision++
 	_ = s.addHistoryLocked(info, filepath.Join(s.dir, info.FileName))
 	s.mu.Unlock()
 	return nil
@@ -293,6 +296,7 @@ func (s *Store) SetCurrentFromHistory(id string) error {
 		}
 	}
 	s.current = &info
+	s.publishedRevision++
 	return s.saveCurrentLocked()
 }
 
@@ -357,12 +361,21 @@ func (s *Store) SetPublished(id string, published bool) error {
 			continue
 		}
 		s.history[i].Published = published
+		s.publishedRevision++
 		if s.history[i].Favorite {
 			return s.saveFavoritesLocked()
 		}
 		return nil
 	}
 	return os.ErrNotExist
+}
+
+// PublishedRevision は公開状態（published 集合）の単調増加リビジョンを返す。
+// マルチクライアントの同時上書き検知（409）に使う。
+func (s *Store) PublishedRevision() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.publishedRevision
 }
 
 func (s *Store) MarkConverted(id string, files []string) error {
@@ -434,6 +447,7 @@ func (s *Store) UpdateHistorySize(id string, size int64) error {
 func (s *Store) Clear() error {
 	s.mu.Lock()
 	s.current = nil
+	s.publishedRevision++
 	s.mu.Unlock()
 
 	entries, err := os.ReadDir(s.dir)

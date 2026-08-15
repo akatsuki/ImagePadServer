@@ -67,6 +67,7 @@ const dashboardScriptStateSync = `
       state.previewImageURL = data.previewImageURL;
       state.publicImageURL = data.publicImageURL;
       state.current = data.current || null;
+      state.publishedRevision = data.publishedRevision || 0;
       state.history = data.history || [];
       state.videoQueue = data.videoQueue || [];
       state.videoQuality = data.videoQuality;

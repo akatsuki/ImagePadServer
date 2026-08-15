@@ -32,7 +32,7 @@ const dashboardScriptHistoryController = `
           const res = await apiFetch('/api/history/publish', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ id, published })
+            body: JSON.stringify({ id, published, revision: state.publishedRevision || 0 })
           });
           if (!res.ok) throw new Error(await res.text());
           state.history = await res.json();
