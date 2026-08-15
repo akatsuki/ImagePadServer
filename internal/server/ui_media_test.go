@@ -675,7 +675,7 @@ func TestMusicWorkspacePlaylistUIShowsRadioFailureStatus(t *testing.T) {
 func TestPlaylistRTSPModeStopsLocalHLSPreview(t *testing.T) {
 	html := getIndexHTML(t)
 	for _, want := range []string{
-		`const shouldShow = active && urlMode === 'hls' && plState.playing && !!plState.hlsUrl;`,
+		`const shouldShow = active && urlMode === 'hls' && plState.playing && !!plState.hlsURL;`,
 		`plUrlModeHLS.addEventListener('click', () => { urlMode = 'hls'; renderShareURL(); syncVideoPreview(); });`,
 		`plUrlModeRTSP.addEventListener('click', () => { urlMode = 'rtsp'; renderShareURL(); syncVideoPreview(); });`,
 	} {

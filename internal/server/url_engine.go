@@ -360,14 +360,8 @@ func urlForCopyTarget(state map[string]interface{}, target string) string {
 			return publicURL
 		}
 	case "plShareUrl":
-		if publicURL, ok := state["publicHlsUrl"].(string); ok && strings.HasPrefix(publicURL, "http") {
-			return publicURL
-		}
 		if publicURL, ok := state["publicHLSURL"].(string); ok && strings.HasPrefix(publicURL, "http") {
 			return publicURL
-		}
-		if hlsURL, ok := state["hlsUrl"].(string); ok && strings.HasPrefix(hlsURL, "http") {
-			return hlsURL
 		}
 		if hlsURL, ok := state["hlsURL"].(string); ok && strings.HasPrefix(hlsURL, "http") {
 			return hlsURL

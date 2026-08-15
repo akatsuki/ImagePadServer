@@ -1297,8 +1297,8 @@ func (s *Server) musicPlaylistState() map[string]interface{} {
 		"rtspUrl":                  rtspURL,
 		"rtspPublic":               rtspPublic,
 		"rtspReady":                st.RTSPReady,
-		"hlsUrl":                   hlsURL,
-		"publicHlsUrl":             publicHLSURL,
+		"hlsURL":                   hlsURL,
+		"publicHLSURL":             publicHLSURL,
 		"hlsReady":                 st.HLSReady,
 		"elapsedSeconds":           elapsed,
 	}

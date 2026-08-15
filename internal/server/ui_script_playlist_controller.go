@@ -5,7 +5,7 @@ const dashboardScriptPlaylistController = `
       let active = false;
       let pollTimer = 0;
       let clockTimer = 0;
-	let plState = { tracks: [], currentTrackId: '', running: false, playing: false, paused: false, shuffle: false, loop: false, deliveryProfile: 'rtsp-ultra', desiredDeliveryProfile: 'rtsp-ultra', activeDeliveryProfile: 'rtsp-ultra', desiredCanonicalHeight: 720, activeCanonicalHeight: 720, rtspUrl: '', rtspPublic: false, hlsUrl: '', publicHlsUrl: '', elapsedSeconds: 0 };
+	let plState = { tracks: [], currentTrackId: '', running: false, playing: false, paused: false, shuffle: false, loop: false, deliveryProfile: 'rtsp-ultra', desiredDeliveryProfile: 'rtsp-ultra', activeDeliveryProfile: 'rtsp-ultra', desiredCanonicalHeight: 720, activeCanonicalHeight: 720, rtspUrl: '', rtspPublic: false, hlsURL: '', publicHLSURL: '', elapsedSeconds: 0 };
       let plFetchedAt = 0;
       let urlMode = 'hls';
       let dragTrackId = null;
@@ -138,7 +138,7 @@ const dashboardScriptPlaylistController = `
       }
 
       function syncVideoPreview() {
-        const shouldShow = active && urlMode === 'hls' && plState.playing && !!plState.hlsUrl;
+        const shouldShow = active && urlMode === 'hls' && plState.playing && !!plState.hlsURL;
         if (plVideoWrap) plVideoWrap.classList.toggle('pl-video-live', shouldShow);
         if (plVideoEmpty) plVideoEmpty.hidden = shouldShow;
         if (!plVideoPreview) return;
@@ -237,7 +237,7 @@ const dashboardScriptPlaylistController = `
         if (!plShareUrl) return;
         const url = urlMode === 'rtsp'
           ? (plState.rtspPublic ? (plState.rtspUrl || '') : '')
-          : (plState.publicHlsUrl || plState.hlsUrl || '');
+          : (plState.publicHLSURL || plState.hlsURL || '');
         let placeholder = '再生を開始するとURLが表示されます';
         if (plState.phase === 'failed') placeholder = '失敗: ' + (plState.lastError || '詳細不明');
         else if (plState.running && urlMode === 'hls' && !plState.hlsReady) placeholder = '配信準備中';

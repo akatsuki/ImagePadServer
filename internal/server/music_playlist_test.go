@@ -179,8 +179,8 @@ func TestMusicPlaylistStateEmpty(t *testing.T) {
 	if st["running"] != false || st["playing"] != false {
 		t.Fatalf("radio must be stopped initially: %v", st)
 	}
-	if st["hlsUrl"] != "" {
-		t.Fatalf("hlsUrl must be empty while stopped, got %v", st["hlsUrl"])
+	if st["hlsURL"] != "" {
+		t.Fatalf("hlsURL must be empty while stopped, got %v", st["hlsURL"])
 	}
 }
 
@@ -872,7 +872,7 @@ func TestMusicPlaylistStartCanBeginStreamWithoutTracks(t *testing.T) {
 
 func TestMusicPlaylistCopyIgnoresUnpublishedLocalRTSP(t *testing.T) {
 	state := map[string]interface{}{
-		"hlsUrl":     "",
+		"hlsURL":     "",
 		"rtspUrl":    "rtsp://192.168.0.10:8554/radio",
 		"rtspPublic": false,
 	}
@@ -896,20 +896,20 @@ func TestMusicPlaylistURLReadinessRequiresCachedStatus(t *testing.T) {
 	}}
 	srv.radio = radio
 	state := srv.musicPlaylistState()
-	if state["rtspUrl"] != "" || state["hlsUrl"] != "" || state["publicHlsUrl"] != "" {
+	if state["rtspUrl"] != "" || state["hlsURL"] != "" || state["publicHLSURL"] != "" {
 		t.Fatalf("unready URLs must be hidden: %v", state)
 	}
 
 	radio.status.RTSPReady = true
 	radio.status.HLSReady = true
 	state = srv.musicPlaylistState()
-	if state["rtspUrl"] == "" || state["hlsUrl"] == "" {
+	if state["rtspUrl"] == "" || state["hlsURL"] == "" {
 		t.Fatalf("ready URLs must be published: %v", state)
 	}
 
 	radio.status.HLSReady = false
 	state = srv.musicPlaylistState()
-	if state["hlsUrl"] != "" || state["publicHlsUrl"] != "" {
+	if state["hlsURL"] != "" || state["publicHLSURL"] != "" {
 		t.Fatalf("lost HLS readiness must withdraw URLs: %v", state)
 	}
 }
