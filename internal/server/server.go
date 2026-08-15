@@ -264,6 +264,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/history/favorite", s.admin(s.handleHistoryFavorite))
 	mux.HandleFunc("/api/history/queue", s.admin(s.handleHistoryQueue))
 	mux.HandleFunc("/api/history/select", s.admin(s.handleHistorySelect))
+	mux.HandleFunc("/api/history/publish", s.admin(s.handleHistoryPublish))
 	mux.HandleFunc("/api/copy-url", s.admin(s.handleCopyURL))
 	mux.HandleFunc("/api/about", s.admin(s.handleAbout))
 	mux.HandleFunc("/api/update-check", s.admin(s.handleUpdateCheck))
@@ -2182,6 +2183,27 @@ func (s *Server) handleHistoryMedia(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, safeFileName(item.PublicName), item.UpdatedAt, file)
 }
 
+func (s *Server) handleHistoryPublish(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	defer s.broadcastStateChanged()
+	var req struct {
+		ID        string `json:"id"`
+		Published bool   `json:"published"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
+		http.Error(w, "invalid history publish request", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.SetPublished(req.ID, req.Published); err != nil {
+		http.Error(w, "history item not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, s.historyState())
+}
+
 func (s *Server) handleCopyURL(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -3053,6 +3075,8 @@ func (s *Server) historyState() []map[string]interface{} {
 			"updatedAt":    item.UpdatedAt,
 			"favorite":     item.Favorite,
 			"persistent":   item.Persistent,
+			"published":    item.Published,
+			"address":      s.adminPath("/pub/" + url.PathEscape(item.ID)),
 			"thumbnailURL": thumbnailURL,
 			"hasThumbnail": item.Thumbnail != "",
 		})

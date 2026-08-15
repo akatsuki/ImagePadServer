@@ -349,6 +349,22 @@ func (s *Store) SetFavorite(id string, favorite bool) error {
 	return os.ErrNotExist
 }
 
+func (s *Store) SetPublished(id string, published bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.history {
+		if s.history[i].ID != id {
+			continue
+		}
+		s.history[i].Published = published
+		if s.history[i].Favorite {
+			return s.saveFavoritesLocked()
+		}
+		return nil
+	}
+	return os.ErrNotExist
+}
+
 func (s *Store) MarkConverted(id string, files []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
