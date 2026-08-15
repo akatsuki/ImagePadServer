@@ -178,6 +178,48 @@ func TestUpdateHistorySizePersistsFavoriteSize(t *testing.T) {
 	}
 }
 
+// TestPublishedFlagPersistsForFavorite は favorite 項目の Published フラグが
+// favorites.json 経由で再起動をまたいで永続化されることを検証する。
+func TestPublishedFlagPersistsForFavorite(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dummy := filepath.Join(store.Dir(), "dummy.png")
+	if err := os.WriteFile(dummy, []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.AddHistory(dummy, CurrentImage{PublicName: "img.png", ContentType: "image/png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetPublished(item.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetFavorite(item.ID, true); err != nil {
+		t.Fatal(err)
+	}
+
+	// 再起動相当（同一 dir で NewStore → loadFavorites）
+	store2, err := NewStore(store.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, h := range store2.History() {
+		if h.ID != item.ID {
+			continue
+		}
+		found = true
+		if !h.Published {
+			t.Fatalf("favorite history Published = false after restart, want true")
+		}
+	}
+	if !found {
+		t.Fatal("favorite item not reloaded after restart")
+	}
+}
+
 func TestCurrentImageAudioMetadata(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
