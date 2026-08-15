@@ -476,6 +476,21 @@ const dashboardScriptUploadEvents = `
           await HistoryController.toggleFavoriteHistoryItem(heart.dataset.historyFavorite, favorite);
           return;
         }
+        const pubToggle = event.target.closest('[data-history-publish-toggle]');
+        if (pubToggle) {
+          event.preventDefault();
+          event.stopPropagation();
+          const published = pubToggle.getAttribute('aria-pressed') !== 'true';
+          await HistoryController.setPublishedHistoryItem(pubToggle.dataset.historyPublishToggle, published);
+          return;
+        }
+        const copyBtn = event.target.closest('[data-history-copy]');
+        if (copyBtn) {
+          event.preventDefault();
+          event.stopPropagation();
+          await HistoryController.copyAddressHistoryItem(copyBtn.dataset.historyCopy);
+          return;
+        }
       });
     }
     for (const button of wingTabButtons) {

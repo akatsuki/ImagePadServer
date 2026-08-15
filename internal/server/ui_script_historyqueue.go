@@ -90,13 +90,37 @@ const dashboardScriptHistoryQueue = `
         heart.title = item.favorite ? 'お気に入りから削除' : 'お気に入り';
         heart.setAttribute('aria-label', heart.title);
 
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'history-publish-toggle' + (item.published ? ' on' : '');
+        toggle.dataset.historyPublishToggle = item.id;
+        toggle.textContent = item.published ? '公開中' : '非公開';
+        toggle.setAttribute('aria-pressed', String(!!item.published));
+
+        actions.appendChild(toggle);
         actions.appendChild(publish);
         actions.appendChild(queue);
         actions.appendChild(heart);
 
+        const pubRow = document.createElement('div');
+        pubRow.className = 'history-address';
+        const addrText = document.createElement('span');
+        addrText.className = 'history-address-text';
+        addrText.textContent = item.published ? (item.address || '') : '非公開（ERROR INACTIVE ADDRESS）';
+        pubRow.appendChild(addrText);
+        if (item.published && item.address) {
+          const copyBtn = document.createElement('button');
+          copyBtn.type = 'button';
+          copyBtn.className = 'history-action-button secondary';
+          copyBtn.dataset.historyCopy = item.id;
+          copyBtn.textContent = 'コピー';
+          pubRow.appendChild(copyBtn);
+        }
+
         row.appendChild(thumb);
         row.appendChild(meta);
         row.appendChild(actions);
+        row.appendChild(pubRow);
         historyList.appendChild(row);
       }
     }
@@ -181,6 +205,8 @@ const dashboardScriptHistoryQueue = `
           height: item.height || 0,
           sizeBytes: item.sizeBytes || 0,
           persistent: !!item.persistent,
+          published: !!item.published,
+          address: item.address || '',
         })),
       });
     }
