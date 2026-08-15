@@ -41,6 +41,20 @@ const dashboardScriptStateSync = `
       }
     }
 
+    function coerceUploadModeForPublication(data) {
+      const obsActive = !!(data.obs && data.obs.connected);
+      const kind = data.current ? data.current.kind : '';
+      // 公開中が画像/音楽なのに OBS タブは無効 → file へ
+      if (uploadMode === 'obs' && (!obsActive || (kind && kind !== 'video'))) {
+        uploadMode = 'file';
+        return;
+      }
+      // OBS が配信中なら、他タブを obs に寄せる（別端末が開始した OBS 配信に追従）
+      if (obsActive && uploadMode !== 'obs') {
+        uploadMode = 'obs';
+      }
+    }
+
     function applyState(data) {
       state.imageURL = data.imageURL;
       state.videoURL = data.videoURL;
@@ -68,6 +82,7 @@ const dashboardScriptStateSync = `
       document.getElementById('phoneURLMobile').textContent = data.phoneURL;
       const phoneDialogURL = document.getElementById('phoneDialogURL');
       if (phoneDialogURL) phoneDialogURL.textContent = data.phoneURL;
+      coerceUploadModeForPublication(data);
       renderShareURL(state);
       document.getElementById('videoStatus').textContent = videoText(data.video);
       updateMobileProgress(data);
