@@ -300,6 +300,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/video/current.mp4", s.handleCurrentVideo)
 	mux.HandleFunc("/stream/current.m3u8", s.handleCurrentHLS)
 	mux.HandleFunc("/stream/", s.handleStream)
+	mux.HandleFunc("/pub/", s.handlePubItem)
 	mux.HandleFunc("/assets/fonts/", s.handleUIFont)
 	mux.HandleFunc("/favicon.ico", s.handleFavicon)
 	mux.HandleFunc("/app-icon.png", s.handleAppIcon)
@@ -2533,6 +2534,56 @@ func (s *Server) serveDeletedImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = jpeg.Encode(w, deletedImage(), &jpeg.Options{Quality: 90})
+}
+
+// handlePubItem は公開済み項目の安定アドレス GET /pub/{id} を配信する。
+// Published=false の項目は 404 ではなく ERROR INACTIVE ADDRESS プレースホルダを
+// 返す（HTTP 200）。
+func (s *Server) handlePubItem(w http.ResponseWriter, r *http.Request) {
+	if !publicReadAllowed(r) {
+		http.NotFound(w, r)
+		return
+	}
+	id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/pub/"), "/")
+	if u, err := url.PathUnescape(id); err == nil {
+		id = u
+	}
+	path, item, ok := s.store.HistoryPath(id)
+	if !ok || !item.Published {
+		s.serveInactivePlaceholder(w, r)
+		return
+	}
+	// 動画の HLS 配信は後続タスク。現時点では画像のみ実ファイルを配信し、
+	// 動画はプレースホルダへフォールバックする。
+	if item.Kind == "video" {
+		s.serveInactivePlaceholder(w, r)
+		return
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		s.serveInactivePlaceholder(w, r)
+		return
+	}
+	defer file.Close()
+	contentType := item.ContentType
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "no-store, max-age=0")
+	http.ServeContent(w, r, safeFileName(item.PublicName), item.UpdatedAt, file)
+}
+
+func (s *Server) serveInactivePlaceholder(w http.ResponseWriter, r *http.Request) {
+	contentType := deletedContentType(r.URL.Path)
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "no-store, max-age=0")
+	w.Header().Set("Content-Disposition", `inline; filename="inactive.jpg"`)
+	if contentType == "image/png" {
+		_ = png.Encode(w, inactiveImage())
+		return
+	}
+	_ = jpeg.Encode(w, inactiveImage(), &jpeg.Options{Quality: 90})
 }
 
 func (s *Server) handleCurrentVideo(w http.ResponseWriter, r *http.Request) {

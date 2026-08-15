@@ -260,6 +260,7 @@ func (s *Store) SetCurrentFromHistory(id string) error {
 	info := item.CurrentImage
 	info.UpdatedAt = time.Now()
 	info.Published = true
+	item.Published = true
 	if info.Kind == "" {
 		info.Kind = "image"
 	}
