@@ -361,6 +361,9 @@ func (s *Store) SetPublished(id string, published bool) error {
 			continue
 		}
 		s.history[i].Published = published
+		if s.current != nil && s.current.ID == id {
+			s.current.Published = published
+		}
 		s.publishedRevision++
 		if s.history[i].Favorite {
 			return s.saveFavoritesLocked()

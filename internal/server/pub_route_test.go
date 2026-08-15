@@ -109,3 +109,34 @@ func TestHandleHistoryPublishDetectsStaleRevision(t *testing.T) {
 		t.Fatalf("fresh revision status = %d, want 200; body=%q", rec2.Code, rec2.Body.String())
 	}
 }
+
+// TestSetPublishedSyncsCurrentFlag は SetPublished が history と current の
+// Published フラグを同期させることを検証する（単一真実源）。
+func TestSetPublishedSyncsCurrentFlag(t *testing.T) {
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(t.TempDir(), "pub.jpg")
+	if err := os.WriteFile(src, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetCurrent(src, library.CurrentImage{Kind: "image", PublicName: "pub.jpg", ContentType: "image/jpeg"}); err != nil {
+		t.Fatal(err)
+	}
+	id := store.Current().ID
+
+	if err := store.SetPublished(id, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Current().Published; got {
+		t.Fatalf("current.Published = %v after unpublish, want false", got)
+	}
+
+	if err := store.SetPublished(id, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Current().Published; !got {
+		t.Fatalf("current.Published = %v after republish, want true", got)
+	}
+}
