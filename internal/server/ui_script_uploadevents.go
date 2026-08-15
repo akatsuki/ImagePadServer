@@ -491,6 +491,14 @@ const dashboardScriptUploadEvents = `
           await HistoryController.copyAddressHistoryItem(copyBtn.dataset.historyCopy);
           return;
         }
+        const row = event.target.closest('.history-item');
+        if (row && row.dataset.historyDetail) {
+          event.preventDefault();
+          const item = (state.history || []).find((it) => it.id === row.dataset.historyDetail);
+          if (item) {
+            applyHistoryTargetMode({ historyTargetMode: item.targetMode, current: item });
+          }
+        }
       });
     }
     for (const button of wingTabButtons) {
@@ -568,9 +576,14 @@ const dashboardScriptUploadEvents = `
 
     function applyHistoryTargetMode(data) {
       const mode = data && data.historyTargetMode ? String(data.historyTargetMode) : '';
-      if (data && data.current && data.current.kind === 'video') {
+      const current = data && data.current;
+      const kind = current ? (current.kind || '') : '';
+      const sourceKind = current ? (current.sourceKind || '') : '';
+      if (kind === 'video') {
         setMediaIntent('video');
-      } else if (data && data.current) {
+      } else if (sourceKind === 'soundcloud' || sourceKind === 'local_audio' || sourceKind === 'remote_audio') {
+        setMediaIntent('music');
+      } else if (current) {
         setMediaIntent('image');
       }
       if (mode === 'link') {

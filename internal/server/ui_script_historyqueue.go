@@ -37,6 +37,7 @@ const dashboardScriptHistoryQueue = `
         const row = document.createElement('div');
         row.className = 'history-item' + (item.id === currentID ? ' current' : '');
         row.title = item.title || '';
+        row.dataset.historyDetail = item.id;
 
         const thumb = document.createElement('div');
         thumb.className = 'history-thumb';
