@@ -2580,9 +2580,15 @@ func (s *Server) handlePubItem(w http.ResponseWriter, r *http.Request) {
 		s.serveInactivePlaceholder(w, r)
 		return
 	}
-	// 動画の HLS 配信は後続タスク。現時点では画像のみ実ファイルを配信し、
-	// 動画はプレースホルダへフォールバックする。
+	// 動画の HLS 配信は後続タスク。現時点では動画プレースホルダへフォールバック
+	// し、生成不能なら画像プレースホルダへ。
 	if item.Kind == "video" {
+		if mp4 := inactiveVideoBytes(); len(mp4) > 0 {
+			w.Header().Set("Content-Type", "video/mp4")
+			w.Header().Set("Cache-Control", "no-store, max-age=0")
+			w.Write(mp4)
+			return
+		}
 		s.serveInactivePlaceholder(w, r)
 		return
 	}
