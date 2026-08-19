@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -168,7 +169,13 @@ func TestHandlePubItemVideoServesVideoPlaceholder(t *testing.T) {
 		t.Fatalf("unpublished video status = %d, want 200; body=%q", rec.Code, rec.Body.String())
 	}
 	ct := rec.Header().Get("Content-Type")
-	if strings.TrimSpace(os.Getenv("IMAGEPAD_FFMPEG")) != "" {
+	hasFFmpeg := strings.TrimSpace(os.Getenv("IMAGEPAD_FFMPEG")) != ""
+	if !hasFFmpeg {
+		if _, err := exec.LookPath("ffmpeg"); err == nil {
+			hasFFmpeg = true
+		}
+	}
+	if hasFFmpeg {
 		if ct != "video/mp4" {
 			t.Fatalf("unpublished video content-type = %q, want video/mp4", ct)
 		}
