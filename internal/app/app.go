@@ -170,6 +170,7 @@ func run(useNativeWindow bool) error {
 	srv := server.New(cfg, store, "")
 	srv.Register(mux)
 	srv.SyncOBSReceiver()
+	go srv.ReconcileHistoryThumbnails()
 	httpServer.Handler = mux
 	go measureNetworkOnce()
 

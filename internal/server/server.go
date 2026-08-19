@@ -2058,6 +2058,8 @@ func (s *Server) enqueueUploadedConversion(path, id, title string) {
 	if ok {
 		preset = s.videoQualityPresetForSourceProbe(probe)
 		totalSeconds = videoDurationSeconds(probe)
+		width, height := videoStreamDimensions(probe)
+		_ = s.store.UpdateMediaMetadata(id, probe.Duration, width, height)
 	}
 	jobID := video.EnqueueUploadedVideoForID(path, s.store.Dir(), id, title, preset, totalSeconds)
 	s.watchConversion(jobID, id)
@@ -2103,6 +2105,21 @@ func videoDurationSeconds(probe video.MediaProbe) int {
 	return secs
 }
 
+// videoStreamDimensions returns the width and height of the first decodable
+// video stream in a media probe, ignoring attached-picture streams (album art
+// embedded in audio files). It returns 0,0 when no usable video stream exists.
+func videoStreamDimensions(probe video.MediaProbe) (int, int) {
+	for _, stream := range probe.Streams {
+		if stream.CodecType != "video" || stream.AttachedPic {
+			continue
+		}
+		if stream.Width > 0 && stream.Height > 0 {
+			return stream.Width, stream.Height
+		}
+	}
+	return 0, 0
+}
+
 func soundCloudCurrentInfo(media video.DownloadedMedia, publicName, thumbnail string) library.CurrentImage {
 	return library.CurrentImage{
 		Kind:         "video",
@@ -2141,7 +2158,11 @@ func (s *Server) watchConversion(jobID, mediaID string) {
 								_ = s.store.UpdateCurrentSize(convertedSize)
 							}
 							_ = s.store.UpdateHistorySize(mediaID, convertedSize)
-							_ = s.store.MarkConverted(mediaID, files)
+							resolutions := []string{}
+							if item.Quality != "" {
+								resolutions = append(resolutions, item.Quality+"p")
+							}
+							_ = s.store.MarkConverted(mediaID, files, resolutions...)
 						}
 						s.broadcastStateChanged()
 						return
@@ -3111,28 +3132,65 @@ func (s *Server) historyState() []map[string]interface{} {
 			title = item.ID
 		}
 		thumbnailURL := s.adminPath("/history/" + url.PathEscape(item.ID))
-		if item.Thumbnail != "" {
-			thumbnailURL = s.adminPath("/history/" + url.PathEscape(item.ID) + "/thumbnail")
+		hasThumbnail := false
+		if thumbPath, _, ok := s.store.HistoryThumbnailPath(item.ID); ok {
+			if _, err := os.Stat(thumbPath); err == nil {
+				thumbnailURL = s.adminPath("/history/" + url.PathEscape(item.ID) + "/thumbnail")
+				hasThumbnail = true
+			}
 		}
 		result = append(result, map[string]interface{}{
-			"id":           item.ID,
-			"kind":         item.Kind,
-			"sourceKind":   item.SourceKind,
-			"targetMode":   historyTargetMode(item.CurrentImage),
-			"title":        title,
-			"width":        item.Width,
-			"height":       item.Height,
-			"sizeBytes":    item.SizeBytes,
-			"updatedAt":    item.UpdatedAt,
-			"favorite":     item.Favorite,
-			"persistent":   item.Persistent,
-			"published":    item.Published,
-			"address":      s.adminPath("/pub/" + url.PathEscape(item.ID)),
-			"thumbnailURL": thumbnailURL,
-			"hasThumbnail": item.Thumbnail != "",
+			"id":              item.ID,
+			"kind":            item.Kind,
+			"sourceKind":      item.SourceKind,
+			"targetMode":      historyTargetMode(item.CurrentImage),
+			"title":           title,
+			"width":           item.Width,
+			"height":          item.Height,
+			"sizeBytes":       item.SizeBytes,
+			"durationSeconds": item.Duration,
+			"resolutions":     item.Resolutions,
+			"converted":       item.Converted,
+			"updatedAt":       item.UpdatedAt,
+			"favorite":        item.Favorite,
+			"persistent":      item.Persistent,
+			"published":       item.Published,
+			"address":         s.adminPath("/pub/" + url.PathEscape(item.ID)),
+			"thumbnailURL":    thumbnailURL,
+			"hasThumbnail":    hasThumbnail,
 		})
 	}
 	return result
+}
+
+// ReconcileHistoryThumbnails regenerates history thumbnail files that are
+// referenced by metadata but missing on disk. Favorites whose thumbnail
+// file was lost (e.g. after an unfavorite/re-favorite cycle across a
+// restart) otherwise report a thumbnail URL that 404s, rendering a
+// broken image in the history UI.
+func (s *Server) ReconcileHistoryThumbnails() {
+	if !video.ToolsReady() {
+		return
+	}
+	for _, item := range s.store.History() {
+		if item.Thumbnail == "" {
+			continue
+		}
+		thumbPath, _, ok := s.store.HistoryThumbnailPath(item.ID)
+		if !ok {
+			continue
+		}
+		if _, err := os.Stat(thumbPath); err == nil {
+			continue
+		}
+		srcPath, _, ok := s.store.HistoryPath(item.ID)
+		if !ok {
+			continue
+		}
+		if err := video.GenerateThumbnail(srcPath, thumbPath); err != nil {
+			log.Printf("history thumbnail regeneration failed for %s: %v", item.ID, err)
+		}
+	}
 }
 
 func historyTargetMode(item library.CurrentImage) string {

@@ -22,9 +22,11 @@ type CurrentImage struct {
 	Width        int       `json:"width"`
 	Height       int       `json:"height"`
 	SizeBytes    int64     `json:"sizeBytes"`
+	Duration     float64   `json:"durationSeconds,omitempty"`
 	OriginalName string    `json:"originalName"`
 	Thumbnail    string    `json:"thumbnail,omitempty"`
 	Converted    bool      `json:"converted,omitempty"`
+	Resolutions  []string  `json:"resolutions,omitempty"`
 	Published    bool      `json:"published,omitempty"`
 	UpdatedAt    time.Time `json:"updatedAt"`
 	Title        string    `json:"title,omitempty"`
@@ -381,7 +383,7 @@ func (s *Store) PublishedRevision() int64 {
 	return s.publishedRevision
 }
 
-func (s *Store) MarkConverted(id string, files []string) error {
+func (s *Store) MarkConverted(id string, files []string, resolutions ...string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -409,6 +411,9 @@ func (s *Store) MarkConverted(id string, files []string) error {
 		}
 	}
 	s.history[index].Converted = true
+	if len(resolutions) > 0 {
+		s.history[index].Resolutions = append([]string(nil), resolutions...)
+	}
 	if s.history[index].Favorite {
 		_ = copyDir(filepath.Join(s.favoriteDir, "converted", id), dstDir)
 		if err := s.saveFavoritesLocked(); err != nil {
@@ -445,6 +450,55 @@ func (s *Store) UpdateHistorySize(id string, size int64) error {
 		}
 	}
 	return os.ErrNotExist
+}
+
+// UpdateMediaMetadata sets the duration and pixel dimensions for the media
+// with the given id, mirroring onto the current item when it matches. Favorites
+// are re-persisted so the values survive restarts.
+func (s *Store) UpdateMediaMetadata(id string, durationSeconds float64, width, height int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	found := false
+	favorite := false
+	for i := range s.history {
+		if s.history[i].ID != id {
+			continue
+		}
+		found = true
+		if durationSeconds > 0 {
+			s.history[i].Duration = durationSeconds
+		}
+		if width > 0 {
+			s.history[i].Width = width
+		}
+		if height > 0 {
+			s.history[i].Height = height
+		}
+		favorite = s.history[i].Favorite
+	}
+	if s.current != nil && s.current.ID == id {
+		found = true
+		if durationSeconds > 0 {
+			s.current.Duration = durationSeconds
+		}
+		if width > 0 {
+			s.current.Width = width
+		}
+		if height > 0 {
+			s.current.Height = height
+		}
+	}
+	if !found {
+		return os.ErrNotExist
+	}
+	if favorite {
+		return s.saveFavoritesLocked()
+	}
+	if s.current != nil && s.current.ID == id {
+		return s.saveCurrentLocked()
+	}
+	return nil
 }
 
 func (s *Store) Clear() error {

@@ -563,6 +563,32 @@ const dashboardCSSComponents = `
       border-radius: var(--radius-small);
       font-size: 12px;
     }
+    .history-address {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      padding: 3px 6px;
+      border-radius: calc(var(--radius-small) - 1px);
+      background: var(--control-bg);
+    }
+    .history-address-text {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .history-address .history-action-button {
+      flex: 0 0 auto;
+      min-height: 24px;
+      padding: 0 6px;
+      font-size: 11px;
+    }
     .queue-item {
       display: grid;
       gap: 6px;

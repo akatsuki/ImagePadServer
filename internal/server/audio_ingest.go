@@ -80,6 +80,7 @@ func (s *Server) processAudioFileAndPublish(r *http.Request, acquired video.Acqu
 	if err != nil {
 		return nil, fmt.Errorf("analyze audio: %w", err)
 	}
+	_ = s.store.UpdateMediaMetadata(currentID, analysis.Duration, 0, 0)
 
 	input := video.AudioRenderInput{
 		SourcePath:  acquired.SourcePath,
@@ -146,6 +147,7 @@ func (s *Server) processAudioFileAndQueue(r *http.Request, acquired video.Acquir
 	if err != nil {
 		return nil, fmt.Errorf("failed to add to history")
 	}
+	_ = s.store.UpdateMediaMetadata(historyItem.ID, analysis.Duration, 0, 0)
 
 	if historyPath, _, ok := s.store.HistoryPath(historyItem.ID); ok {
 		// Use history thumbnail if available, otherwise artwork.

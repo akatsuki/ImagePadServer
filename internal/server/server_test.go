@@ -726,6 +726,72 @@ func TestStateDefaultsToImageURLForPendingStillConversion(t *testing.T) {
 	}
 }
 
+func TestHistoryStateReportsThumbnailOnlyWhenFileExists(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	thumbSource := filepath.Join(store.Dir(), "thumb-source.jpg")
+	if err := os.WriteFile(thumbSource, []byte("jpeg"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	srcPath := filepath.Join(t.TempDir(), "video.mp4")
+	if err := os.WriteFile(srcPath, []byte("video"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.AddHistory(srcPath, library.CurrentImage{
+		Kind:       "video",
+		FileName:   "video.mp4",
+		PublicName: "video.mp4",
+		Thumbnail:  "thumb-source.jpg",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	thumbFile := filepath.Join(store.Dir(), "thumb-"+created.ID+".jpg")
+
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+
+	find := func() map[string]interface{} {
+		for _, it := range srv.historyState() {
+			if id, _ := it["id"].(string); id == created.ID {
+				return it
+			}
+		}
+		return nil
+	}
+
+	it := find()
+	if it == nil {
+		t.Fatal("history item not found")
+	}
+	if it["hasThumbnail"] != true {
+		t.Fatalf("hasThumbnail = %v, want true while thumbnail file exists", it["hasThumbnail"])
+	}
+	if u, _ := it["thumbnailURL"].(string); !strings.Contains(u, "/thumbnail") {
+		t.Fatalf("thumbnailURL = %q, want /thumbnail", u)
+	}
+
+	if err := os.Remove(thumbFile); err != nil {
+		t.Fatal(err)
+	}
+
+	it = find()
+	if it == nil {
+		t.Fatal("history item not found after thumbnail removal")
+	}
+	if it["hasThumbnail"] != false {
+		t.Fatalf("hasThumbnail = %v, want false once thumbnail file is missing", it["hasThumbnail"])
+	}
+	if u, _ := it["thumbnailURL"].(string); strings.Contains(u, "/thumbnail") {
+		t.Fatalf("thumbnailURL = %q, want media URL fallback (no /thumbnail)", u)
+	}
+}
+
 func TestPublishingVideoThenImageUsesImageURLAndCancelsVideoJob(t *testing.T) {
 	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
 	t.Setenv("IMAGEPAD_FFMPEG", slowFFmpegPath(t))

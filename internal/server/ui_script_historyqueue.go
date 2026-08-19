@@ -107,7 +107,7 @@ const dashboardScriptHistoryQueue = `
         pubRow.className = 'history-address';
         const addrText = document.createElement('span');
         addrText.className = 'history-address-text';
-        addrText.textContent = item.published ? (item.address || '') : '非公開（ERROR INACTIVE ADDRESS）';
+        addrText.textContent = item.published ? (item.address || '') : '非公開';
         pubRow.appendChild(addrText);
         if (item.published && item.address) {
           const copyBtn = document.createElement('button');
@@ -198,6 +198,7 @@ const dashboardScriptHistoryQueue = `
         items: (items || []).map((item) => ({
           id: item.id || '',
           kind: item.kind || '',
+          sourceKind: item.sourceKind || '',
           title: item.title || '',
           thumbnailURL: item.thumbnailURL || '',
           hasThumbnail: !!item.hasThumbnail,
@@ -205,6 +206,9 @@ const dashboardScriptHistoryQueue = `
           width: item.width || 0,
           height: item.height || 0,
           sizeBytes: item.sizeBytes || 0,
+          durationSeconds: item.durationSeconds || 0,
+          resolutions: item.resolutions || [],
+          converted: !!item.converted,
           persistent: !!item.persistent,
           published: !!item.published,
           address: item.address || '',
@@ -251,12 +255,26 @@ const dashboardScriptHistoryQueue = `
 
     function historyDetail(item) {
       const parts = [];
-      if (item.kind === 'video') {
+      const musicKinds = ['music', 'soundcloud', 'local_audio', 'remote_audio'];
+      const isMusic = musicKinds.indexOf(item.sourceKind) >= 0;
+      const isVideo = item.kind === 'video' && !isMusic;
+      const isImage = item.kind !== 'video';
+
+      if (isVideo) {
         parts.push('動画');
-      } else if (item.width && item.height) {
-        parts.push(item.width + ' x ' + item.height);
+      } else if (isMusic) {
+        parts.push('音楽');
       } else {
         parts.push('画像');
+      }
+      if ((isVideo || isImage) && item.width && item.height) {
+        parts.push(item.width + ' x ' + item.height);
+      }
+      if ((isVideo || isMusic) && item.durationSeconds) {
+        parts.push(formatMediaDuration(item.durationSeconds));
+      }
+      if ((isVideo || isMusic) && item.resolutions && item.resolutions.length) {
+        parts.push('対応 ' + item.resolutions.join(', '));
       }
       if (item.sizeBytes) {
         const mb = item.sizeBytes / 1024 / 1024;
@@ -266,6 +284,17 @@ const dashboardScriptHistoryQueue = `
         parts.push('保存済み');
       }
       return parts.join(' / ');
+    }
+
+    function formatMediaDuration(seconds) {
+      const total = Math.max(0, Math.round(seconds || 0));
+      const m = Math.floor(total / 60);
+      const s = total % 60;
+      if (m >= 60) {
+        const h = Math.floor(m / 60);
+        return h + ':' + String(m % 60).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+      }
+      return m + ':' + String(s).padStart(2, '0');
     }
 
     function ingestPhaseLabel(phase) {
