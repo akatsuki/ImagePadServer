@@ -94,18 +94,21 @@ func ytdlpConcurrentFragments(rawURL string) string {
 }
 
 // ytdlpDownloadAttempts returns the ordered sets of extra yt-dlp args to try for
-// rawURL. For YouTube it impersonates a browser (the default android_vr client
-// 403s for some users) and lets yt-dlp try multiple player clients (web,
-// web_safari, android_vr) so a single client returning an empty format list
-// does not fail the whole download. Each impersonation target is a separate
-// attempt, so the caller stops at the first success. Other sites get a single
-// attempt with no extra args to avoid impersonation side effects on their
-// extractors.
+// rawURL. For YouTube the first attempt uses yt-dlp's default client selection
+// (visionos/... in current builds), which is the path upstream tests against and
+// the one most likely to avoid the HTTP 403 that web-family clients now trigger.
+// If that fails, it impersonates a browser (safari, chrome, firefox) and lets
+// yt-dlp try multiple player clients (web, web_safari, android_vr) so a single
+// client returning an empty format list does not fail the whole download. Each
+// attempt is a separate invocation, so the caller stops at the first success.
+// Other sites get a single attempt with no extra args to avoid impersonation
+// side effects on their extractors.
 func ytdlpDownloadAttempts(rawURL string) [][]string {
 	if !isYouTubeURL(rawURL) {
 		return [][]string{nil}
 	}
-	sets := make([][]string, 0, len(youtubeImpersonateTargets))
+	sets := make([][]string, 0, len(youtubeImpersonateTargets)+1)
+	sets = append(sets, []string{}) // default client selection (no impersonation / no client pin)
 	for _, target := range youtubeImpersonateTargets {
 		sets = append(sets, []string{
 			"--impersonate", target,

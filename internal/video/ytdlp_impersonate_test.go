@@ -53,14 +53,17 @@ func TestRunYTDLPDownloadYouTubeFallsBackThroughTargets(t *testing.T) {
 	oldRun := runDownloadCmd
 	defer func() { runDownloadCmd = oldRun }()
 	var targets []string
+	var attempts int
 	runDownloadCmd = func(_ string, args ...string) error {
+		attempts++
 		for i := 0; i < len(args)-1; i++ {
 			if args[i] == "--impersonate" {
 				targets = append(targets, args[i+1])
 			}
 		}
-		// Fail safari, succeed on chrome (the second target).
-		if targets[len(targets)-1] == "safari" {
+		// Fail the default attempt and safari, succeed on chrome (the third
+		// attempt: default -> safari -> chrome).
+		if attempts < 3 {
 			return errStub
 		}
 		return nil
@@ -68,8 +71,11 @@ func TestRunYTDLPDownloadYouTubeFallsBackThroughTargets(t *testing.T) {
 	if err := runYTDLPDownload("yt-dlp", "https://www.youtube.com/watch?v=x", []string{"-o", "out"}); err != nil {
 		t.Fatal(err)
 	}
+	if attempts != 3 {
+		t.Fatalf("attempts = %d, want 3 (default, safari, chrome)", attempts)
+	}
 	if len(targets) != 2 || targets[0] != "safari" || targets[1] != "chrome" {
-		t.Fatalf("impersonation order = %v, want [safari chrome] (stop at first success)", targets)
+		t.Fatalf("impersonation order = %v, want [safari chrome] (default attempt has no impersonation)", targets)
 	}
 }
 
@@ -151,8 +157,11 @@ func TestRunYTDLPDownloadStopsAfterYouTubeBotCheck(t *testing.T) {
 	if len(report.Attempts) != 1 {
 		t.Fatalf("attempts = %d, want 1 after bot check", len(report.Attempts))
 	}
-	if report.Attempts[0].ImpersonateTarget != "safari" || !strings.Contains(strings.Join(report.Attempts[0].Args, " "), "youtube:player_client=") {
-		t.Fatalf("first attempt not captured: %+v", report.Attempts[0])
+	if report.Attempts[0].ImpersonateTarget != "" {
+		t.Fatalf("first attempt should be the default client selection (no impersonation), got %+v", report.Attempts[0])
+	}
+	if strings.Contains(strings.Join(report.Attempts[0].Args, " "), "youtube:player_client=") {
+		t.Fatalf("first attempt should not pin player clients, got %+v", report.Attempts[0])
 	}
 	if report.Attempts[0].Class != "youtube_bot_check" {
 		t.Fatalf("attempt class = %q", report.Attempts[0].Class)
@@ -182,7 +191,14 @@ func TestRunYTDLPDownloadDoesNotWriteDiagnosticForNonYouTubeFailure(t *testing.T
 }
 
 func TestYouTubeAttemptsForceMultiClient(t *testing.T) {
-	for _, set := range ytdlpDownloadAttempts("https://youtu.be/x") {
+	sets := ytdlpDownloadAttempts("https://youtu.be/x")
+	if len(sets) != len(youtubeImpersonateTargets)+1 {
+		t.Fatalf("attempts = %d, want %d (default + one per impersonation target)", len(sets), len(youtubeImpersonateTargets)+1)
+	}
+	if joined := strings.Join(sets[0], " "); joined != "" {
+		t.Errorf("first attempt should be the default client selection (no extra args), got %q", joined)
+	}
+	for _, set := range sets[1:] {
 		joined := strings.Join(set, " ")
 		if !strings.Contains(joined, "youtube:player_client=") {
 			t.Errorf("attempt %q does not pin player clients", joined)
