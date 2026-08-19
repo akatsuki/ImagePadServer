@@ -89,7 +89,7 @@ func (s *Server) acquireDownloadedSoundCloud(ctx context.Context, media video.Do
 var ensureFFprobePath = video.EnsureFFprobe
 
 var musicURLAcquirer = func(ctx context.Context, s *Server, rawURL string) (video.AcquiredAudio, error) {
-	ytdlp, err := video.EnsureYTDLP()
+	ytdlp, err := video.ResolveYTDLP()
 	if err != nil {
 		return video.AcquiredAudio{}, err
 	}

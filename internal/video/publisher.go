@@ -936,7 +936,7 @@ func cancelQueue(outDir string) {
 // falls back to the file name when the title is unavailable. The returned
 // thumbnailPath is the yt-dlp-written thumbnail image (if any).
 func downloadVideoURL(rawURL, outDir string) (sourcePath, name, thumbnailPath string, err error) {
-	exe, err := EnsureYTDLP()
+	exe, err := ResolveYTDLP()
 	if err != nil {
 		return "", "", "", err
 	}

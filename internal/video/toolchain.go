@@ -37,12 +37,18 @@ const (
 	// pinned download URL above). A previous app version's bundle is migrated
 	// forward only when its ffmpeg reports this exact version; otherwise the
 	// newer pinned build is downloaded instead.
-	ffmpegPinnedVersion  = "8.1.1"
-	ytdlpDownloadURL     = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
-	ytdlpMacOSURL        = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos"
-	ytdlpSHA256SumsURL   = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS"
-	ffmpegDownloadSHA256 = ""
-	ytdlpDownloadSHA256  = ""
+	ffmpegPinnedVersion = "8.1.1"
+	ytdlpDownloadURL    = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+	ytdlpMacOSURL       = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos"
+	ytdlpSHA256SumsURL  = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS"
+	// Nightly build stream, used as a one-shot fallback when the stable
+	// release hits a YouTube bot-check / HTTP 403 / PO-token failure (see
+	// runYTDLPNightlyFallback). Downloaded on demand; failures are non-fatal.
+	ytdlpNightlyDownloadURL   = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
+	ytdlpNightlyMacOSURL      = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp_macos"
+	ytdlpNightlySHA256SumsURL = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
+	ffmpegDownloadSHA256      = ""
+	ytdlpDownloadSHA256       = ""
 )
 
 // executableName returns base with the OS-specific executable extension.
@@ -256,6 +262,10 @@ func localYTDLPPath() string {
 	return filepath.Join(toolVersionDir(), executableName("yt-dlp"))
 }
 
+func nightlyYTDLPPath() string {
+	return filepath.Join(toolVersionDir(), executableName("yt-dlp-nightly"))
+}
+
 func ytdlpAssetName() string {
 	if runtime.GOOS == "darwin" {
 		return "yt-dlp_macos"
@@ -377,6 +387,48 @@ func EnsureLatestYTDLP() (string, bool, error) {
 		return "", false, err
 	}
 	return path, true, nil
+}
+
+// EnsureNightlyYTDLP returns the nightly yt-dlp build path, downloading it
+// (best-effort) if missing or invalid. It is never fatal at startup and is
+// only invoked on demand by the nightly fallback or an explicit "nightly"
+// channel selection.
+func EnsureNightlyYTDLP() (string, error) {
+	target := nightlyYTDLPPath()
+	if validateToolExecutable(target, "--version") == nil {
+		return target, nil
+	}
+	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
+		return "", fmt.Errorf("automatic yt-dlp nightly download is unsupported on %s", runtime.GOOS)
+	}
+	ytdlpBundleMu.Lock()
+	defer ytdlpBundleMu.Unlock()
+	if validateToolExecutable(target, "--version") == nil {
+		return target, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+		return "", fmt.Errorf("failed to prepare yt-dlp nightly folder: %w", err)
+	}
+	checksum, err := remoteNightlySHA256For(ytdlpAssetName())
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve yt-dlp nightly checksum: %w", err)
+	}
+	rawURL := ytdlpNightlyDownloadURL
+	if runtime.GOOS == "darwin" {
+		rawURL = ytdlpNightlyMacOSURL
+	}
+	installBegin("yt-dlp")
+	if err := downloadExecutable(target, rawURL, 50<<20, checksum); err != nil {
+		installFail(err.Error())
+		return "", fmt.Errorf("failed to download yt-dlp nightly: %w", err)
+	}
+	if err := validateExecutable(target, "--version"); err != nil {
+		_ = os.Remove(target)
+		installFail(err.Error())
+		return "", err
+	}
+	installDone()
+	return target, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -712,8 +764,16 @@ func downloadExecutable(path, rawURL string, maxBytes int64, expectedSHA256 stri
 }
 
 func remoteSHA256For(fileName string) (string, error) {
+	return remoteSHA256From(ytdlpSHA256SumsURL, fileName)
+}
+
+func remoteNightlySHA256For(fileName string) (string, error) {
+	return remoteSHA256From(ytdlpNightlySHA256SumsURL, fileName)
+}
+
+func remoteSHA256From(sumsURL, fileName string) (string, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
-	req, err := http.NewRequest(http.MethodGet, ytdlpSHA256SumsURL, nil)
+	req, err := http.NewRequest(http.MethodGet, sumsURL, nil)
 	if err != nil {
 		return "", err
 	}

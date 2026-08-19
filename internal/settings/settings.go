@@ -26,6 +26,7 @@ type Settings struct {
 	OBSStreamKey                 string        `json:"obsStreamKey,omitempty"`
 	OBSLatencyMode               string        `json:"obsLatencyMode,omitempty"`
 	OBSDVREnabled                bool          `json:"obsDVREnabled,omitempty"`
+	YTDLPChannel                 string        `json:"ytdlpChannel,omitempty"`
 	RelayDevices                 []RelayDevice `json:"relayDevices,omitempty"`
 }
 
@@ -70,6 +71,17 @@ func NormalizeMusicPlaylistCanonicalHeight(height int) int {
 		return height
 	default:
 		return 720
+	}
+}
+
+// NormalizeYTDLPChannel normalizes a yt-dlp update-channel preference to one of
+// "auto" (default), "stable", or "nightly". Unknown values fall back to "auto".
+func NormalizeYTDLPChannel(channel string) string {
+	switch strings.ToLower(strings.TrimSpace(channel)) {
+	case "stable", "nightly":
+		return strings.ToLower(strings.TrimSpace(channel))
+	default:
+		return "auto"
 	}
 }
 

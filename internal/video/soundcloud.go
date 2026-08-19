@@ -101,7 +101,7 @@ func DownloadMediaURL(rawURL, outDir string) (DownloadedMedia, error) {
 		}, nil
 	}
 
-	exe, err := EnsureYTDLP()
+	exe, err := ResolveYTDLP()
 	if err != nil {
 		return DownloadedMedia{}, err
 	}

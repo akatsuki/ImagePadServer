@@ -52,6 +52,15 @@ const dashboardScriptSettings = `
       ytdlpAuthInitialized = true;
       ytdlpAuthWasSaved = saved;
     }
+    function updateYTDLPChannelState() {
+      const channel = state.ytdlpChannel || {};
+      const mode = channel.mode === 'stable' || channel.mode === 'nightly' ? channel.mode : 'auto';
+      if (ytdlpChannelSelect) ytdlpChannelSelect.value = mode;
+      if (ytdlpChannelStatus) {
+        const current = channel.current === 'nightly' ? 'ナイトリー版' : '安定版';
+        ytdlpChannelStatus.textContent = '現在: ' + current + (channel.autoSwitched ? '（自動切替）' : '');
+      }
+    }
     function normalizedThemePreference(value) {
       return value === 'light' || value === 'dark' || value === 'system' ? value : 'system';
     }
@@ -92,6 +101,7 @@ const dashboardScriptSettings = `
     function showSettingsModal() {
       if (!settingsModal) return;
       updateYTDLPAuthState();
+      updateYTDLPChannelState();
       applyThemePreference(currentThemePreference(), false);
       openManagedModal(settingsModal, settingsCloseButton || ytdlpLoginButton, settingsButton);
     }
@@ -182,6 +192,21 @@ const dashboardScriptSettings = `
     if (ytdlpLoginButton) ytdlpLoginButton.addEventListener('click', loginYTDLP);
     if (toastYTDLPLoginButton) toastYTDLPLoginButton.addEventListener('click', loginYTDLP);
     if (ytdlpCookieDeleteButton) ytdlpCookieDeleteButton.addEventListener('click', deleteYTDLPCookies);
+    if (ytdlpChannelSelect) ytdlpChannelSelect.addEventListener('change', async () => {
+      try {
+        const res = await apiFetch('/api/ytdlp/channel', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ channel: ytdlpChannelSelect.value })
+        });
+        if (!res.ok) throw new Error(await res.text());
+        state.ytdlpChannel = await res.json();
+        updateYTDLPChannelState();
+        toast.textContent = 'yt-dlp更新チャネルを更新しました';
+      } catch (error) {
+        toast.textContent = error.message || 'yt-dlp更新チャネルの更新に失敗しました';
+      }
+    });
     const quitButtons = [document.getElementById('quitHeaderButton'), document.getElementById('quitButton')].filter(Boolean);
     quitButtons.forEach((quitButton) => {
       quitButton.addEventListener('click', async () => {

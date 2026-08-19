@@ -108,6 +108,9 @@ func TestRunYTDLPDownloadStopsAfterYouTubeBotCheck(t *testing.T) {
 
 	oldRun := runDownloadCmd
 	defer func() { runDownloadCmd = oldRun }()
+	oldResolver := nightlyYTDLPResolver
+	defer func() { nightlyYTDLPResolver = oldResolver }()
+	nightlyYTDLPResolver = func() (string, error) { return "", errors.New("nightly unavailable") }
 	var calls int
 	runDownloadCmd = func(_ string, args ...string) error {
 		calls++

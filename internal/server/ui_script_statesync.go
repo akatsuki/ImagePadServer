@@ -76,6 +76,7 @@ const dashboardScriptStateSync = `
       state.obs = data.obs || null;
       state.pairing = data.pairing || null;
       state.ytdlpAuth = data.ytdlpAuth || null;
+      state.ytdlpChannel = data.ytdlpChannel || null;
       state.toolInstall = data.toolInstall || null;
       state.videoPlayerEnabled = !!(data.videoPlayer && data.videoPlayer.enabled);
       state.musicModeEnabled = !!(data.videoPlayer && data.videoPlayer.musicModeEnabled);
@@ -93,6 +94,7 @@ const dashboardScriptStateSync = `
       applyOBS(data.obs);
       applyPairing(data.pairing);
       updateYTDLPAuthState();
+      updateYTDLPChannelState();
       applyOBSProtection();
       const publicStatus = publicText(data.tunnel, data.upnp);
       const publicStatusEl = document.getElementById('upnpText');

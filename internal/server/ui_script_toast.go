@@ -19,6 +19,7 @@ const dashboardScriptToast = `
       obs: null,
       pairing: null,
       ytdlpAuth: null,
+      ytdlpChannel: null,
       currentID: "",
       obsPreviewID: "",
       obsPreviewURL: "",

@@ -462,6 +462,17 @@ const indexHTML = `<!doctype html>
           </div>
           <button type="button" class="warn" id="ytdlpCookieDeleteButton">Cookie削除</button>
         </div>
+        <div class="settings-row">
+          <div>
+            <strong>yt-dlp 更新チャネル</strong>
+            <p>BOT認証などで安定版が失敗した時、自動でナイトリー版へ切り替えます。<span id="ytdlpChannelStatus"></span></p>
+          </div>
+          <select id="ytdlpChannelSelect">
+            <option value="auto">自動（推奨）</option>
+            <option value="stable">安定版</option>
+            <option value="nightly">ナイトリー版</option>
+          </select>
+        </div>
       </div>
       <div class="settings-section">
         <div class="settings-section-title">アプリ情報</div>

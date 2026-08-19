@@ -117,10 +117,33 @@ func ytdlpDownloadAttempts(rawURL string) [][]string {
 
 // runYTDLPDownload runs yt-dlp for rawURL, retrying YouTube downloads across the
 // browser impersonation targets until one succeeds. baseArgs must not include
-// the URL (it is appended last). Non-YouTube URLs run exactly once.
+// the URL (it is appended last). Non-YouTube URLs run exactly once. When a
+// YouTube download fails with a bot-check / HTTP 403 / PO-token error that
+// impersonation cannot fix, it falls back to a nightly yt-dlp build once
+// before giving up.
 func runYTDLPDownload(exe, rawURL string, baseArgs []string) error {
-	var lastErr error
+	lastErr, attempts := runYTDLPAttempts(exe, rawURL, baseArgs)
+	if lastErr == nil {
+		return nil
+	}
+	if isYouTubeURL(rawURL) && ytdlpNightlyFallbackClass(classifyYTDLPError(lastErr.Error())) {
+		if runYTDLPNightlyFallback(exe, rawURL, baseArgs) == nil {
+			return nil
+		}
+	}
+	if isYouTubeURL(rawURL) {
+		writeYTDLPFailureDiagnostic(rawURL, exe, ytdlpauth.Status().Saved, attempts)
+	}
+	return lastErr
+}
+
+// runYTDLPAttempts runs the impersonation loop for exe (no nightly fallback).
+// On a YouTube bot-check it fails fast: further impersonation targets cannot
+// resolve a login/bot-check problem. It returns the last error and the
+// diagnostic attempts collected.
+func runYTDLPAttempts(exe, rawURL string, baseArgs []string) (error, []ytdlpAttemptDiagnostic) {
 	isYouTube := isYouTubeURL(rawURL)
+	var lastErr error
 	var attempts []ytdlpAttemptDiagnostic
 	for _, extra := range ytdlpDownloadAttempts(rawURL) {
 		args := make([]string, 0, len(baseArgs)+len(extra)+1)
@@ -131,29 +154,58 @@ func runYTDLPDownload(exe, rawURL string, baseArgs []string) error {
 		args = append(args, ytdlpauth.SavedCookieArgs()...)
 		args = append(args, extra...)
 		args = append(args, rawURL)
-		if err := runDownloadCmd(exe, args...); err == nil {
-			return nil
-		} else {
-			lastErr = err
-			if isYouTube {
-				class := classifyYTDLPError(err.Error())
-				attempts = append(attempts, ytdlpAttemptDiagnostic{
-					ImpersonateTarget: impersonateTargetFromArgs(args),
-					Args:              append([]string(nil), args...),
-					Error:             err.Error(),
-					Class:             class,
-				})
-				if class == "youtube_bot_check" {
-					writeYTDLPFailureDiagnostic(rawURL, exe, ytdlpauth.Status().Saved, attempts)
-					return err
-				}
+		err := runDownloadCmd(exe, args...)
+		if err == nil {
+			return nil, attempts
+		}
+		lastErr = err
+		if isYouTube {
+			class := classifyYTDLPError(err.Error())
+			attempts = append(attempts, ytdlpAttemptDiagnostic{
+				ImpersonateTarget: impersonateTargetFromArgs(args),
+				Args:              append([]string(nil), args...),
+				Error:             err.Error(),
+				Class:             class,
+			})
+			if class == "youtube_bot_check" {
+				return err, attempts
 			}
 		}
 	}
-	if isYouTube && lastErr != nil {
-		writeYTDLPFailureDiagnostic(rawURL, exe, ytdlpauth.Status().Saved, attempts)
+	return lastErr, attempts
+}
+
+// ytdlpNightlyFallbackClass reports whether class justifies a one-shot nightly
+// fallback. These are the YouTube failures a newer yt-dlp build can plausibly
+// fix (extractor/PO-token/anti-bot changes); network/timeout/format errors are
+// deliberately excluded.
+func ytdlpNightlyFallbackClass(class string) bool {
+	switch class {
+	case "youtube_bot_check", "http_403", "youtube_po_token_missing":
+		return true
+	default:
+		return false
 	}
-	return lastErr
+}
+
+// runYTDLPNightlyFallback re-runs the download against a freshly ensured
+// nightly yt-dlp build. On success it sets the session-scoped auto-nightly flag
+// so subsequent downloads resolve to nightly directly. It is best-effort: if
+// the nightly binary cannot be acquired (or equals the stable exe), it returns
+// an error and the caller keeps the original failure.
+func runYTDLPNightlyFallback(stableExe, rawURL string, baseArgs []string) error {
+	nightly, err := nightlyYTDLPResolver()
+	if err != nil {
+		return err
+	}
+	if nightly == stableExe {
+		return fmt.Errorf("yt-dlp nightly fallback resolved to the stable binary")
+	}
+	if err, _ := runYTDLPAttempts(nightly, rawURL, baseArgs); err != nil {
+		return err
+	}
+	SetYTDLPAutoNightly()
+	return nil
 }
 
 func writeYTDLPFailureDiagnostic(rawURL, exe string, usedCookies bool, attempts []ytdlpAttemptDiagnostic) {

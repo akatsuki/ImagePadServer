@@ -247,6 +247,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/quit", s.admin(s.handleQuit))
 	mux.HandleFunc("/api/ytdlp/login", s.admin(s.handleYTDLPLogin))
 	mux.HandleFunc("/api/ytdlp/cookies", s.admin(s.handleYTDLPCookies))
+	mux.HandleFunc("/api/ytdlp/channel", s.admin(s.handleYTDLPChannel))
 	mux.HandleFunc("/api/upload", s.admin(s.handleUpload))
 	mux.HandleFunc("/api/upload-queue", s.admin(s.handleUploadQueue))
 	mux.HandleFunc("/api/upload-url", s.admin(s.handleUploadURL))
@@ -722,6 +723,33 @@ func (s *Server) handleYTDLPCookies(w http.ResponseWriter, r *http.Request) {
 		}
 		s.broadcastStateChanged()
 		writeJSON(w, ytdlpauth.Status())
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleYTDLPChannel(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, video.YTDLPChannelState())
+	case http.MethodPost:
+		var body struct {
+			Channel string `json:"channel"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		channel := settings.NormalizeYTDLPChannel(body.Channel)
+		if err := settings.Update(func(st *settings.Settings) error {
+			st.YTDLPChannel = channel
+			return nil
+		}); err != nil {
+			http.Error(w, "failed to save yt-dlp channel: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		s.broadcastStateChanged()
+		writeJSON(w, video.YTDLPChannelState())
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
@@ -3022,6 +3050,7 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 		"pairing":           s.pairingState(),
 		"videoQueue":        s.videoQueueState(),
 		"ytdlpAuth":         ytdlpauth.Status(),
+		"ytdlpChannel":      video.YTDLPChannelState(),
 		"ingest":            s.ingestState(),
 		"toolInstall":       video.ToolInstallStatus(),
 		"current":           current,
@@ -3060,6 +3089,7 @@ func (s *Server) stateWithMedia(r *http.Request, current *library.CurrentImage, 
 		"pairing":           s.pairingState(),
 		"videoQueue":        s.videoQueueState(),
 		"ytdlpAuth":         ytdlpauth.Status(),
+		"ytdlpChannel":      video.YTDLPChannelState(),
 		"ingest":            s.ingestState(),
 		"toolInstall":       video.ToolInstallStatus(),
 		"current":           current,
