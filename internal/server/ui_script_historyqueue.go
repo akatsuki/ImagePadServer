@@ -16,6 +16,23 @@ const dashboardScriptHistoryQueue = `
       HistoryController.render(state);
     }
 
+    function historyActionIcon(kind) {
+      switch (kind) {
+        case 'published':
+          return '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.2 2.4 3.3 5.4 3.3 9S14.2 18.6 12 21c-2.2-2.4-3.3-5.4-3.3-9S9.8 5.4 12 3Z"/></svg>';
+        case 'unpublished':
+          return '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M3 3l18 18"/></svg>';
+        case 'preview':
+          return '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.5"/></svg>';
+        case 'convert':
+          return '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M3 15h18M8 4v5M16 4v5M8 15v5M16 15v5"/></svg>';
+        case 'link':
+          return '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M10 13.5a4 4 0 0 0 5.7.1l2.8-2.8a4 4 0 0 0-5.7-5.7l-1.6 1.6"/><path d="M14 10.5a4 4 0 0 0-5.7-.1l-2.8 2.8a4 4 0 0 0 5.7 5.7l1.6-1.6"/></svg>';
+        default:
+          return '';
+      }
+    }
+
     function renderHistory(items, currentID) {
       if (!historyList) return;
       if (wingMode === 'queue') {
@@ -64,27 +81,27 @@ const dashboardScriptHistoryQueue = `
         const actions = document.createElement('div');
         actions.className = 'history-actions';
 
-        const publish = document.createElement('button');
-        publish.type = 'button';
-        publish.className = 'history-action-button secondary';
-        publish.dataset.historyPublish = item.id;
-        publish.textContent = item.id === currentID ? '公開中' : '公開に切替';
-        publish.title = item.id === currentID ? '現在公開中です' : 'この項目を現在公開中に切り替え';
-        publish.setAttribute('aria-label', publish.title);
-        publish.disabled = item.id === currentID;
+        const select = document.createElement('button');
+        select.type = 'button';
+        select.className = 'history-action-button history-action-icon secondary';
+        select.dataset.historySelect = item.id;
+        select.innerHTML = historyActionIcon('preview');
+        select.title = item.id === currentID ? '右カラムでプレビュー中です' : 'この履歴項目を右カラムのプレビューに表示';
+        select.setAttribute('aria-label', select.title);
+        select.disabled = item.id === currentID;
 
         const queue = document.createElement('button');
         queue.type = 'button';
-        queue.className = 'history-action-button secondary';
+        queue.className = 'history-action-button history-action-icon secondary';
         queue.dataset.historyQueue = item.id;
-        queue.textContent = '変換';
+        queue.innerHTML = historyActionIcon('convert');
         queue.title = '動画変換に追加';
         queue.setAttribute('aria-label', queue.title);
         queue.hidden = !state.videoPlayerEnabled;
 
         const heart = document.createElement('button');
         heart.type = 'button';
-        heart.className = 'heart-button' + (item.favorite ? ' active' : '');
+        heart.className = 'heart-button history-action-icon' + (item.favorite ? ' active' : '');
         heart.dataset.historyFavorite = item.id;
         heart.dataset.favorite = item.favorite ? '1' : '0';
         heart.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 1 0-7.8 7.8l1 1L12 21l7.8-7.6 1-1a5.5 5.5 0 0 0 0-7.8Z"/></svg>';
@@ -93,35 +110,30 @@ const dashboardScriptHistoryQueue = `
 
         const toggle = document.createElement('button');
         toggle.type = 'button';
-        toggle.className = 'history-publish-toggle' + (item.published ? ' on' : '');
+        toggle.className = 'history-publish-toggle history-action-icon' + (item.published ? ' on' : '');
         toggle.dataset.historyPublishToggle = item.id;
-        toggle.textContent = item.published ? '公開中' : '非公開';
+        toggle.innerHTML = historyActionIcon(item.published ? 'published' : 'unpublished');
+        toggle.title = item.published ? '公開中（クリックで非公開）' : '非公開（クリックで公開）';
+        toggle.setAttribute('aria-label', toggle.title);
         toggle.setAttribute('aria-pressed', String(!!item.published));
 
         actions.appendChild(toggle);
-        actions.appendChild(publish);
+        actions.appendChild(select);
         actions.appendChild(queue);
         actions.appendChild(heart);
 
-        const pubRow = document.createElement('div');
-        pubRow.className = 'history-address';
-        const addrText = document.createElement('span');
-        addrText.className = 'history-address-text';
-        addrText.textContent = item.published ? (item.address || '') : '非公開';
-        pubRow.appendChild(addrText);
-        if (item.published && item.address) {
-          const copyBtn = document.createElement('button');
-          copyBtn.type = 'button';
-          copyBtn.className = 'history-action-button secondary';
-          copyBtn.dataset.historyCopy = item.id;
-          copyBtn.textContent = 'コピー';
-          pubRow.appendChild(copyBtn);
-        }
-
+        const copyBtn = document.createElement('button');
+        copyBtn.type = 'button';
+        copyBtn.className = 'history-action-button history-action-icon secondary';
+        copyBtn.dataset.historyCopy = item.id;
+        copyBtn.innerHTML = historyActionIcon('link');
+        copyBtn.title = item.published && item.address ? '公開URLをコピー' : '公開するとURLをコピーできます';
+        copyBtn.setAttribute('aria-label', copyBtn.title);
+        copyBtn.disabled = !item.published || !item.address;
+        actions.appendChild(copyBtn);
         row.appendChild(thumb);
         row.appendChild(meta);
         row.appendChild(actions);
-        row.appendChild(pubRow);
         historyList.appendChild(row);
       }
     }

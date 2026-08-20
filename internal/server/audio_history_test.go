@@ -131,8 +131,15 @@ func TestAudioHistoryAlreadyConverted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	convertedDir := filepath.Join(filepath.Dir(srv.store.Dir()), "converted", item.ID)
+	if err := os.MkdirAll(convertedDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(convertedDir, "rendered.mp4"), []byte("converted"), 0600); err != nil {
+		t.Fatal(err)
+	}
 
-	// With Converted==true, enqueueHistoryItem should skip analysis
+	// With Converted==true and an existing archive, enqueueHistoryItem should skip analysis
 	// and just restore current from history
 	if err := srv.enqueueHistoryItem(item.ID); err != nil {
 		t.Fatalf("enqueueHistoryItem for converted item: %v", err)

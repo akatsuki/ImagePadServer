@@ -283,9 +283,6 @@ func New(outDir, host string, port int, key string, preset func() video.QualityP
 		port = 1935
 	}
 	key = strings.TrimSpace(key)
-	if key == "" {
-		key = "imagepad"
-	}
 	return &Manager{
 		outDir:  outDir,
 		host:    host,
@@ -306,6 +303,13 @@ func New(outDir, host string, port int, key string, preset func() video.QualityP
 
 func (m *Manager) Start() {
 	m.mu.Lock()
+	if strings.TrimSpace(m.key) == "" {
+		m.status.Enabled = false
+		m.status.Listening = false
+		m.status.Message = "OBS受信はストリームキー未設定のため無効です。"
+		m.mu.Unlock()
+		return
+	}
 	if m.running {
 		m.status.Enabled = true
 		m.mu.Unlock()

@@ -54,6 +54,23 @@ func audioContentType(name string) string {
 	return soundCloudContentType(name)
 }
 
+func imageContentType(name string) string {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".avif":
+		return "image/avif"
+	case ".gif":
+		return "image/gif"
+	case ".jpeg", ".jpg":
+		return "image/jpeg"
+	case ".png":
+		return "image/png"
+	case ".webp":
+		return "image/webp"
+	default:
+		return "application/octet-stream"
+	}
+}
+
 func soundCloudContentType(name string) string {
 	switch strings.ToLower(filepath.Ext(name)) {
 	case ".mp3":
@@ -104,6 +121,64 @@ func hlsURLPath(id string) string {
 		return "stream/current.m3u8"
 	}
 	return "stream/" + url.PathEscape(id) + "/" + video.PlaylistName(id)
+}
+
+func publicMediaExtension(info library.CurrentImage) string {
+	ext := strings.ToLower(filepath.Ext(info.PublicName))
+	switch ext {
+	case ".avif", ".avi", ".flac", ".gif", ".jpeg", ".jpg", ".m4a", ".m4v", ".mkv", ".mov", ".mp3", ".mp4", ".ogg", ".opus", ".png", ".wav", ".webm", ".webp":
+		return ext
+	}
+
+	mediaType, _, _ := mime.ParseMediaType(info.ContentType)
+	switch strings.ToLower(mediaType) {
+	case "audio/flac":
+		return ".flac"
+	case "audio/mpeg":
+		return ".mp3"
+	case "audio/mp4":
+		return ".m4a"
+	case "audio/ogg":
+		return ".ogg"
+	case "audio/wav", "audio/x-wav":
+		return ".wav"
+	case "image/avif":
+		return ".avif"
+	case "image/gif":
+		return ".gif"
+	case "image/jpeg":
+		return ".jpg"
+	case "image/png":
+		return ".png"
+	case "image/webp":
+		return ".webp"
+	case "video/mp4":
+		return ".mp4"
+	case "video/quicktime":
+		return ".mov"
+	case "video/webm":
+		return ".webm"
+	case "video/x-matroska":
+		return ".mkv"
+	case "video/x-msvideo":
+		return ".avi"
+	default:
+		return ""
+	}
+}
+
+func publicHistoryPath(item library.HistoryItem) string {
+	return "/pub/" + url.PathEscape(item.ID) + publicMediaExtension(item.CurrentImage)
+}
+
+func stripPublicMediaExtension(id string) string {
+	ext := strings.ToLower(filepath.Ext(id))
+	switch ext {
+	case ".avif", ".avi", ".flac", ".gif", ".jpeg", ".jpg", ".m4a", ".m4v", ".mkv", ".mov", ".mp3", ".mp4", ".ogg", ".opus", ".png", ".wav", ".webm", ".webp":
+		return strings.TrimSuffix(id, id[len(id)-len(ext):])
+	default:
+		return id
+	}
 }
 
 // lhlsContentType maps a community-LHLS artifact filename (HLS playlists and

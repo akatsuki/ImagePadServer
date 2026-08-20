@@ -39,8 +39,8 @@ import (
 const (
 	// maxMultipartMemory is kept low so large uploads spill to temp files instead of RAM.
 	maxMultipartMemory           = 32 << 20
-	maxLocalVideoUploadBytes     = 8 << 30
-	maxLocalVideoUploadBytesText = "8 GiB"
+	maxLocalVideoUploadBytes     = video.MaxMediaSourceBytes
+	maxLocalVideoUploadBytesText = "4 GiB - 1 byte"
 )
 
 type shareModeContextKey struct{}
@@ -62,8 +62,9 @@ var (
 )
 
 type Server struct {
-	cfg   config.Config
-	store *library.Store
+	lifecycleCtx context.Context
+	cfg          config.Config
+	store        *library.Store
 
 	mu                    sync.RWMutex
 	upnp                  upnp.Result
@@ -198,7 +199,9 @@ func New(cfg config.Config, store *library.Store, imageURLBase string) *Server {
 	}
 	obsStreamKey, err := settings.EnsureOBSStreamKey()
 	if err != nil {
-		obsStreamKey = adminToken
+		// OBS has its own credential boundary. Never reuse the administrator
+		// token when the dedicated stream-key store is unavailable.
+		obsStreamKey = ""
 	}
 	activeCanonicalHeight := settings.ActiveMusicPlaylistCanonicalHeight()
 	srv := &Server{
@@ -237,6 +240,21 @@ func New(cfg config.Config, store *library.Store, imageURLBase string) *Server {
 	srv.setRTSPURL = srv.obs.SetRTSPEndpointURL
 	srv.initMusicPlaylist(advertisedHost)
 	return srv
+}
+
+// SetLifecycleContext connects queued media work to application shutdown.
+func (s *Server) SetLifecycleContext(ctx context.Context) {
+	if ctx == nil {
+		return
+	}
+	s.lifecycleCtx = ctx
+}
+
+func (s *Server) lifecycleContext() context.Context {
+	if s.lifecycleCtx != nil {
+		return s.lifecycleCtx
+	}
+	return context.Background()
 }
 
 func (s *Server) Register(mux *http.ServeMux) {
@@ -1543,7 +1561,9 @@ func (s *Server) handleOBSStreamStart(session obsrtmp.Session) {
 		ContentType:  "video/mp4",
 		OriginalName: session.Title,
 	}
-	_ = s.store.SetCurrentInfoWithIDInMemory(info)
+	if err := s.store.SetCurrentInfoWithIDInMemory(info); err != nil {
+		log.Printf("OBS history update failed for %s: %v", session.ID, err)
+	}
 	s.obsCommitMu.Unlock()
 	go func() { _ = s.store.Save() }()
 	s.broadcastStateChanged()
@@ -1587,11 +1607,15 @@ func (s *Server) handleOBSStreamDone(session obsrtmp.Session) {
 	if stat, err := os.Stat(session.Recording); err == nil {
 		info.SizeBytes = stat.Size()
 	}
-	_ = s.store.SetCurrentInfoWithIDInMemory(info)
+	if err := s.store.SetCurrentInfoWithIDInMemory(info); err != nil {
+		log.Printf("OBS history update failed for %s: %v", session.ID, err)
+	}
 	s.obsCommitMu.Unlock()
 	files := video.GeneratedFiles(s.store.Dir(), session.ID)
 	if len(files) > 0 && s.isOBSLatestSession(session.ID, session.Generation) {
-		_ = s.store.MarkConverted(session.ID, files)
+		if err := s.store.MarkConverted(session.ID, files); err != nil {
+			log.Printf("OBS conversion state update failed for %s: %v", session.ID, err)
+		}
 	}
 	go func() { _ = s.store.Save() }()
 	s.broadcastStateChanged()
@@ -1929,7 +1953,11 @@ func (s *Server) handleHistoryFavorite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.SetFavorite(req.ID, req.Favorite); err != nil {
-		http.Error(w, "history item not found", http.StatusNotFound)
+		if os.IsNotExist(err) {
+			http.Error(w, "history item not found", http.StatusNotFound)
+		} else {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 		return
 	}
 	writeJSON(w, s.historyState())
@@ -1958,7 +1986,11 @@ func (s *Server) handleHistoryQueue(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.clearIngest()
 	if err := s.enqueueHistoryItem(req.ID); err != nil {
-		http.Error(w, "history item not found", http.StatusNotFound)
+		if _, _, ok := s.store.HistoryPath(req.ID); !ok {
+			http.Error(w, "history item not found", http.StatusNotFound)
+		} else {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 		return
 	}
 	writeJSON(w, s.state(r))
@@ -1978,7 +2010,11 @@ func (s *Server) handleHistorySelect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.SetCurrentFromHistory(req.ID); err != nil {
-		http.Error(w, "history item not found", http.StatusNotFound)
+		if _, _, ok := s.store.HistoryPath(req.ID); !ok {
+			http.Error(w, "history item not found", http.StatusNotFound)
+		} else {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 		return
 	}
 	current := s.store.Current()
@@ -2152,17 +2188,26 @@ func (s *Server) watchConversion(jobID, mediaID string) {
 					switch item.Status {
 					case "done":
 						files := video.GeneratedFiles(s.store.Dir(), mediaID)
-						if len(files) > 0 {
-							convertedSize := totalFileSize(files)
-							if current := s.store.Current(); current != nil && current.ID == mediaID {
-								_ = s.store.UpdateCurrentSize(convertedSize)
-							}
-							_ = s.store.UpdateHistorySize(mediaID, convertedSize)
-							resolutions := []string{}
-							if item.Quality != "" {
-								resolutions = append(resolutions, item.Quality+"p")
-							}
-							_ = s.store.MarkConverted(mediaID, files, resolutions...)
+						if len(files) == 0 {
+							log.Printf("conversion job %s completed without generated files", jobID)
+							s.broadcastStateChanged()
+							return
+						}
+						resolutions := []string{}
+						if item.Quality != "" {
+							resolutions = append(resolutions, item.Quality+"p")
+						}
+						if err := s.store.MarkConverted(mediaID, files, resolutions...); err != nil {
+							log.Printf("conversion state update failed for %s: %v", mediaID, err)
+							s.broadcastStateChanged()
+							return
+						}
+						convertedSize := totalFileSize(files)
+						if err := s.store.UpdateCurrentSizeForID(mediaID, convertedSize); err != nil && !os.IsNotExist(err) {
+							log.Printf("current converted size update failed for %s: %v", mediaID, err)
+						}
+						if err := s.store.UpdateHistorySize(mediaID, convertedSize); err != nil {
+							log.Printf("history converted size update failed for %s: %v", mediaID, err)
 						}
 						s.broadcastStateChanged()
 						return
@@ -2252,10 +2297,17 @@ func (s *Server) handleHistoryPublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.SetPublished(req.ID, req.Published); err != nil {
-		http.Error(w, "history item not found", http.StatusNotFound)
+		if os.IsNotExist(err) {
+			http.Error(w, "history item not found", http.StatusNotFound)
+		} else {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 		return
 	}
-	writeJSON(w, s.historyState())
+	writeJSON(w, map[string]interface{}{
+		"history":           s.historyState(),
+		"publishedRevision": s.store.PublishedRevision(),
+	})
 }
 
 func (s *Server) handleCopyURL(w http.ResponseWriter, r *http.Request) {
@@ -2520,6 +2572,34 @@ func (s *Server) adminURL(baseURL string) string {
 	return parsed.String()
 }
 
+func (s *Server) historyPlaybackPath(item library.HistoryItem) string {
+	// Still-image conversion produces the published image stored in the history
+	// path. The later video-player conversion is a separate HLS representation
+	// and must not replace the image URL copied from history.
+	if item.Kind == "video" && item.Converted {
+		if dir, _, ok := s.store.ConvertedPath(item.ID); ok {
+			playlist := filepath.Join(dir, video.PlaylistName(item.ID))
+			if info, err := os.Stat(playlist); err == nil && !info.IsDir() && info.Size() > 0 {
+				return "/" + hlsURLPath(item.ID)
+			}
+		}
+	}
+	return publicHistoryPath(item)
+}
+
+func (s *Server) publicMediaURL(path string) string {
+	s.mu.RLock()
+	baseURL := s.lanURL
+	if s.tunnelURLBase != "" {
+		baseURL = s.tunnelURLBase
+	}
+	s.mu.RUnlock()
+	if baseURL == "" {
+		return path
+	}
+	return strings.TrimRight(baseURL, "/") + "/" + strings.TrimLeft(path, "/")
+}
+
 func (s *Server) adminPath(path string) string {
 	if s.adminToken == "" {
 		return path
@@ -2612,7 +2692,7 @@ func (s *Server) serveDeletedImage(w http.ResponseWriter, r *http.Request) {
 	_ = jpeg.Encode(w, deletedImage(), &jpeg.Options{Quality: 90})
 }
 
-// handlePubItem は公開済み項目の安定アドレス GET /pub/{id} を配信する。
+// handlePubItem は公開済み項目の安定アドレス GET /pub/{id}[.ext] を配信する。
 // Published=false の項目は 404 ではなく ERROR INACTIVE ADDRESS プレースホルダを
 // 返す（HTTP 200）。
 func (s *Server) handlePubItem(w http.ResponseWriter, r *http.Request) {
@@ -2621,6 +2701,7 @@ func (s *Server) handlePubItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/pub/"), "/")
+	id = stripPublicMediaExtension(id)
 	if u, err := url.PathUnescape(id); err == nil {
 		id = u
 	}
@@ -2629,8 +2710,7 @@ func (s *Server) handlePubItem(w http.ResponseWriter, r *http.Request) {
 		s.serveInactivePlaceholder(w, r)
 		return
 	}
-	// 非公開、および動画（HLS 配信は後続タスクのため）はプレースホルダへ。
-	if !item.Published || item.Kind == "video" {
+	if !item.Published {
 		s.serveInactiveForKind(w, r, item.Kind)
 		return
 	}
@@ -2642,10 +2722,21 @@ func (s *Server) handlePubItem(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 	contentType := item.ContentType
 	if contentType == "" {
-		contentType = "application/octet-stream"
+		switch item.Kind {
+		case "image":
+			contentType = imageContentType(item.PublicName)
+		case "video":
+			contentType = videoContentType(item.PublicName)
+		case "audio":
+			contentType = audioContentType(item.PublicName)
+		default:
+			contentType = "application/octet-stream"
+		}
 	}
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "no-store, max-age=0")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, safeFileName(item.PublicName)))
+	s.recordImageRequest(r)
 	http.ServeContent(w, r, safeFileName(item.PublicName), item.UpdatedAt, file)
 }
 
@@ -2729,6 +2820,11 @@ func (s *Server) handleCurrentHLS(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if requestedID := streamRequestID(r); requestedID != "" {
+		if s.serveConvertedHLSArtifact(w, r, requestedID) {
+			return
+		}
+	}
 	if requestedID := streamRequestID(r); requestedID != "" && s.obsMediaActive(requestedID) {
 		if s.serveLHLSArtifact(w, r, requestedID) {
 			return
@@ -2768,6 +2864,11 @@ func (s *Server) handleCurrentHLSSegment(w http.ResponseWriter, r *http.Request)
 		http.NotFound(w, r)
 		return
 	}
+	if requestedID := streamRequestID(r); requestedID != "" {
+		if s.serveConvertedHLSArtifact(w, r, requestedID) {
+			return
+		}
+	}
 	if requestedID := streamRequestID(r); requestedID != "" && s.obsMediaActive(requestedID) {
 		if s.serveLHLSArtifact(w, r, requestedID) {
 			return
@@ -2798,6 +2899,29 @@ func (s *Server) handleCurrentHLSSegment(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	s.serveGeneratedFile(w, r, fileName, "video/mp2t", fileName, img.UpdatedAt)
+}
+
+func (s *Server) serveConvertedHLSArtifact(w http.ResponseWriter, r *http.Request, id string) bool {
+	dir, item, ok := s.store.ConvertedPath(id)
+	if !ok || !item.Published {
+		return false
+	}
+	name := filepath.Base(r.URL.Path)
+	if name != video.PlaylistName(id) && !isHLSSegmentName(name) {
+		return false
+	}
+	path := filepath.Join(dir, name)
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	w.Header().Set("Content-Type", lhlsContentType(name))
+	w.Header().Set("Cache-Control", "no-store, max-age=0")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, safeFileName(name)))
+	s.recordImageRequest(r)
+	http.ServeContent(w, r, name, item.UpdatedAt, file)
+	return true
 }
 
 func (s *Server) obsMediaActive(id string) bool {
@@ -3074,6 +3198,7 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 		"ytdlpChannel":      video.YTDLPChannelState(),
 		"ingest":            s.ingestState(),
 		"toolInstall":       video.ToolInstallStatus(),
+		"externalTools":     video.ExternalToolStatus(),
 		"current":           current,
 		"publishedRevision": s.store.PublishedRevision(),
 		"history":           s.historyState(),
@@ -3113,6 +3238,7 @@ func (s *Server) stateWithMedia(r *http.Request, current *library.CurrentImage, 
 		"ytdlpChannel":      video.YTDLPChannelState(),
 		"ingest":            s.ingestState(),
 		"toolInstall":       video.ToolInstallStatus(),
+		"externalTools":     video.ExternalToolStatus(),
 		"current":           current,
 		"publishedRevision": s.store.PublishedRevision(),
 		"history":           s.historyState(),
@@ -3155,7 +3281,7 @@ func (s *Server) historyState() []map[string]interface{} {
 			"favorite":        item.Favorite,
 			"persistent":      item.Persistent,
 			"published":       item.Published,
-			"address":         s.adminPath("/pub/" + url.PathEscape(item.ID)),
+			"address":         s.publicMediaURL(s.historyPlaybackPath(item)),
 			"thumbnailURL":    thumbnailURL,
 			"hasThumbnail":    hasThumbnail,
 		})

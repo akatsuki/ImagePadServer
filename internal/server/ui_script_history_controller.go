@@ -15,7 +15,7 @@ const dashboardScriptHistoryController = `
         renderHistory(items, currentID);
       }
 
-      async function publishHistoryItem(id) {
+      async function selectHistoryItem(id) {
         return selectHistory(id);
       }
 
@@ -35,7 +35,11 @@ const dashboardScriptHistoryController = `
             body: JSON.stringify({ id, published, revision: state.publishedRevision || 0 })
           });
           if (!res.ok) throw new Error(await res.text());
-          state.history = await res.json();
+          const payload = await res.json();
+          state.history = Array.isArray(payload) ? payload : (payload.history || []);
+          if (!Array.isArray(payload) && Number.isFinite(payload.publishedRevision)) {
+            state.publishedRevision = payload.publishedRevision;
+          }
           HistoryController.render(state);
           toast.textContent = published ? '公開しました' : '非公開にしました';
         } catch (error) {
@@ -47,7 +51,8 @@ const dashboardScriptHistoryController = `
         const item = (state.history || []).find((it) => it.id === id);
         if (!item || !item.address) return;
         try {
-          await copyText(item.address, document.body);
+          const address = new URL(item.address, window.location.href).href;
+          await copyText(address, document.body);
           toast.textContent = 'アドレスをコピーしました';
         } catch (error) {
           toast.textContent = 'コピーに失敗しました';
@@ -57,7 +62,7 @@ const dashboardScriptHistoryController = `
       return {
         init: initHistoryController,
         render: renderHistoryController,
-        publishHistoryItem,
+        selectHistoryItem,
         toggleFavoriteHistoryItem,
         queueHistoryItem,
         setPublishedHistoryItem,

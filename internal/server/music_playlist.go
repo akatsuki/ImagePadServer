@@ -1368,7 +1368,7 @@ func (s *Server) handleMusicPlaylistAdd(w http.ResponseWriter, r *http.Request) 
 		if !s.enqueueMusicJob(func() {
 			s.musicQueue.SetProgress(track.ID, trackProgressQueued)
 			s.broadcastStateChangedThrottled()
-			acquired, err := musicURLAcquirer(context.Background(), s, input)
+			acquired, err := musicURLAcquirer(s.lifecycleContext(), s, input)
 			if err != nil {
 				s.musicQueue.MarkFailed(track.ID, videoURLDownloadError(err))
 				s.broadcastStateChangedThrottled()
@@ -1403,7 +1403,7 @@ func (s *Server) handleMusicPlaylistAdd(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		defer f.Close()
-		acquired, err := s.acquireUploadedAudio(context.Background(), f, filepath.Base(localPath))
+		acquired, err := s.acquireUploadedAudio(s.lifecycleContext(), f, filepath.Base(localPath))
 		if err != nil {
 			s.musicQueue.MarkFailed(track.ID, err.Error())
 			s.broadcastStateChangedThrottled()
@@ -1420,7 +1420,7 @@ func (s *Server) handleMusicPlaylistAdd(w http.ResponseWriter, r *http.Request) 
 // metadata, artwork thumbnail, loudness analysis, and the pre-rendered TS.
 // The audio source file is deleted afterwards; only the TS is kept.
 func (s *Server) prepareRadioTrack(trackID string, acquired video.AcquiredAudio) {
-	ctx := context.Background()
+	ctx := s.lifecycleContext()
 	thumbnailPath := ""
 	fail := func(err error) {
 		os.Remove(acquired.SourcePath)

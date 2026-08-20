@@ -431,8 +431,7 @@ const dashboardCSSRefinements = `
       box-shadow: var(--shadow-inset-subtle);
     }
     .switch-slider::before,
-    .flow-step::before,
-    .heart-button {
+    .flow-step::before {
       border-radius: 50%;
     }
     .switch-slider::before {

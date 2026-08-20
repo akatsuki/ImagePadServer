@@ -313,6 +313,39 @@ func ToolsReady() bool {
 	return usableFFprobePath() != ""
 }
 
+// ExternalToolStatus returns a side-effect-free snapshot used by the API/UI.
+// Detection and installation are intentionally separate: reporting state must
+// never download a tool or start a long-running external process.
+type ExternalTool struct {
+	Name   string `json:"name"`
+	Status string `json:"status"` // available, missing, or misconfigured
+	Path   string `json:"path,omitempty"`
+	Error  string `json:"error,omitempty"`
+}
+
+func ExternalToolStatus() []ExternalTool {
+	resolve := func(name string, pathFn func() (string, error)) ExternalTool {
+		path, err := pathFn()
+		if err == nil && fileExists(path) {
+			return ExternalTool{Name: name, Status: "available", Path: path}
+		}
+		status := "missing"
+		if strings.TrimSpace(os.Getenv("IMAGEPAD_"+strings.ToUpper(strings.ReplaceAll(name, "-", "")))) != "" {
+			status = "misconfigured"
+		}
+		result := ExternalTool{Name: name, Status: status}
+		if err != nil {
+			result.Error = err.Error()
+		}
+		return result
+	}
+	return []ExternalTool{
+		resolve("ffmpeg", ffmpegPath),
+		resolve("ffprobe", ffprobePath),
+		resolve("yt-dlp", ytdlpPath),
+	}
+}
+
 // ValidateInstalledTools checks the bundled binaries at startup and re-acquires
 // any that are missing or fail validation. It is best-effort: errors are
 // surfaced only through the install tracker, never returned, so startup never

@@ -458,9 +458,9 @@ const dashboardScriptUploadEvents = `
 
     if (historyList) {
       historyList.addEventListener('click', async (event) => {
-        const publish = event.target.closest('[data-history-publish]');
-        if (publish) {
-          await HistoryController.publishHistoryItem(publish.dataset.historyPublish);
+        const select = event.target.closest('[data-history-select]');
+        if (select) {
+          await HistoryController.selectHistoryItem(select.dataset.historySelect);
           return;
         }
         const queue = event.target.closest('[data-history-queue]');

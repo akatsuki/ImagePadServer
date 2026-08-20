@@ -167,7 +167,10 @@ func run(useNativeWindow bool) error {
 
 	advertisedHost := cfg.AdvertisedHost(network.BestReachableIP(cfg.PreferTailscale))
 	mux := http.NewServeMux()
+	lifecycleCtx, cancelLifecycle := context.WithCancel(context.Background())
+	defer cancelLifecycle()
 	srv := server.New(cfg, store, "")
+	srv.SetLifecycleContext(lifecycleCtx)
 	srv.Register(mux)
 	srv.SyncOBSReceiver()
 	go srv.ReconcileHistoryThumbnails()
@@ -279,6 +282,7 @@ func run(useNativeWindow bool) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	cancelLifecycle()
 	srv.StopOBSReceiver()
 	cleanupShutdownHelpers(log.Printf)
 	stopTunnelManager()

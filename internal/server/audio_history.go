@@ -36,7 +36,11 @@ func (s *Server) audioRenderInputForStored(ctx context.Context, path string, ite
 
 	artworkPath := ""
 	if item.Thumbnail != "" {
-		artworkPath = filepath.Join(s.store.Dir(), item.Thumbnail)
+		if thumbPath, _, ok := s.store.HistoryThumbnailPath(item.ID); ok {
+			artworkPath = thumbPath
+		} else {
+			artworkPath = filepath.Join(s.store.Dir(), item.Thumbnail)
+		}
 	}
 
 	return video.AudioRenderInput{

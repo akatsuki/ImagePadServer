@@ -726,6 +726,81 @@ func TestStateDefaultsToImageURLForPendingStillConversion(t *testing.T) {
 	}
 }
 
+func TestHistoryStateUsesAbsolutePublicAddress(t *testing.T) {
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+	src := filepath.Join(t.TempDir(), "image.png")
+	if err := os.WriteFile(src, []byte("image"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.AddHistory(src, library.CurrentImage{Kind: "image", PublicName: "image.png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	address, _ := srv.historyState()[0]["address"].(string)
+	want := srv.publicMediaURL("/pub/" + item.ID + ".png")
+	if address != want {
+		t.Fatalf("history address = %q, want %q", address, want)
+	}
+
+	srv.SetTunnelStatus(true, "https://example.trycloudflare.com", "connected")
+	address, _ = srv.historyState()[0]["address"].(string)
+	want = "https://example.trycloudflare.com/pub/" + item.ID + ".png"
+	if address != want {
+		t.Fatalf("tunnel history address = %q, want %q", address, want)
+	}
+}
+
+func TestHistoryStateUsesPublishedImageForConvertedImage(t *testing.T) {
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+	src := filepath.Join(t.TempDir(), "processed.webp")
+	wantBody := []byte("converted-image-bytes")
+	if err := os.WriteFile(src, wantBody, 0600); err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.AddHistory(src, library.CurrentImage{
+		Kind:        "image",
+		PublicName:  "processed.webp",
+		ContentType: "image/webp",
+		Converted:   true,
+		Published:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	address, _ := srv.historyState()[0]["address"].(string)
+	wantAddress := srv.publicMediaURL("/pub/" + item.ID + ".webp")
+	if address != wantAddress {
+		t.Fatalf("converted image address = %q, want %q", address, wantAddress)
+	}
+	if strings.Contains(address, "/stream/") {
+		t.Fatalf("converted image address = %q, must not use HLS", address)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/pub/"+item.ID+".webp", nil)
+	req.RemoteAddr = "127.0.0.1:50000"
+	rec := httptest.NewRecorder()
+	srv.handlePubItem(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("converted image status = %d, want 200; body=%q", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "image/webp" {
+		t.Fatalf("converted image content-type = %q, want image/webp", got)
+	}
+	if got := rec.Body.Bytes(); string(got) != string(wantBody) {
+		t.Fatalf("converted image body = %q, want %q", got, wantBody)
+	}
+}
+
 func TestHistoryStateReportsThumbnailOnlyWhenFileExists(t *testing.T) {
 	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
 

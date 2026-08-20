@@ -14,7 +14,7 @@ import (
 	"imagepadserver/internal/library"
 )
 
-// TestHandlePubItemServesPublishedOrInactive は /pub/{id} の契約を検証する。
+// TestHandlePubItemServesPublishedOrInactive は /pub/{id}[.ext] の契約を検証する。
 // 公開済み項目は実コンテンツ、非公開項目は 404 ではなく ERROR INACTIVE
 // ADDRESS プレースホルダ（HTTP 200）を返す。
 func TestHandlePubItemServesPublishedOrInactive(t *testing.T) {
@@ -60,6 +60,43 @@ func TestHandlePubItemServesPublishedOrInactive(t *testing.T) {
 	}
 	if rec2.Body.Len() == 0 {
 		t.Fatal("unpublished placeholder body is empty")
+	}
+}
+
+func TestHandlePubItemServesPublishedVideoWithExtension(t *testing.T) {
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+
+	src := filepath.Join(t.TempDir(), "pub.mp4")
+	wantBody := []byte("published-video-bytes")
+	if err := os.WriteFile(src, wantBody, 0600); err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.AddHistory(src, library.CurrentImage{
+		Kind:        "video",
+		PublicName:  "pub.mp4",
+		ContentType: "video/mp4",
+		Published:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8080/pub/"+item.ID+".mp4", nil)
+	req.RemoteAddr = "127.0.0.1:50000"
+	rec := httptest.NewRecorder()
+	srv.handlePubItem(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("published video status = %d, want 200; body=%q", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "video/mp4" {
+		t.Fatalf("published video content-type = %q, want video/mp4", got)
+	}
+	if got := rec.Body.Bytes(); string(got) != string(wantBody) {
+		t.Fatalf("published video body = %q, want %q", got, wantBody)
 	}
 }
 

@@ -552,42 +552,89 @@ const dashboardCSSComponents = `
       font-weight: 700;
     }
     .history-actions {
-      display: grid;
-      grid-template-columns: repeat(2, auto) 34px;
-      align-items: center;
-      gap: 4px;
-    }
-    .history-action-button {
-      min-height: 30px;
-      padding: 0 7px;
-      border-radius: var(--radius-small);
-      font-size: 12px;
-    }
-    .history-address {
-      grid-column: 1 / -1;
       display: flex;
       align-items: center;
-      gap: 6px;
+      justify-content: flex-end;
+      gap: 2px;
       min-width: 0;
-      padding: 3px 6px;
-      border-radius: calc(var(--radius-small) - 1px);
-      background: var(--control-bg);
+      width: max-content;
+      max-width: 100%;
+      justify-self: end;
     }
-    .history-address-text {
-      flex: 1;
+    .history-action-button {
       min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      color: var(--muted);
+      width: 100%;
+      min-height: 30px;
+      padding: 3px 6px;
+      border-radius: var(--radius-small);
+      font-size: 11px;
+      line-height: 1.15;
+      white-space: normal;
+    }
+    .history-action-icon {
+      display: inline-grid;
+      place-items: center;
+      width: 30px;
+      min-width: 30px;
+      height: 30px;
+      min-height: 30px;
+      padding: 0;
+      line-height: 1;
+    }
+    .history-action-icon svg {
+      width: 17px;
+      height: 17px;
+      display: block;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .history-publish-toggle {
+      min-width: 0;
+      width: 100%;
+      min-height: 30px;
+      padding: 3px 6px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-small);
+      background: var(--control-bg);
+      color: var(--control-ink);
       font-size: 11px;
       font-weight: 700;
+      line-height: 1.15;
+      white-space: normal;
+      cursor: pointer;
     }
-    .history-address .history-action-button {
-      flex: 0 0 auto;
-      min-height: 24px;
-      padding: 0 6px;
-      font-size: 11px;
+    .history-actions .history-publish-toggle {
+      width: 30px;
+      min-width: 30px;
+      padding: 0;
+    }
+    .history-publish-toggle.on {
+      border-color: var(--accent);
+      background: var(--soft);
+      color: var(--ink);
+    }
+    .history-actions .heart-button {
+      width: 30px;
+      min-width: 30px;
+      height: 30px;
+      min-height: 30px;
+      padding: 0;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-small);
+      background: var(--control-bg);
+      color: var(--control-ink);
+    }
+    @media (max-width: 860px) {
+      .history-item {
+        grid-template-columns: 48px minmax(0, 1fr);
+      }
+      .history-actions {
+        grid-column: 1 / -1;
+        justify-self: start;
+      }
     }
     .queue-item {
       display: grid;
@@ -649,10 +696,10 @@ const dashboardCSSComponents = `
       opacity: .65;
     }
     .heart-button {
-      min-width: 34px;
-      width: 34px;
-      height: 34px;
-      min-height: 34px;
+      min-width: 30px;
+      width: 30px;
+      height: 30px;
+      min-height: 30px;
       padding: 0;
       border-radius: 50%;
       background: transparent;
@@ -660,12 +707,12 @@ const dashboardCSSComponents = `
       line-height: 1;
     }
     .heart-button svg {
-      width: 19px;
-      height: 19px;
+      width: 17px;
+      height: 17px;
       display: block;
       fill: none;
       stroke: currentColor;
-      stroke-width: 2.2;
+      stroke-width: 1.8;
       stroke-linecap: round;
       stroke-linejoin: round;
     }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 
 	"imagepadserver/internal/video"
@@ -115,23 +116,26 @@ func (f *ProgramTrackFeeder) Run(ctx context.Context, mediaPath string, startSec
 	waitForDecoders := func(ended string) error {
 		decodersWaited = true
 		var videoErr, audioErr, videoDrainErr, audioDrainErr error
+		canceledVideo, canceledAudio := false, false
 		if ended == "video" {
 			videoErr = <-videoWait
-			_, audioDrainErr = io.Copy(io.Discard, audioOut)
-			audioErr = <-audioWait
+			// The video decoder reached EOF first. Give the audio decoder a
+			// short chance to report its own exit so a racing failure is not
+			// mistaken for the cancellation used to stop a blocked peer.
+			audioErr, canceledAudio = waitForPeerDecoder(audioWait, cancelAudio)
 		} else {
+			// Symmetric handling for an audio-first EOF.
 			audioErr = <-audioWait
-			_, videoDrainErr = io.Copy(io.Discard, videoOut)
-			videoErr = <-videoWait
+			videoErr, canceledVideo = waitForPeerDecoder(videoWait, cancelVideo)
 		}
 		if ctx.Err() != nil {
 			return nil
 		}
 		var decoderErrs []error
-		if videoErr != nil {
+		if videoErr != nil && (!canceledVideo || !isDecoderCancellation(videoErr)) {
 			decoderErrs = append(decoderErrs, fmt.Errorf("program video decoder: %w: %s", videoErr, videoStderr.Tail(400)))
 		}
-		if audioErr != nil {
+		if audioErr != nil && (!canceledAudio || !isDecoderCancellation(audioErr)) {
 			decoderErrs = append(decoderErrs, fmt.Errorf("program audio decoder: %w: %s", audioErr, audioStderr.Tail(400)))
 		}
 		if videoDrainErr != nil {
@@ -190,6 +194,36 @@ func (f *ProgramTrackFeeder) Run(ctx context.Context, mediaPath string, startSec
 			return waitForDecoders("audio")
 		}
 	}
+}
+
+func waitForPeerDecoder(wait <-chan error, cancel context.CancelFunc) (error, bool) {
+	timer := time.NewTimer(25 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case err := <-wait:
+		return err, false
+	case <-timer.C:
+		cancel()
+		return <-wait, true
+	}
+}
+
+func isDecoderCancellation(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	// exec.CommandContext reports a process terminated by its context as a
+	// killed process. Preserve ordinary non-zero exit statuses even when the
+	// peer EOF caused us to cancel the decoder at nearly the same time.
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ProcessState != nil && exitErr.ProcessState.ExitCode() == 1 {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "signal: killed") || strings.Contains(message, "process terminated")
 }
 
 func programSourcePTS(frameIndex uint64) (videoPTS, audioPTS time.Duration) {

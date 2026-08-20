@@ -71,6 +71,10 @@ func NewStore(dir string) (*Store, error) {
 		favoriteDir:  filepath.Join(filepath.Dir(dir), "favorites"),
 		convertedDir: filepath.Join(filepath.Dir(dir), "converted"),
 	}
+	// Non-favorite converted output belongs to the ephemeral workspace.
+	if err := ResetDir(store.convertedDir); err != nil {
+		return nil, err
+	}
 	_ = store.loadFavorites()
 	return store, nil
 }
@@ -79,8 +83,13 @@ func NewStore(dir string) (*Store, error) {
 func (s *Store) Reset() error {
 	s.mu.Lock()
 	s.current = nil
+	s.history = nil
+	s.publishedRevision++
 	s.mu.Unlock()
-	return ResetDir(s.dir)
+	if err := ResetDir(s.dir); err != nil {
+		return err
+	}
+	return ResetDir(s.convertedDir)
 }
 
 func (s *Store) Dir() string {
@@ -124,6 +133,26 @@ func (s *Store) HistoryPath(id string) (string, HistoryItem, bool) {
 	return "", HistoryItem{}, false
 }
 
+func (s *Store) ConvertedPath(id string) (string, HistoryItem, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, item := range s.history {
+		if item.ID != id || !item.Converted {
+			continue
+		}
+		base := s.convertedDir
+		if item.Persistent {
+			base = filepath.Join(s.favoriteDir, "converted")
+		}
+		path := filepath.Join(base, item.ID)
+		info, err := os.Stat(path)
+		if err == nil && info.IsDir() {
+			return path, item, true
+		}
+	}
+	return "", HistoryItem{}, false
+}
+
 func (s *Store) HistoryThumbnailPath(id string) (string, HistoryItem, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -162,9 +191,12 @@ func (s *Store) SetCurrent(srcPath string, info CurrentImage) error {
 	}
 
 	s.mu.Lock()
+	if err := s.addHistoryLocked(info, dstPath); err != nil {
+		s.mu.Unlock()
+		return err
+	}
 	s.current = &info
 	s.publishedRevision++
-	_ = s.addHistoryLocked(info, dstPath)
 	s.mu.Unlock()
 	return s.save()
 }
@@ -213,9 +245,18 @@ func (s *Store) setCurrentInfoInMemory(info CurrentImage) error {
 	}
 
 	s.mu.Lock()
+	srcPath := filepath.Join(s.dir, info.FileName)
+	if _, err := os.Stat(srcPath); err == nil {
+		if err := s.addHistoryLocked(info, srcPath); err != nil {
+			s.mu.Unlock()
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		s.mu.Unlock()
+		return err
+	}
 	s.current = &info
 	s.publishedRevision++
-	_ = s.addHistoryLocked(info, filepath.Join(s.dir, info.FileName))
 	s.mu.Unlock()
 	return nil
 }
@@ -264,8 +305,8 @@ func (s *Store) SetCurrentFromHistory(id string) error {
 	srcPath := s.historyPath(*item)
 	info := item.CurrentImage
 	info.UpdatedAt = time.Now()
-	info.Published = true
-	item.Published = true
+	// Selecting a history item changes the preview target, not visibility.
+	info.Published = item.Published
 	if info.Kind == "" {
 		info.Kind = "image"
 	}
@@ -298,7 +339,6 @@ func (s *Store) SetCurrentFromHistory(id string) error {
 		}
 	}
 	s.current = &info
-	s.publishedRevision++
 	return s.saveCurrentLocked()
 }
 
@@ -333,7 +373,9 @@ func (s *Store) SetFavorite(id string, favorite bool) error {
 				}
 			}
 			if s.history[i].Converted {
-				_ = copyDir(filepath.Join(s.favoriteDir, "converted", s.history[i].ID), filepath.Join(s.convertedDir, s.history[i].ID))
+				if err := copyDir(filepath.Join(s.favoriteDir, "converted", s.history[i].ID), filepath.Join(s.convertedDir, s.history[i].ID)); err != nil {
+					return err
+				}
 			}
 			s.history[i].HistoryFileName = dstName
 			s.history[i].Favorite = true
@@ -363,12 +405,18 @@ func (s *Store) SetPublished(id string, published bool) error {
 			continue
 		}
 		s.history[i].Published = published
-		if s.current != nil && s.current.ID == id {
+		currentMatches := s.current != nil && s.current.ID == id
+		if currentMatches {
 			s.current.Published = published
 		}
 		s.publishedRevision++
 		if s.history[i].Favorite {
-			return s.saveFavoritesLocked()
+			if err := s.saveFavoritesLocked(); err != nil {
+				return err
+			}
+		}
+		if currentMatches {
+			return s.saveCurrentLocked()
 		}
 		return nil
 	}
@@ -398,36 +446,85 @@ func (s *Store) MarkConverted(id string, files []string, resolutions ...string) 
 		return os.ErrNotExist
 	}
 
-	dstDir := filepath.Join(s.convertedDir, id)
-	if err := os.MkdirAll(dstDir, 0700); err != nil {
-		return err
+	if len(files) == 0 {
+		return os.ErrNotExist
 	}
 	for _, src := range files {
 		if src == "" {
-			continue
+			return os.ErrNotExist
 		}
-		if err := copyFile(filepath.Join(dstDir, filepath.Base(src)), src); err != nil {
+		stat, err := os.Stat(src)
+		if err != nil {
 			return err
 		}
+		if stat.IsDir() {
+			return os.ErrInvalid
+		}
+	}
+	// Build the conversion in a staging directory. The metadata flag is a
+	// commit marker, so readers must never observe a half-populated HLS tree.
+	dstDir := filepath.Join(s.convertedDir, id)
+	tmpDir := filepath.Join(s.convertedDir, "."+id+".tmp")
+	if err := os.RemoveAll(tmpDir); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(tmpDir, 0700); err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmpDir)
+	for _, src := range files {
+		if err := copyFile(filepath.Join(tmpDir, filepath.Base(src)), src); err != nil {
+			return err
+		}
+	}
+	if err := os.RemoveAll(dstDir); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpDir, dstDir); err != nil {
+		return err
 	}
 	s.history[index].Converted = true
 	if len(resolutions) > 0 {
 		s.history[index].Resolutions = append([]string(nil), resolutions...)
 	}
+	if s.current != nil && s.current.ID == id {
+		s.current.Converted = true
+		s.current.Resolutions = append([]string(nil), s.history[index].Resolutions...)
+	}
 	if s.history[index].Favorite {
-		_ = copyDir(filepath.Join(s.favoriteDir, "converted", id), dstDir)
+		if err := copyDir(filepath.Join(s.favoriteDir, "converted", id), dstDir); err != nil {
+			return err
+		}
 		if err := s.saveFavoritesLocked(); err != nil {
 			return err
 		}
+	}
+	if s.current != nil && s.current.ID == id {
+		return s.saveCurrentLocked()
 	}
 	return nil
 }
 
 // UpdateCurrentSize sets the current media's SizeBytes and persists state.json.
 func (s *Store) UpdateCurrentSize(size int64) error {
+	return s.updateCurrentSizeForID("", size)
+}
+
+// UpdateCurrentSizeForID updates SizeBytes only when the requested media is
+// still the current item. Conversion jobs can finish after the user selects a
+// different history item, so an unconditional update would corrupt the new
+// current item's metadata.
+func (s *Store) UpdateCurrentSizeForID(id string, size int64) error {
+	return s.updateCurrentSizeForID(id, size)
+}
+
+func (s *Store) updateCurrentSizeForID(id string, size int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.current == nil {
+		return os.ErrNotExist
+	}
+	if id != "" && s.current.ID != id {
 		return os.ErrNotExist
 	}
 	s.current.SizeBytes = size
@@ -537,7 +634,20 @@ func (s *Store) saveCurrentLocked() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(s.dir, "state.json"), data, 0600)
+	data = append(data, byte(10))
+	return writeAtomicFile(filepath.Join(s.dir, "state.json"), data, 0600)
+}
+
+func writeAtomicFile(path string, data []byte, perm os.FileMode) error {
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, perm); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return nil
 }
 
 func (s *Store) addHistoryLocked(info CurrentImage, srcPath string) error {
@@ -588,6 +698,10 @@ func (s *Store) pruneHistoryLocked(limit int) {
 			continue
 		}
 		_ = os.Remove(filepath.Join(s.dir, item.HistoryFileName))
+		if item.Thumbnail != "" {
+			_ = os.Remove(filepath.Join(s.dir, item.Thumbnail))
+		}
+		_ = os.RemoveAll(filepath.Join(s.convertedDir, item.ID))
 	}
 	s.history = kept
 }
@@ -673,9 +787,6 @@ func copyFile(dst, src string) error {
 func copyDir(dst, src string) error {
 	entries, err := os.ReadDir(src)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
 		return err
 	}
 	if err := os.MkdirAll(dst, 0700); err != nil {

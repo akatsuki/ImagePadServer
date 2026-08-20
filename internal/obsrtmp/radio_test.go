@@ -327,8 +327,11 @@ func TestRadioSkipCancelsCurrentPush(t *testing.T) {
 }
 
 func TestRadioTrackGenerationCompletionSignalsExactTrackAndSessionStop(t *testing.T) {
+	var queueMu sync.Mutex
 	queue := []string{"blocked"}
 	next := func() (string, string, bool) {
+		queueMu.Lock()
+		defer queueMu.Unlock()
 		if len(queue) == 0 {
 			return "", "", false
 		}
@@ -357,7 +360,9 @@ func TestRadioTrackGenerationCompletionSignalsExactTrackAndSessionStop(t *testin
 		t.Fatal("skipped generation did not complete")
 	}
 
+	queueMu.Lock()
 	queue = []string{"blocked"}
+	queueMu.Unlock()
 	m.Wake()
 	h.waitEvent(t, "start")
 	stopping := m.CurrentTrackGeneration()

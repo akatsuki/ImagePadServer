@@ -109,6 +109,19 @@ func TestUIHistoryPublishNavigatesToSourceMode(t *testing.T) {
 	}
 }
 
+func TestUIStateSyncDoesNotChangeSelectedUploadMode(t *testing.T) {
+	html := getIndexHTML(t)
+	if strings.Contains(html, `function coerceUploadModeForPublication`) {
+		t.Fatal("state refresh must not coerce the user's selected upload mode")
+	}
+	if strings.Contains(html, `if (obsActive && uploadMode !== 'obs')`) {
+		t.Fatal("state refresh must not switch another upload mode to OBS automatically")
+	}
+	if strings.Contains(html, `coerceUploadModeForPublication(data)`) {
+		t.Fatal("state refresh must not invoke automatic upload mode switching")
+	}
+}
+
 func TestUIModeSwitchRefreshesShareURLDisplay(t *testing.T) {
 	html := getIndexHTML(t)
 	for _, want := range []string{
@@ -267,11 +280,17 @@ func TestUIHistoryControllerIsWired(t *testing.T) {
 	for _, want := range []string{
 		`const HistoryController = (() => {`,
 		`function renderHistoryController(data)`,
-		`function publishHistoryItem(id)`,
+		`function selectHistoryItem(id)`,
 		`function toggleFavoriteHistoryItem(id, favorite)`,
 		`function queueHistoryItem(id)`,
 		`HistoryController.render(state)`,
-		`HistoryController.publishHistoryItem(publish.dataset.historyPublish)`,
+		`HistoryController.selectHistoryItem(select.dataset.historySelect)`,
+		`function historyActionIcon(kind)`,
+		`historyActionIcon(item.published ? 'published' : 'unpublished')`,
+		`historyActionIcon('preview')`,
+		`historyActionIcon('convert')`,
+		`new URL(item.address, window.location.href).href`,
+		`history-action-icon`,
 		`lastHistoryRenderSignature`,
 		`if (signature === lastHistoryRenderSignature) return;`,
 	} {
