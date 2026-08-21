@@ -20,7 +20,7 @@ jobs:
             target: x86_64-unknown-linux-gnu
             ext: ""
           - name: macos-amd64
-            runs_on: macos-13
+            runs_on: macos-14
             target: x86_64-apple-darwin
             ext: ""
           - name: macos-arm64
