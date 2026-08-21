@@ -42,12 +42,12 @@ jobs:
         env:
           GPU_SIDECAR_TARGET: ${{ matrix.target }}
           GPU_SIDECAR_DIR: ${{ github.workspace }}/dist/gpu
-        run: ./scripts/build-gpu-sidecar.sh
+        run: sh ./scripts/build-gpu-sidecar.sh
       - name: Verify sidecar version and checksum
         shell: bash
         env:
           GPU_SIDECAR_DIR: ${{ github.workspace }}/dist/gpu
-        run: ./scripts/verify-gpu-artifacts.sh
+        run: sh ./scripts/verify-gpu-artifacts.sh
       - name: Upload sidecar artifact
         uses: actions/upload-artifact@v4
         with:
