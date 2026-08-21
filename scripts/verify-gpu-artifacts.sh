@@ -11,7 +11,7 @@ if [ ! -d "$ARTIFACT_DIR" ]; then
   exit 1
 fi
 FOUND=0
-for BIN in "$ARTIFACT_DIR"/playlist-compositord "$ARTIFACT_DIR"/playlist-compositord.exe; do
+for BIN in "$ARTIFACT_DIR"/playlist-compositord.exe "$ARTIFACT_DIR"/playlist-compositord; do
   [ -f "$BIN" ] || continue
   FOUND=1
   ACTUAL="$($BIN --version 2>/dev/null || true)"
@@ -20,6 +20,7 @@ for BIN in "$ARTIFACT_DIR"/playlist-compositord "$ARTIFACT_DIR"/playlist-composi
   SUM_FILE="$BIN.sha256"
   [ -f "$SUM_FILE" ] || { echo "checksum manifest missing: $SUM_FILE" >&2; exit 1; }
   if command -v sha256sum >/dev/null 2>&1; then sha256sum -c "$SUM_FILE"; else shasum -a 256 -c "$SUM_FILE"; fi
+  break
 done
 [ "$FOUND" -eq 1 ] || { echo "no playlist-compositord artifact found in $ARTIFACT_DIR" >&2; exit 1; }
 printf '%s\n' "verified GPU sidecar artifacts in $ARTIFACT_DIR"

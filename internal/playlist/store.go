@@ -1125,7 +1125,7 @@ func existingContainedAsset(base, relative string) (string, error) {
 	if !info.Mode().IsRegular() {
 		return "", errors.New("saved asset is not a regular file")
 	}
-	return resolved, nil
+	return path, nil
 }
 
 func existingLegacyAsset(base, path string) (string, error) {
@@ -1147,7 +1147,7 @@ func existingLegacyAsset(base, path string) (string, error) {
 	if !info.Mode().IsRegular() {
 		return "", errors.New("legacy asset is not a regular file")
 	}
-	return realPath, nil
+	return path, nil
 }
 
 func ensureSameVolumeContained(base, candidate string) error {
@@ -1244,14 +1244,14 @@ func containedChild(root, name string, mustExist bool) (string, error) {
 		if err := ensureSameVolumeContained(rootResolved, resolved); err != nil {
 			return "", err
 		}
-		return resolved, nil
+		return filepath.Join(rootAbs, name), nil
 	} else if !errors.Is(lerr, os.ErrNotExist) {
 		return "", lerr
 	}
 	if mustExist {
 		return "", os.ErrNotExist
 	}
-	return candidate, nil
+	return filepath.Join(rootAbs, name), nil
 }
 
 func (s *Store) playlistRoot(id string, create bool) (string, error) {

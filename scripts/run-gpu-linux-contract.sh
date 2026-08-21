@@ -5,7 +5,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 image="imagepadserver-playlist-compositord-linux-contract"
 
 docker build --pull -f "$repo_root/gpu/playlist-compositord/Dockerfile.linux" \
-  -t "$image" "$repo_root/gpu/playlist-compositord"
+  -t "$image" "$repo_root"
 
 # The container validates the Linux build and Rust contract tests. It is not a
 # GPU acceptance lane: no software adapter is promoted as a supported result.

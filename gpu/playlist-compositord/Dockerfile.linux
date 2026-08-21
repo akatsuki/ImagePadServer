@@ -5,8 +5,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
-COPY Cargo.toml Cargo.lock ./
-COPY src ./src
+COPY gpu/playlist-compositord/Cargo.toml gpu/playlist-compositord/Cargo.lock ./
+COPY gpu/playlist-compositord/src ./src
+COPY internal/video/fonts /internal/video/fonts
 
 RUN cargo test --locked
 RUN cargo build --locked --release
