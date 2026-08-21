@@ -14,6 +14,10 @@ func TestMusicPreRenderFFmpegSmokeUsesCPUProduction(t *testing.T) {
 	if ffmpeg == "" {
 		t.Skip("set IMAGEPAD_FFMPEG for the CPU production smoke")
 	}
+	filters, err := exec.Command(ffmpeg, "-hide_banner", "-filters").CombinedOutput()
+	if err != nil || !strings.Contains(string(filters), " ass ") {
+		t.Skip("FFmpeg was built without the libass filter")
+	}
 	audio := filepath.Join(t.TempDir(), "tone.wav")
 	if err := exec.Command(ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=0.5", audio).Run(); err != nil {
 		t.Fatal(err)

@@ -1151,11 +1151,11 @@ func existingLegacyAsset(base, path string) (string, error) {
 }
 
 func ensureSameVolumeContained(base, candidate string) error {
-	baseAbs, err := filepath.Abs(base)
+	baseAbs, err := canonicalPathForContainment(base)
 	if err != nil {
 		return err
 	}
-	candidateAbs, err := filepath.Abs(candidate)
+	candidateAbs, err := canonicalPathForContainment(candidate)
 	if err != nil {
 		return err
 	}
@@ -1170,6 +1170,28 @@ func ensureSameVolumeContained(base, candidate string) error {
 		return errors.New("path escapes playlist version")
 	}
 	return nil
+}
+
+// canonicalPathForContainment resolves existing symlinks and preserves the
+// real path of the nearest existing parent for paths that are not created yet.
+// macOS commonly exposes the temporary directory through /var while the
+// filesystem resolves it to /private/var; comparing the two textual paths
+// would incorrectly classify a contained asset as external.
+func canonicalPathForContainment(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return filepath.Clean(resolved), nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	parent, err := canonicalPathForContainment(filepath.Dir(abs))
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(parent, filepath.Base(abs)), nil
 }
 
 func safeComponent(value string) string {

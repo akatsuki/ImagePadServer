@@ -696,6 +696,11 @@ func (s *queueState) pruneLocked(limit int) {
 }
 
 func runQueueJob(job *queueJob) {
+	// CancelQueue can win the race after nextPending selects a job but before
+	// the worker starts it. Do not resurrect a job that was already canceled.
+	if job.Status == "canceled" {
+		return
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	job.Cancel = cancel
 	job.Done = make(chan struct{})

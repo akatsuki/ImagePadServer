@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -2064,11 +2065,36 @@ func (s *Server) runtimeLoadDirInUse(dir string) bool {
 }
 
 func pathWithin(root, path string) bool {
-	rel, err := filepath.Rel(root, path)
+	rootResolved, err := canonicalPathForWithin(root)
+	if err != nil {
+		return false
+	}
+	pathResolved, err := canonicalPathForWithin(path)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(rootResolved, pathResolved)
 	if err != nil || rel == "." {
 		return false
 	}
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func canonicalPathForWithin(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return filepath.Clean(resolved), nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	parent, err := canonicalPathForWithin(filepath.Dir(abs))
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(parent, filepath.Base(abs)), nil
 }
 
 func canonicalStoreFile(root, path string) (string, bool) {

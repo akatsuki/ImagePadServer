@@ -29,6 +29,20 @@ import (
 	"imagepadserver/internal/ytdlpauth"
 )
 
+// TestMain provides explicit tool overrides for the server package. Without
+// them, tests that call production paths after changing IMAGEPAD_DATA_DIR can
+// start the real FFmpeg bundle installer and leave a download locked during
+// t.TempDir cleanup. Individual tests may still override these with t.Setenv.
+func TestMain(m *testing.M) {
+	if p, err := exec.LookPath("ffmpeg"); err == nil {
+		_ = os.Setenv("IMAGEPAD_FFMPEG", p)
+	}
+	if p, err := exec.LookPath("ffprobe"); err == nil {
+		_ = os.Setenv("IMAGEPAD_FFPROBE", p)
+	}
+	os.Exit(m.Run())
+}
+
 func TestValidatePublicURLRejectsLocalhost(t *testing.T) {
 	if _, err := validatePublicURL("http://localhost/image.png"); err == nil {
 		t.Fatal("expected localhost URL to be rejected")

@@ -145,8 +145,8 @@ fn stage_log(message: String) {
 mod windows_impl {
     use super::*;
 
-    use super::super::h264_ring::BoundedH264Ring;
-    use super::super::native_nvenc::{
+    use crate::h264_ring::BoundedH264Ring;
+    use crate::native_nvenc::{
         nvenc_runtime_available, D3d12NvencEncoder, D3d12Surface, PendingBitstream,
     };
     use std::time::Instant;
@@ -190,7 +190,7 @@ mod windows_impl {
     }
 
     fn playlist_spectrum_bytes(
-        timeline: &super::super::protocol::TimelineChunk,
+        timeline: &crate::protocol::TimelineChunk,
     ) -> Result<Vec<u8>, String> {
         if timeline.frames.is_empty() || timeline.frames.len() > H264_SURFACE_RING_SLOTS {
             return Err("playlist spectrum upload requires a bounded 1..8 frame batch".into());
@@ -243,9 +243,8 @@ mod windows_impl {
         device: wgpu::Device,
         queue: wgpu::Queue,
         pipeline: wgpu::ComputePipeline,
-        playlist_pipeline: Option<super::super::playlist_shader_timeline::PlaylistComputePipeline>,
-        playlist_static_textures:
-            Option<super::super::playlist_shader_timeline::PlaylistStaticTextureSet>,
+        playlist_pipeline: Option<crate::playlist_shader_timeline::PlaylistComputePipeline>,
+        playlist_static_textures: Option<crate::playlist_shader_timeline::PlaylistStaticTextureSet>,
         playlist_assets_hash: Option<String>,
         playlist_artwork_hash: String,
         playlist_glyph_hash: String,
@@ -309,7 +308,7 @@ mod windows_impl {
         layout: &wgpu::BindGroupLayout,
         descriptor: ShaderModuleDescriptor,
         pcm: &[f32],
-        uniform: &super::super::music_v2_shader_host::ShaderSceneUniform,
+        uniform: &crate::music_v2_shader_host::ShaderSceneUniform,
         glyph_atlas_view: &wgpu::TextureView,
         glyph_metrics: &wgpu::Buffer,
         glyph_sampler: &wgpu::Sampler,
@@ -525,7 +524,7 @@ mod windows_impl {
         pub fn ensure_playlist_pipeline(&mut self) -> Result<(), String> {
             if self.playlist_pipeline.is_none() {
                 self.playlist_pipeline = Some(
-                    super::super::playlist_shader_timeline::create_playlist_compute_pipeline(
+                    crate::playlist_shader_timeline::create_playlist_compute_pipeline(
                         &self.device,
                     )?,
                 );
@@ -535,19 +534,18 @@ mod windows_impl {
 
         pub fn prepare_playlist_static_textures(
             &mut self,
-            assets: &super::super::protocol::TrackAssets,
+            assets: &crate::protocol::TrackAssets,
         ) -> Result<(), String> {
             if self.playlist_assets_hash.as_deref() == Some(assets.assets_hash.as_str())
                 && self.playlist_static_textures.is_some()
             {
                 return Ok(());
             }
-            let textures =
-                super::super::playlist_shader_timeline::PlaylistStaticTextureSet::upload(
-                    &self.device,
-                    &self.queue,
-                    assets,
-                )?;
+            let textures = crate::playlist_shader_timeline::PlaylistStaticTextureSet::upload(
+                &self.device,
+                &self.queue,
+                assets,
+            )?;
             self.playlist_static_textures = Some(textures);
             self.playlist_assets_hash = Some(assets.assets_hash.clone());
             self.playlist_artwork_hash = assets
@@ -565,7 +563,7 @@ mod windows_impl {
 
         pub fn prepare_playlist_spectrum_buffer(
             &mut self,
-            timeline: &super::super::protocol::TimelineChunk,
+            timeline: &crate::protocol::TimelineChunk,
         ) -> Result<(), String> {
             let bytes = playlist_spectrum_bytes(timeline)?;
             // Allocate a stable, maximum-size buffer once. The bind groups built
@@ -616,8 +614,7 @@ mod windows_impl {
             for slot_index in 0..H264_SURFACE_RING_SLOTS {
                 let frame_uniform = self.device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("playlist-frame-uniform"),
-                    size: super::super::playlist_shader_timeline::PLAYLIST_FRAME_UNIFORM_BYTES
-                        as u64,
+                    size: crate::playlist_shader_timeline::PLAYLIST_FRAME_UNIFORM_BYTES as u64,
                     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
@@ -645,10 +642,10 @@ mod windows_impl {
                     );
                 }
                 let conversion = RgbaToBgraPass::new(&self.device, &output_view);
-                let bind_group = super::super::playlist_shader_timeline::create_playlist_bind_group(
+                let bind_group = crate::playlist_shader_timeline::create_playlist_bind_group(
                     &self.device,
                     &pipeline.bind_group_layout,
-                    super::super::playlist_shader_timeline::PlaylistBindGroupResources {
+                    crate::playlist_shader_timeline::PlaylistBindGroupResources {
                         frame_uniform: &frame_uniform,
                         artwork_texture: &textures.artwork_view,
                         glyph_atlas: &textures.glyph_view,
@@ -703,7 +700,7 @@ mod windows_impl {
 
         pub fn submit_playlist_timeline(
             &mut self,
-            uniforms: &[super::super::playlist_shader_timeline::PlaylistFrameUniform],
+            uniforms: &[crate::playlist_shader_timeline::PlaylistFrameUniform],
         ) -> Result<(), String> {
             let chunk_ranges = playlist_command_chunk_ranges(uniforms.len())?;
             if !self.playlist_pending_frames.is_empty()
@@ -763,12 +760,12 @@ mod windows_impl {
                     let uniform = &uniforms[index];
                     let ring_slot = ring_indices[index];
                     let slot = &self.playlist_frame_slots[ring_slot];
-                    super::super::playlist_shader_timeline::write_playlist_frame_uniform(
+                    crate::playlist_shader_timeline::write_playlist_frame_uniform(
                         &self.queue,
                         &slot.frame_uniform,
                         uniform,
                     );
-                    super::super::playlist_shader_timeline::encode_playlist_compute_pass(
+                    crate::playlist_shader_timeline::encode_playlist_compute_pass(
                         &mut encoder,
                         pipeline,
                         &slot.bind_group,
@@ -881,7 +878,7 @@ mod windows_impl {
                 .mark_bitstream_ready(pending.ring_slot, u64::from(frame_index).saturating_add(1))
                 .map_err(|error| format!("playlist ring bitstream readiness failed: {error:?}"))?;
             let frame = EncodedH264Frame {
-                schema: super::super::contracts::CONTRACT_VERSION,
+                schema: crate::contracts::CONTRACT_VERSION,
                 sequence: pending.sequence,
                 pts_ns: pending.pts_ns,
                 width: self.width,
@@ -918,7 +915,7 @@ mod windows_impl {
 
         pub fn encode_playlist_timeline(
             &mut self,
-            uniforms: &[super::super::playlist_shader_timeline::PlaylistFrameUniform],
+            uniforms: &[crate::playlist_shader_timeline::PlaylistFrameUniform],
         ) -> Result<Vec<EncodedH264Frame>, String> {
             if uniforms.is_empty() || uniforms.len() > H264_SURFACE_RING_SLOTS {
                 return Err("playlist encode requires a bounded 1..8 frame batch".into());
@@ -960,12 +957,12 @@ mod windows_impl {
                 });
             for (index, uniform) in uniforms.iter().enumerate() {
                 let slot = &self.playlist_frame_slots[ring_indices[index]];
-                super::super::playlist_shader_timeline::write_playlist_frame_uniform(
+                crate::playlist_shader_timeline::write_playlist_frame_uniform(
                     &self.queue,
                     &slot.frame_uniform,
                     uniform,
                 );
-                super::super::playlist_shader_timeline::encode_playlist_compute_pass(
+                crate::playlist_shader_timeline::encode_playlist_compute_pass(
                     &mut encoder,
                     pipeline,
                     &slot.bind_group,
@@ -1023,7 +1020,7 @@ mod windows_impl {
                         format!("playlist ring bitstream readiness failed: {error:?}")
                     })?;
                 let frame = EncodedH264Frame {
-                    schema: super::super::contracts::CONTRACT_VERSION,
+                    schema: crate::contracts::CONTRACT_VERSION,
                     sequence,
                     pts_ns,
                     width: self.width,
@@ -1212,7 +1209,7 @@ mod windows_impl {
                         format!("direct H264 ring bitstream readiness failed: {error:?}")
                     })?;
                 let frame = EncodedH264Frame {
-                    schema: super::super::contracts::CONTRACT_VERSION,
+                    schema: crate::contracts::CONTRACT_VERSION,
                     sequence,
                     pts_ns,
                     width: self.width,
@@ -1381,7 +1378,7 @@ mod windows_impl {
             .min(u64::from(u32::MAX)) as u32;
         let scale_x = width as f64 / 1280.0;
         let scale_y = height as f64 / 720.0;
-        let rect = |r: &super::super::contracts::SceneRect| {
+        let rect = |r: &crate::contracts::SceneRect| {
             [
                 (f64::from(r.x) * scale_x).round() as i32,
                 (f64::from(r.y) * scale_y).round() as i32,
@@ -1670,14 +1667,14 @@ impl DirectNvencRenderer {
 
     pub fn prepare_playlist_static_textures(
         &mut self,
-        _: &super::super::protocol::TrackAssets,
+        _: &crate::protocol::TrackAssets,
     ) -> Result<(), String> {
         Err("playlist D3D12/wgpu static textures are only available on Windows".into())
     }
 
     pub fn prepare_playlist_spectrum_buffer(
         &mut self,
-        _: &super::super::protocol::TimelineChunk,
+        _: &crate::protocol::TimelineChunk,
     ) -> Result<(), String> {
         Err("playlist D3D12/wgpu spectrum buffer is only available on Windows".into())
     }
@@ -1688,7 +1685,7 @@ impl DirectNvencRenderer {
 
     pub fn submit_playlist_timeline(
         &mut self,
-        _: &[super::super::playlist_shader_timeline::PlaylistFrameUniform],
+        _: &[crate::playlist_shader_timeline::PlaylistFrameUniform],
     ) -> Result<(), String> {
         Err("playlist D3D12/wgpu compute submit is only available on Windows".into())
     }
@@ -1699,7 +1696,7 @@ impl DirectNvencRenderer {
 
     pub fn encode_playlist_timeline(
         &mut self,
-        _: &[super::super::playlist_shader_timeline::PlaylistFrameUniform],
+        _: &[crate::playlist_shader_timeline::PlaylistFrameUniform],
     ) -> Result<Vec<EncodedH264Frame>, String> {
         Err("playlist D3D12/wgpu NVENC encode is only available on Windows".into())
     }
@@ -1710,6 +1707,20 @@ impl DirectNvencRenderer {
         _: i64,
         _: &MusicScenePayload,
     ) -> Result<EncodedH264Frame, String> {
+        Err("direct D3D12/NVENC sidecar is only available on Windows".into())
+    }
+    pub fn reset_playlist_session(&mut self) -> Result<(), String> {
+        Err("direct D3D12/NVENC sidecar is only available on Windows".into())
+    }
+
+    pub fn render_batch(
+        &mut self,
+        _: &[(&MusicScenePayload, u64, i64)],
+    ) -> Result<Vec<EncodedH264Frame>, String> {
+        Err("direct D3D12/NVENC sidecar is only available on Windows".into())
+    }
+
+    pub fn flush(&mut self) -> Result<(), String> {
         Err("direct D3D12/NVENC sidecar is only available on Windows".into())
     }
 }
