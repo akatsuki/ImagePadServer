@@ -79,6 +79,7 @@ type Server struct {
 	adminToken            string
 	obs                   *obsrtmp.Manager
 	obsCommitMu           sync.Mutex
+	obsSaveWG             sync.WaitGroup
 	obsCallbackGeneration uint64
 	obsSessionActive      func(string, uint64) bool
 	obsSessionLatest      func(string, uint64) bool
@@ -1565,7 +1566,11 @@ func (s *Server) handleOBSStreamStart(session obsrtmp.Session) {
 		log.Printf("OBS history update failed for %s: %v", session.ID, err)
 	}
 	s.obsCommitMu.Unlock()
-	go func() { _ = s.store.Save() }()
+	s.obsSaveWG.Add(1)
+	go func() {
+		defer s.obsSaveWG.Done()
+		_ = s.store.Save()
+	}()
 	s.broadcastStateChanged()
 }
 
@@ -1617,7 +1622,11 @@ func (s *Server) handleOBSStreamDone(session obsrtmp.Session) {
 			log.Printf("OBS conversion state update failed for %s: %v", session.ID, err)
 		}
 	}
-	go func() { _ = s.store.Save() }()
+	s.obsSaveWG.Add(1)
+	go func() {
+		defer s.obsSaveWG.Done()
+		_ = s.store.Save()
+	}()
 	s.broadcastStateChanged()
 }
 

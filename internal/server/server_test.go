@@ -2008,6 +2008,7 @@ func TestOBSBlockedOldStartDoesNotDelayReplacementServerCommit(t *testing.T) {
 	if current := store.Current(); current == nil || current.ID != "b" {
 		t.Fatalf("released A rewound B current state: %+v", current)
 	}
+	srv.obsSaveWG.Wait()
 }
 
 func TestRTSPReadyPublishesUPnPURL(t *testing.T) {
