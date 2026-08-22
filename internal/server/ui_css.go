@@ -1,3 +1,3 @@
 package server
 
-const dashboardCSS = dashboardCSSTokens + dashboardCSSLayout + dashboardCSSUpload + dashboardCSSComponents + dashboardCSSRefinements + dashboardCSSResponsive
+const dashboardCSS = dashboardCSSTokens + dashboardCSSLayout + dashboardCSSUpload + dashboardCSSComponents + dashboardCSSAirPlay + dashboardCSSRefinements + dashboardCSSResponsive

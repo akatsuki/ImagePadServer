@@ -122,6 +122,24 @@ const indexHTML = `<!doctype html>
                       </div>
                     </div>
                   </div>
+                  <section class="airplay-card" id="airplayCard" hidden aria-labelledby="airplayTitle">
+                    <div class="airplay-card-heading">
+                      <svg class="airplay-graphic" viewBox="0 0 48 48" aria-hidden="true" focusable="false">
+                        <rect x="7" y="6" width="34" height="25" rx="4" fill="none" stroke="currentColor" stroke-width="2.5"/>
+                        <path d="M17 39h14M24 31v8M14 24c2.8-3.2 6.2-4.8 10-4.8s7.2 1.6 10 4.8M18.2 27.5c1.7-1.7 3.6-2.5 5.8-2.5s4.1.8 5.8 2.5" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+                      </svg>
+                      <div>
+                        <h3 id="airplayTitle">iOS AirPlay画面共有</h3>
+                        <p>同じLANのiPhone/iPadから画面ミラーリングを受け、現在のLive配信へ載せます。</p>
+                      </div>
+                    </div>
+                    <p class="airplay-status" id="airplayStatusText" role="status" aria-live="polite">AirPlay受信は無効です</p>
+                    <code class="airplay-receiver-path" id="airplayReceiverPath"></code>
+                    <div class="airplay-actions">
+                      <button type="button" id="airplayStartButton">AirPlay受信を開始</button>
+                      <button type="button" class="secondary" id="airplayEndButton" hidden>受信を停止</button>
+                    </div>
+                  </section>
                 </div>
               </div>
             </div>

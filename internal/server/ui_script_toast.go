@@ -17,6 +17,7 @@ const dashboardScriptToast = `
       musicModeEnabled: false,
       videoQuality: null,
       obs: null,
+      airplay: null,
       pairing: null,
       ytdlpAuth: null,
       ytdlpChannel: null,

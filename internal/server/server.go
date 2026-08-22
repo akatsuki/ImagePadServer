@@ -21,6 +21,7 @@ import (
 	"github.com/skip2/go-qrcode"
 
 	"imagepadserver/internal/about"
+	"imagepadserver/internal/airplay"
 	"imagepadserver/internal/appicon"
 	"imagepadserver/internal/clipboard"
 	"imagepadserver/internal/config"
@@ -78,6 +79,7 @@ type Server struct {
 	exitRequested         func()
 	adminToken            string
 	obs                   *obsrtmp.Manager
+	airplay               *airplay.Manager
 	obsCommitMu           sync.Mutex
 	obsSaveWG             sync.WaitGroup
 	obsCallbackGeneration uint64
@@ -220,6 +222,7 @@ func New(cfg config.Config, store *library.Store, imageURLBase string) *Server {
 		stateEvents:           make(map[chan struct{}]struct{}),
 		activeCanonicalHeight: activeCanonicalHeight,
 	}
+	srv.airplay = airplay.New(srv.broadcastStateChanged)
 	srv.obs = obsrtmp.New(store.Dir(), advertisedHost, 1935, obsStreamKey, srv.videoQualityPreset, srv.obsLatencyProfile, obsrtmp.Callbacks{
 		OnStart:     srv.handleOBSStreamStart,
 		OnDone:      srv.handleOBSStreamDone,
@@ -278,6 +281,8 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/obs/relay-config", s.handleOBSRelayConfig)
 	mux.HandleFunc("/api/obs/start", s.admin(s.handleOBSStart))
 	mux.HandleFunc("/api/obs/end", s.admin(s.handleOBSEnd))
+	mux.HandleFunc("/api/airplay/start", s.admin(s.handleAirPlayStart))
+	mux.HandleFunc("/api/airplay/end", s.admin(s.handleAirPlayEnd))
 	mux.HandleFunc("/api/obs/key", s.admin(s.handleOBSKey))
 	mux.HandleFunc("/api/obs/latency", s.admin(s.handleOBSLatency))
 	mux.HandleFunc("/api/history", s.admin(s.handleHistory))
@@ -454,11 +459,17 @@ func (s *Server) SyncOBSReceiver() {
 		s.obs.Start()
 		return
 	}
+	if s.airplay != nil {
+		s.airplay.Stop(8 * time.Second)
+	}
 	s.closeRTSPMapping("", obsrtmp.RTSPEndpoint{})
 	s.obs.Stop()
 }
 
 func (s *Server) StopOBSReceiver() {
+	if s.airplay != nil {
+		s.airplay.Stop(8 * time.Second)
+	}
 	s.closeRTSPMapping("", obsrtmp.RTSPEndpoint{})
 	if s.obs != nil {
 		s.obs.StopAndWait(8 * time.Second)
@@ -3106,6 +3117,7 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 
 	localImageURL := ""
 	obsStatus := s.obsState()
+	airplayStatus := s.airplayState()
 	imageURLBase := s.imageURLBase
 	if tunnelURLBase != "" {
 		imageURLBase = tunnelURLBase
@@ -3146,17 +3158,20 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 		}
 	} else {
 		videoPlayer := s.videoPlayerEmptyState()
-		state := map[string]interface{}{
+		shareState := map[string]interface{}{
 			"imageURL":      imageURL,
 			"videoURL":      videoURL,
 			"hlsURL":        hlsURL,
 			"localImageURL": localImageURL,
 			"videoPlayer":   videoPlayer,
 			"obs":           obsStatus,
+			"airplay":       airplayStatus,
 			"obsLatency":    s.obsLatencyProfile(),
 		}
-		shareURL, shareURLLabel := primaryShareURL(state)
-		return withResolvedShareURLs(s.stateWithMedia(r, current, upnpResult, tunnelStatus, videoPlayer, obsStatus, imageURL, videoURL, hlsURL, shareURL, shareURLLabel, publicImageURL, publicVideoURL, publicHLSURL, localImageURL, previewImageURL))
+		shareURL, shareURLLabel := primaryShareURL(shareState)
+		state := s.stateWithMedia(r, current, upnpResult, tunnelStatus, videoPlayer, obsStatus, imageURL, videoURL, hlsURL, shareURL, shareURLLabel, publicImageURL, publicVideoURL, publicHLSURL, localImageURL, previewImageURL)
+		state["airplay"] = airplayStatus
+		return withResolvedShareURLs(state)
 	}
 	if imageURL == "" {
 		imageURL = ""
@@ -3201,6 +3216,7 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 		"videoPlayer":       videoPlayer,
 		"videoQuality":      s.videoQualityState(),
 		"obs":               obsStatus,
+		"airplay":           airplayStatus,
 		"pairing":           s.pairingState(),
 		"videoQueue":        s.videoQueueState(),
 		"ytdlpAuth":         ytdlpauth.Status(),

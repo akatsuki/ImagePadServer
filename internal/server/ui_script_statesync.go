@@ -60,6 +60,7 @@ const dashboardScriptStateSync = `
       state.ingest = data.ingest || null;
       state.video = data.video || null;
       state.obs = data.obs || null;
+      state.airplay = data.airplay || null;
       state.pairing = data.pairing || null;
       state.ytdlpAuth = data.ytdlpAuth || null;
       state.ytdlpChannel = data.ytdlpChannel || null;
@@ -77,6 +78,7 @@ const dashboardScriptStateSync = `
       applyQuality(data.videoQuality);
       applyVideoPlayer(data.videoPlayer);
       applyOBS(data.obs);
+      applyAirPlay(data.airplay);
       applyPairing(data.pairing);
       updateYTDLPAuthState();
       updateYTDLPChannelState();
@@ -104,6 +106,6 @@ const dashboardScriptStateSync = `
         setTimeout(() => SettingsController.openPhoneConnect(), 240);
       }
 
-      scheduleRefresh((data.ingest && data.ingest.active) || (data.video && data.video.active) || (data.obs && data.obs.connected) ? 750 : 2000);
+      scheduleRefresh((data.ingest && data.ingest.active) || (data.video && data.video.active) || (data.obs && data.obs.connected) || (data.airplay && data.airplay.running) ? 750 : 2000);
     }
 `
