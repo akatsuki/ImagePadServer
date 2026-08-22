@@ -522,30 +522,30 @@ func TestUIContainsImagePresetControls(t *testing.T) {
 func TestVideoAndMusicModeTogglesAreNotInSettings(t *testing.T) {
 	html := getIndexHTML(t)
 	for _, want := range []string{
-		`id="musicIntentButton" data-media-intent="music"`,
-		`syncLegacyMusicMode(mediaIntent === 'music')`,
+		"id=\"musicIntentButton\"",
+		"data-media-intent=\"music\"",
+		"syncLegacyMusicMode(mediaIntent ===",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("upload music mode wiring is missing %q", want)
 		}
 	}
 	for _, forbidden := range []string{
-		`id="videoPlayerToggle"`,
-		`id="videoPlayerText"`,
-		`id="musicModeRow"`,
-		`id="musicModeToggle"`,
-		`id="musicModeText"`,
-		`<strong>ミュージックモード</strong>`,
-		`videoPlayerToggle.addEventListener('change'`,
-		`musicModeToggle.addEventListener('change'`,
-		`musicModeRow.hidden = !musicWorkspaceEnabled || !data.enabled`,
+		"id=\"videoPlayerToggle\"",
+		"id=\"videoPlayerText\"",
+		"id=\"musicModeRow\"",
+		"id=\"musicModeToggle\"",
+		"id=\"musicModeText\"",
+		"<strong>ミュージックモード</strong>",
+		"videoPlayerToggle.addEventListener",
+		"musicModeToggle.addEventListener",
+		"musicModeRow.hidden",
 	} {
 		if strings.Contains(html, forbidden) {
 			t.Fatalf("settings must not expose video/music mode control %q", forbidden)
 		}
 	}
 }
-
 func TestUIContainsEncoderModeSetting(t *testing.T) {
 	html := getIndexHTML(t)
 	for _, want := range []string{
@@ -563,56 +563,48 @@ func TestUIContainsEncoderModeSetting(t *testing.T) {
 func TestMusicWorkspaceModeMenu(t *testing.T) {
 	html := getIndexHTML(t)
 	for _, want := range []string{
-		`const musicWorkspaceEnabled = true`,
-		`id="musicIntentButton" data-media-intent="music"`,
-		`syncLegacyMusicMode(mediaIntent === 'music')`,
-		`function syncLegacyMusicMode(enabled)`,
-		`apiFetch('/api/music-mode'`,
-		`if (mediaIntent === 'music') {
-        MusicController.render({ active: true });
-      }`,
-		`return 'ミュージックHLSを生成';`,
-		`MusicController.init({`,
-		`MusicController.render({`,
-		`mediaIntent = intent === 'music' && musicWorkspaceEnabled`,
-		`PreviewController.setVisible(!active || mode === 'single')`,
-		`.preview-panel[hidden]`,
-		`obsModeButton.hidden = !state.videoPlayerEnabled || mediaIntent !== 'video'`,
-		`modeTabs.classList.toggle('has-obs', !!state.videoPlayerEnabled && mediaIntent === 'video')`,
-		// シングル/プレイリストの2モードメニュー。
-		`id="musicModeMenu"`,
-		`data-music-mode-choice="single"`,
-		`data-music-mode-choice="playlist"`,
-		`music-caret`,
-		`musicModeMenu.addEventListener('click'`,
-		`event.target.closest('[data-music-mode-choice]')`,
-		// プレイリストモードでも従来のアップロードUIを残し、追加先だけ切り替える。
-		`MusicController.mode() === 'playlist' && uploadMode !== 'obs'`,
-		`PlaylistController.addFromUploadForm(uploadMode)`,
-		`return 'プレイリストに追加';`,
+		"const musicWorkspaceEnabled = true",
+		"id=\"musicIntentButton\"",
+		"data-media-intent=\"music\"",
+		"syncLegacyMusicMode(mediaIntent ===",
+		"function syncLegacyMusicMode(enabled)",
+		"/api/music-mode",
+		"MusicController.setMode(",
+		"playlist",
+		"init: initMusicController",
+		"MusicController.render({ active:",
+		"mediaIntent = intent",
+		"PreviewController.setVisible(!active || mode === \"single\")",
+		`<div class="mode-tabs" role="tablist" aria-label="入力方法">`,
+		"id=\"liveIntentButton\"",
+		"data-media-input-mode=\"playlist\"",
+		"PlaylistController.addFromUploadForm(uploadMode)",
+		"プレイリストに追加",
 	} {
 		if !strings.Contains(html, want) {
-			t.Fatalf("music menu/controller missing %q", want)
+			t.Fatalf("music hierarchy/controller missing %q", want)
 		}
 	}
-	if strings.Contains(html, `if (previewPanel) previewPanel.hidden = active`) {
+	if strings.Contains(html, "if (previewPanel) previewPanel.hidden = active") {
 		t.Fatal("MusicController must not directly hide the preview panel")
 	}
-	if strings.Contains(html, `uploadHeading.textContent = mediaIntent === 'video' ? '動画アップロード' : '画像アップロード'`) {
+	if strings.Contains(html, "uploadHeading.textContent = mediaIntent === \"video\" ?") {
 		t.Fatal("applyVideoPlayer must not overwrite music headings back to image")
 	}
 	for _, forbidden := range []string{
-		// パーティーモードは v1.6.2 まで出さない。
-		`data-music-mode-choice="party"`,
-		`パーティーモード`,
-		`ミュージック機能はGUI準備中です`,
+		"id=\"musicModeMenu\"",
+		"data-music-mode-choice",
+		"music-caret",
+		"musicModeMenu.addEventListener",
+		"event.target.closest([data-music-mode-choice])",
+		"パーティーモード",
+		"ミュージック機能はGUI準備中です",
 	} {
 		if strings.Contains(html, forbidden) {
-			t.Fatalf("music menu must not expose %q", forbidden)
+			t.Fatalf("obsolete music menu must not expose %q", forbidden)
 		}
 	}
 }
-
 func TestMusicWorkspacePlaylistUI(t *testing.T) {
 	html := getIndexHTML(t)
 	for _, want := range []string{
@@ -804,6 +796,129 @@ func TestBrowserCookieSourceIsNotExposed(t *testing.T) {
 	} {
 		if strings.Contains(html, forbidden) {
 			t.Fatalf("frozen browser cookie integration remains in UI: %q", forbidden)
+		}
+	}
+}
+
+func TestUIInputTabsRouteToExistingWorkspaces(t *testing.T) {
+	html := getIndexHTML(t)
+	for _, want := range []string{
+		`id="obsModeButton" data-media-input-mode="obs"`,
+		`id="playlistModeButton" data-media-input-mode="playlist"`,
+		"obsModeButton.addEventListener",
+		"mediaIntent !==",
+		"MusicController.setMode(",
+		"playlist",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("input route wiring missing %q", want)
+		}
+	}
+	for _, id := range []string{"id=\"obsUploadPanel\"", "id=\"musicPlaylistPanel\""} {
+		if count := strings.Count(html, id); count != 1 {
+			t.Fatalf("existing workspace %s must remain rendered once, got %d", id, count)
+		}
+	}
+	for _, forbidden := range []string{"liveWorkspace", "liveOBSPanel", "livePlaylistPanel", "LiveController"} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("input routes must not create a relocated LIVE workspace: %q", forbidden)
+		}
+	}
+	previewColumn := strings.Index(html, "<div class=\"preview-column\">")
+	playlistPanel := strings.Index(html, "id=\"musicPlaylistPanel\"")
+	if previewColumn < 0 || playlistPanel < previewColumn {
+		t.Fatal("playlist panel must stay in the original preview column")
+	}
+	sourceCard := strings.Index(html, "<div class=\"source-card\">")
+	secondaryFlow := strings.Index(html, "<div class=\"flow-secondary\">")
+	obsPanel := strings.Index(html, "id=\"obsUploadPanel\"")
+	if sourceCard < 0 || secondaryFlow < 0 || obsPanel < sourceCard || obsPanel > secondaryFlow {
+		t.Fatal("OBS panel must stay in the original input card before the conversion/output flow")
+	}
+}
+
+func TestUIChildModesRenderInsideInputTabs(t *testing.T) {
+	html := getIndexHTML(t)
+	navStart := strings.Index(html, `<nav class="media-hierarchy"`)
+	if navStart < 0 {
+		t.Fatal("media parent navigation is missing")
+	}
+	navRelativeEnd := strings.Index(html[navStart:], `<form id="uploadForm"`)
+	if navRelativeEnd < 0 {
+		t.Fatal("upload form boundary is missing")
+	}
+	navHTML := html[navStart : navStart+navRelativeEnd]
+	if strings.Contains(navHTML, "data-media-input-mode") || strings.Contains(navHTML, "ModeButton") {
+		t.Fatal("child input modes must not be rendered directly under the parent tabs")
+	}
+
+	modeStart := strings.Index(html, `<div class="mode-tabs" role="tablist" aria-label="入力方法">`)
+	if modeStart < 0 {
+		t.Fatal("input mode tabs are missing from the input card")
+	}
+	modeRelativeEnd := strings.Index(html[modeStart:], `</div>`)
+	if modeRelativeEnd < 0 {
+		t.Fatal("input mode tabs boundary is missing")
+	}
+	modeHTML := html[modeStart : modeStart+modeRelativeEnd]
+	for _, want := range []string{
+		`id="fileModeButton" data-media-input-mode="file"`,
+		`id="linkModeButton" data-media-input-mode="link"`,
+		`id="obsModeButton" data-media-input-mode="obs"`,
+		`id="playlistModeButton" data-media-input-mode="playlist"`,
+	} {
+		if !strings.Contains(modeHTML, want) {
+			t.Fatalf("input child mode is not rendered inside mode-tabs: %q", want)
+		}
+	}
+}
+
+func TestUIPlaylistChildTabsHaveNoLeftIndent(t *testing.T) {
+	html := getIndexHTML(t)
+	start := strings.Index(html, `.playlist-input-tabs {`)
+	if start < 0 {
+		t.Fatal("playlist input tabs CSS is missing")
+	}
+	relativeEnd := strings.Index(html[start:], "}")
+	if relativeEnd < 0 {
+		t.Fatal("playlist input tabs CSS boundary is missing")
+	}
+	css := html[start : start+relativeEnd]
+	for _, forbidden := range []string{
+		"margin: -2px 0 8px 14px;",
+		"padding: 6px 0 0 10px;",
+	} {
+		if strings.Contains(css, forbidden) {
+			t.Fatalf("playlist input tabs retain left indentation: %q", forbidden)
+		}
+	}
+	for _, want := range []string{
+		"margin: -2px 0 8px;",
+		"padding: 6px 0 0;",
+	} {
+		if !strings.Contains(css, want) {
+			t.Fatalf("playlist input tabs CSS is missing zero-left-spacing rule: %q", want)
+		}
+	}
+}
+
+func TestUIPlaylistChildModesRenderBelowPlaylist(t *testing.T) {
+	html := getIndexHTML(t)
+	playlistMode := strings.Index(html, `id="playlistModeButton" data-media-input-mode="playlist"`)
+	playlistInputs := strings.Index(html, `<div class="playlist-input-tabs" id="playlistInputTabs"`)
+	if playlistMode < 0 || playlistInputs < 0 || playlistInputs <= playlistMode {
+		t.Fatal("playlist file/link tabs must render below the playlist input mode")
+	}
+	for _, want := range []string{
+		`role="tablist" aria-label="プレイリスト入力方法"`,
+		`id="playlistFileModeButton" data-playlist-input-mode="file"`,
+		`id="playlistLinkModeButton" data-playlist-input-mode="link"`,
+		`playlistInputTabs.hidden = !playlistActive`,
+		`playlistFileModeButton.addEventListener('click', () => setUploadMode('file'))`,
+		`playlistLinkModeButton.addEventListener('click', () => setUploadMode('link'))`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("playlist child input mode wiring is missing %q", want)
 		}
 	}
 }

@@ -47,20 +47,22 @@ const indexHTML = `<!doctype html>
               <h2 id="uploadHeading">画像アップロード</h2>
               <p class="section-kicker" id="uploadKicker">静止画を変換して、ImagePad URLとしてすぐ公開する</p>
             </div>
-            <div class="media-kind-switch" id="mediaKindSwitch" role="group" aria-label="メディア種別" hidden>
-              <button type="button" class="active" id="imageIntentButton" data-media-intent="image" aria-pressed="true">静止画</button>
-              <button type="button" id="videoIntentButton" data-media-intent="video" aria-pressed="false">動画</button>
-              <button type="button" id="musicIntentButton" data-media-intent="music" hidden aria-pressed="false" aria-haspopup="menu" aria-expanded="false">
-                <span>ミュージック</span>
-                <svg class="music-caret" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path fill="currentColor" d="M2.2 4.2 6 8l3.8-3.8H2.2Z"/></svg>
-              </button>
-              <div class="music-mode-menu" id="musicModeMenu" role="menu" aria-label="ミュージックモード" hidden>
-                <button type="button" role="menuitemradio" aria-checked="true" data-music-mode-choice="single">シングル</button>
-                <button type="button" role="menuitemradio" aria-checked="false" data-music-mode-choice="playlist">プレイリスト</button>
-              </div>
-            </div>
           </div>
         </div>
+        <nav class="media-hierarchy" id="mediaKindSwitch" aria-label="メディア種別">
+          <button type="button" class="media-nav-parent active" id="imageIntentButton" data-media-nav-parent data-media-intent="image" aria-pressed="true">
+            <span class="media-nav-icon" aria-hidden="true">▧</span><span>静止画</span>
+          </button>
+          <button type="button" class="media-nav-parent" id="videoIntentButton" data-media-nav-parent data-media-intent="video" aria-pressed="false">
+            <span class="media-nav-icon" aria-hidden="true">▶</span><span>動画</span>
+          </button>
+          <button type="button" class="media-nav-parent" id="musicIntentButton" data-media-nav-parent data-media-intent="music" aria-pressed="false">
+            <span class="media-nav-icon" aria-hidden="true">♫</span><span>ミュージック</span>
+          </button>
+          <button type="button" class="media-nav-parent" id="liveIntentButton" data-media-nav-parent data-media-intent="live" aria-pressed="false">
+            <span class="media-nav-icon" aria-hidden="true">●</span><span>LIVE</span>
+          </button>
+        </nav>
         <form id="uploadForm">
           <div class="flow-grid" id="flowGrid">
             <div class="flow-primary">
@@ -72,11 +74,15 @@ const indexHTML = `<!doctype html>
                   </svg>
                   <span>入力</span>
                 </div>
-                <div class="mode-tabs" role="tablist" aria-label="アップロード方法">
-                  <button class="mode-tab active" id="fileModeButton" type="button" role="tab" aria-selected="true" aria-controls="fileUploadPanel">画像</button>
-                  <span class="divider" aria-hidden="true">|</span>
-                  <button class="mode-tab" id="linkModeButton" type="button" role="tab" aria-selected="false" aria-controls="linkUploadPanel">リンク</button>
-                  <button class="mode-tab" id="obsModeButton" type="button" role="tab" aria-selected="false" aria-controls="obsUploadPanel" hidden>OBS</button>
+                <div class="mode-tabs" role="tablist" aria-label="入力方法">
+                  <button class="mode-tab active" id="fileModeButton" data-media-input-mode="file" type="button" role="tab" aria-selected="true" aria-controls="fileUploadPanel">ファイル</button>
+                  <button class="mode-tab" id="linkModeButton" data-media-input-mode="link" type="button" role="tab" aria-selected="false" aria-controls="linkUploadPanel">リンク</button>
+                  <button class="mode-tab" id="obsModeButton" data-media-input-mode="obs" type="button" role="tab" aria-selected="false" aria-controls="obsUploadPanel" hidden>OBS</button>
+                  <button class="mode-tab" id="playlistModeButton" data-media-input-mode="playlist" type="button" role="tab" aria-selected="false" aria-controls="musicPlaylistPanel" hidden>プレイリスト</button>
+                </div>
+                <div class="playlist-input-tabs" id="playlistInputTabs" role="tablist" aria-label="プレイリスト入力方法" hidden>
+                  <button class="mode-tab playlist-input-tab active" id="playlistFileModeButton" data-playlist-input-mode="file" type="button" role="tab" aria-selected="true" aria-controls="fileUploadPanel">ファイル</button>
+                  <button class="mode-tab playlist-input-tab" id="playlistLinkModeButton" data-playlist-input-mode="link" type="button" role="tab" aria-selected="false" aria-controls="linkUploadPanel">リンク</button>
                 </div>
                 <div class="upload-panel active" id="fileUploadPanel" role="tabpanel" aria-labelledby="fileModeButton">
                   <div class="drop-zone" id="fileDropZone">

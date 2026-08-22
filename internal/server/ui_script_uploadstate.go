@@ -107,6 +107,51 @@ const dashboardScriptUploadState = `
       }
     }
 
+    function updateMediaNavigation() {
+      const playlistActive = mediaIntent === 'music' && typeof MusicController !== 'undefined' && MusicController.mode && MusicController.mode() === 'playlist';
+      const activeGroup = uploadMode === 'obs' || playlistActive ? 'live' : mediaIntent;
+      const videoEnabled = !!state.videoPlayerEnabled;
+      const liveInput = activeGroup === 'live';
+
+      mediaNavParentButtons.forEach((button) => {
+        const intent = button.dataset.mediaIntent;
+        const active = intent === activeGroup;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', String(active));
+        button.disabled = intent !== 'image' && (!videoEnabled || (intent === 'music' && !musicWorkspaceEnabled));
+      });
+
+      const inputModes = [
+        [fileModeButton, !liveInput],
+        [linkModeButton, !liveInput],
+        [obsModeButton, liveInput && videoEnabled],
+        [playlistModeButton, liveInput && videoEnabled && musicWorkspaceEnabled]
+      ];
+      inputModes.forEach(([button, visible]) => {
+        if (!button) return;
+        button.hidden = !visible;
+        button.disabled = !visible;
+        const mode = button.dataset.mediaInputMode;
+        const selected = mode === 'playlist'
+          ? playlistActive
+          : mode === uploadMode && !playlistActive;
+        button.classList.toggle('active', selected);
+        button.setAttribute('aria-selected', String(selected));
+      });
+      const playlistInputModes = [
+        [playlistFileModeButton, playlistActive && uploadMode === 'file'],
+        [playlistLinkModeButton, playlistActive && uploadMode === 'link']
+      ];
+      playlistInputModes.forEach(([button, selected]) => {
+        if (!button) return;
+        button.disabled = !playlistActive;
+        button.classList.toggle('active', selected);
+        button.setAttribute('aria-selected', String(selected));
+      });
+      if (playlistInputTabs) playlistInputTabs.hidden = !playlistActive;
+      if (modeTabs) modeTabs.classList.toggle('live-input', liveInput);
+    }
+
     function setMediaIntent(intent, syncLegacy = true) {
       if (!musicWorkspaceEnabled && intent === 'music') {
         intent = 'image';
@@ -127,9 +172,12 @@ const dashboardScriptUploadState = `
       if (imageIntentButton) imageIntentButton.setAttribute('aria-pressed', String(mediaIntent === 'image'));
       if (videoIntentButton) videoIntentButton.setAttribute('aria-pressed', String(mediaIntent === 'video'));
       if (musicIntentButton) musicIntentButton.setAttribute('aria-pressed', String(mediaIntent === 'music'));
-      if (obsModeButton) obsModeButton.hidden = !state.videoPlayerEnabled || mediaIntent !== 'video';
-      if (modeTabs) modeTabs.classList.toggle('has-obs', !!state.videoPlayerEnabled && mediaIntent === 'video');
       if (MusicController) MusicController.render({ active: mediaIntent === 'music' });
+      if (playlistModeButton) {
+        const playlistActive = mediaIntent === 'music' && MusicController && MusicController.mode && MusicController.mode() === 'playlist';
+        playlistModeButton.classList.toggle('active', playlistActive);
+        playlistModeButton.setAttribute('aria-selected', String(playlistActive));
+      }
       if (dropHint) {
         dropHint.textContent = mediaIntent === 'music'
           ? '音楽ファイルをここにドロップ'
@@ -201,6 +249,7 @@ const dashboardScriptUploadState = `
       if (uploadMode !== 'obs') {
         setUploadMode(uploadMode);
       }
+      updateMediaNavigation();
     }
 
     function applyVideoPlayer(data) {
@@ -212,17 +261,12 @@ const dashboardScriptUploadState = `
       state.musicModeEnabled = !!data.musicModeEnabled;
       imageInput.accept = data.enabled ? '' : imageAccept;
       if (!data.enabled) mediaIntent = 'image';
-      if (mediaKindSwitch) mediaKindSwitch.hidden = !data.enabled;
+      if (mediaKindSwitch) mediaKindSwitch.hidden = false;
       if (mediaKindSwitch) mediaKindSwitch.classList.toggle('has-music', !!data.enabled && musicWorkspaceEnabled);
-      if (musicIntentButton) musicIntentButton.hidden = !data.enabled || !musicWorkspaceEnabled;
       if (mediaKindSwitch) mediaKindSwitch.dataset.enabledLabel = '画像/音声/動画';
       if (dragDropOverlayHint) dragDropOverlayHint.dataset.enabledLabel = '画像、RAW、音声、動画ファイルを選択します';
       fileModeButton.textContent = 'ファイル';
       imageURLInput.placeholder = data.enabled ? 'https://example.com/image_or_video.webp' : 'https://example.com/image.webp';
-      obsModeButton.hidden = !data.enabled || mediaIntent !== 'video';
-      if (modeTabs) {
-        modeTabs.classList.toggle('has-obs', !!data.enabled && mediaIntent === 'video');
-      }
       if ((!data.enabled || mediaIntent !== 'video') && uploadMode === 'obs') {
         setUploadMode('file');
       }

@@ -1,6 +1,49 @@
 package server
 
 const dashboardCSSUpload = `
+    .media-hierarchy {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      margin: 0 14px 14px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-control);
+      background: var(--panel-strong);
+    }
+    .media-nav-parent {
+      min-width: 0;
+      min-height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      padding: 5px 8px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-small);
+      background: var(--control-bg);
+      color: var(--control-ink);
+      box-shadow: none;
+      font-size: 12px;
+      font-weight: 850;
+      line-height: 1.2;
+      white-space: nowrap;
+    }
+    .media-nav-parent.active {
+      border-color: var(--accent-blue);
+      background: var(--tab-active-bg);
+      color: var(--tab-active-ink);
+      box-shadow: var(--shadow-active);
+    }
+    .media-nav-parent:disabled {
+      cursor: not-allowed;
+      opacity: .45;
+    }
+    .media-nav-icon {
+      color: var(--accent-blue);
+      font-size: 14px;
+      line-height: 1;
+    }
     .media-kind-switch {
       flex: 0 0 auto;
       position: relative;
@@ -57,45 +100,6 @@ const dashboardCSSUpload = `
     }
     .flow-grid[hidden] {
       display: none;
-    }
-    .music-caret {
-      width: 10px;
-      height: 10px;
-      flex: 0 0 auto;
-    }
-    .music-mode-menu {
-      position: absolute;
-      top: calc(100% + 6px);
-      right: 0;
-      z-index: 30;
-      display: grid;
-      gap: 2px;
-      min-width: 148px;
-      padding: 4px;
-      border: 1px solid var(--line);
-      border-radius: var(--radius-small);
-      background: var(--panel);
-      box-shadow: var(--shadow-soft);
-    }
-    .music-mode-menu[hidden] {
-      display: none;
-    }
-    .music-mode-menu button {
-      justify-content: flex-start;
-      min-height: 32px;
-      padding: 0 10px;
-      border-radius: 6px;
-      background: transparent;
-      color: var(--control-ink);
-      box-shadow: none;
-      font-size: 12px;
-      font-weight: 800;
-      text-align: left;
-    }
-    .music-mode-menu button.active,
-    .music-mode-menu button:hover {
-      background: var(--tab-active-bg);
-      color: var(--tab-active-ink);
     }
     .music-playlist-panel[hidden] {
       display: none;
@@ -858,10 +862,21 @@ const dashboardCSSUpload = `
       gap: 6px;
       margin-bottom: 8px;
     }
-    .mode-tabs.has-obs {
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+    .playlist-input-tabs {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px;
+      margin: -2px 0 8px;
+      padding: 6px 0 0;
     }
-    .mode-tabs .divider {
+    .playlist-input-tabs[hidden] {
+      display: none;
+    }
+    .playlist-input-tab {
+      min-height: 32px;
+      font-size: 12px;
+    }
+    .mode-tab[hidden] {
       display: none;
     }
     .mode-tab {

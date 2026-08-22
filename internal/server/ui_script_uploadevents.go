@@ -133,12 +133,17 @@ const dashboardScriptUploadEvents = `
       uploadMode = mode;
       const linkMode = mode === 'link';
       const obsMode = mode === 'obs';
-      fileModeButton.classList.toggle('active', !linkMode && !obsMode);
+      const fileMode = !linkMode && !obsMode;
+      fileModeButton.classList.toggle('active', fileMode);
       linkModeButton.classList.toggle('active', linkMode);
       obsModeButton.classList.toggle('active', obsMode);
-      fileModeButton.setAttribute('aria-selected', String(!linkMode && !obsMode));
+      if (playlistFileModeButton) playlistFileModeButton.classList.toggle('active', fileMode);
+      if (playlistLinkModeButton) playlistLinkModeButton.classList.toggle('active', linkMode);
+      fileModeButton.setAttribute('aria-selected', String(fileMode));
       linkModeButton.setAttribute('aria-selected', String(linkMode));
       obsModeButton.setAttribute('aria-selected', String(obsMode));
+      if (playlistFileModeButton) playlistFileModeButton.setAttribute('aria-selected', String(fileMode));
+      if (playlistLinkModeButton) playlistLinkModeButton.setAttribute('aria-selected', String(linkMode));
       fileUploadPanel.classList.toggle('active', !linkMode && !obsMode);
       linkUploadPanel.classList.toggle('active', linkMode);
       obsUploadPanel.classList.toggle('active', obsMode);
@@ -163,6 +168,7 @@ const dashboardScriptUploadEvents = `
       if (linkMode) {
         imageURLInput.focus();
       }
+      if (typeof updateMediaNavigation === 'function') updateMediaNavigation();
     }
 
     function uploadFromFile(action) {
