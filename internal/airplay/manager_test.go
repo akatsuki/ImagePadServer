@@ -44,6 +44,26 @@ func TestResolveReceiverPathFromEnvironment(t *testing.T) {
 	}
 }
 
+func TestReserveRTPPortsAvoidsRTCPOverlap(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		videoPort, audioPort, err := reserveRTPPorts()
+		if err != nil {
+			t.Fatalf("reserveRTPPorts: %v", err)
+		}
+		ports := []int{videoPort, videoPort + 1, audioPort, audioPort + 1}
+		seen := make(map[int]bool, len(ports))
+		for _, port := range ports {
+			if port <= 0 || port > 65535 {
+				t.Fatalf("invalid reserved port %d from video=%d audio=%d", port, videoPort, audioPort)
+			}
+			if seen[port] {
+				t.Fatalf("overlapping RTP/RTCP ports: video=%d/%d audio=%d/%d", videoPort, videoPort+1, audioPort, audioPort+1)
+			}
+			seen[port] = true
+		}
+	}
+}
+
 func TestBuildReceiverArgsUsesLocalRTPPorts(t *testing.T) {
 	args := BuildReceiverArgs(41001, 41002, "Test Receiver")
 	joined := strings.Join(args, " ")

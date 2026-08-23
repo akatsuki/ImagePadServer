@@ -177,13 +177,9 @@ func (m *Manager) Start(parent context.Context, ffmpegPath, publishURL string) e
 	}
 	m.mu.Unlock()
 
-	videoPort, err := reserveUDPPort()
+	videoPort, audioPort, err := reserveRTPPorts()
 	if err != nil {
-		return fmt.Errorf("reserve AirPlay video port: %w", err)
-	}
-	audioPort, err := reserveUDPPort()
-	if err != nil {
-		return fmt.Errorf("reserve AirPlay audio port: %w", err)
+		return fmt.Errorf("reserve AirPlay RTP ports: %w", err)
 	}
 	tempDir, err := os.MkdirTemp("", "imagepad-airplay-")
 	if err != nil {
@@ -286,13 +282,57 @@ func validatePublishURL(raw string) error {
 	return nil
 }
 
-func reserveUDPPort() (int, error) {
-	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+type rtpPortPair struct {
+	rtp  *net.UDPConn
+	rtcp *net.UDPConn
+	port int
+}
+
+func reserveRTPPorts() (videoPort, audioPort int, err error) {
+	video, err := reserveRTPPortPair()
 	if err != nil {
-		return 0, err
+		return 0, 0, fmt.Errorf("video pair: %w", err)
 	}
-	port := conn.LocalAddr().(*net.UDPAddr).Port
-	return port, conn.Close()
+	defer video.close()
+
+	// Keep the video RTP and RTCP sockets reserved while selecting the audio
+	// pair. FFmpeg binds RTCP on RTP+1, so independently reserving two single
+	// ports can assign the audio RTP port to the video RTCP port.
+	audio, err := reserveRTPPortPair()
+	if err != nil {
+		return 0, 0, fmt.Errorf("audio pair: %w", err)
+	}
+	defer audio.close()
+
+	return video.port, audio.port, nil
+}
+
+func reserveRTPPortPair() (*rtpPortPair, error) {
+	const maxAttempts = 100
+	addr := net.ParseIP("127.0.0.1")
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		rtp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: addr, Port: 0})
+		if err != nil {
+			return nil, err
+		}
+		port := rtp.LocalAddr().(*net.UDPAddr).Port
+		if port >= 65535 {
+			_ = rtp.Close()
+			continue
+		}
+		rtcp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: addr, Port: port + 1})
+		if err != nil {
+			_ = rtp.Close()
+			continue
+		}
+		return &rtpPortPair{rtp: rtp, rtcp: rtcp, port: port}, nil
+	}
+	return nil, fmt.Errorf("could not reserve consecutive RTP/RTCP ports after %d attempts", maxAttempts)
+}
+
+func (p *rtpPortPair) close() {
+	_ = p.rtp.Close()
+	_ = p.rtcp.Close()
 }
 
 func normalizeReceiverTitle(title string) string {
