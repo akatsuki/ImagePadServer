@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"imagepadserver/internal/about"
+	"imagepadserver/internal/airplay"
 	"imagepadserver/internal/appwindow"
 	"imagepadserver/internal/browser"
 	"imagepadserver/internal/config"
@@ -169,6 +170,15 @@ func run(useNativeWindow bool) error {
 	mux := http.NewServeMux()
 	lifecycleCtx, cancelLifecycle := context.WithCancel(context.Background())
 	defer cancelLifecycle()
+	go func() {
+		setupCtx, cancelSetup := context.WithTimeout(lifecycleCtx, 15*time.Minute)
+		defer cancelSetup()
+		if receiverPath, err := airplay.PrepareOnStartup(setupCtx); err != nil {
+			log.Printf("startup AirPlay setup failed: %v", err)
+		} else if receiverPath != "" {
+			log.Printf("AirPlay receiver ready: %s", receiverPath)
+		}
+	}()
 	srv := server.New(cfg, store, "")
 	srv.SetLifecycleContext(lifecycleCtx)
 	srv.Register(mux)

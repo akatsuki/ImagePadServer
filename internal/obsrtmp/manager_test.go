@@ -226,6 +226,16 @@ func newTestManager(t *testing.T, latencyMode string) *Manager {
 	}, Callbacks{})
 }
 
+func TestInternalPublishURLUsesLoopback(t *testing.T) {
+	manager := New(t.TempDir(), "192.168.0.234", 1935, "airplay-key", nil, func() LatencyProfile {
+		return NormalizeLatencyProfile(LatencyModeRTSPRealtime)
+	}, Callbacks{})
+
+	if got, want := manager.InternalPublishURL(), "rtmp://127.0.0.1:1935/live/airplay-key"; got != want {
+		t.Fatalf("InternalPublishURL() = %q, want %q", got, want)
+	}
+}
+
 func TestSetRTSPURLRejectsStaleSession(t *testing.T) {
 	manager := newTestManager(t, "rtspt")
 	manager.current = &Session{ID: "current"}

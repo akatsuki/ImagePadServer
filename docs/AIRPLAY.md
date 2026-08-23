@@ -16,6 +16,17 @@ iPhone/iPad AirPlay
 既存のOBS/Live配信経路を置き換えず、AirPlay開始時だけ同じRTMP ingestへ接続します。AirPlay専用プロセスは停止時とサーバー終了時に終了させます。
 
 ## Windows 10 セットアップ
+Windows amd64で `IMAGEPAD_AIRPLAY=1` を設定し、`IMAGEPAD_AIRPLAY_RECEIVER` を指定しない場合は、ImagePadServerが初回起動時にUxPlayのWindowsバンドルを自動準備します。
+
+- 固定リリース: `2.0.0.1736`
+- ダウンロード元: `https://github.com/leapbtw/uxplay-windows/releases/download/2.0.0.1736/uxplay-windows.zip`
+- SHA-256: `9d3a51c15fc9db857351195e7eb7bbb21700d9ae25d936a54bcf8536b62cca18`
+- キャッシュ: `%APPDATA%\ImagePadServer\modules\uxplay\2.0.0.1736`
+- 不完全なダウンロード・展開は完了マーカーがないため再利用されません。
+- Bonjour Serviceが未登録の場合はインストーラーをUAC昇格で実行します。UAC承認または管理者権限が必要です。
+
+既存のUxPlayを使う場合は `IMAGEPAD_AIRPLAY_RECEIVER` に実行ファイルの絶対パスを指定してください。この指定がある場合、自動ダウンロードとBonjourの自動インストールは行いません。自動準備に失敗した場合でも、サーバーは起動を継続しますが、AirPlayの開始時に具体的なエラーを返します。
+
 
 1. UxPlayをWindows向けに用意します。公式のWindowsビルド手順は [UxPlay README](https://github.com/FDH2/UxPlay/blob/master/README.md#building-uxplay-on-microsoft-windows-using-msys2-with-the-mingw-64-compiler) を参照してください。GStreamerとBonjour Service（またはUxPlayがサポートするサービス検出方式）が必要です。
 2. UxPlayの実行ファイルが単体で起動できることを確認します。

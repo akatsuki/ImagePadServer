@@ -50,12 +50,13 @@ func (s *Server) handleAirPlayStart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "FFmpeg is unavailable: "+err.Error(), http.StatusServiceUnavailable)
 		return
 	}
-	relayConfig, err := s.obsRelayConfig(true)
-	if err != nil {
+	if _, err := s.obsRelayConfig(true); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	publishURL, _ := relayConfig["rtmpURL"].(string)
+	// AirPlay runs on this host; use the receiver loopback endpoint instead of
+	// the externally advertised LAN address, which may not be locally reachable.
+	publishURL := s.obs.InternalPublishURL()
 	if strings.TrimSpace(publishURL) == "" {
 		http.Error(w, "OBS RTMP publish URL is unavailable", http.StatusServiceUnavailable)
 		return

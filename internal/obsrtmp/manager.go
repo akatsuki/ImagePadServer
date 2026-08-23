@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -276,6 +277,19 @@ type Status struct {
 	EncoderName    string                    `json:"encoderName,omitempty"`
 	HardwareEncode bool                      `json:"hardwareEncode"`
 	ActiveSession  *OBSActiveSessionContract `json:"activeSession,omitempty"`
+}
+
+// InternalPublishURL returns the loopback RTMP endpoint used by local bridges.
+// The externally advertised endpoint remains available through Status.ServerAddress.
+func (m *Manager) InternalPublishURL() string {
+	m.mu.Lock()
+	port := m.port
+	key := m.key
+	m.mu.Unlock()
+	if port <= 0 || strings.TrimSpace(key) == "" {
+		return ""
+	}
+	return serverAddress("127.0.0.1", port) + "/" + url.PathEscape(key)
 }
 
 func New(outDir, host string, port int, key string, preset func() video.QualityPreset, latency func() LatencyProfile, cb Callbacks) *Manager {

@@ -47,10 +47,13 @@ func TestResolveReceiverPathFromEnvironment(t *testing.T) {
 func TestBuildReceiverArgsUsesLocalRTPPorts(t *testing.T) {
 	args := BuildReceiverArgs(41001, 41002, "Test Receiver")
 	joined := strings.Join(args, " ")
-	for _, want := range []string{"-n", "Test Receiver", "-vrtp", "port=41001", "-artp", "port=41002"} {
+	for _, want := range []string{"-n", "Test-Receiver", "-vrtp", "port=41001", "-artp", "port=41002"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("receiver args %q do not contain %q", joined, want)
 		}
+	}
+	if !strings.Contains(args[5], "	!	udpsink	") || !strings.Contains(args[7], "	!	udpsink	") {
+		t.Errorf("RTP pipelines must use tab separators: %q", args)
 	}
 }
 

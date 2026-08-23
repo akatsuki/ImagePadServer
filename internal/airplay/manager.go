@@ -20,7 +20,7 @@ const (
 	envFeatureFlag       = "IMAGEPAD_AIRPLAY"
 	envUxPlayPath        = "IMAGEPAD_UXPLAY"
 	envReceiverPath      = "IMAGEPAD_AIRPLAY_RECEIVER"
-	defaultReceiverTitle = "ImagePadServer AirPlay"
+	defaultReceiverTitle = "ImagePadServer-AirPlay"
 )
 
 var (
@@ -65,18 +65,28 @@ func FeatureEnabled() bool {
 	}
 }
 
+func resolveReceiverOnPATH() (string, error) {
+	for _, name := range []string{"uxplay", "uxplay.exe"} {
+		if path, err := exec.LookPath(name); err == nil {
+			return path, nil
+		}
+	}
+	return "", errors.New("UxPlay was not found on PATH")
+}
+
 func ResolveReceiverPath() (string, error) {
 	for _, key := range []string{envUxPlayPath, envReceiverPath} {
 		if raw := strings.TrimSpace(os.Getenv(key)); raw != "" {
 			return resolveExecutable(raw)
 		}
 	}
-	for _, name := range []string{"uxplay", "uxplay.exe"} {
-		if path, err := exec.LookPath(name); err == nil {
-			return path, nil
-		}
+	if path, err := resolveReceiverOnPATH(); err == nil {
+		return path, nil
 	}
-	return "", errors.New("UxPlay was not found; set IMAGEPAD_UXPLAY to its executable")
+	if path, err := InstalledUxPlayPath(); err == nil {
+		return path, nil
+	}
+	return "", errors.New("UxPlay was not found; set IMAGEPAD_UXPLAY or enable IMAGEPAD_AIRPLAY=1 for automatic Windows setup")
 }
 
 func resolveExecutable(raw string) (string, error) {
@@ -135,7 +145,18 @@ func (m *Manager) Start(parent context.Context, ffmpegPath, publishURL string) e
 	if !FeatureEnabled() {
 		return ErrDisabled
 	}
+	if parent == nil {
+		parent = context.Background()
+	}
 	receiverPath, err := ResolveReceiverPath()
+	if err != nil && !hasExplicitReceiverPath() {
+		if preparedPath, setupErr := PrepareOnStartup(parent); setupErr == nil && preparedPath != "" {
+			receiverPath = preparedPath
+			err = nil
+		} else if setupErr != nil {
+			err = fmt.Errorf("%w; automatic AirPlay setup failed: %v", err, setupErr)
+		}
+	}
 	if err != nil {
 		return err
 	}
@@ -179,28 +200,45 @@ func (m *Manager) Start(parent context.Context, ffmpegPath, publishURL string) e
 		return fmt.Errorf("write AirPlay audio SDP: %w", err)
 	}
 
-	if parent == nil {
-		parent = context.Background()
-	}
 	ctx, cancel := context.WithCancel(parent)
-	bridgeLog := &limitedBuffer{max: 8192}
 	receiverLog := &limitedBuffer{max: 8192}
-	bridge := exec.CommandContext(ctx, ffmpegPath, BuildBridgeArgs(videoSDP, audioSDP, publishURL)...)
-	configureProcess(bridge, bridgeLog)
-	if err := bridge.Start(); err != nil {
+	bridgeArgs := BuildBridgeArgs(videoSDP, audioSDP, publishURL)
+	bridge, bridgeLog, untrack, err := startBridgeProcess(ctx, ffmpegPath, bridgeArgs)
+	if err != nil {
 		cancel()
 		os.RemoveAll(tempDir)
 		return fmt.Errorf("start AirPlay FFmpeg bridge: %w", err)
 	}
-	untrack := video.TrackStartedFFmpeg(bridge)
 	receiver := exec.CommandContext(ctx, receiverPath, BuildReceiverArgs(videoPort, audioPort, defaultReceiverTitle)...)
-	configureProcess(receiver, receiverLog)
-	if err := receiver.Start(); err != nil {
+	restoreReceiverConfig, err := configureReceiverProcess(receiver, receiverLog, receiverPath, tempDir)
+	if err != nil {
 		cancel()
 		_, _ = bridge.Process, bridge.Wait()
 		untrack()
 		os.RemoveAll(tempDir)
+		return fmt.Errorf("configure AirPlay receiver: %w", err)
+	}
+	if err := receiver.Start(); err != nil {
+		var restoreErr error
+		if restoreReceiverConfig != nil {
+			restoreErr = restoreReceiverConfig()
+		}
+		cancel()
+		_, _ = bridge.Process, bridge.Wait()
+		untrack()
+		os.RemoveAll(tempDir)
+		if restoreErr != nil {
+			return fmt.Errorf("start AirPlay receiver: %w; restore receiver configuration: %v", err, restoreErr)
+		}
 		return fmt.Errorf("start AirPlay receiver: %w", err)
+	}
+	if err := restoreReceiverConfigurationAfterStartup(receiverLog, restoreReceiverConfig); err != nil {
+		cancel()
+		_, _ = receiver.Process, receiver.Wait()
+		_, _ = bridge.Process, bridge.Wait()
+		untrack()
+		os.RemoveAll(tempDir)
+		return fmt.Errorf("restore AirPlay receiver configuration: %w", err)
 	}
 
 	done := make(chan struct{})
@@ -219,8 +257,25 @@ func (m *Manager) Start(parent context.Context, ffmpegPath, publishURL string) e
 	}
 	m.mu.Unlock()
 	m.notify()
-	go m.monitor(ctx, cancel, done, bridge, receiver, bridgeLog, receiverLog, untrack, tempDir)
+	go m.monitor(ctx, cancel, done, bridge, receiver, ffmpegPath, bridgeArgs, bridgeLog, receiverLog, untrack, tempDir)
 	return nil
+}
+
+func restoreReceiverConfigurationAfterStartup(output *limitedBuffer, restore func() error) error {
+	if restore == nil {
+		return nil
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(output.String(), "[arguments] Reading:") {
+			// The wrapper logs immediately before opening arguments.txt. Keep the
+			// temporary file in place long enough for that synchronous read.
+			time.Sleep(100 * time.Millisecond)
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return restore()
 }
 
 func validatePublishURL(raw string) error {
@@ -240,11 +295,21 @@ func reserveUDPPort() (int, error) {
 	return port, conn.Close()
 }
 
+func normalizeReceiverTitle(title string) string {
+	fields := strings.Fields(title)
+	if len(fields) == 0 {
+		return defaultReceiverTitle
+	}
+	return strings.Join(fields, "-")
+}
+
 func BuildReceiverArgs(videoPort, audioPort int, title string) []string {
-	videoPipeline := fmt.Sprintf("config-interval=1 ! udpsink host=127.0.0.1 port=%d", videoPort)
-	audioPipeline := fmt.Sprintf("pt=96 ! udpsink host=127.0.0.1 port=%d", audioPort)
+	title = normalizeReceiverTitle(title)
+	videoPipeline := fmt.Sprintf("config-interval=1\t!\tudpsink\thost=127.0.0.1\tport=%d", videoPort)
+	audioPipeline := fmt.Sprintf("pt=96\t!\tudpsink\thost=127.0.0.1\tport=%d", audioPort)
 	return []string{
 		"-n", title,
+		"-vs", "0",
 		"-vrtp", videoPipeline,
 		"-artp", audioPipeline,
 	}
@@ -256,9 +321,13 @@ func BuildBridgeArgs(videoSDP, audioSDP, publishURL string) []string {
 		"-loglevel", "warning",
 		"-protocol_whitelist", "file,udp,rtp",
 		"-thread_queue_size", "512",
+		"-analyzeduration", "86400000000",
+		"-probesize", "100000000",
 		"-i", videoSDP,
 		"-protocol_whitelist", "file,udp,rtp",
 		"-thread_queue_size", "512",
+		"-analyzeduration", "86400000000",
+		"-probesize", "100000000",
 		"-i", audioSDP,
 		"-map", "0:v:0",
 		"-map", "1:a:0",
@@ -319,38 +388,94 @@ func (m *Manager) Stop(timeout time.Duration) bool {
 	}
 }
 
-func (m *Manager) monitor(ctx context.Context, cancel context.CancelFunc, done chan struct{}, bridge, receiver *exec.Cmd, bridgeLog, receiverLog *limitedBuffer, untrack func(), tempDir string) {
-	bridgeDone := make(chan error, 1)
+func startBridgeProcess(ctx context.Context, ffmpegPath string, args []string) (*exec.Cmd, *limitedBuffer, func(), error) {
+	log := &limitedBuffer{max: 8192}
+	bridge := exec.CommandContext(ctx, ffmpegPath, args...)
+	configureProcess(bridge, log)
+	if err := bridge.Start(); err != nil {
+		return nil, nil, nil, err
+	}
+	return bridge, log, video.TrackStartedFFmpeg(bridge), nil
+}
+
+func waitForProcess(cmd *exec.Cmd, result chan<- error) {
+	result <- cmd.Wait()
+}
+
+func (m *Manager) monitor(ctx context.Context, cancel context.CancelFunc, done chan struct{}, bridge, receiver *exec.Cmd, ffmpegPath string, bridgeArgs []string, bridgeLog, receiverLog *limitedBuffer, untrack func(), tempDir string) {
 	receiverDone := make(chan error, 1)
-	go func() { bridgeDone <- bridge.Wait() }()
 	go func() { receiverDone <- receiver.Wait() }()
+
+	currentBridge := bridge
+	currentBridgeLog := bridgeLog
+	currentUntrack := untrack
+	bridgeDone := make(chan error, 1)
+	go waitForProcess(currentBridge, bridgeDone)
 
 	stoppedByRequest := false
 	var firstName string
 	var firstErr error
-	select {
-	case firstErr = <-bridgeDone:
-		firstName = "FFmpeg bridge"
-	case firstErr = <-receiverDone:
-		firstName = "UxPlay receiver"
-	case <-ctx.Done():
-		stoppedByRequest = true
-	}
-	cancel()
-	var bridgeErr, receiverErr error
-	if firstName == "FFmpeg bridge" {
-		bridgeErr = firstErr
-		receiverErr = <-receiverDone
-	} else if firstName == "UxPlay receiver" {
-		receiverErr = firstErr
-		bridgeErr = <-bridgeDone
-	} else {
-		bridgeErr = <-bridgeDone
-		receiverErr = <-receiverDone
-	}
-	untrack()
-	os.RemoveAll(tempDir)
+	for {
+		select {
+		case <-ctx.Done():
+			stoppedByRequest = true
+			cancel()
+			bridgeErr := <-bridgeDone
+			receiverErr := <-receiverDone
+			currentUntrack()
+			m.finishMonitor(done, tempDir, stoppedByRequest, firstName, firstErr, bridgeErr, receiverErr, currentBridgeLog, receiverLog)
+			return
+		case receiverErr := <-receiverDone:
+			firstName = "UxPlay receiver"
+			firstErr = receiverErr
+			cancel()
+			bridgeErr := <-bridgeDone
+			currentUntrack()
+			m.finishMonitor(done, tempDir, stoppedByRequest, firstName, firstErr, bridgeErr, receiverErr, currentBridgeLog, receiverLog)
+			return
+		case bridgeErr := <-bridgeDone:
+			if ctx.Err() != nil {
+				stoppedByRequest = true
+				cancel()
+				receiverErr := <-receiverDone
+				currentUntrack()
+				m.finishMonitor(done, tempDir, stoppedByRequest, firstName, firstErr, bridgeErr, receiverErr, currentBridgeLog, receiverLog)
+				return
+			}
 
+			// FFmpeg can exit before the first RTP packet when the iPhone has not
+			// connected yet. Keep UxPlay and its Bonjour advertisement alive, and
+			// recreate only the bridge so a later iPhone connection is accepted.
+			currentUntrack()
+			select {
+			case <-ctx.Done():
+				stoppedByRequest = true
+				cancel()
+				receiverErr := <-receiverDone
+				m.finishMonitor(done, tempDir, stoppedByRequest, firstName, firstErr, bridgeErr, receiverErr, currentBridgeLog, receiverLog)
+				return
+			case <-time.After(500 * time.Millisecond):
+			}
+			newBridge, newLog, newUntrack, err := startBridgeProcess(ctx, ffmpegPath, bridgeArgs)
+			if err != nil {
+				firstName = "FFmpeg bridge"
+				firstErr = err
+				cancel()
+				receiverErr := <-receiverDone
+				m.finishMonitor(done, tempDir, stoppedByRequest, firstName, firstErr, bridgeErr, receiverErr, currentBridgeLog, receiverLog)
+				return
+			}
+			currentBridge = newBridge
+			currentBridgeLog = newLog
+			currentUntrack = newUntrack
+			bridgeDone = make(chan error, 1)
+			go waitForProcess(currentBridge, bridgeDone)
+		}
+	}
+}
+
+func (m *Manager) finishMonitor(done chan struct{}, tempDir string, stoppedByRequest bool, firstName string, firstErr, bridgeErr, receiverErr error, bridgeLog, receiverLog *limitedBuffer) {
+	os.RemoveAll(tempDir)
 	message := "AirPlay受信を停止しました。"
 	if !stoppedByRequest {
 		message = processExitMessage(firstName, firstErr, bridgeErr, receiverErr, bridgeLog, receiverLog)
