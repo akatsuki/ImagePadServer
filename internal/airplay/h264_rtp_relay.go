@@ -239,11 +239,19 @@ func (s *h264RTPRelayState) forwardWithReplay(packet []byte, replay bool) ([][]b
 		isIDR = true
 	}
 	if s.dropUntilMarker {
-		if packet[1]&0x80 != 0 {
+		if isIDR {
+			// A recovery IDR after a sequence gap is the reference the
+			// following P frames depend on. The old marker-only check
+			// dropped it (an IDR's marker bit sits on its last fragment),
+			// which then discarded every P frame until the next keyframe.
 			s.dropUntilMarker = false
-			s.previousMarker = true
+		} else {
+			if packet[1]&0x80 != 0 {
+				s.dropUntilMarker = false
+				s.previousMarker = true
+			}
+			return nil, false
 		}
-		return nil, false
 	}
 
 	parameterSetsAvailable := len(s.sps) > 0 && len(s.pps) > 0
@@ -320,6 +328,14 @@ func (s *h264RTPRelayState) resetDecoderInput(clearParameterSets bool) {
 	if clearParameterSets {
 		s.sps = nil
 		s.pps = nil
+		// A new SSRC carries a new RTP clock origin: the old input-
+		// timestamp baseline is meaningless and would otherwise advance
+		// outputTimestamp by a huge delta. Reset the delta baseline but
+		// keep outputTimestamp so the output timeline stays monotonic
+		// (resetting it to zero would desync video from the continuously
+		// running audio relay).
+		s.lastInputTimestamp = 0
+		s.previousMarker = false
 	}
 }
 

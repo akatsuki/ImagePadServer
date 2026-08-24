@@ -437,6 +437,56 @@ func TestH264RTPRelayStateNormalizesToZeroOrigin(t *testing.T) {
 	}
 }
 
+func TestH264RTPRelayStateAcceptsFragmentedRecoveryIDRAfterGap(t *testing.T) {
+	var state h264RTPRelayState
+	state.forward(testMarkedRTPPacket(1, 100, []byte{7, 1}))
+	state.forward(testMarkedRTPPacket(2, 100, []byte{8, 2}))
+	state.forward(testRTPPacket(3, 100, []byte{28, 0x80 | 5, 3}))
+	state.forward(testMarkedRTPPacket(4, 100, []byte{28, 0x40 | 5, 4}))
+
+	// A sequence gap (5 skipped) is followed immediately by a fragmented
+	// recovery IDR with no marked packet in between. The relay must accept the
+	// IDR rather than dropping it until a marker (the marker sits on the last
+	// fragment, so the old logic discarded the whole IDR and then dropped every
+	// P frame until the next keyframe).
+	outputs := state.forward(testRTPPacket(6, 500, []byte{28, 0x80 | 5, 6}))
+	if len(outputs) != 3 {
+		t.Fatalf("recovery IDR start produced %d packets; want SPS, PPS, IDR", len(outputs))
+	}
+	state.forward(testMarkedRTPPacket(7, 500, []byte{28, 0x40 | 5, 7}))
+
+	if outputs := state.forward(testMarkedRTPPacket(8, 800, []byte{1, 8})); len(outputs) != 1 {
+		t.Fatalf("P-frame after recovery produced %d packets; want 1", len(outputs))
+	}
+}
+
+func TestH264RTPRelayStateResetsTimestampBaselineOnSSRCSwitch(t *testing.T) {
+	var state h264RTPRelayState
+	state.forward(testMarkedRTPPacket(1, 100, []byte{7, 1}))
+	state.forward(testMarkedRTPPacket(2, 100, []byte{8, 2}))
+	state.forward(testMarkedRTPPacket(3, 100, []byte{5, 3}))
+
+	// A new stream on a different SSRC has a fresh RTP timestamp origin. The
+	// relay must keep the output timeline monotonic instead of advancing it by
+	// the huge delta between the old and new origins.
+	newSSRC := uint32(0x87654321)
+	sps := testRTPPacket(1, 500000, []byte{7, 1})
+	binary.BigEndian.PutUint32(sps[8:12], newSSRC)
+	state.forward(sps)
+	pps := testRTPPacket(2, 500000, []byte{8, 2})
+	binary.BigEndian.PutUint32(pps[8:12], newSSRC)
+	state.forward(pps)
+	idr := testMarkedRTPPacket(3, 500000, []byte{5, 3})
+	binary.BigEndian.PutUint32(idr[8:12], newSSRC)
+	outputs := state.forward(idr)
+	if len(outputs) != 3 {
+		t.Fatalf("new-SSRC IDR produced %d packets; want SPS, PPS, IDR", len(outputs))
+	}
+	if got := binary.BigEndian.Uint32(outputs[2][4:8]); got >= 500000 {
+		t.Fatalf("new-SSRC IDR timestamp = %d; want a small monotonic value (huge jump detected)", got)
+	}
+}
+
 func readyH264RTPRelayState() h264RTPRelayState {
 	return h264RTPRelayState{
 		inputSSRCReady: true,
