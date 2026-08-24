@@ -5,12 +5,18 @@ const dashboardScriptAirPlay = `
       if (!airplayCard) return;
       if (!data || !data.enabled) {
         airplayCard.hidden = true;
+        if (airplayModeButton) airplayModeButton.hidden = true;
+        if (uploadMode === 'airplay') setUploadMode('obs');
         return;
       }
       airplayCard.hidden = false;
-      const message = data.message || (data.running ? "AirPlay受信中です" : "AirPlay受信を開始できます");
+      if (airplayModeButton) airplayModeButton.hidden = false;
+      const connected = !!(data.running && data.receiverRunning && data.bridgeRunning && state.obs && state.obs.connected);
+      const message = connected
+        ? "iPhoneの画面を受信中です。配信開始ボタンで公開できます。"
+        : (data.message || (data.running ? "iPhoneからの画面ミラーリング接続を待っています。" : "AirPlay受信を開始できます"));
       airplayStatusText.textContent = message;
-      airplayStatusText.classList.toggle("is-running", !!data.running);
+      airplayStatusText.classList.toggle("is-running", connected);
       airplayStatusText.classList.toggle("is-error", !data.available && !data.running);
       airplayReceiverPath.textContent = data.receiverPath ? "受信器: " + data.receiverPath : "";
       airplayStartButton.hidden = !!data.running;

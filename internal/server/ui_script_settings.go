@@ -235,6 +235,11 @@ const dashboardScriptSettings = `
       if (mediaIntent !== 'video') setMediaIntent('video');
       setUploadMode('obs');
     });
+    airplayModeButton.addEventListener('click', () => {
+      if (!state.videoPlayerEnabled || !state.airplay || !state.airplay.enabled) return;
+      if (mediaIntent !== 'video') setMediaIntent('video');
+      setUploadMode('airplay');
+    });
     if (playlistModeButton) playlistModeButton.addEventListener('click', () => {
       if (!state.videoPlayerEnabled || !musicWorkspaceEnabled) return;
       if (typeof MusicController !== 'undefined' && MusicController.setMode) {

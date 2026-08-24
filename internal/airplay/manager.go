@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/url"
 	"os"
@@ -177,7 +178,7 @@ func (m *Manager) Start(parent context.Context, ffmpegPath, publishURL string) e
 	}
 	m.mu.Unlock()
 
-	videoPort, audioPort, err := reserveRTPPorts()
+	videoInputPort, videoPort, audioInputPort, audioPort, err := reserveRTPPorts()
 	if err != nil {
 		return fmt.Errorf("reserve AirPlay RTP ports: %w", err)
 	}
@@ -185,27 +186,37 @@ func (m *Manager) Start(parent context.Context, ffmpegPath, publishURL string) e
 	if err != nil {
 		return fmt.Errorf("create AirPlay session directory: %w", err)
 	}
-	videoSDP := filepath.Join(tempDir, "video.sdp")
-	audioSDP := filepath.Join(tempDir, "audio.sdp")
-	if err := os.WriteFile(videoSDP, []byte(BuildVideoSDP(videoPort)), 0600); err != nil {
+	sessionSDP := filepath.Join(tempDir, "session.sdp")
+	if err := os.WriteFile(sessionSDP, []byte(BuildSessionSDP(videoPort, audioPort)), 0600); err != nil {
 		os.RemoveAll(tempDir)
-		return fmt.Errorf("write AirPlay video SDP: %w", err)
-	}
-	if err := os.WriteFile(audioSDP, []byte(BuildAudioSDP(audioPort)), 0600); err != nil {
-		os.RemoveAll(tempDir)
-		return fmt.Errorf("write AirPlay audio SDP: %w", err)
+		return fmt.Errorf("write AirPlay session SDP: %w", err)
 	}
 
 	ctx, cancel := context.WithCancel(parent)
-	receiverLog := &limitedBuffer{max: 8192}
-	bridgeArgs := BuildBridgeArgs(videoSDP, audioSDP, publishURL)
-	bridge, bridgeLog, untrack, err := startBridgeProcess(ctx, ffmpegPath, bridgeArgs)
+	audioRelay, err := startL16RTPRelay(ctx, audioInputPort, audioPort)
 	if err != nil {
 		cancel()
 		os.RemoveAll(tempDir)
+		return fmt.Errorf("start AirPlay L16 RTP relay: %w", err)
+	}
+	relay, err := startH264RTPRelay(ctx, videoInputPort, videoPort, audioRelay.NotifyVideoActivity)
+	if err != nil {
+		cancel()
+		os.RemoveAll(tempDir)
+		audioRelay.Close()
+		return fmt.Errorf("start AirPlay H.264 RTP relay: %w", err)
+	}
+	receiverLog := &limitedBuffer{max: 8192}
+	bridgeArgs := BuildBridgeArgs(sessionSDP, publishURL)
+	bridge, bridgeLog, untrack, err := startBridgeProcess(ctx, ffmpegPath, bridgeArgs)
+	if err != nil {
+		cancel()
+		relay.Close()
+		os.RemoveAll(tempDir)
 		return fmt.Errorf("start AirPlay FFmpeg bridge: %w", err)
 	}
-	receiver := exec.CommandContext(ctx, receiverPath, BuildReceiverArgs(videoPort, audioPort, defaultReceiverTitle)...)
+	scheduleBridgeDecoderRefresh(ctx, relay)
+	receiver := exec.CommandContext(ctx, receiverPath, BuildReceiverArgs(videoInputPort, audioInputPort, defaultReceiverTitle)...)
 	restoreReceiverConfig, err := configureReceiverProcess(receiver, receiverLog, receiverPath, tempDir)
 	if err != nil {
 		cancel()
@@ -253,7 +264,7 @@ func (m *Manager) Start(parent context.Context, ffmpegPath, publishURL string) e
 	}
 	m.mu.Unlock()
 	m.notify()
-	go m.monitor(ctx, cancel, done, bridge, receiver, ffmpegPath, bridgeArgs, bridgeLog, receiverLog, untrack, tempDir)
+	go m.monitor(ctx, cancel, done, relay, audioRelay, bridge, receiver, ffmpegPath, bridgeArgs, bridgeLog, receiverLog, untrack, tempDir)
 	return nil
 }
 
@@ -288,23 +299,22 @@ type rtpPortPair struct {
 	port int
 }
 
-func reserveRTPPorts() (videoPort, audioPort int, err error) {
-	video, err := reserveRTPPortPair()
-	if err != nil {
-		return 0, 0, fmt.Errorf("video pair: %w", err)
+func reserveRTPPorts() (videoInputPort, videoPort, audioInputPort, audioPort int, err error) {
+	pairs := make([]*rtpPortPair, 0, 4)
+	defer func() {
+		for _, pair := range pairs {
+			pair.close()
+		}
+	}()
+	labels := []string{"video input", "video output", "audio input", "audio output"}
+	for _, label := range labels {
+		pair, reserveErr := reserveRTPPortPair()
+		if reserveErr != nil {
+			return 0, 0, 0, 0, fmt.Errorf("%s pair: %w", label, reserveErr)
+		}
+		pairs = append(pairs, pair)
 	}
-	defer video.close()
-
-	// Keep the video RTP and RTCP sockets reserved while selecting the audio
-	// pair. FFmpeg binds RTCP on RTP+1, so independently reserving two single
-	// ports can assign the audio RTP port to the video RTCP port.
-	audio, err := reserveRTPPortPair()
-	if err != nil {
-		return 0, 0, fmt.Errorf("audio pair: %w", err)
-	}
-	defer audio.close()
-
-	return video.port, audio.port, nil
+	return pairs[0].port, pairs[1].port, pairs[2].port, pairs[3].port, nil
 }
 
 func reserveRTPPortPair() (*rtpPortPair, error) {
@@ -345,7 +355,7 @@ func normalizeReceiverTitle(title string) string {
 
 func BuildReceiverArgs(videoPort, audioPort int, title string) []string {
 	title = normalizeReceiverTitle(title)
-	videoPipeline := fmt.Sprintf("config-interval=1\t!\tudpsink\thost=127.0.0.1\tport=%d", videoPort)
+	videoPipeline := fmt.Sprintf("config-interval=-1\t!\tudpsink\thost=127.0.0.1\tport=%d", videoPort)
 	audioPipeline := fmt.Sprintf("pt=96\t!\tudpsink\thost=127.0.0.1\tport=%d", audioPort)
 	return []string{
 		"-n", title,
@@ -355,53 +365,51 @@ func BuildReceiverArgs(videoPort, audioPort int, title string) []string {
 	}
 }
 
-func BuildBridgeArgs(videoSDP, audioSDP, publishURL string) []string {
+func BuildBridgeArgs(sessionSDP, publishURL string) []string {
 	return []string{
 		"-hide_banner",
 		"-loglevel", "warning",
 		"-protocol_whitelist", "file,udp,rtp",
 		"-thread_queue_size", "512",
-		"-analyzeduration", "86400000000",
-		"-probesize", "100000000",
-		"-i", videoSDP,
-		"-protocol_whitelist", "file,udp,rtp",
-		"-thread_queue_size", "512",
-		"-analyzeduration", "86400000000",
-		"-probesize", "100000000",
-		"-i", audioSDP,
+		"-buffer_size", "4194304",
+		"-reorder_queue_size", "4096",
+		"-analyzeduration", "2000000",
+		"-probesize", "5000000",
+		"-fflags", "+genpts+discardcorrupt",
+		"-i", sessionSDP,
 		"-map", "0:v:0",
-		"-map", "1:a:0",
+		"-map", "0:a:0",
 		"-c:v", "copy",
+		// UxPlay Windows RTP output can leave H.264 packets without muxable DTS.
+		// The relay already normalizes the 90 kHz RTP PTS, so preserve that
+		// advancing timeline and copy it to DTS for this no-B-frame stream.
+		"-bsf:v", "setts=pts=PTS:dts=PTS",
 		"-c:a", "aac",
+		// Derive audio PTS from decoded sample count so source resets cannot
+		// produce a negative or backward FLV timestamp.
+		"-af", "aresample=async=1:first_pts=0,asetpts=N/SR/TB",
 		"-b:a", "160k",
 		"-ar", "44100",
 		"-ac", "2",
+		"-avoid_negative_ts", "make_zero",
 		"-f", "flv",
 		publishURL,
 	}
 }
 
-func BuildVideoSDP(port int) string {
+func BuildSessionSDP(videoPort, audioPort int) string {
 	return fmt.Sprintf("v=0\r\n"+
 		"o=- 0 0 IN IP4 127.0.0.1\r\n"+
-		"s=ImagePadServer AirPlay video\r\n"+
+		"s=ImagePadServer AirPlay session\r\n"+
 		"c=IN IP4 127.0.0.1\r\n"+
 		"t=0 0\r\n"+
 		"m=video %d RTP/AVP 96\r\n"+
 		"a=rtpmap:96 H264/90000\r\n"+
 		"a=fmtp:96 packetization-mode=1\r\n"+
-		"a=recvonly\r\n", port)
-}
-
-func BuildAudioSDP(port int) string {
-	return fmt.Sprintf("v=0\r\n"+
-		"o=- 0 0 IN IP4 127.0.0.1\r\n"+
-		"s=ImagePadServer AirPlay audio\r\n"+
-		"c=IN IP4 127.0.0.1\r\n"+
-		"t=0 0\r\n"+
+		"a=recvonly\r\n"+
 		"m=audio %d RTP/AVP 96\r\n"+
 		"a=rtpmap:96 L16/44100/2\r\n"+
-		"a=recvonly\r\n", port)
+		"a=recvonly\r\n", videoPort, audioPort)
 }
 
 func (m *Manager) Stop(timeout time.Duration) bool {
@@ -429,20 +437,67 @@ func (m *Manager) Stop(timeout time.Duration) bool {
 }
 
 func startBridgeProcess(ctx context.Context, ffmpegPath string, args []string) (*exec.Cmd, *limitedBuffer, func(), error) {
-	log := &limitedBuffer{max: 8192}
-	bridge := exec.CommandContext(ctx, ffmpegPath, args...)
-	configureProcess(bridge, log)
+	output := &limitedBuffer{max: 8192}
+	bridgeArgs := args
+	if os.Getenv("IMAGEPAD_AIRPLAY_RTP_DEBUG") == "1" {
+		bridgeArgs = append([]string(nil), args...)
+		for i := 0; i+1 < len(bridgeArgs); i++ {
+			if bridgeArgs[i] == "-loglevel" {
+				bridgeArgs[i+1] = "verbose"
+				break
+			}
+		}
+		// Packet timestamps distinguish a stalled RTP clock from FLV
+		// interleaving blocked by a sparse audio stream.
+		last := len(bridgeArgs) - 1
+		bridgeArgs = append(bridgeArgs[:last], append([]string{"-debug_ts"}, bridgeArgs[last:]...)...)
+	}
+	bridge := exec.CommandContext(ctx, ffmpegPath, bridgeArgs...)
+	configureProcess(bridge, output)
 	if err := bridge.Start(); err != nil {
 		return nil, nil, nil, err
 	}
-	return bridge, log, video.TrackStartedFFmpeg(bridge), nil
+	return bridge, output, video.TrackStartedFFmpeg(bridge), nil
 }
 
 func waitForProcess(cmd *exec.Cmd, result chan<- error) {
 	result <- cmd.Wait()
 }
 
-func (m *Manager) monitor(ctx context.Context, cancel context.CancelFunc, done chan struct{}, bridge, receiver *exec.Cmd, ffmpegPath string, bridgeArgs []string, bridgeLog, receiverLog *limitedBuffer, untrack func(), tempDir string) {
+var bridgeDecoderRefreshIntervals = []time.Duration{
+	0,
+	100 * time.Millisecond,
+	150 * time.Millisecond,
+	250 * time.Millisecond,
+	500 * time.Millisecond,
+}
+
+// scheduleBridgeDecoderRefresh repeats the cached SPS/PPS and complete IDR
+// while a newly spawned FFmpeg process is opening its SDP and binding the UDP
+// socket. A single replay immediately after cmd.Start races that bind and can
+// be silently lost, leaving FFmpeg with only P-frames until the next iOS IDR.
+func scheduleBridgeDecoderRefresh(ctx context.Context, relay *h264RTPRelay) {
+	go replayDecoderRefreshes(ctx, bridgeDecoderRefreshIntervals, relay.ReplayParameterSets)
+}
+
+func replayDecoderRefreshes(ctx context.Context, intervals []time.Duration, replay func()) {
+	for _, interval := range intervals {
+		timer := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return
+		case <-timer.C:
+			replay()
+		}
+	}
+}
+
+func (m *Manager) monitor(ctx context.Context, cancel context.CancelFunc, done chan struct{}, relay *h264RTPRelay, audioRelay *l16RTPRelay, bridge, receiver *exec.Cmd, ffmpegPath string, bridgeArgs []string, bridgeLog, receiverLog *limitedBuffer, untrack func(), tempDir string) {
+	defer relay.Close()
+	defer audioRelay.Close()
 	receiverDone := make(chan error, 1)
 	go func() { receiverDone <- receiver.Wait() }()
 
@@ -455,8 +510,22 @@ func (m *Manager) monitor(ctx context.Context, cancel context.CancelFunc, done c
 	stoppedByRequest := false
 	var firstName string
 	var firstErr error
+	var debugTicker *time.Ticker
+	var debugTick <-chan time.Time
+	lastDebugLog := ""
+	if os.Getenv("IMAGEPAD_AIRPLAY_RTP_DEBUG") == "1" {
+		debugTicker = time.NewTicker(time.Second)
+		debugTick = debugTicker.C
+		defer debugTicker.Stop()
+	}
 	for {
 		select {
+		case <-debugTick:
+			output := redactBridgeOutput(currentBridgeLog.String(), bridgeArgs)
+			if output != "" && output != lastDebugLog {
+				log.Printf("AirPlay FFmpeg bridge output:\n%s", output)
+				lastDebugLog = output
+			}
 		case <-ctx.Done():
 			stoppedByRequest = true
 			cancel()
@@ -483,6 +552,9 @@ func (m *Manager) monitor(ctx context.Context, cancel context.CancelFunc, done c
 				return
 			}
 
+			exitOutput := redactBridgeOutput(currentBridgeLog.String(), bridgeArgs)
+			log.Printf("AirPlay FFmpeg bridge exited: err=%v output=%q", bridgeErr, exitOutput)
+
 			// FFmpeg can exit before the first RTP packet when the iPhone has not
 			// connected yet. Keep UxPlay and its Bonjour advertisement alive, and
 			// recreate only the bridge so a later iPhone connection is accepted.
@@ -505,6 +577,7 @@ func (m *Manager) monitor(ctx context.Context, cancel context.CancelFunc, done c
 				m.finishMonitor(done, tempDir, stoppedByRequest, firstName, firstErr, bridgeErr, receiverErr, currentBridgeLog, receiverLog)
 				return
 			}
+			scheduleBridgeDecoderRefresh(ctx, relay)
 			currentBridge = newBridge
 			currentBridgeLog = newLog
 			currentUntrack = newUntrack
@@ -512,6 +585,17 @@ func (m *Manager) monitor(ctx context.Context, cancel context.CancelFunc, done c
 			go waitForProcess(currentBridge, bridgeDone)
 		}
 	}
+}
+
+func redactBridgeOutput(output string, args []string) string {
+	if len(args) == 0 {
+		return output
+	}
+	publishURL := args[len(args)-1]
+	if publishURL == "" {
+		return output
+	}
+	return strings.ReplaceAll(output, publishURL, "[REDACTED]")
 }
 
 func (m *Manager) finishMonitor(done chan struct{}, tempDir string, stoppedByRequest bool, firstName string, firstErr, bridgeErr, receiverErr error, bridgeLog, receiverLog *limitedBuffer) {

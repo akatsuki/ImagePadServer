@@ -49,7 +49,7 @@ func TestConfigureUxPlayWindowsWrapperUsesIsolatedArguments(t *testing.T) {
 			`-vs 0`,
 			`port=41001`,
 			`port=41002`,
-			"config-interval=1	!	udpsink	host=127.0.0.1	port=41001",
+			"config-interval=-1	!	udpsink	host=127.0.0.1	port=41001",
 		} {
 			if !strings.Contains(got, want) {
 				t.Errorf("wrapper arguments %q do not contain %q", got, want)

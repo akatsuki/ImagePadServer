@@ -44,6 +44,15 @@ func (s *Server) handleAirPlayStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	wasListening := obsBefore.Listening
+	restoreOBS := func() {
+		s.obs.StopContinuousPublishing()
+		if obsBefore.Publishing {
+			s.obs.StartPublishing()
+		}
+		if !wasListening {
+			s.obs.Stop()
+		}
+	}
 
 	ffmpegPath, err := video.EnsureFFmpeg()
 	if err != nil {
@@ -54,19 +63,19 @@ func (s *Server) handleAirPlayStart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.obs.StartContinuousPublishing()
 	// AirPlay runs on this host; use the receiver loopback endpoint instead of
 	// the externally advertised LAN address, which may not be locally reachable.
 	publishURL := s.obs.InternalPublishURL()
 	if strings.TrimSpace(publishURL) == "" {
+		restoreOBS()
 		http.Error(w, "OBS RTMP publish URL is unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	if err := s.airplay.Start(s.lifecycleContext(), ffmpegPath, publishURL); err != nil {
-		// The receiver was only armed for this attempt. Keep existing OBS
-		// behavior if it was already running; otherwise leave it stopped.
-		if !wasListening {
-			s.obs.Stop()
-		}
+		// The receiver was only armed for this attempt. Restore the previous
+		// one-shot OBS state instead of leaving an AirPlay-owned arm behind.
+		restoreOBS()
 		if errors.Is(err, airplay.ErrDisabled) {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
@@ -90,6 +99,9 @@ func (s *Server) handleAirPlayEnd(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "AirPlay receiver is unavailable", http.StatusServiceUnavailable)
 		return
 	}
+	if s.obs != nil {
+		s.obs.StopContinuousPublishing()
+	}
 	if !s.airplay.Status().Running {
 		writeJSON(w, map[string]interface{}{"ok": true, "airplay": s.airplayState()})
 		return
@@ -106,4 +118,14 @@ func (s *Server) handleAirPlayEnd(w http.ResponseWriter, r *http.Request) {
 		"airplay": s.airplayState(),
 		"obs":     s.obsState(),
 	})
+}
+
+func (s *Server) handleAirPlayReconnectTimeout() {
+	if s.airplay != nil {
+		s.airplay.Stop(8 * time.Second)
+	}
+	if s.obs != nil && s.videoPlayerEnabled() {
+		s.obs.Restart(8 * time.Second)
+	}
+	s.broadcastStateChanged()
 }

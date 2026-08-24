@@ -66,7 +66,7 @@ const dashboardScriptUploadState = `
     }
 
     function uploadActionLabel() {
-      if (uploadMode === 'obs') return '配信開始';
+      if (isLiveInputMode(uploadMode)) return '配信開始';
       if (mediaIntent === 'music') {
         if (MusicController && MusicController.mode && MusicController.mode() === 'playlist') {
           return 'プレイリストに追加';
@@ -109,7 +109,7 @@ const dashboardScriptUploadState = `
 
     function updateMediaNavigation() {
       const playlistActive = mediaIntent === 'music' && typeof MusicController !== 'undefined' && MusicController.mode && MusicController.mode() === 'playlist';
-      const activeGroup = uploadMode === 'obs' || playlistActive ? 'live' : mediaIntent;
+      const activeGroup = isLiveInputMode(uploadMode) || playlistActive ? 'live' : mediaIntent;
       const videoEnabled = !!state.videoPlayerEnabled;
       const liveInput = activeGroup === 'live';
 
@@ -125,7 +125,8 @@ const dashboardScriptUploadState = `
         [fileModeButton, !liveInput],
         [linkModeButton, !liveInput],
         [obsModeButton, liveInput && videoEnabled],
-        [playlistModeButton, liveInput && videoEnabled && musicWorkspaceEnabled]
+        [playlistModeButton, liveInput && videoEnabled && musicWorkspaceEnabled],
+        [airplayModeButton, liveInput && videoEnabled && !!(state.airplay && state.airplay.enabled)]
       ];
       inputModes.forEach(([button, visible]) => {
         if (!button) return;
@@ -137,6 +138,7 @@ const dashboardScriptUploadState = `
           : mode === uploadMode && !playlistActive;
         button.classList.toggle('active', selected);
         button.setAttribute('aria-selected', String(selected));
+        button.tabIndex = visible && selected ? 0 : -1;
       });
       const playlistInputModes = [
         [playlistFileModeButton, playlistActive && uploadMode === 'file'],
@@ -147,6 +149,7 @@ const dashboardScriptUploadState = `
         button.disabled = !playlistActive;
         button.classList.toggle('active', selected);
         button.setAttribute('aria-selected', String(selected));
+        button.tabIndex = playlistActive && selected ? 0 : -1;
       });
       if (playlistInputTabs) playlistInputTabs.hidden = !playlistActive;
       if (modeTabs) modeTabs.classList.toggle('live-input', liveInput);
@@ -161,7 +164,7 @@ const dashboardScriptUploadState = `
         : intent === 'video' && state.videoPlayerEnabled
           ? 'video'
           : 'image';
-      if (mediaIntent !== 'video' && uploadMode === 'obs') {
+      if (mediaIntent !== 'video' && isLiveInputMode(uploadMode)) {
         if (videoInfoPanel) videoInfoPanel.hidden = true;
         uploadMode = 'file';
       }
@@ -225,13 +228,13 @@ const dashboardScriptUploadState = `
         imageURLInput.placeholder = 'https://example.com/music.mp3';
       }
       if (queueUploadButton) {
-        queueUploadButton.hidden = !state.videoPlayerEnabled || uploadMode === 'obs' || mediaIntent !== 'video' || mediaIntent === 'music';
+        queueUploadButton.hidden = !state.videoPlayerEnabled || isLiveInputMode(uploadMode) || mediaIntent !== 'video' || mediaIntent === 'music';
       }
       imageTransformOptions.forEach((option) => {
         option.hidden = mediaIntent !== 'image';
       });
 	if (qualityRow) {
-		qualityRow.hidden = uploadMode === 'obs' || (mediaIntent !== 'video' && mediaIntent !== 'music');
+		qualityRow.hidden = isLiveInputMode(uploadMode) || (mediaIntent !== 'video' && mediaIntent !== 'music');
 		qualityRow.classList.toggle('standalone', mediaIntent === 'video' || mediaIntent === 'music');
 	}
 	if (musicPlaylistDeliveryOption) {
@@ -241,12 +244,12 @@ const dashboardScriptUploadState = `
 	  musicPlaylistCanonicalOption.hidden = !(mediaIntent === 'music' && MusicController && MusicController.mode && MusicController.mode() === 'playlist');
 	}
       if (obsLatencyOption) {
-        obsLatencyOption.hidden = uploadMode !== 'obs';
+        obsLatencyOption.hidden = !isLiveInputMode(uploadMode);
       }
       if (videoInfoPanel) {
         videoInfoPanel.hidden = mediaIntent !== 'video';
       }
-      if (uploadMode !== 'obs') {
+      if (!isLiveInputMode(uploadMode)) {
         setUploadMode(uploadMode);
       }
       updateMediaNavigation();
@@ -267,7 +270,7 @@ const dashboardScriptUploadState = `
       if (dragDropOverlayHint) dragDropOverlayHint.dataset.enabledLabel = '画像、RAW、音声、動画ファイルを選択します';
       fileModeButton.textContent = 'ファイル';
       imageURLInput.placeholder = data.enabled ? 'https://example.com/image_or_video.webp' : 'https://example.com/image.webp';
-      if ((!data.enabled || mediaIntent !== 'video') && uploadMode === 'obs') {
+      if ((!data.enabled || mediaIntent !== 'video') && isLiveInputMode(uploadMode)) {
         setUploadMode('file');
       }
       setMediaIntent(mediaIntent, false);

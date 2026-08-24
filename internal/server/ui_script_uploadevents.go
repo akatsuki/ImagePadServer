@@ -55,7 +55,7 @@ const dashboardScriptUploadEvents = `
         MusicController.render({ active: true });
       }
       // プレイリストモード中は従来のアップロードUIをキュー追加に接続する。
-      if (mediaIntent === 'music' && MusicController.mode() === 'playlist' && uploadMode !== 'obs') {
+      if (mediaIntent === 'music' && MusicController.mode() === 'playlist' && !isLiveInputMode(uploadMode)) {
         uploadButton.disabled = true;
         try {
           await PlaylistController.addFromUploadForm(uploadMode);
@@ -64,7 +64,7 @@ const dashboardScriptUploadEvents = `
         }
         return;
       }
-      if (uploadMode === 'obs') {
+      if (isLiveInputMode(uploadMode)) {
         if (!(state.obs && state.obs.connected) || (state.obs && state.obs.publishing)) {
           updateOBSActionState(state.obs);
           return;
@@ -77,7 +77,7 @@ const dashboardScriptUploadEvents = `
           const data = await res.json();
           pendingOBSAutoCopy = true;
           applyState(data);
-          setUploadMode('obs');
+          setUploadMode(uploadMode);
           announceLocalChange();
           toast.textContent = data.obs && data.obs.connected ? 'OBS配信を公開しました' : 'OBS配信開始を予約しました';
         } catch (error) {
@@ -126,38 +126,51 @@ const dashboardScriptUploadEvents = `
       }
     });
 
+    function isLiveInputMode(mode) {
+      return mode === 'obs' || mode === 'airplay';
+    }
+
     function setUploadMode(mode) {
-      if (mode === 'obs' && (!state.videoPlayerEnabled || mediaIntent !== 'video')) {
+      if (isLiveInputMode(mode) && (!state.videoPlayerEnabled || mediaIntent !== 'video')) {
         mode = 'file';
+      }
+      if (mode === 'airplay' && (!state.airplay || !state.airplay.enabled)) {
+        mode = 'obs';
       }
       uploadMode = mode;
       const linkMode = mode === 'link';
       const obsMode = mode === 'obs';
-      const fileMode = !linkMode && !obsMode;
+      const airplayMode = mode === 'airplay';
+      const liveMode = isLiveInputMode(mode);
+      const fileMode = !linkMode && !liveMode;
       fileModeButton.classList.toggle('active', fileMode);
       linkModeButton.classList.toggle('active', linkMode);
       obsModeButton.classList.toggle('active', obsMode);
+      airplayModeButton.classList.toggle('active', airplayMode);
       if (playlistFileModeButton) playlistFileModeButton.classList.toggle('active', fileMode);
       if (playlistLinkModeButton) playlistLinkModeButton.classList.toggle('active', linkMode);
       fileModeButton.setAttribute('aria-selected', String(fileMode));
       linkModeButton.setAttribute('aria-selected', String(linkMode));
       obsModeButton.setAttribute('aria-selected', String(obsMode));
+      airplayModeButton.setAttribute('aria-selected', String(airplayMode));
       if (playlistFileModeButton) playlistFileModeButton.setAttribute('aria-selected', String(fileMode));
       if (playlistLinkModeButton) playlistLinkModeButton.setAttribute('aria-selected', String(linkMode));
-      fileUploadPanel.classList.toggle('active', !linkMode && !obsMode);
+      fileUploadPanel.classList.toggle('active', fileMode);
       linkUploadPanel.classList.toggle('active', linkMode);
       obsUploadPanel.classList.toggle('active', obsMode);
-      fileUploadPanel.hidden = linkMode || obsMode;
+      airplayUploadPanel.classList.toggle('active', airplayMode);
+      fileUploadPanel.hidden = !fileMode;
       linkUploadPanel.hidden = !linkMode;
       obsUploadPanel.hidden = !obsMode;
+      airplayUploadPanel.hidden = !airplayMode;
       updateUploadControlsVisibility();
-      imageInput.required = !linkMode && !obsMode;
+      imageInput.required = fileMode;
       imageURLInput.required = linkMode;
       uploadButton.hidden = false;
-      if (!obsMode) {
+      if (!liveMode) {
         uploadButton.disabled = false;
       }
-      queueUploadButton.hidden = obsMode || !state.videoPlayerEnabled || mediaIntent !== 'video' || mediaIntent === 'music';
+      queueUploadButton.hidden = liveMode || !state.videoPlayerEnabled || mediaIntent !== 'video' || mediaIntent === 'music';
       if (videoInfoPanel) {
         videoInfoPanel.hidden = mediaIntent !== 'video';
       }
@@ -444,7 +457,7 @@ const dashboardScriptUploadEvents = `
     }
 
     clearButton.addEventListener('click', async () => {
-      const obsEnd = uploadMode === 'obs';
+      const obsEnd = isLiveInputMode(uploadMode);
       if (!obsEnd && !window.confirm('現在公開中の画像をクリアしますか？')) return;
       clearButton.disabled = true;
       toast.textContent = obsEnd ? 'OBS配信を終了中...' : '画像をクリア中...';
@@ -625,7 +638,7 @@ const dashboardScriptUploadEvents = `
           return;
         }
       }
-      if ((id === 'phoneURL' || id === 'phoneURLMobile' || id === 'phoneDialogURL') && uploadMode === 'obs' && !text) {
+      if ((id === 'phoneURL' || id === 'phoneURLMobile' || id === 'phoneDialogURL') && isLiveInputMode(uploadMode) && !text) {
         text = '';
       }
       if (!text || text === '-' || text === '*****') {

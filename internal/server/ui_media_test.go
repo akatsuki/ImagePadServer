@@ -611,7 +611,7 @@ func TestMusicWorkspacePlaylistUI(t *testing.T) {
 		`シングル`,
 		`ミュージックHLSを生成`,
 		`https://example.com/music.mp3`,
-		`qualityRow.hidden = uploadMode === 'obs' || (mediaIntent !== 'video' && mediaIntent !== 'music')`,
+		`qualityRow.hidden = isLiveInputMode(uploadMode) || (mediaIntent !== 'video' && mediaIntent !== 'music')`,
 		`qualityRow.hidden = protectedMode || (mediaIntent !== 'video' && mediaIntent !== 'music')`,
 		`qualityRow.classList.toggle('standalone', mediaIntent === 'video' || mediaIntent === 'music')`,
 		`.quality-row.standalone`,

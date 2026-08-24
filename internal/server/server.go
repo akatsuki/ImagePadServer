@@ -224,10 +224,11 @@ func New(cfg config.Config, store *library.Store, imageURLBase string) *Server {
 	}
 	srv.airplay = airplay.New(srv.broadcastStateChanged)
 	srv.obs = obsrtmp.New(store.Dir(), advertisedHost, 1935, obsStreamKey, srv.videoQualityPreset, srv.obsLatencyProfile, obsrtmp.Callbacks{
-		OnStart:     srv.handleOBSStreamStart,
-		OnDone:      srv.handleOBSStreamDone,
-		OnRTSPReady: srv.handleRTSPReady,
-		OnRTSPDone:  srv.handleRTSPDone,
+		OnStart:                       srv.handleOBSStreamStart,
+		OnDone:                        srv.handleOBSStreamDone,
+		OnRTSPReady:                   srv.handleRTSPReady,
+		OnRTSPDone:                    srv.handleRTSPDone,
+		OnContinuousPublishingTimeout: srv.handleAirPlayReconnectTimeout,
 	})
 	srv.obsSessionActive = srv.obs.IsSessionActive
 	srv.obsSessionLatest = srv.obs.IsLatestSession

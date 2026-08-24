@@ -15,6 +15,21 @@ import (
 	"imagepadserver/internal/video"
 )
 
+func TestFFmpegRTMPProbeKeepsLargeInitialIDR(t *testing.T) {
+	manager := newTestManager(t, LatencyModeHLS)
+	args := manager.ffmpegArgs("media123", "recording.mp4", video.ResolveQuality("720", 0))
+
+	if got := valueAfter(args, "-analyzeduration"); got != "1000000" {
+		t.Fatalf("-analyzeduration = %q, want 1000000; args: %s", got, strings.Join(args, " "))
+	}
+	if got := valueAfter(args, "-probesize"); got != "4194304" {
+		t.Fatalf("-probesize = %q, want 4194304; args: %s", got, strings.Join(args, " "))
+	}
+	if slices.Contains(args, "nobuffer") {
+		t.Fatalf("RTMP probe must retain the initial IDR: %s", strings.Join(args, " "))
+	}
+}
+
 func TestFFmpegArgsUseNormalHLS(t *testing.T) {
 	manager := newTestManager(t, LatencyModeHLS)
 	args := manager.ffmpegArgs("media123", "recording.mp4", video.ResolveQuality("720", 0))
@@ -44,6 +59,25 @@ func TestFFmpegArgsUseNormalHLS(t *testing.T) {
 	}
 	if !containsSubsequence(args, []string{video.PlaylistName("media123"), "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy", "-movflags", "+faststart", "recording.mp4"}) {
 		t.Fatalf("expected recording output to remain stream-copy MP4 after HLS output: %s", strings.Join(args, " "))
+	}
+}
+
+func TestFFmpegArgsUseStableAspectPreservingCanvas(t *testing.T) {
+	manager := newTestManager(t, LatencyModeHLS)
+	args := manager.ffmpegArgs("media123", "recording.mp4", video.ResolveQuality("720", 0))
+	filter := valueAfter(args, "-vf")
+	for _, want := range []string{
+		"scale=w=1280:h=720",
+		"force_original_aspect_ratio=decrease",
+		"out_range=tv",
+		"pad=1280:720",
+		"setsar=1",
+		"format=yuv420p",
+		"setparams=range=limited",
+	} {
+		if !strings.Contains(filter, want) {
+			t.Fatalf("video filter %q does not contain %q", filter, want)
+		}
 	}
 }
 

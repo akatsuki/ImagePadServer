@@ -1,3 +1,3 @@
 package server
 
-const dashboardScript = dashboardScriptToast + dashboardScriptState + dashboardScriptOBS + dashboardScriptAirPlay + dashboardScriptUploadEvents + dashboardScriptSettings + dashboardScriptLiveSync
+const dashboardScript = dashboardScriptToast + dashboardScriptState + dashboardScriptOBS + dashboardScriptAirPlay + dashboardScriptUploadEvents + dashboardScriptInputTabs + dashboardScriptSettings + dashboardScriptLiveSync

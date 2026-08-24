@@ -75,14 +75,15 @@ const indexHTML = `<!doctype html>
                   <span>入力</span>
                 </div>
                 <div class="mode-tabs" role="tablist" aria-label="入力方法">
-                  <button class="mode-tab active" id="fileModeButton" data-media-input-mode="file" type="button" role="tab" aria-selected="true" aria-controls="fileUploadPanel">ファイル</button>
-                  <button class="mode-tab" id="linkModeButton" data-media-input-mode="link" type="button" role="tab" aria-selected="false" aria-controls="linkUploadPanel">リンク</button>
-                  <button class="mode-tab" id="obsModeButton" data-media-input-mode="obs" type="button" role="tab" aria-selected="false" aria-controls="obsUploadPanel" hidden>OBS</button>
-                  <button class="mode-tab" id="playlistModeButton" data-media-input-mode="playlist" type="button" role="tab" aria-selected="false" aria-controls="musicPlaylistPanel" hidden>プレイリスト</button>
+                  <button class="mode-tab active" id="fileModeButton" data-media-input-mode="file" type="button" role="tab" aria-selected="true" aria-controls="fileUploadPanel" tabindex="0">ファイル</button>
+                  <button class="mode-tab" id="linkModeButton" data-media-input-mode="link" type="button" role="tab" aria-selected="false" aria-controls="linkUploadPanel" tabindex="-1">リンク</button>
+                  <button class="mode-tab" id="obsModeButton" data-media-input-mode="obs" type="button" role="tab" aria-selected="false" aria-controls="obsUploadPanel" tabindex="-1" hidden>OBS</button>
+                  <button class="mode-tab" id="playlistModeButton" data-media-input-mode="playlist" type="button" role="tab" aria-selected="false" aria-controls="musicPlaylistPanel" tabindex="-1" hidden>Playlist</button>
+                  <button class="mode-tab" id="airplayModeButton" data-media-input-mode="airplay" type="button" role="tab" aria-selected="false" aria-controls="airplayUploadPanel" tabindex="-1" hidden>AirPlay</button>
                 </div>
                 <div class="playlist-input-tabs" id="playlistInputTabs" role="tablist" aria-label="プレイリスト入力方法" hidden>
-                  <button class="mode-tab playlist-input-tab active" id="playlistFileModeButton" data-playlist-input-mode="file" type="button" role="tab" aria-selected="true" aria-controls="fileUploadPanel">ファイル</button>
-                  <button class="mode-tab playlist-input-tab" id="playlistLinkModeButton" data-playlist-input-mode="link" type="button" role="tab" aria-selected="false" aria-controls="linkUploadPanel">リンク</button>
+                  <button class="mode-tab playlist-input-tab active" id="playlistFileModeButton" data-playlist-input-mode="file" type="button" role="tab" aria-selected="true" aria-controls="fileUploadPanel" tabindex="0">ファイル</button>
+                  <button class="mode-tab playlist-input-tab" id="playlistLinkModeButton" data-playlist-input-mode="link" type="button" role="tab" aria-selected="false" aria-controls="linkUploadPanel" tabindex="-1">リンク</button>
                 </div>
                 <div class="upload-panel active" id="fileUploadPanel" role="tabpanel" aria-labelledby="fileModeButton">
                   <div class="drop-zone" id="fileDropZone">
@@ -122,6 +123,8 @@ const indexHTML = `<!doctype html>
                       </div>
                     </div>
                   </div>
+                </div>
+                <div class="upload-panel" id="airplayUploadPanel" role="tabpanel" aria-labelledby="airplayModeButton" hidden>
                   <section class="airplay-card" id="airplayCard" hidden aria-labelledby="airplayTitle">
                     <div class="airplay-card-heading">
                       <svg class="airplay-graphic" viewBox="0 0 48 48" aria-hidden="true" focusable="false">

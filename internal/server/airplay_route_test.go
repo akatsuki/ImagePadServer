@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"imagepadserver/internal/airplay"
+	"imagepadserver/internal/obsrtmp"
 )
 
 func TestAirPlayStartDisabledIsFailClosed(t *testing.T) {
@@ -26,7 +27,9 @@ func TestAirPlayStartDisabledIsFailClosed(t *testing.T) {
 
 func TestAirPlayEndIsAllowedWhenFeatureIsDisabled(t *testing.T) {
 	t.Setenv("IMAGEPAD_AIRPLAY", "0")
-	srv := &Server{airplay: airplay.New(nil)}
+	obs := obsrtmp.New(t.TempDir(), "127.0.0.1", 1935, "test-key", nil, nil, obsrtmp.Callbacks{})
+	obs.StartContinuousPublishing()
+	srv := &Server{airplay: airplay.New(nil), obs: obs}
 	req := httptest.NewRequest(http.MethodPost, "/api/airplay/end", nil)
 	rr := httptest.NewRecorder()
 
@@ -37,5 +40,8 @@ func TestAirPlayEndIsAllowedWhenFeatureIsDisabled(t *testing.T) {
 	}
 	if status := srv.airplay.Status(); status.Running {
 		t.Fatal("disabled AirPlay end unexpectedly reports a running receiver")
+	}
+	if status := obs.Status(); status.Publishing {
+		t.Fatal("explicit AirPlay end left continuous OBS publishing armed")
 	}
 }

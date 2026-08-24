@@ -50,15 +50,50 @@ func TestEnsureFFprobeRepairsStaleConfiguredPath(t *testing.T) {
 		return nil
 	}
 
-	got, err := EnsureFFprobe()
-	if err != nil {
-		t.Fatalf("EnsureFFprobe: %v", err)
-	}
-	if got != localFFprobePath() {
-		t.Fatalf("EnsureFFprobe() = %q, want %q", got, localFFprobePath())
+	for attempt := 1; attempt <= 2; attempt++ {
+		got, err := EnsureFFprobe()
+		if err != nil {
+			t.Fatalf("EnsureFFprobe attempt %d: %v", attempt, err)
+		}
+		if got != localFFprobePath() {
+			t.Fatalf("EnsureFFprobe() attempt %d = %q, want %q", attempt, got, localFFprobePath())
+		}
 	}
 	if installCalls != 1 {
 		t.Fatalf("installer calls = %d, want 1", installCalls)
+	}
+}
+
+func TestConfiguredExecutableNamesResolveViaPATH(t *testing.T) {
+	toolDir := t.TempDir()
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	t.Setenv("PATH", toolDir)
+
+	tests := []struct {
+		name    string
+		envKey  string
+		command string
+		resolve func() (string, error)
+	}{
+		{name: "ffmpeg", envKey: "IMAGEPAD_FFMPEG", command: "ffmpeg", resolve: ffmpegPath},
+		{name: "ffprobe", envKey: "IMAGEPAD_FFPROBE", command: "ffprobe", resolve: ffprobePath},
+		{name: "yt-dlp", envKey: "IMAGEPAD_YTDLP", command: "yt-dlp", resolve: ytdlpPath},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			want := filepath.Join(toolDir, executableName(tt.command))
+			if err := os.WriteFile(want, []byte("fixture"), 0755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv(tt.envKey, tt.command)
+			got, err := tt.resolve()
+			if err != nil {
+				t.Fatalf("resolve %s via PATH: %v", tt.command, err)
+			}
+			if !strings.EqualFold(filepath.Clean(got), filepath.Clean(want)) {
+				t.Fatalf("resolve %s = %q, want %q", tt.command, got, want)
+			}
+		})
 	}
 }
 

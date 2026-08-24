@@ -297,7 +297,7 @@ const dashboardScriptPreviewController = `
         data = data || {};
         context = context || {};
         const nextCurrentID = context.nextCurrentID || (data.current && data.current.id) || '';
-        if (context.uploadMode === 'obs' && data.obs && (data.obs.connected || data.obs.publishing)) {
+        if (isLiveInputMode(context.uploadMode) && data.obs && (data.obs.connected || data.obs.publishing)) {
           renderOBSPreview(data, context);
           return;
         }
