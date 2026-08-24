@@ -289,7 +289,7 @@ func TestH264RTPRelayStateKeepsReplayPendingUntilParameterSetsArrive(t *testing.
 
 func TestH264RTPRelayStateSynthesizesTimestampForConstantInput(t *testing.T) {
 	state := readyH264RTPRelayState()
-	want := []uint32{500, 3500, 6500}
+	want := []uint32{0, 3000, 6000}
 	for i, wantTimestamp := range want {
 		outputs := state.forward(testMarkedRTPPacket(uint16(i+1), 500, []byte{1, byte(i)}))
 		if len(outputs) != 1 {
@@ -304,10 +304,11 @@ func TestH264RTPRelayStateSynthesizesTimestampForConstantInput(t *testing.T) {
 func TestH264RTPRelayStatePreservesValidTimestampDeltas(t *testing.T) {
 	state := readyH264RTPRelayState()
 	input := []uint32{1000, 4000, 10000}
+	want := []uint32{0, 3000, 9000}
 	for i, timestamp := range input {
 		outputs := state.forward(testMarkedRTPPacket(uint16(i+1), timestamp, []byte{1, byte(i)}))
-		if got := binary.BigEndian.Uint32(outputs[0][4:8]); got != timestamp {
-			t.Fatalf("frame %d timestamp = %d; want %d", i, got, timestamp)
+		if got := binary.BigEndian.Uint32(outputs[0][4:8]); got != want[i] {
+			t.Fatalf("frame %d timestamp = %d; want %d (zero-based origin)", i, got, want[i])
 		}
 	}
 }
@@ -349,14 +350,14 @@ func TestH264RTPRelayStateKeepsPacketsInAccessUnitAtSameTimestamp(t *testing.T) 
 	first := state.forward(testRTPPacket(1, 700, []byte{1, 1}))
 	last := state.forward(testMarkedRTPPacket(2, 700, []byte{1, 2}))
 	next := state.forward(testMarkedRTPPacket(3, 700, []byte{1, 3}))
-	if got := binary.BigEndian.Uint32(first[0][4:8]); got != 700 {
-		t.Fatalf("first packet timestamp = %d; want 700", got)
+	if got := binary.BigEndian.Uint32(first[0][4:8]); got != 0 {
+		t.Fatalf("first packet timestamp = %d; want 0 (zero-based origin)", got)
 	}
-	if got := binary.BigEndian.Uint32(last[0][4:8]); got != 700 {
-		t.Fatalf("last packet timestamp = %d; want 700", got)
+	if got := binary.BigEndian.Uint32(last[0][4:8]); got != 0 {
+		t.Fatalf("last packet timestamp = %d; want 0 (zero-based origin)", got)
 	}
-	if got := binary.BigEndian.Uint32(next[0][4:8]); got != 3700 {
-		t.Fatalf("next access unit timestamp = %d; want 3700", got)
+	if got := binary.BigEndian.Uint32(next[0][4:8]); got != 3000 {
+		t.Fatalf("next access unit timestamp = %d; want 3000", got)
 	}
 }
 
@@ -414,6 +415,25 @@ func TestH264RTPRelayStateDropsMalformedRTP(t *testing.T) {
 	var state h264RTPRelayState
 	if outputs := state.forward([]byte{1, 2, 3}); outputs != nil {
 		t.Fatalf("malformed RTP produced %d packets; want none", len(outputs))
+	}
+}
+
+func TestH264RTPRelayStateNormalizesToZeroOrigin(t *testing.T) {
+	state := readyH264RTPRelayState()
+	// iOS starts its RTP timeline at an arbitrary offset (e.g. 1407000 = 15.6 s
+	// at 90 kHz). The relay must discard that offset so video shares a zero
+	// origin with the audio relay (asetpts=N/SR/TB); otherwise A/V drifts by
+	// the offset (~3.8 s on the real device).
+	input := []uint32{1407000, 1410000, 1413000}
+	want := []uint32{0, 3000, 6000}
+	for i, timestamp := range input {
+		outputs := state.forward(testMarkedRTPPacket(uint16(i+1), timestamp, []byte{1, byte(i)}))
+		if len(outputs) != 1 {
+			t.Fatalf("frame %d produced %d packets; want 1", i, len(outputs))
+		}
+		if got := binary.BigEndian.Uint32(outputs[0][4:8]); got != want[i] {
+			t.Fatalf("frame %d timestamp = %d; want %d (zero-based origin)", i, got, want[i])
+		}
 	}
 }
 

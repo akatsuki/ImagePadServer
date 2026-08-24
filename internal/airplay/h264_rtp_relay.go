@@ -392,15 +392,18 @@ func (s *h264RTPRelayState) replayCachedDecoderRefresh() ([][]byte, bool) {
 	return out, true
 }
 
-// normalizeTimestamp preserves valid RTP timestamp deltas, but advances a
-// broken constant timestamp at each H.264 access-unit boundary. UxPlay on
-// Windows can emit every mirrored frame with the same 90 kHz RTP timestamp;
-// forwarding that value unchanged leaves FFmpeg's output PTS at zero forever.
+// normalizeTimestamp rewrites each packet's RTP timestamp into the zero-based
+// output timeline shared with the audio relay. The first input timestamp (an
+// arbitrary iOS RTP origin) is discarded: the first packet is emitted at zero
+// and later access units advance by the observed input deltas. A broken
+// constant input timestamp is advanced by a fixed 90 kHz step at each
+// access-unit boundary (UxPlay on Windows can emit every mirrored frame with
+// the same timestamp, which would otherwise leave FFmpeg's output PTS frozen).
 func (s *h264RTPRelayState) normalizeTimestamp(packet []byte) {
 	inputTimestamp := binary.BigEndian.Uint32(packet[4:8])
 	if !s.timestampInitialized {
 		s.timestampInitialized = true
-		s.outputTimestamp = inputTimestamp
+		s.outputTimestamp = 0
 	} else if s.previousMarker {
 		delta := inputTimestamp - s.lastInputTimestamp
 		if delta == 0 {
