@@ -150,14 +150,17 @@ func (r *l16RTPRelay) run(ctx context.Context) {
 			binary.BigEndian.PutUint32(packet[4:8], timestamp)
 			binary.BigEndian.PutUint32(packet[8:12], l16SSRC)
 			copy(packet[12:], payload)
-			if _, err := r.inputConn.WriteToUDP(packet, r.outputAddr); err != nil {
-				return
-			}
+			// Count the packet before writing it so a reader that already
+			// observed the datagram sees a consistent Stats() view (closes a
+			// read-then-check race in the clock-forwarding test).
 			sequence++
 			timestamp += l16FramesPerPacket
 			r.outputPackets.Add(1)
 			if isSilence {
 				r.silencePackets.Add(1)
+			}
+			if _, err := r.inputConn.WriteToUDP(packet, r.outputAddr); err != nil {
+				return
 			}
 		}
 	}
