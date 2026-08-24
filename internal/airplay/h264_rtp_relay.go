@@ -172,8 +172,6 @@ func logH264RTPMetadata(direction string, ordinal uint64, packet []byte) {
 	log.Printf("AirPlay H264 RTP %s packet=%d seq=%d ts=%d pt=%d marker=%t nal=%d fu=%d start=%t end=%t bytes=%d", direction, ordinal, binary.BigEndian.Uint16(packet[2:4]), binary.BigEndian.Uint32(packet[4:8]), packet[1]&0x7f, packet[1]&0x80 != 0, nalType, fuType, start, end, len(payload))
 }
 
-const defaultH264RTPFrameTimestampStep uint32 = 90000 / 30
-
 type h264RTPRelayState struct {
 	initialized           bool
 	nextSequence          uint16
@@ -181,6 +179,7 @@ type h264RTPRelayState struct {
 	outputTimestamp       uint32
 	lastInputTimestamp    uint32
 	previousMarker        bool
+	fps                   fpsDetector
 	inputSequenceReady    bool
 	expectedInputSequence uint16
 	inputSSRCReady        bool
@@ -412,9 +411,10 @@ func (s *h264RTPRelayState) replayCachedDecoderRefresh() ([][]byte, bool) {
 // output timeline shared with the audio relay. The first input timestamp (an
 // arbitrary iOS RTP origin) is discarded: the first packet is emitted at zero
 // and later access units advance by the observed input deltas. A broken
-// constant input timestamp is advanced by a fixed 90 kHz step at each
-// access-unit boundary (UxPlay on Windows can emit every mirrored frame with
-// the same timestamp, which would otherwise leave FFmpeg's output PTS frozen).
+// constant input timestamp is advanced at each access-unit boundary by a step
+// synthesized from the measured frame rate (see fpsDetector); UxPlay on
+// Windows can emit every mirrored frame with the same timestamp, which would
+// otherwise leave FFmpeg's output PTS frozen or pinned at 30 fps.
 func (s *h264RTPRelayState) normalizeTimestamp(packet []byte) {
 	inputTimestamp := binary.BigEndian.Uint32(packet[4:8])
 	if !s.timestampInitialized {
@@ -423,12 +423,16 @@ func (s *h264RTPRelayState) normalizeTimestamp(packet []byte) {
 	} else if s.previousMarker {
 		delta := inputTimestamp - s.lastInputTimestamp
 		if delta == 0 {
-			delta = defaultH264RTPFrameTimestampStep
+			delta = s.fps.timestampStep()
 		}
 		s.outputTimestamp += delta
 	}
 	s.lastInputTimestamp = inputTimestamp
-	s.previousMarker = packet[1]&0x80 != 0
+	marker := packet[1]&0x80 != 0
+	s.previousMarker = marker
+	if marker {
+		s.fps.observeFrame(time.Now())
+	}
 	binary.BigEndian.PutUint32(packet[4:8], s.outputTimestamp)
 }
 
