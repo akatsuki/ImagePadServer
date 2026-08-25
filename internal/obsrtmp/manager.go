@@ -1039,7 +1039,14 @@ func stableOBSVideoFilter(height int) string {
 	if width > 1920 {
 		width = 1920
 	}
-	return fmt.Sprintf("scale=w=%d:h=%d:force_original_aspect_ratio=decrease:force_divisible_by=2:out_range=tv,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p,setparams=range=limited:color_primaries=bt709:color_trc=bt709:colorspace=bt709", width, height, width, height)
+	// Pick the canvas from the input orientation: landscape (width x height) for
+	// iw >= ih, portrait (height x width) otherwise, so a portrait AirPlay mirror
+	// is not letterboxed into a 16:9 frame. The pad only fills the remainder when
+	// a source's aspect differs within its own orientation.
+	return fmt.Sprintf("scale=w='if(gte(iw,ih),%d,%d)':h='if(gte(iw,ih),%d,%d)':force_original_aspect_ratio=decrease:force_divisible_by=2:out_range=tv,"+
+		"pad=w='if(gte(iw,ih),%d,%d)':h='if(gte(iw,ih),%d,%d)':x=(ow-iw)/2:y=(oh-ih)/2:color=black,"+
+		"setsar=1,format=yuv420p,setparams=range=limited:color_primaries=bt709:color_trc=bt709:colorspace=bt709",
+		width, height, height, width, width, height, height, width)
 }
 
 func (m *Manager) ffmpegArgs(id, recording string, preset video.QualityPreset) []string {

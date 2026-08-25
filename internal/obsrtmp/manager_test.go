@@ -67,16 +67,28 @@ func TestFFmpegArgsUseStableAspectPreservingCanvas(t *testing.T) {
 	args := manager.ffmpegArgs("media123", "recording.mp4", video.ResolveQuality("720", 0))
 	filter := valueAfter(args, "-vf")
 	for _, want := range []string{
-		"scale=w=1280:h=720",
+		"scale=w='if(gte(iw,ih),1280,720)':h='if(gte(iw,ih),720,1280)'",
 		"force_original_aspect_ratio=decrease",
 		"out_range=tv",
-		"pad=1280:720",
+		"pad=w='if(gte(iw,ih),1280,720)':h='if(gte(iw,ih),720,1280)'",
 		"setsar=1",
 		"format=yuv420p",
 		"setparams=range=limited:color_primaries=bt709:color_trc=bt709:colorspace=bt709",
 	} {
 		if !strings.Contains(filter, want) {
 			t.Fatalf("video filter %q does not contain %q", filter, want)
+		}
+	}
+}
+
+func TestStableOBSVideoFilterIsOrientationAware(t *testing.T) {
+	filter := stableOBSVideoFilter(720)
+	for _, want := range []string{
+		"if(gte(iw,ih),1280,720)",
+		"if(gte(iw,ih),720,1280)",
+	} {
+		if !strings.Contains(filter, want) {
+			t.Fatalf("filter %q does not contain %q", filter, want)
 		}
 	}
 }
