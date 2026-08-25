@@ -25,6 +25,7 @@ type h264RTPRelay struct {
 	once             sync.Once
 	replayGeneration atomic.Uint64
 	onPacket         func()
+	videoStarted     atomic.Bool
 }
 
 func startH264RTPRelay(ctx context.Context, inputPort, outputPort int, onPacket ...func()) (*h264RTPRelay, error) {
@@ -75,6 +76,13 @@ func (r *h264RTPRelay) ReplayParameterSets() {
 	_ = r.conn.SetReadDeadline(time.Now())
 }
 
+// HasReceivedVideo reports whether at least one video RTP packet has been
+// received. The bridge respawn policy uses this to distinguish a genuine
+// mid-stream failure from the probe phase before an iPhone connects.
+func (r *h264RTPRelay) HasReceivedVideo() bool {
+	return r.videoStarted.Load()
+}
+
 func (r *h264RTPRelay) run() {
 	defer close(r.done)
 	buffer := make([]byte, 65535)
@@ -121,6 +129,7 @@ func (r *h264RTPRelay) run() {
 			return
 		}
 		inputPackets++
+		r.videoStarted.Store(true)
 		if packetDebug {
 			logH264RTPMetadata("input", inputPackets, buffer[:n])
 		}

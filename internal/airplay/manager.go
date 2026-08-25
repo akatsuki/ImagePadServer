@@ -528,6 +528,8 @@ func (m *Manager) monitor(ctx context.Context, cancel context.CancelFunc, done c
 	stoppedByRequest := false
 	var firstName string
 	var firstErr error
+	backoff := newBridgeRespawnBackoff(bridgeRespawnInitialDelay, bridgeRespawnMaxDelay, bridgeRespawnMaxRetries)
+	lastBridgeStart := time.Now()
 	var debugTicker *time.Ticker
 	var debugTick <-chan time.Time
 	lastDebugLog := ""
@@ -573,9 +575,36 @@ func (m *Manager) monitor(ctx context.Context, cancel context.CancelFunc, done c
 			exitOutput := redactBridgeOutput(currentBridgeLog.String(), bridgeArgs)
 			log.Printf("AirPlay FFmpeg bridge exited: err=%v output=%q", bridgeErr, exitOutput)
 
+			// A bridge that ran long enough before exiting did real work, so a
+			// late isolated crash should not inherit a stale retry budget.
+			if time.Since(lastBridgeStart) >= bridgeRespawnStableDuration {
+				backoff.reset()
+			}
+
 			// FFmpeg can exit before the first RTP packet when the iPhone has not
-			// connected yet. Keep UxPlay and its Bonjour advertisement alive, and
-			// recreate only the bridge so a later iPhone connection is accepted.
+			// connected yet: it only finished its input probe. Keep UxPlay and its
+			// Bonjour advertisement alive and recreate the bridge without burning
+			// the retry budget, so a later connection is accepted. Once video is
+			// flowing, a bridge exit is a real failure: back off and, after
+			// repeated failures, surface it instead of crash-looping forever.
+			respawnDelay := time.Duration(0)
+			if relay.HasReceivedVideo() {
+				delay, exhausted := backoff.nextDelay()
+				if exhausted {
+					firstName = "FFmpeg bridge"
+					firstErr = fmt.Errorf("gave up restarting FFmpeg bridge after %d rapid failures (last exit: %w)", backoff.attempts(), bridgeErr)
+					cancel()
+					receiverErr := <-receiverDone
+					currentUntrack()
+					m.finishMonitor(done, tempDir, stoppedByRequest, firstName, firstErr, bridgeErr, receiverErr, currentBridgeLog, receiverLog)
+					return
+				}
+				respawnDelay = delay
+				m.setStatusMessage(fmt.Sprintf("FFmpegブリッジ再接続中（%d回目）…", backoff.attempts()))
+			} else {
+				backoff.reset()
+			}
+
 			currentUntrack()
 			select {
 			case <-ctx.Done():
@@ -584,7 +613,7 @@ func (m *Manager) monitor(ctx context.Context, cancel context.CancelFunc, done c
 				receiverErr := <-receiverDone
 				m.finishMonitor(done, tempDir, stoppedByRequest, firstName, firstErr, bridgeErr, receiverErr, currentBridgeLog, receiverLog)
 				return
-			case <-time.After(500 * time.Millisecond):
+			case <-time.After(respawnDelay):
 			}
 			newBridge, newLog, newUntrack, err := startBridgeProcess(ctx, ffmpegPath, bridgeArgs)
 			if err != nil {
@@ -596,6 +625,7 @@ func (m *Manager) monitor(ctx context.Context, cancel context.CancelFunc, done c
 				return
 			}
 			scheduleBridgeDecoderRefresh(ctx, relay)
+			lastBridgeStart = time.Now()
 			currentBridge = newBridge
 			currentBridgeLog = newLog
 			currentUntrack = newUntrack
@@ -665,6 +695,16 @@ func (m *Manager) notify() {
 	if m.onChange != nil {
 		go m.onChange()
 	}
+}
+
+// setStatusMessage updates the status message under the manager lock and
+// notifies listeners, so a client watching status sees reconnect progress
+// instead of a stalled "running" state.
+func (m *Manager) setStatusMessage(msg string) {
+	m.mu.Lock()
+	m.status.Message = msg
+	m.mu.Unlock()
+	m.notify()
 }
 
 type limitedBuffer struct {
