@@ -224,7 +224,13 @@ func (m *Manager) Start(parent context.Context, ffmpegPath, publishURL string) e
 		return fmt.Errorf("start AirPlay H.264 RTP relay: %w", err)
 	}
 	receiverLog := &limitedBuffer{max: 8192}
-	bridgeArgs := BuildBridgeArgs(sessionSDP, publishURL)
+	// Select the GPU encoder once up front and re-encode the bridge video so a
+	// portrait<->landscape rotation (fresh SPS/PPS from UxPlay) cannot crash the
+	// FLV muxer. The bridge preserves the incoming resolution, so the OBS stage
+	// keeps deciding portrait vs landscape from the actual frame dimensions.
+	encoder := video.SelectVideoEncoder(ctx, ffmpegPath, video.EncoderLowLatency)
+	bridgePreset := video.ResolveQualityForUpload("1080", 20, 0)
+	bridgeArgs := BuildBridgeArgs(sessionSDP, publishURL, encoder, bridgePreset)
 	bridge, bridgeLog, untrack, err := startBridgeProcess(ctx, ffmpegPath, bridgeArgs)
 	if err != nil {
 		cancel()
@@ -383,8 +389,8 @@ func BuildReceiverArgs(videoPort, audioPort int, title string) []string {
 	}
 }
 
-func BuildBridgeArgs(sessionSDP, publishURL string) []string {
-	return []string{
+func BuildBridgeArgs(sessionSDP, publishURL string, encoder video.VideoEncoderProfile, preset video.QualityPreset) []string {
+	args := []string{
 		"-hide_banner",
 		"-loglevel", "warning",
 		"-protocol_whitelist", "file,udp,rtp",
@@ -397,11 +403,15 @@ func BuildBridgeArgs(sessionSDP, publishURL string) []string {
 		"-i", sessionSDP,
 		"-map", "0:v:0",
 		"-map", "0:a:0",
-		"-c:v", "copy",
-		// UxPlay Windows RTP output can leave H.264 packets without muxable DTS.
-		// The relay already normalizes the 90 kHz RTP PTS, so preserve that
-		// advancing timeline and copy it to DTS for this no-B-frame stream.
-		"-bsf:v", "setts=pts=PTS:dts=PTS",
+	}
+	// Re-encode the video instead of -c:v copy. UxPlay emits fresh SPS/PPS when
+	// the source rotates between portrait and landscape; a raw copy forwards
+	// those parameter-set updates to the FLV muxer, which then references a
+	// stale PPS, emits "no frame!", and drops the RTMP connection (-10054).
+	// The encoder absorbs the parameter-set change and always writes a coherent
+	// sequence header, so the ingest survives the rotation.
+	args = append(args, encoder.FFmpegArgs(preset, "ultrafast")...)
+	args = append(args,
 		"-c:a", "aac",
 		// Derive audio PTS from decoded sample count so source resets cannot
 		// produce a negative or backward FLV timestamp.
@@ -414,7 +424,8 @@ func BuildBridgeArgs(sessionSDP, publishURL string) []string {
 		"-avoid_negative_ts", "make_zero",
 		"-f", "flv",
 		publishURL,
-	}
+	)
+	return args
 }
 
 func BuildSessionSDP(videoPort, audioPort int) string {

@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"imagepadserver/internal/video"
 )
 
 func TestFeatureEnabledCanBeDisabled(t *testing.T) {
@@ -101,7 +103,9 @@ func TestReplayDecoderRefreshesStopsWhenSessionEnds(t *testing.T) {
 }
 
 func TestBuildBridgeArgsMapsVideoAndAudioToRTMP(t *testing.T) {
-	args := BuildBridgeArgs("session.sdp", "rtmp://127.0.0.1:1935/live/key")
+	encoder := video.CPUVideoEncoder(video.EncoderLowLatency)
+	preset := video.ResolveQualityForUpload("1080", 20, 0)
+	args := BuildBridgeArgs("session.sdp", "rtmp://127.0.0.1:1935/live/key", encoder, preset)
 	joined := strings.Join(args, " ")
 	for _, expected := range []string{
 		"-protocol_whitelist file,udp,rtp",
@@ -113,8 +117,9 @@ func TestBuildBridgeArgsMapsVideoAndAudioToRTMP(t *testing.T) {
 		"-i session.sdp",
 		"-map 0:v:0",
 		"-map 0:a:0",
-		"-c:v copy",
-		"-bsf:v setts=pts=PTS:dts=PTS",
+		"-c:v libx264",
+		"-preset ultrafast",
+		"-tune zerolatency",
 		"-c:a aac",
 		"-af aresample=async=1:first_pts=0,asetpts=N/SR/TB",
 		"-ar 48000",

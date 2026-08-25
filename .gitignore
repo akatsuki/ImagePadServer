@@ -24,3 +24,6 @@ auto.crt
 auto.key
 *.syso
 youtube_cookies.txt
+
+/.hermes/desktop-attachments/
+/.hermes/uxplay_README.md
