@@ -1039,7 +1039,7 @@ func stableOBSVideoFilter(height int) string {
 	if width > 1920 {
 		width = 1920
 	}
-	return fmt.Sprintf("scale=w=%d:h=%d:force_original_aspect_ratio=decrease:force_divisible_by=2:out_range=tv,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p,setparams=range=limited", width, height, width, height)
+	return fmt.Sprintf("scale=w=%d:h=%d:force_original_aspect_ratio=decrease:force_divisible_by=2:out_range=tv,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p,setparams=range=limited:color_primaries=bt709:color_trc=bt709:colorspace=bt709", width, height, width, height)
 }
 
 func (m *Manager) ffmpegArgs(id, recording string, preset video.QualityPreset) []string {

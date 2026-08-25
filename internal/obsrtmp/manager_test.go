@@ -73,7 +73,7 @@ func TestFFmpegArgsUseStableAspectPreservingCanvas(t *testing.T) {
 		"pad=1280:720",
 		"setsar=1",
 		"format=yuv420p",
-		"setparams=range=limited",
+		"setparams=range=limited:color_primaries=bt709:color_trc=bt709:colorspace=bt709",
 	} {
 		if !strings.Contains(filter, want) {
 			t.Fatalf("video filter %q does not contain %q", filter, want)
