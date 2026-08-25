@@ -153,7 +153,7 @@ type l16RTPRelay struct {
 }
 
 func startL16RTPRelay(parent context.Context, inputPort, outputPort int) (*l16RTPRelay, error) {
-	inputConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: inputPort})
+	inputConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: inputPort})
 	if err != nil {
 		return nil, fmt.Errorf("listen L16 RTP input: %w", err)
 	}
