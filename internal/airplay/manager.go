@@ -543,6 +543,8 @@ func (m *Manager) monitor(ctx context.Context, cancel context.CancelFunc, done c
 	var firstErr error
 	backoff := newBridgeRespawnBackoff(bridgeRespawnInitialDelay, bridgeRespawnMaxDelay, bridgeRespawnMaxRetries)
 	lastBridgeStart := time.Now()
+	formatChanges := relay.FormatChanges()
+	restartForFormatChange := false
 	var debugTicker *time.Ticker
 	var debugTick <-chan time.Time
 	lastDebugLog := ""
@@ -575,6 +577,15 @@ func (m *Manager) monitor(ctx context.Context, cancel context.CancelFunc, done c
 			currentUntrack()
 			m.finishMonitor(done, tempDir, stoppedByRequest, firstName, firstErr, bridgeErr, receiverErr, currentBridgeLog, receiverLog)
 			return
+		case <-formatChanges:
+			// The video format changed (SPS/PPS or SSRC/sequence). Hardware
+			// encoders cannot change their output resolution mid-stream, so
+			// restart the bridge to re-open the encoder at the new size. The
+			// relay re-sends cached SPS/PPS/IDR once the new bridge is up.
+			if currentBridge != nil && currentBridge.Process != nil {
+				restartForFormatChange = true
+				_ = currentBridge.Process.Kill()
+			}
 		case bridgeErr := <-bridgeDone:
 			if ctx.Err() != nil {
 				stoppedByRequest = true
@@ -601,7 +612,12 @@ func (m *Manager) monitor(ctx context.Context, cancel context.CancelFunc, done c
 			// flowing, a bridge exit is a real failure: back off and, after
 			// repeated failures, surface it instead of crash-looping forever.
 			respawnDelay := time.Duration(0)
-			if relay.HasReceivedVideo() {
+			if restartForFormatChange {
+				// An intentional restart after a format change is not a failure:
+				// reset the retry budget and respawn immediately.
+				backoff.reset()
+				restartForFormatChange = false
+			} else if relay.HasReceivedVideo() {
 				delay, exhausted := backoff.nextDelay()
 				if exhausted {
 					firstName = "FFmpeg bridge"

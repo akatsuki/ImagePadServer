@@ -26,6 +26,7 @@ type h264RTPRelay struct {
 	replayGeneration atomic.Uint64
 	onPacket         func()
 	videoStarted     atomic.Bool
+	formatChange     chan struct{}
 }
 
 func startH264RTPRelay(ctx context.Context, inputPort, outputPort int, onPacket ...func()) (*h264RTPRelay, error) {
@@ -42,9 +43,10 @@ func startH264RTPRelay(ctx context.Context, inputPort, outputPort int, onPacket 
 		return nil, err
 	}
 	relay := &h264RTPRelay{
-		conn:   conn,
-		output: &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: outputPort},
-		done:   make(chan struct{}),
+		conn:         conn,
+		output:       &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: outputPort},
+		done:         make(chan struct{}),
+		formatChange: make(chan struct{}, 1),
 	}
 	if len(onPacket) > 0 {
 		relay.onPacket = onPacket[0]
@@ -81,6 +83,15 @@ func (r *h264RTPRelay) ReplayParameterSets() {
 // mid-stream failure from the probe phase before an iPhone connects.
 func (r *h264RTPRelay) HasReceivedVideo() bool {
 	return r.videoStarted.Load()
+}
+
+// FormatChanges returns a channel that receives a value whenever the relay
+// observes a video format change (SPS/PPS change) or an input discontinuity
+// (SSRC/sequence change). The manager restarts the FFmpeg bridge on this
+// signal because hardware encoders cannot change their output resolution
+// mid-stream.
+func (r *h264RTPRelay) FormatChanges() <-chan struct{} {
+	return r.formatChange
 }
 
 func (r *h264RTPRelay) run() {
@@ -138,6 +149,12 @@ func (r *h264RTPRelay) run() {
 		previousDiscontinuities := state.inputDiscontinuities
 		previousFormatChanges := state.formatChanges
 		packets, replayed := state.forwardWithReplay(buffer[:n], replay)
+		if state.inputDiscontinuities != previousDiscontinuities || state.formatChanges != previousFormatChanges {
+			select {
+			case r.formatChange <- struct{}{}:
+			default:
+			}
+		}
 		if debug && state.inputDiscontinuities != previousDiscontinuities {
 			log.Printf("AirPlay H264 RTP input discontinuity total=%d expected_seq=%d received_seq=%d; dropping until a complete IDR", state.inputDiscontinuities, state.lastExpectedSequence, state.lastReceivedSequence)
 		}

@@ -510,3 +510,75 @@ func testRTPPacket(sequence uint16, timestamp uint32, payload []byte) []byte {
 	copy(packet[12:], payload)
 	return packet
 }
+func TestH264RTPRelaySignalsFormatChange(t *testing.T) {
+	outputConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer outputConn.Close()
+	inputReservation, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputPort := inputReservation.LocalAddr().(*net.UDPAddr).Port
+	if err := inputReservation.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	relay, err := startH264RTPRelay(ctx, inputPort, outputConn.LocalAddr().(*net.UDPAddr).Port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer relay.Close()
+	sender, err := net.DialUDP("udp4", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: inputPort})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sender.Close()
+
+	send := func(packet []byte) {
+		if _, err := sender.Write(packet); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitSignal := func() {
+		select {
+		case <-relay.FormatChanges():
+		case <-time.After(3 * time.Second):
+			t.Fatal("expected a format-change signal")
+		}
+	}
+	assertNoSignal := func() {
+		select {
+		case <-relay.FormatChanges():
+			t.Fatal("unexpected format-change signal")
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+
+	// Phase 1: establish a stream on SSRC A. No format change has happened yet.
+	send(testRTPPacket(1, 100, []byte{7, 1}))       // SPS
+	send(testRTPPacket(2, 100, []byte{8, 1}))       // PPS
+	send(testMarkedRTPPacket(3, 100, []byte{5, 3})) // IDR
+	assertNoSignal()
+
+	// Phase 2: an SSRC switch is an input discontinuity and must signal.
+	newSSRC := uint32(0x87654321)
+	withSSRC := func(packet []byte) []byte {
+		binary.BigEndian.PutUint32(packet[8:12], newSSRC)
+		return packet
+	}
+	send(withSSRC(testRTPPacket(1, 100, []byte{7, 1})))
+	send(withSSRC(testRTPPacket(2, 100, []byte{8, 1})))
+	send(withSSRC(testMarkedRTPPacket(3, 100, []byte{5, 3})))
+	waitSignal()
+
+	// Phase 3: a parameter-set change on the same SSRC (the real rotation:
+	// the receiver emits fresh SPS/PPS without changing SSRC) must signal.
+	send(withSSRC(testRTPPacket(4, 200, []byte{7, 2})))
+	send(withSSRC(testRTPPacket(5, 200, []byte{8, 2})))
+	send(withSSRC(testMarkedRTPPacket(6, 200, []byte{5, 4})))
+	waitSignal()
+}
