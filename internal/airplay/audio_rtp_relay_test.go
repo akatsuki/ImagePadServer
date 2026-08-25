@@ -94,6 +94,9 @@ func TestL16RTPRelayDropsUnexpectedPayloadType(t *testing.T) {
 	if input != 0 {
 		t.Fatalf("accepted unexpected payload type: %d packets", input)
 	}
+	if pt, ok := relay.UnsupportedCodecPT(); !ok || pt != l16PayloadType+1 {
+		t.Fatalf("unsupported codec = %d, ok=%t; want %d, true", pt, ok, l16PayloadType+1)
+	}
 }
 
 func readL16Packet(t *testing.T, conn *net.UDPConn) []byte {
@@ -137,4 +140,40 @@ func TestL16RTPRelayLeavesOutputPairAvailable(t *testing.T) {
 		t.Fatalf("bind output RTCP: %v", err)
 	}
 	defer rtcp.Close()
+}
+
+func TestL16RTPRelayStateReclocksOutputToInputTimestamps(t *testing.T) {
+	state := newL16RTPRelayState()
+	// Two full packets whose RTP timestamps advance by 1000 (not 352). The
+	// relay must preserve the input delta instead of synthesizing a fixed
+	// per-packet step, so the output tracks the upstream audio clock and does
+	// not drift from the video relay over long sessions.
+	full := bytes.Repeat([]byte{0x12, 0x34, 0x56, 0x78}, l16FramesPerPacket)
+	state.ingest(1000, full, l16MaxQueueBytes)
+	first, firstSilence := state.emit()
+	state.ingest(2000, full, l16MaxQueueBytes)
+	second, secondSilence := state.emit()
+	if firstSilence || secondSilence {
+		t.Fatal("real packets emitted as silence")
+	}
+	if got := binary.BigEndian.Uint32(first[4:8]); got != 0 {
+		t.Fatalf("first timestamp = %d; want 0", got)
+	}
+	if got := binary.BigEndian.Uint32(second[4:8]); got != 1000 {
+		t.Fatalf("second timestamp = %d; want 1000 (input delta preserved)", got)
+	}
+}
+
+func TestAudioCodecLabel(t *testing.T) {
+	if got := audioCodecLabel(nil); got != "" {
+		t.Fatalf("nil label = %q, want empty", got)
+	}
+	r := &l16RTPRelay{}
+	if got := audioCodecLabel(r); got != "l16" {
+		t.Fatalf("default label = %q, want l16", got)
+	}
+	r.unsupportedPayloadType.Store(l16PayloadType + 1)
+	if got := audioCodecLabel(r); got != "unsupported(pt=97)" {
+		t.Fatalf("unsupported label = %q, want unsupported(pt=97)", got)
+	}
 }

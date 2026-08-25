@@ -50,13 +50,15 @@ const (
 // and silence fill. It is decoupled from UDP I/O so the drift and alignment
 // behaviour can be unit-tested deterministically.
 //
-// The output timestamp is normalized to a zero origin (consistent with the
-// normalized video timeline) and advances by l16FramesPerPacket per packet.
-// Drift compensation is achieved in the relay run loop by emitting packets in
-// response to input arrival (input-clock driven) rather than on a fixed
-// wall-clock ticker, so the output rate tracks the source clock.
+// The output timestamp is re-clocked to the input RTP timestamps (the same
+// zero-based domain as the normalized video timeline) rather than advancing by
+// a fixed per-packet step. This locks the audio output to the upstream RTP
+// clock, which AirPlay derives from the same wall clock as the video, instead
+// of UxPlay's delivery rate (which drifts ~0.7%/s and desynchronizes audio
+// from video over long sessions).
 type l16RTPRelayState struct {
 	queue       []byte
+	queueTS     uint32
 	sequence    uint16
 	outputTS    uint32
 	baseTS      uint32
@@ -70,23 +72,24 @@ func newL16RTPRelayState() *l16RTPRelayState {
 	return &l16RTPRelayState{wasSilence: true}
 }
 
-// ingest appends an input L16 payload to the queue, recording the input RTP
-// timestamp on first use. The payload is truncated to a whole-frame boundary
-// and the queue is trimmed to maxQueueBytes on a frame boundary, so a partial
-// stereo sample can never be split across output packets.
+// ingest appends an input L16 payload to the queue, tracking the input RTP
+// timestamp of the queue head so emit can re-clock the output to the upstream
+// clock. The payload is truncated to a whole-frame boundary and the queue is
+// trimmed to maxQueueBytes on a frame boundary, so a partial stereo sample can
+// never be split across output packets.
 func (s *l16RTPRelayState) ingest(timestamp uint32, payload []byte, maxQueueBytes int) {
-	if !s.initialized {
-		s.initialized = true
-		s.baseTS = timestamp
-	}
 	if rem := len(payload) % l16FrameBytes; rem != 0 {
 		payload = payload[:len(payload)-rem]
+	}
+	if len(s.queue) == 0 {
+		s.queueTS = timestamp
 	}
 	s.queue = append(s.queue, payload...)
 	if maxQueueBytes > 0 && len(s.queue) > maxQueueBytes {
 		drop := len(s.queue) - maxQueueBytes
 		drop -= drop % l16FrameBytes
 		s.queue = s.queue[drop:]
+		s.queueTS += uint32(drop / l16FrameBytes)
 	}
 }
 
@@ -96,17 +99,25 @@ func (s *l16RTPRelayState) hasFullPacket() bool {
 }
 
 // emit returns the next output RTP packet, consuming a full packet from the
-// queue or emitting silence when the queue has underflowed. It advances the
-// sequence and normalized output timestamp and sets the marker bit at
+// queue or emitting silence when the queue has underflowed. For real audio it
+// re-clocks the output timestamp to the input RTP timestamp of the queue head;
+// silence advances the timestamp by one packet. It sets the marker bit at
 // talk-spurt boundaries (silence-to-audio transitions).
 func (s *l16RTPRelayState) emit() (packet []byte, isSilence bool) {
 	isSilence = len(s.queue) < l16PacketBytes
 	var payload []byte
 	if isSilence {
 		payload = make([]byte, l16PacketBytes)
+		s.outputTS += l16FramesPerPacket
 	} else {
 		payload = s.queue[:l16PacketBytes]
 		s.queue = s.queue[l16PacketBytes:]
+		if !s.initialized {
+			s.initialized = true
+			s.baseTS = s.queueTS
+		}
+		s.outputTS = s.queueTS - s.baseTS
+		s.queueTS += l16FramesPerPacket
 	}
 	packet = make([]byte, 12+len(payload))
 	packet[0] = 0x80
@@ -119,7 +130,6 @@ func (s *l16RTPRelayState) emit() (packet []byte, isSilence bool) {
 	binary.BigEndian.PutUint32(packet[8:12], l16SSRC)
 	copy(packet[12:], payload)
 	s.sequence++
-	s.outputTS += l16FramesPerPacket
 	s.wasSilence = isSilence
 	return packet, isSilence
 }
@@ -134,6 +144,12 @@ type l16RTPRelay struct {
 	inputPackets   atomic.Uint64
 	outputPackets  atomic.Uint64
 	silencePackets atomic.Uint64
+
+	// unsupportedPayloadType records the first non-L16 payload type observed
+	// on the audio stream so the manager can surface it in status instead of
+	// silently mis-transcoding (fail-closed codec detection).
+	unsupportedPayloadType atomic.Uint32
+	unsupportedPackets     atomic.Uint64
 }
 
 func startL16RTPRelay(parent context.Context, inputPort, outputPort int) (*l16RTPRelay, error) {
@@ -182,6 +198,24 @@ func (r *l16RTPRelay) Stats() (input, output, silence uint64) {
 	return r.inputPackets.Load(), r.outputPackets.Load(), r.silencePackets.Load()
 }
 
+// noteUnsupportedCodec records a dropped non-L16 payload and logs a single
+// warning the first time it is observed. The relay stays fail-closed: the
+// packet is never re-packetized as L16, so a codec mismatch cannot corrupt
+// the downstream stream.
+func (r *l16RTPRelay) noteUnsupportedCodec(pt uint32) {
+	r.unsupportedPackets.Add(1)
+	if r.unsupportedPayloadType.CompareAndSwap(0, pt) {
+		log.Printf("AirPlay L16 RTP relay: unsupported audio payload type %d (expected %d); dropping packets (fail-closed)", pt, l16PayloadType)
+	}
+}
+
+// UnsupportedCodecPT reports the first non-L16 payload type observed on the
+// input stream, or (0, false) if only L16 has been seen.
+func (r *l16RTPRelay) UnsupportedCodecPT() (uint32, bool) {
+	pt := r.unsupportedPayloadType.Load()
+	return pt, pt != 0
+}
+
 func (r *l16RTPRelay) logStats(ctx context.Context) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
@@ -208,7 +242,11 @@ func (r *l16RTPRelay) readLoop(ctx context.Context, packets chan<- l16AudioInput
 		if err != nil {
 			return
 		}
-		if n < 12 || buf[0]>>6 != 2 || buf[1]&0x7f != l16PayloadType {
+		if n < 12 || buf[0]>>6 != 2 {
+			continue
+		}
+		if pt := buf[1] & 0x7f; pt != l16PayloadType {
+			r.noteUnsupportedCodec(uint32(pt))
 			continue
 		}
 		cc := int(buf[0] & 0x0f)
@@ -264,9 +302,9 @@ func (r *l16RTPRelay) run(ctx context.Context) {
 			}
 			state.ingest(p.timestamp, p.payload, maxQueue)
 			if r.videoStarted.Load() {
-				// Input-clock driven emission: drain whatever full packets
-				// the source has produced so the output rate follows the
-				// input clock rather than a fixed ticker.
+				// Input-driven emission: drain whatever full packets the
+				// source has produced. Timestamps are re-clocked in emit to
+				// the input RTP clock, not the arrival rate.
 				for state.hasFullPacket() {
 					packet, isSilence := state.emit()
 					if !r.writePacket(packet, isSilence) {

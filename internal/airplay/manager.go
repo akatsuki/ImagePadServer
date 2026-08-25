@@ -36,18 +36,20 @@ type Status struct {
 	ReceiverRunning bool   `json:"receiverRunning"`
 	BridgeRunning   bool   `json:"bridgeRunning"`
 	ReceiverPath    string `json:"receiverPath,omitempty"`
+	AudioCodec      string `json:"audioCodec,omitempty"`
 	Message         string `json:"message,omitempty"`
 }
 
 type Manager struct {
 	// opMu serializes Start and Stop so a concurrent lifecycle request cannot leak a child process.
-	opMu     sync.Mutex
-	mu       sync.Mutex
-	running  bool
-	cancel   context.CancelFunc
-	done     chan struct{}
-	status   Status
-	onChange func()
+	opMu       sync.Mutex
+	mu         sync.Mutex
+	running    bool
+	cancel     context.CancelFunc
+	done       chan struct{}
+	status     Status
+	audioRelay *l16RTPRelay
+	onChange   func()
 }
 
 func New(onChange func()) *Manager {
@@ -112,13 +114,28 @@ func resolveExecutable(raw string) (string, error) {
 	return path, nil
 }
 
+// audioCodecLabel reports the negotiated audio codec for status. It stays
+// "l16" while the relay sees only L16; a non-L16 payload type is surfaced as
+// "unsupported(pt=N)" so a codec mismatch is visible instead of silent.
+func audioCodecLabel(relay *l16RTPRelay) string {
+	if relay == nil {
+		return ""
+	}
+	if pt, ok := relay.UnsupportedCodecPT(); ok {
+		return fmt.Sprintf("unsupported(pt=%d)", pt)
+	}
+	return "l16"
+}
+
 func (m *Manager) Status() Status {
 	enabled := FeatureEnabled()
 	m.mu.Lock()
 	status := m.status
 	running := m.running
+	audioRelay := m.audioRelay
 	m.mu.Unlock()
 	status.Enabled = enabled
+	status.AudioCodec = audioCodecLabel(audioRelay)
 	if running {
 		status.Available = true
 		return status
@@ -253,6 +270,7 @@ func (m *Manager) Start(parent context.Context, ffmpegPath, publishURL string) e
 	m.running = true
 	m.cancel = cancel
 	m.done = done
+	m.audioRelay = audioRelay
 	m.status = Status{
 		Enabled:         true,
 		Available:       true,
@@ -608,6 +626,7 @@ func (m *Manager) finishMonitor(done chan struct{}, tempDir string, stoppedByReq
 	m.running = false
 	m.cancel = nil
 	m.done = nil
+	m.audioRelay = nil
 	m.status.Running = false
 	m.status.ReceiverRunning = false
 	m.status.BridgeRunning = false
