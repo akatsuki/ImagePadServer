@@ -117,6 +117,7 @@ func TestBuildBridgeArgsMapsVideoAndAudioToRTMP(t *testing.T) {
 		"-bsf:v setts=pts=PTS:dts=PTS",
 		"-c:a aac",
 		"-af aresample=async=1:first_pts=0,asetpts=N/SR/TB",
+		"-ar 48000",
 		"-avoid_negative_ts make_zero",
 		"-f flv",
 	} {

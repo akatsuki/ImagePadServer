@@ -407,7 +407,9 @@ func BuildBridgeArgs(sessionSDP, publishURL string) []string {
 		// produce a negative or backward FLV timestamp.
 		"-af", "aresample=async=1:first_pts=0,asetpts=N/SR/TB",
 		"-b:a", "160k",
-		"-ar", "44100",
+		// Match OBS's native 48 kHz so the ingest does not resample the AAC a
+		// second time; the aresample filter above converts the 44.1 kHz L16.
+		"-ar", "48000",
 		"-ac", "2",
 		"-avoid_negative_ts", "make_zero",
 		"-f", "flv",
