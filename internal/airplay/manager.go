@@ -488,7 +488,12 @@ func startBridgeProcess(ctx context.Context, ffmpegPath string, args []string) (
 	if err := bridge.Start(); err != nil {
 		return nil, nil, nil, err
 	}
-	return bridge, output, video.TrackStartedFFmpeg(bridge), nil
+	untrack, trackErr := video.TrackStartedFFmpeg(bridge)
+	if trackErr != nil {
+		waitErr := bridge.Wait()
+		return nil, output, nil, errors.Join(trackErr, waitErr)
+	}
+	return bridge, output, untrack, nil
 }
 
 func waitForProcess(cmd *exec.Cmd, result chan<- error) {

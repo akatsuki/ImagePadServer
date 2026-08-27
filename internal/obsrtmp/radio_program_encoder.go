@@ -108,7 +108,13 @@ func newFFmpegProgramEncoder(ctx context.Context, outDir, ffmpeg string, preset 
 		cancel()
 		return nil, err
 	}
-	untrack := video.TrackStartedFFmpeg(cmd)
+	untrack, trackErr := video.TrackStartedFFmpeg(cmd)
+	if trackErr != nil {
+		_ = audioListener.Close()
+		cancel()
+		waitErr := cmd.Wait()
+		return nil, errors.Join(trackErr, waitErr)
+	}
 	program := &ffmpegProgramEncoder{
 		cmd:           cmd,
 		cancel:        cancel,

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -914,6 +915,18 @@ func (m *Manager) runOneWithContract(parent context.Context, ffmpeg string, cont
 		cancel()
 		return fmt.Errorf("OBS RTMP受信の開始に失敗しました: %w", err)
 	}
+	untrack, trackErr := video.TrackStartedFFmpeg(cmd)
+	if trackErr != nil {
+		cancel()
+		if stdin != nil {
+			_ = stdin.Close()
+		}
+		waitErr := cmd.Wait()
+		if debugLog != nil {
+			_ = debugLog.Close()
+		}
+		return errors.Join(trackErr, waitErr)
+	}
 	debugDone := make(chan struct{})
 	if debugLog != nil {
 		go func() {
@@ -927,7 +940,6 @@ func (m *Manager) runOneWithContract(parent context.Context, ffmpeg string, cont
 	} else {
 		close(debugDone)
 	}
-	untrack := video.TrackStartedFFmpeg(cmd)
 	errCh := make(chan error, 1)
 	waitDone := make(chan struct{})
 	go func() {

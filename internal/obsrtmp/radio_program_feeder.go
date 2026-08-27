@@ -20,7 +20,7 @@ type ProgramTrackFeeder struct {
 	height       int
 	ensureFFmpeg func() (string, error)
 	command      func(ctx context.Context, name string, args ...string) *exec.Cmd
-	started      func(cmd *exec.Cmd) func()
+	started      func(cmd *exec.Cmd) (func(), error)
 }
 
 func NewProgramTrackFeeder(outDir string, width, height int) *ProgramTrackFeeder {
@@ -77,27 +77,42 @@ func (f *ProgramTrackFeeder) Run(ctx context.Context, mediaPath string, startSec
 	if err := videoCmd.Start(); err != nil {
 		return err
 	}
+	untrackVideo, trackErr := f.started(videoCmd)
+	if trackErr != nil {
+		cancelVideo()
+		waitErr := videoCmd.Wait()
+		return errors.Join(trackErr, waitErr)
+	}
 	if err := videoPipe.Close(); err != nil {
 		cancelVideo()
-		_ = videoCmd.Wait()
-		return err
+		waitErr := videoCmd.Wait()
+		untrackVideo()
+		return errors.Join(err, waitErr)
 	}
-	untrackVideo := f.started(videoCmd)
 	if err := audioCmd.Start(); err != nil {
 		cancelVideo()
-		_ = videoCmd.Wait()
+		waitErr := videoCmd.Wait()
 		untrackVideo()
-		return err
+		return errors.Join(err, waitErr)
+	}
+	untrackAudio, trackErr := f.started(audioCmd)
+	if trackErr != nil {
+		cancelVideo()
+		cancelAudio()
+		videoWaitErr := videoCmd.Wait()
+		audioWaitErr := audioCmd.Wait()
+		untrackVideo()
+		return errors.Join(trackErr, videoWaitErr, audioWaitErr)
 	}
 	if err := audioPipe.Close(); err != nil {
 		cancelVideo()
 		cancelAudio()
-		_ = videoCmd.Wait()
-		_ = audioCmd.Wait()
+		videoWaitErr := videoCmd.Wait()
+		audioWaitErr := audioCmd.Wait()
 		untrackVideo()
-		return err
+		untrackAudio()
+		return errors.Join(err, videoWaitErr, audioWaitErr)
 	}
-	untrackAudio := f.started(audioCmd)
 	decodersWaited := false
 	videoWait := make(chan error, 1)
 	audioWait := make(chan error, 1)

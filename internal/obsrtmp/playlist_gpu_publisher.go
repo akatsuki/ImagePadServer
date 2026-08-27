@@ -3,6 +3,7 @@ package obsrtmp
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -92,6 +93,12 @@ func (m *RadioManager) startFFmpegPlaylistGPUPublisher(ctx context.Context, publ
 		cancelPublisher()
 		return nil, err
 	}
+	untrack, trackErr := video.TrackStartedFFmpeg(cmd)
+	if trackErr != nil {
+		cancelPublisher()
+		waitErr := cmd.Wait()
+		return nil, errors.Join(trackErr, waitErr)
+	}
 	_ = recordPlaylistGPUTrace(tracePath, "gpu_publisher_started", map[string]any{
 		"pid": cmd.Process.Pid,
 	})
@@ -99,7 +106,6 @@ func (m *RadioManager) startFFmpegPlaylistGPUPublisher(ctx context.Context, publ
 		message := fmt.Sprintf("started pid=%d\npublisherProfile=%s\npublishURL=%s\nargs=%q\n", cmd.Process.Pid, RadioPublisherProfilePlaylistGPUEvaluation, sanitizeRadioErrorMessage(publishURL), sanitizeRadioArgs(args))
 		_ = os.WriteFile(path, []byte(message), 0600)
 	}
-	untrack := video.TrackStartedFFmpeg(cmd)
 	exit := make(chan error, 1)
 	go func() {
 		defer untrack()

@@ -6,8 +6,11 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+	"os"
+	"os/exec"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -204,6 +207,89 @@ func TestStartPlaylistGPUMuxBridgeRequiresPublisherSink(t *testing.T) {
 	if _, err := StartPlaylistGPUMuxBridge(context.Background(), "ffmpeg", nil, 640, 360, 30, 48_000, 2, 0); err == nil {
 		t.Fatal("GPU mux bridge must fail closed without a publisher sink")
 	}
+}
+
+func TestStartPlaylistGPUMuxProcessTracksOwnedFFmpegUntilWait(t *testing.T) {
+	originalCommand := playlistGPUMuxCommand
+	originalDial := playlistGPUMuxDial
+	originalTrack := playlistGPUMuxTrackStartedFFmpeg
+	t.Cleanup(func() {
+		playlistGPUMuxCommand = originalCommand
+		playlistGPUMuxDial = originalDial
+		playlistGPUMuxTrackStartedFFmpeg = originalTrack
+	})
+
+	playlistGPUMuxCommand = func(_ string, _ ...string) *exec.Cmd {
+		cmd := exec.Command(os.Args[0], "-test.run=TestRadioFallbackFeederHelperProcess", "--")
+		cmd.Env = append(os.Environ(), "IMAGEPAD_RADIO_FALLBACK_HELPER=1", "IMAGEPAD_RADIO_FALLBACK_HELPER_HANG=1")
+		return cmd
+	}
+
+	var peerMu sync.Mutex
+	var peers []net.Conn
+	var dialed atomic.Int32
+	playlistGPUMuxDial = func(context.Context, string) (net.Conn, error) {
+		conn, peer := net.Pipe()
+		peerMu.Lock()
+		peers = append(peers, peer)
+		peerMu.Unlock()
+		dialed.Add(1)
+		return conn, nil
+	}
+
+	var tracked atomic.Int32
+	var untracked atomic.Int32
+	playlistGPUMuxTrackStartedFFmpeg = func(*exec.Cmd) (func(), error) {
+		tracked.Add(1)
+		var called atomic.Bool
+		return func() {
+			if called.CompareAndSwap(false, true) {
+				untracked.Add(1)
+			}
+		}, nil
+	}
+
+	process, err := StartPlaylistGPUMuxProcess(
+		"ffmpeg.exe",
+		10,
+		20,
+		30,
+		48_000,
+		2,
+		0,
+	)
+	if err != nil {
+		t.Fatalf("StartPlaylistGPUMuxProcess: %v", err)
+	}
+
+	waitForPlaylistGPUMuxCondition(t, time.Second, func() bool {
+		return tracked.Load() == 1 && dialed.Load() == 2
+	})
+	if err := process.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	_ = process.Wait()
+	waitForPlaylistGPUMuxCondition(t, time.Second, func() bool {
+		return untracked.Load() == 1
+	})
+
+	peerMu.Lock()
+	defer peerMu.Unlock()
+	for _, peer := range peers {
+		_ = peer.Close()
+	}
+}
+
+func waitForPlaylistGPUMuxCondition(t *testing.T, timeout time.Duration, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("condition was not satisfied before timeout")
 }
 
 func containsSequence(haystack, needle []string) bool {

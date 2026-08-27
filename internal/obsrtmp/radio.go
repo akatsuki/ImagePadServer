@@ -1484,11 +1484,16 @@ func (m *RadioManager) startFFmpegPublisher(ctx context.Context, publishURL stri
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
+	untrack, trackErr := video.TrackStartedFFmpeg(cmd)
+	if trackErr != nil {
+		_ = stdin.Close()
+		waitErr := cmd.Wait()
+		return nil, errors.Join(trackErr, waitErr)
+	}
 	if path := strings.TrimSpace(os.Getenv("IMAGEPAD_FFMPEG_PUBLISHER_DEBUG")); path != "" {
 		message := fmt.Sprintf("started pid=%d\npublishURL=%s\nargs=%q\n", cmd.Process.Pid, sanitizeRadioErrorMessage(publishURL), sanitizeRadioArgs(video.RadioPublisherArgs(publishURL)))
 		_ = os.WriteFile(path, []byte(message), 0600)
 	}
-	untrack := video.TrackStartedFFmpeg(cmd)
 	exit := make(chan error, 1)
 	go func() {
 		defer untrack()
@@ -1541,7 +1546,11 @@ func (m *RadioManager) runFFmpegFeeder(ctx context.Context, mediaPath string, st
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	untrack := video.TrackStartedFFmpeg(cmd)
+	untrack, trackErr := video.TrackStartedFFmpeg(cmd)
+	if trackErr != nil {
+		waitErr := cmd.Wait()
+		return errors.Join(trackErr, waitErr)
+	}
 	defer untrack()
 	_, copyErr := io.Copy(sink, stdout)
 	waitErr := cmd.Wait()
