@@ -32,7 +32,10 @@ jobs:
           test "$version" = "$GITHUB_REF_NAME"
           test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" = true
       - name: Install media test tools
-        run: brew install ffmpeg webp
+        run: |
+          brew install ffmpeg webp
+          echo "IMAGEPAD_FFMPEG=$(command -v ffmpeg)" >> "$GITHUB_ENV"
+          echo "IMAGEPAD_FFPROBE=$(command -v ffprobe)" >> "$GITHUB_ENV"
       - run: go test ./...
       - name: Check archive gate regressions
         run: python3 -m unittest discover -s scripts/tests -p 'test_*airplay*archive.py'
