@@ -17,6 +17,8 @@ import (
 	"imagepadserver/internal/settings"
 )
 
+var protectStartedFFmpegWithJob = assignStartedFFmpegToKillOnCloseJob
+
 type trackedProcess struct {
 	PID       int       `json:"pid"`
 	Path      string    `json:"path"`
@@ -28,28 +30,84 @@ type trackedProcess struct {
 
 var processRegistryMu sync.Mutex
 
-func TrackStartedFFmpeg(cmd *exec.Cmd) func() {
-	if cmd == nil || cmd.Process == nil {
-		return func() {}
+var noopFFmpegUntrack = func() {}
+
+// TrackStartedFFmpeg protects and records an FFmpeg process that this app has
+// already started. Job protection is established before the persistent ledger
+// is updated so a protection failure cannot leave an unprotected tracked
+// process running. The caller remains the sole owner of cmd.Wait.
+func TrackStartedFFmpeg(cmd *exec.Cmd) (func(), error) {
+	if cmd == nil {
+		return noopFFmpegUntrack, errors.New("track started FFmpeg: nil command")
 	}
 	if !isFFmpegPath(cmd.Path) {
-		return func() {}
+		return noopFFmpegUntrack, nil
 	}
+	if cmd.Process == nil {
+		return noopFFmpegUntrack, errors.New("track started FFmpeg: process has not been started")
+	}
+
+	pid := cmd.Process.Pid
+	releaseJob, err := protectStartedFFmpegWithJob(cmd.Process)
+	if err != nil {
+		killErr := killStartedFFmpegTree(cmd.Process)
+		if killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
+			return noopFFmpegUntrack, fmt.Errorf("protect started FFmpeg pid %d with kill-on-close job: %w (kill failed: %v)", pid, err, killErr)
+		}
+		return noopFFmpegUntrack, fmt.Errorf("protect started FFmpeg pid %d with kill-on-close job: %w", pid, err)
+	}
+
 	entry := trackedProcess{
-		PID:       cmd.Process.Pid,
+		PID:       pid,
 		Path:      cmd.Path,
 		Args:      append([]string(nil), cmd.Args...),
 		Dir:       cmd.Dir,
 		Marker:    settings.Dir(),
 		StartedAt: time.Now(),
 	}
-	_ = addTrackedProcess(entry)
+	if err := addTrackedProcess(entry); err != nil {
+		killErr := killStartedFFmpegTree(cmd.Process)
+		releaseJob()
+		if killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
+			return noopFFmpegUntrack, fmt.Errorf("record started FFmpeg pid %d: %w (kill failed: %v)", pid, err, killErr)
+		}
+		return noopFFmpegUntrack, fmt.Errorf("record started FFmpeg pid %d: %w", pid, err)
+	}
+
 	var once sync.Once
 	return func() {
 		once.Do(func() {
+			releaseJob()
 			_ = removeTrackedProcess(entry.PID)
 		})
+	}, nil
+}
+
+// configureFFmpegContextCancellation replaces os/exec's Windows default
+// cancellation (which only terminates the directly started process) with a
+// process-tree termination. FFmpeg may be a .cmd/.bat wrapper; killing only
+// that wrapper can leave ping.exe, ffmpeg.exe, or another helper holding the
+// conversion directory open after the caller has already returned.
+func configureFFmpegContextCancellation(cmd *exec.Cmd) {
+	if cmd == nil || runtime.GOOS != "windows" {
+		return
 	}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return os.ErrProcessDone
+		}
+		return killStartedFFmpegTree(cmd.Process)
+	}
+}
+
+func killStartedFFmpegTree(process *os.Process) error {
+	if process == nil {
+		return errors.New("kill FFmpeg tree: nil process")
+	}
+	if runtime.GOOS == "windows" {
+		return killProcessTree(process.Pid)
+	}
+	return process.Kill()
 }
 
 func CleanupTrackedFFmpeg() (int, error) {
@@ -104,7 +162,11 @@ func CombinedOutputTrackedFFmpeg(cmd *exec.Cmd) ([]byte, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	untrack := TrackStartedFFmpeg(cmd)
+	untrack, trackErr := TrackStartedFFmpeg(cmd)
+	if trackErr != nil {
+		waitErr := cmd.Wait()
+		return output.Bytes(), errors.Join(trackErr, waitErr)
+	}
 	err := cmd.Wait()
 	untrack()
 	return output.Bytes(), err
@@ -124,7 +186,11 @@ func SeparateOutputTrackedFFmpeg(cmd *exec.Cmd) (stdout, stderr []byte, err erro
 	if err := cmd.Start(); err != nil {
 		return nil, nil, err
 	}
-	untrack := TrackStartedFFmpeg(cmd)
+	untrack, trackErr := TrackStartedFFmpeg(cmd)
+	if trackErr != nil {
+		waitErr := cmd.Wait()
+		return outBuf.Bytes(), errBuf.Bytes(), errors.Join(trackErr, waitErr)
+	}
 	runErr := cmd.Wait()
 	untrack()
 	return outBuf.Bytes(), errBuf.Bytes(), runErr
@@ -202,8 +268,13 @@ func processRegistryPath() string {
 }
 
 func isFFmpegPath(path string) bool {
-	name := strings.ToLower(filepath.Base(path))
-	return name == "ffmpeg" || name == "ffmpeg.exe"
+	name := strings.ToLower(commandLineExecutableBase(path))
+	switch name {
+	case "ffmpeg", "ffmpeg.exe", "ffmpeg.cmd", "ffmpeg.bat":
+		return true
+	default:
+		return false
+	}
 }
 
 func trackedProcessMatches(entry trackedProcess) (bool, error) {

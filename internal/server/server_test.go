@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/png"
@@ -20,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"imagepadserver/internal/airplaycontract"
 	"imagepadserver/internal/config"
 	"imagepadserver/internal/library"
 	"imagepadserver/internal/obsrtmp"
@@ -769,6 +771,141 @@ func TestHistoryStateUsesAbsolutePublicAddress(t *testing.T) {
 	}
 }
 
+func TestHistoryStateNestsAirPlayPublisherRecordingsWithoutDuplicatingHistory(t *testing.T) {
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(t.TempDir(), "representative.mp4")
+	if err := os.WriteFile(src, []byte("video"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.AddHistory(src, library.CurrentImage{Kind: "video", SourceKind: "obs", PublicName: "airplay.mp4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := airplaycontract.NewPublisherArtifacts(store.Dir(), item.ID, 1)
+	second := airplaycontract.NewPublisherArtifacts(store.Dir(), item.ID, 2)
+	if err := os.MkdirAll(filepath.Dir(second.Recording), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(second.Recording, []byte("verified-generation"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+	srv.obsRecordingOutcomes = func(sessionID string) []airplaycontract.RecordingOutcome {
+		if sessionID != item.ID {
+			return nil
+		}
+		return []airplaycontract.RecordingOutcome{
+			{Artifacts: first, Closed: true, HasRealVideo: true, Reason: "probe-failed"},
+			{Artifacts: second, Closed: true, ProbeOK: true, HasRealVideo: true, DurationNS: uint64(3 * time.Second), Reason: "verified"},
+		}
+	}
+
+	history := srv.historyState()
+	if len(history) != 1 {
+		t.Fatalf("AirPlay publisher generations duplicated history: %+v", history)
+	}
+	recordings, ok := history[0]["recordings"].([]map[string]interface{})
+	if !ok || len(recordings) != 2 {
+		t.Fatalf("nested AirPlay recordings = %#v, want two generations", history[0]["recordings"])
+	}
+	if recordings[0]["generation"] != uint64(1) || recordings[0]["available"] != false || recordings[0]["reason"] != "probe-failed" {
+		t.Fatalf("generation 1 recording state = %+v", recordings[0])
+	}
+	if recordings[1]["generation"] != uint64(2) || recordings[1]["available"] != true || recordings[1]["durationSeconds"] != float64(3) {
+		t.Fatalf("generation 2 recording state = %+v", recordings[1])
+	}
+	for _, recording := range recordings {
+		if _, leaked := recording["path"]; leaked {
+			t.Fatalf("recording state leaked local path: %+v", recording)
+		}
+		if fileName, _ := recording["fileName"].(string); fileName == "" || filepath.IsAbs(fileName) {
+			t.Fatalf("recording fileName is not a safe base name: %+v", recording)
+		}
+	}
+}
+
+func TestHistoryMediaServesOnlyVerifiedStoreOwnedPublisherGeneration(t *testing.T) {
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	representative := filepath.Join(t.TempDir(), "representative.mp4")
+	if err := os.WriteFile(representative, []byte("representative"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.AddHistory(representative, library.CurrentImage{Kind: "video", SourceKind: "obs", PublicName: "airplay.mp4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := airplaycontract.NewPublisherArtifacts(store.Dir(), item.ID, 1)
+	verified := airplaycontract.NewPublisherArtifacts(store.Dir(), item.ID, 2)
+	if err := os.MkdirAll(filepath.Dir(verified.Recording), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(verified.Recording, []byte("verified-generation"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	outside := airplaycontract.NewPublisherArtifacts(t.TempDir(), item.ID, 3)
+	if err := os.MkdirAll(filepath.Dir(outside.Recording), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(outside.Recording, []byte("outside-generation"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+	srv.obsRecordingOutcomes = func(sessionID string) []airplaycontract.RecordingOutcome {
+		if sessionID != item.ID {
+			return nil
+		}
+		return []airplaycontract.RecordingOutcome{
+			{Artifacts: failed, Closed: true, ProbeOK: false, HasRealVideo: true, Reason: "probe-failed"},
+			{Artifacts: verified, Closed: true, ProbeOK: true, HasRealVideo: true, DurationNS: uint64(4 * time.Second), Reason: "verified"},
+			{Artifacts: outside, Closed: true, ProbeOK: true, HasRealVideo: true, DurationNS: uint64(4 * time.Second), Reason: "verified"},
+		}
+	}
+
+	recordings := srv.historyState()[0]["recordings"].([]map[string]interface{})
+	if _, ok := recordings[0]["playbackURL"]; ok {
+		t.Fatalf("failed generation received playback URL: %+v", recordings[0])
+	}
+	if playbackURL, _ := recordings[1]["playbackURL"].(string); !strings.Contains(playbackURL, "/history/"+item.ID+"/recordings/2") {
+		t.Fatalf("verified generation playback URL = %q", playbackURL)
+	}
+	if recordings[2]["available"] != false {
+		t.Fatalf("Store-external generation was marked available: %+v", recordings[2])
+	}
+	if _, ok := recordings[2]["playbackURL"]; ok {
+		t.Fatalf("Store-external generation received playback URL: %+v", recordings[2])
+	}
+
+	request := func(method, path string) *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		srv.handleHistoryMedia(recorder, httptest.NewRequest(method, path, nil))
+		return recorder
+	}
+	if got := request(http.MethodGet, "/history/"+item.ID+"/recordings/1"); got.Code != http.StatusNotFound {
+		t.Fatalf("failed generation status = %d, want 404", got.Code)
+	}
+	if got := request(http.MethodGet, "/history/"+item.ID+"/recordings/2"); got.Code != http.StatusOK || got.Body.String() != "verified-generation" || got.Header().Get("Content-Type") != "video/mp4" {
+		t.Fatalf("verified generation response = status %d type %q body %q", got.Code, got.Header().Get("Content-Type"), got.Body.String())
+	}
+	if got := request(http.MethodHead, "/history/"+item.ID+"/recordings/2"); got.Code != http.StatusOK || got.Body.Len() != 0 {
+		t.Fatalf("verified generation HEAD = status %d body %q", got.Code, got.Body.String())
+	}
+	if got := request(http.MethodPost, "/history/"+item.ID+"/recordings/2"); got.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("verified generation POST status = %d, want 405", got.Code)
+	}
+	if got := request(http.MethodGet, "/history/"+item.ID+"/recordings/3"); got.Code != http.StatusNotFound {
+		t.Fatalf("outside generation status = %d, want 404", got.Code)
+	}
+	if got := request(http.MethodGet, "/history/"+item.ID+"/recordings/not-a-number"); got.Code != http.StatusNotFound {
+		t.Fatalf("invalid generation status = %d, want 404", got.Code)
+	}
+}
+
 func TestHistoryStateUsesPublishedImageForConvertedImage(t *testing.T) {
 	store, err := library.NewStore(t.TempDir())
 	if err != nil {
@@ -1091,6 +1228,7 @@ func TestHistorySelectImageClearsStaleHLSClipboardURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer video.CancelQueue(store.Dir())
 
 	videoSource := filepath.Join(t.TempDir(), "clip.mp4")
 	if err := os.WriteFile(videoSource, []byte("mp4"), 0600); err != nil {
@@ -1193,6 +1331,7 @@ func TestHistorySelectURLIssuingMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer video.CancelQueue(store.Dir())
 	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
 	srv.SetTunnelStatus(true, "https://example.trycloudflare.com", "connected")
 	mux := http.NewServeMux()
@@ -1755,6 +1894,28 @@ func TestOBSEntryPlaylistAliasDoesNotRewriteChildPlaylists(t *testing.T) {
 	}
 }
 
+func TestOBSUsesMediaMTXHLSForDirectPublishingAcrossDeliveryProfiles(t *testing.T) {
+	tests := []struct {
+		name      string
+		direct    bool
+		transport string
+		want      bool
+	}{
+		{name: "direct standard HLS", direct: true, transport: obsrtmp.LatencyModeHLS, want: true},
+		{name: "direct high quality HLS", direct: true, transport: obsrtmp.LatencyModeHLS, want: true},
+		{name: "normal standard HLS", direct: false, transport: obsrtmp.LatencyModeHLS, want: false},
+		{name: "normal LL-HLS", direct: false, transport: obsrtmp.LatencyModeLLHLS, want: true},
+		{name: "normal RTSP preview", direct: false, transport: obsrtmp.LatencyModeRTSPT, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := obsUsesMediaMTXHLS(tt.direct, tt.transport); got != tt.want {
+				t.Fatalf("obsUsesMediaMTXHLS(%v, %q) = %v, want %v", tt.direct, tt.transport, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestHistoryTargetModeTreatsSavedOBSRecordingAsFile(t *testing.T) {
 	mode := historyTargetMode(library.CurrentImage{
 		Kind:       "video",
@@ -2011,6 +2172,357 @@ func TestOBSBlockedOldStartDoesNotDelayReplacementServerCommit(t *testing.T) {
 	srv.obsSaveWG.Wait()
 }
 
+func TestOBSStreamCallbacksKeepVerificationRequiredRecordingOutOfHistory(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+	srv.obsSessionActive = func(sessionID string, generation uint64) bool {
+		return sessionID == "airplay-source-clock" && generation == 1
+	}
+	srv.obsSessionLatest = srv.obsSessionActive
+	recording := filepath.Join(store.Dir(), "publisher-0001.mp4")
+	if err := os.WriteFile(recording, []byte("not-yet-verified"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	session := obsrtmp.Session{
+		ID:                            "airplay-source-clock",
+		Generation:                    1,
+		Title:                         "AirPlay source-clock",
+		Recording:                     recording,
+		RecordingVerificationRequired: true,
+	}
+	srv.handleOBSStreamStart(session)
+	if history := store.History(); len(history) != 0 {
+		t.Fatalf("verification-required start entered history: %+v", history)
+	}
+	if current := store.Current(); current == nil || current.ID != session.ID || current.FileName != filepath.Base(recording) {
+		t.Fatalf("pending current after start=%+v", current)
+	}
+
+	srv.handleOBSStreamDone(session)
+	srv.obsSaveWG.Wait()
+	if history := store.History(); len(history) != 0 {
+		t.Fatalf("verification-required done entered history: %+v", history)
+	}
+	if current := store.Current(); current == nil || current.ID != session.ID || current.Thumbnail != "" || current.SizeBytes != 0 {
+		t.Fatalf("unverified done exposed finalized metadata: %+v", current)
+	}
+}
+
+func TestOBSStreamStartKeepsLegacyHistoryBehavior(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+	recording := filepath.Join(store.Dir(), "legacy-direct.mp4")
+	if err := os.WriteFile(recording, []byte("legacy-recording"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	srv.handleOBSStreamStart(obsrtmp.Session{ID: "legacy", Title: "OBS", Recording: recording})
+	srv.obsSaveWG.Wait()
+	if history := store.History(); len(history) != 1 || history[0].ID != "legacy" {
+		t.Fatalf("legacy start history=%+v", history)
+	}
+}
+
+func TestOBSRecordingOutcomesDoneCommitsVerifiedLatestGenerationOnce(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+	const sessionID = "0123456789abcdef"
+	recordingDir := filepath.Join(store.Dir(), "airplay", sessionID)
+	if err := os.MkdirAll(recordingDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	recording := filepath.Join(recordingDir, "publisher-0002.mp4")
+	if err := os.WriteFile(recording, []byte("verified-latest"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	latest := airplaycontract.RecordingOutcome{
+		Artifacts: airplaycontract.PublisherArtifacts{SessionID: sessionID, Generation: 2, Recording: recording},
+		Closed:    true, HasRealVideo: true, ProbeOK: true,
+		DurationNS: uint64(3 * time.Second), Reason: "verified",
+	}
+	srv.obsRepresentativeRecording = func(gotSessionID string) (string, bool) {
+		return recording, gotSessionID == sessionID
+	}
+	srv.obsRecordingOutcomes = func(gotSessionID string) []airplaycontract.RecordingOutcome {
+		if gotSessionID != sessionID {
+			return nil
+		}
+		return []airplaycontract.RecordingOutcome{latest}
+	}
+	session := obsrtmp.Session{
+		ID: sessionID, Title: "AirPlay verified", Recording: recording,
+		RecordingVerificationRequired: true,
+	}
+	srv.handleOBSStreamStart(session)
+	srv.handleOBSRecordingOutcomesDone(sessionID)
+	srv.handleOBSRecordingOutcomesDone(sessionID)
+	srv.obsSaveWG.Wait()
+	history := store.History()
+	if len(history) != 1 || history[0].ID != sessionID || history[0].Duration != 3 {
+		t.Fatalf("verified history=%+v", history)
+	}
+	currentPath, current, ok := store.CurrentPath()
+	if !ok || current == nil || current.FileName != history[0].HistoryFileName {
+		t.Fatalf("verified current path=%q current=%+v", currentPath, current)
+	}
+	data, err := os.ReadFile(currentPath)
+	if err != nil || string(data) != "verified-latest" {
+		t.Fatalf("verified current=%q err=%v", data, err)
+	}
+
+	lateRecording := filepath.Join(recordingDir, "publisher-0003.mp4")
+	if err := os.WriteFile(lateRecording, []byte("late-unverified"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	session.Recording = lateRecording
+	srv.handleOBSStreamDone(session)
+	srv.obsSaveWG.Wait()
+	currentPath, _, _ = store.CurrentPath()
+	data, err = os.ReadFile(currentPath)
+	if err != nil || string(data) != "verified-latest" || len(store.History()) != 1 {
+		t.Fatalf("late OnDone replaced verified recording: data=%q err=%v history=%+v", data, err, store.History())
+	}
+}
+
+func TestOBSRecordingOutcomesDoneCommitsOldSessionWithoutReplacingNewCurrent(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+	oldID := "0123456789abcdef"
+	newID := "fedcba9876543210"
+	oldDir := filepath.Join(store.Dir(), "airplay", oldID)
+	newDir := filepath.Join(store.Dir(), "airplay", newID)
+	if err := os.MkdirAll(oldDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(newDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	oldRecording := filepath.Join(oldDir, "publisher-0001.mp4")
+	newRecording := filepath.Join(newDir, "publisher-0001.mp4")
+	if err := os.WriteFile(oldRecording, []byte("old-verified"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(newRecording, []byte("new-pending"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	srv.obsRepresentativeRecording = func(sessionID string) (string, bool) {
+		return oldRecording, sessionID == oldID
+	}
+	srv.obsRecordingOutcomes = func(sessionID string) []airplaycontract.RecordingOutcome {
+		if sessionID != oldID {
+			return nil
+		}
+		return []airplaycontract.RecordingOutcome{{
+			Artifacts: airplaycontract.PublisherArtifacts{SessionID: oldID, Generation: 1, Recording: oldRecording},
+			Closed:    true, HasRealVideo: true, ProbeOK: true, DurationNS: uint64(time.Second), Reason: "verified",
+		}}
+	}
+	srv.handleOBSStreamStart(obsrtmp.Session{ID: oldID, Title: "old", Recording: oldRecording, RecordingVerificationRequired: true})
+	srv.handleOBSStreamStart(obsrtmp.Session{ID: newID, Title: "new", Recording: newRecording, RecordingVerificationRequired: true})
+	srv.handleOBSRecordingOutcomesDone(oldID)
+	srv.obsSaveWG.Wait()
+	if current := store.Current(); current == nil || current.ID != newID {
+		t.Fatalf("old verified session replaced new current: %+v", current)
+	}
+	history := store.History()
+	if len(history) != 1 || history[0].ID != oldID {
+		t.Fatalf("old verified history=%+v", history)
+	}
+}
+
+func TestOBSRecordingOutcomesDoneRejectsUnverifiedAndLateDone(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+	const sessionID = "0123456789abcdef"
+	recording := filepath.Join(store.Dir(), "publisher-0001.mp4")
+	if err := os.WriteFile(recording, []byte("unverified"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	srv.obsRepresentativeRecording = func(string) (string, bool) { return "", false }
+	srv.obsRecordingOutcomes = func(string) []airplaycontract.RecordingOutcome { return nil }
+	session := obsrtmp.Session{ID: sessionID, Title: "AirPlay", Recording: recording, RecordingVerificationRequired: true}
+	srv.handleOBSStreamStart(session)
+	srv.handleOBSRecordingOutcomesDone(sessionID)
+	srv.handleOBSStreamDone(session)
+	srv.obsSaveWG.Wait()
+	if history := store.History(); len(history) != 0 {
+		t.Fatalf("unverified recording entered history: %+v", history)
+	}
+}
+
+func TestOBSRecordingOutcomesDoneCanRetryCommitFailure(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+	const sessionID = "0123456789abcdef"
+	recordingDir := filepath.Join(store.Dir(), "airplay", sessionID)
+	if err := os.MkdirAll(recordingDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	recording := filepath.Join(recordingDir, "publisher-0001.mp4")
+	if err := os.WriteFile(recording, []byte("verified"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	outcome := airplaycontract.RecordingOutcome{
+		Artifacts: airplaycontract.PublisherArtifacts{SessionID: sessionID, Generation: 1, Recording: recording},
+		Closed:    true, HasRealVideo: true, ProbeOK: true, DurationNS: uint64(time.Second), Reason: "verified",
+	}
+	srv.obsRepresentativeRecording = func(string) (string, bool) { return recording, true }
+	srv.obsRecordingOutcomes = func(string) []airplaycontract.RecordingOutcome { return []airplaycontract.RecordingOutcome{outcome} }
+	srv.obsRecordingCommitMaxAttempts = 1
+	attempts := 0
+	srv.obsCommitVerifiedRecording = func(path string, info library.CurrentImage) error {
+		attempts++
+		if attempts == 1 {
+			return errors.New("temporary commit failure")
+		}
+		return store.CommitHistoryFromPathWithIDInMemory(path, info)
+	}
+	session := obsrtmp.Session{ID: sessionID, Title: "AirPlay", Recording: recording, RecordingVerificationRequired: true}
+	srv.handleOBSStreamStart(session)
+	srv.handleOBSRecordingOutcomesDone(sessionID)
+	if len(store.History()) != 0 {
+		t.Fatal("failed commit entered history")
+	}
+	if _, completed := srv.obsRecordingCompleted[sessionID]; completed {
+		t.Fatal("failed commit became permanently completed")
+	}
+	if _, pending := srv.obsPendingRecordings[sessionID]; !pending {
+		t.Fatal("failed commit discarded retry metadata")
+	}
+	currentBeforeLateCallback := *store.Current()
+	pendingBeforeLateCallback := srv.obsPendingRecordings[sessionID]
+	lateSession := session
+	lateSession.Title = "late callback must not replace retry metadata"
+	lateSession.Recording = filepath.Join(recordingDir, "late-callback.mp4")
+	srv.handleOBSStreamStart(lateSession)
+	srv.handleOBSStreamDone(lateSession)
+	if current := store.Current(); current == nil || current.FileName != currentBeforeLateCallback.FileName || current.OriginalName != currentBeforeLateCallback.OriginalName {
+		t.Fatalf("late callback replaced pending current: got=%+v want=%+v", current, currentBeforeLateCallback)
+	}
+	if pending := srv.obsPendingRecordings[sessionID]; pending.FileName != pendingBeforeLateCallback.FileName || pending.OriginalName != pendingBeforeLateCallback.OriginalName {
+		t.Fatalf("late callback replaced retry metadata: got=%+v want=%+v", pending, pendingBeforeLateCallback)
+	}
+	srv.handleOBSRecordingOutcomesDone(sessionID)
+	srv.obsSaveWG.Wait()
+	if attempts != 2 || len(store.History()) != 1 {
+		t.Fatalf("retry attempts=%d history=%+v", attempts, store.History())
+	}
+	srv.handleOBSRecordingOutcomesDone(sessionID)
+	if attempts != 2 || len(store.History()) != 1 {
+		t.Fatalf("duplicate completion attempts=%d history=%+v", attempts, store.History())
+	}
+}
+
+func TestOBSRecordingOutcomesDoneRetriesCommitWithoutReopeningLateCallbacks(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+	const sessionID = "1123456789abcdef"
+	recordingDir := filepath.Join(store.Dir(), "airplay", sessionID)
+	if err := os.MkdirAll(recordingDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	recording := filepath.Join(recordingDir, "publisher-0001.mp4")
+	if err := os.WriteFile(recording, []byte("verified"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	outcome := airplaycontract.RecordingOutcome{
+		Artifacts: airplaycontract.PublisherArtifacts{SessionID: sessionID, Generation: 1, Recording: recording},
+		Closed:    true, HasRealVideo: true, ProbeOK: true, DurationNS: uint64(time.Second), Reason: "verified",
+	}
+	srv.obsRepresentativeRecording = func(string) (string, bool) { return recording, true }
+	srv.obsRecordingOutcomes = func(string) []airplaycontract.RecordingOutcome { return []airplaycontract.RecordingOutcome{outcome} }
+	retryWaiting := make(chan struct{})
+	releaseRetry := make(chan struct{})
+	srv.obsRecordingCommitRetryWait = func(int) {
+		close(retryWaiting)
+		<-releaseRetry
+	}
+	var attempts atomic.Int32
+	srv.obsCommitVerifiedRecording = func(path string, info library.CurrentImage) error {
+		if attempts.Add(1) == 1 {
+			return errors.New("temporary commit failure")
+		}
+		return store.CommitHistoryFromPathWithIDInMemory(path, info)
+	}
+	session := obsrtmp.Session{ID: sessionID, Title: "AirPlay", Recording: recording, RecordingVerificationRequired: true}
+	srv.handleOBSStreamStart(session)
+	currentBeforeLateCallback := *store.Current()
+	pendingBeforeLateCallback := srv.obsPendingRecordings[sessionID]
+	completionDone := make(chan struct{})
+	go func() {
+		srv.handleOBSRecordingOutcomesDone(sessionID)
+		close(completionDone)
+	}()
+	select {
+	case <-retryWaiting:
+	case <-time.After(time.Second):
+		t.Fatal("commit retry did not wait")
+	}
+	lateSession := session
+	lateSession.Title = "late callback must stay closed during retry"
+	lateSession.Recording = filepath.Join(recordingDir, "late-callback.mp4")
+	srv.handleOBSStreamStart(lateSession)
+	srv.handleOBSStreamDone(lateSession)
+	if current := store.Current(); current == nil || current.FileName != currentBeforeLateCallback.FileName || current.OriginalName != currentBeforeLateCallback.OriginalName {
+		t.Fatalf("late callback replaced current during retry: got=%+v want=%+v", current, currentBeforeLateCallback)
+	}
+	if pending := srv.obsPendingRecordings[sessionID]; pending.FileName != pendingBeforeLateCallback.FileName || pending.OriginalName != pendingBeforeLateCallback.OriginalName {
+		t.Fatalf("late callback replaced pending metadata during retry: got=%+v want=%+v", pending, pendingBeforeLateCallback)
+	}
+	close(releaseRetry)
+	select {
+	case <-completionDone:
+	case <-time.After(time.Second):
+		t.Fatal("commit retry did not finish")
+	}
+	srv.obsSaveWG.Wait()
+	if attempts.Load() != 2 || len(store.History()) != 1 {
+		t.Fatalf("automatic retry attempts=%d history=%+v", attempts.Load(), store.History())
+	}
+}
+
+func TestOBSRecordingCompletedSessionsAreBounded(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	store, err := library.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
+	for index := 0; index <= obsRecordingCompletionLimit; index++ {
+		srv.handleOBSRecordingOutcomesDone(fmt.Sprintf("%016x", index))
+	}
+	if len(srv.obsRecordingCompleted) != obsRecordingCompletionLimit {
+		t.Fatalf("completed sessions=%d, want %d", len(srv.obsRecordingCompleted), obsRecordingCompletionLimit)
+	}
+}
+
 func TestRTSPReadyPublishesUPnPURL(t *testing.T) {
 	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
 	store, err := library.NewStore(t.TempDir())
@@ -2252,6 +2764,23 @@ func TestStopOBSReceiverClosesRTSPMapping(t *testing.T) {
 	srv.StopOBSReceiver()
 	if got := mapping.closeCalls.Load(); got != 1 {
 		t.Fatalf("mapping close calls = %d, want 1", got)
+	}
+}
+
+func TestAirPlayShutdownBudgetWrapsPublisherEscalation(t *testing.T) {
+	if airPlayReceiverStopTimeout <= 12*time.Second {
+		t.Fatalf("AirPlay outer stop timeout = %s, must exceed publisher 10s graceful + 2s kill wait", airPlayReceiverStopTimeout)
+	}
+	source, err := os.ReadFile("server.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	if got := strings.Count(text, "s.airplay.Stop(airPlayReceiverStopTimeout)"); got != 1 {
+		t.Fatalf("unclassified AirPlay receiver synchronization stops = %d, want 1", got)
+	}
+	if got := strings.Count(text, "s.airplay.StopForServerShutdown(airPlayReceiverStopTimeout)"); got != 1 {
+		t.Fatalf("explicit AirPlay server-shutdown stops = %d, want 1", got)
 	}
 }
 

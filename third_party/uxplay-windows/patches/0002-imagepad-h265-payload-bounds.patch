@@ -1,0 +1,113 @@
+diff --git a/lib/raop_rtp_mirror.c b/lib/raop_rtp_mirror.c
+index 2bb4f5f..ccdaeef 100644
+--- a/lib/raop_rtp_mirror.c
++++ b/lib/raop_rtp_mirror.c
+@@ -630,8 +635,14 @@ raop_rtp_mirror_thread(void *arg)
+                     sps_pps = NULL;
+                 }
+                 /* test for a H265 VPS/SPS/PPS */
+                 unsigned char hvc1[] = { 0x68, 0x76, 0x63, 0x31 };
+ 
++                if (payload_size < 8) {
++                    logger_log(raop_rtp_mirror->logger, LOGGER_ERR,
++                               "raop_rtp_mirror: codec packet header is too short: %d", payload_size);
++                    unsupported_codec = true;
++                    break;
++                }
+                 if (!memcmp(payload + 4, hvc1, 4)) {
+                     /* hvc1 HECV detected */
+                     if (codec == VIDEO_CODEC_UNKNOWN) {
+@@ -651,47 +657,89 @@ raop_rtp_mirror_thread(void *arg)
+                     }
+                     unsigned char vps_start_code[] = { 0xa0, 0x00, 0x01, 0x00 };
+                     unsigned char sps_start_code[] = { 0xa1, 0x00, 0x01, 0x00 };
+                     unsigned char pps_start_code[] = { 0xa2, 0x00, 0x01, 0x00 };
+ 
++                    if (payload_size < 0x75 + 4) {
++                        logger_log(raop_rtp_mirror->logger, LOGGER_ERR,
++                                   "raop_rtp_mirror: H265 codec packet is too short: %d", payload_size);
++                        unsupported_codec = true;
++                        break;
++                    }
+                     unsigned char * ptr = payload + 0x75;
+  
+                     if (memcmp(ptr, vps_start_code, 4)) {
+                         logger_log(raop_rtp_mirror->logger, LOGGER_ERR, "non-conforming HEVC VPS/SPS/PPS payload (VPS)");
+                         raop_rtp_mirror->callbacks.video_pause(raop_rtp_mirror->callbacks.cls);
+                         break;
+                     }
+-                    short vps_size = byteutils_get_short_be(ptr, 3);
++                    int vps_size = byteutils_get_short_be(ptr, 3);
+                     ptr += 5;
++                    if (vps_size <= 0 || (size_t)(ptr - payload) > payload_size ||
++                        (size_t)vps_size > payload_size - (size_t)(ptr - payload)) {
++                        logger_log(raop_rtp_mirror->logger, LOGGER_ERR,
++                                   "raop_rtp_mirror: invalid H265 VPS size: %d (payload %d)",
++                                   vps_size, payload_size);
++                        unsupported_codec = true;
++                        break;
++                    }
+                     unsigned char *vps = ptr;
+                     if (logger_debug) {
+                         char *str = utils_data_to_string(vps, vps_size, 16);
+                         logger_log(raop_rtp_mirror->logger, LOGGER_INFO, "h265 vps size %d\n%s",vps_size, str);
+                         free(str);
+                     }
+                     ptr += vps_size;
++                    if (payload_size - (size_t)(ptr - payload) < 4) {
++                        logger_log(raop_rtp_mirror->logger, LOGGER_ERR,
++                                   "raop_rtp_mirror: truncated H265 SPS marker (payload %d)", payload_size);
++                        unsupported_codec = true;
++                        break;
++                    }
+                     if (memcmp(ptr, sps_start_code, 4)) {
+                         logger_log(raop_rtp_mirror->logger, LOGGER_ERR, "non-conforming HEVC VPS/SPS/PPS payload (SPS)");
+                         raop_rtp_mirror->callbacks.video_pause(raop_rtp_mirror->callbacks.cls);
+                         break;
+                     }
+-                    short sps_size = byteutils_get_short_be(ptr, 3);
++                    int sps_size = byteutils_get_short_be(ptr, 3);
+                     ptr += 5;
++                    if (sps_size <= 0 || (size_t)(ptr - payload) > payload_size ||
++                        (size_t)sps_size > payload_size - (size_t)(ptr - payload)) {
++                        logger_log(raop_rtp_mirror->logger, LOGGER_ERR,
++                                   "raop_rtp_mirror: invalid H265 SPS size: %d (payload %d)",
++                                   sps_size, payload_size);
++                        unsupported_codec = true;
++                        break;
++                    }
+                     unsigned char *sps = ptr;
+                     if (logger_debug) {
+                         char *str = utils_data_to_string(sps, sps_size, 16);
+                         logger_log(raop_rtp_mirror->logger, LOGGER_INFO, "h265 sps size %d\n%s",vps_size, str);
+                         free(str);
+                     }
+                     ptr += sps_size;
++                    if (payload_size - (size_t)(ptr - payload) < 4) {
++                        logger_log(raop_rtp_mirror->logger, LOGGER_ERR,
++                                   "raop_rtp_mirror: truncated H265 PPS marker (payload %d)", payload_size);
++                        unsupported_codec = true;
++                        break;
++                    }
+                     if (memcmp(ptr, pps_start_code, 4)) {
+                         logger_log(raop_rtp_mirror->logger, LOGGER_ERR, "non-conforming HEVC VPS/SPS/PPS payload (PPS)");			
+                        raop_rtp_mirror->callbacks.video_pause(raop_rtp_mirror->callbacks.cls);
+                        break;
+                     }
+-                    short pps_size = byteutils_get_short_be(ptr, 3);
++                    int pps_size = byteutils_get_short_be(ptr, 3);
+                     ptr += 5;
++                    if (pps_size <= 0 || (size_t)(ptr - payload) > payload_size ||
++                        (size_t)pps_size > payload_size - (size_t)(ptr - payload)) {
++                        logger_log(raop_rtp_mirror->logger, LOGGER_ERR,
++                                   "raop_rtp_mirror: invalid H265 PPS size: %d (payload %d)",
++                                   pps_size, payload_size);
++                        unsupported_codec = true;
++                        break;
++                    }
+                     unsigned char *pps = ptr;
+                     if (logger_debug) {
+                         char *str = utils_data_to_string(pps, pps_size, 16);
+                         logger_log(raop_rtp_mirror->logger, LOGGER_INFO, "h265 pps size %d\n%s",pps_size, str);
+                         free(str);
+                     }

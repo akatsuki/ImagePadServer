@@ -148,6 +148,11 @@ const dashboardCSSResponsive = `
       .section-kicker {
         line-height: 1.45;
       }
+      .media-hierarchy {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        margin-right: 12px;
+        margin-left: 12px;
+      }
       .media-kind-switch {
         width: 100%;
         align-self: stretch;

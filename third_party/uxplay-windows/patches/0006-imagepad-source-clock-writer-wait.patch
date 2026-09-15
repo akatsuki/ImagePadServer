@@ -1,0 +1,87 @@
+diff --git a/renderers/source_clock_renderer.c b/renderers/source_clock_renderer.c
+index 8dfb47a..43fac95 100644
+--- a/renderers/source_clock_renderer.c
++++ b/renderers/source_clock_renderer.c
+@@ -297,8 +297,7 @@ static void *writer_main(void *argument) {
+         uint32_t generation;
+         bool send_end;
+         pthread_mutex_lock(&writer->mutex);
+-        while (!writer->stopping && writer->head == NULL && !writer->send_session_end &&
+-               !writer->session_active) {
++        while (!writer->stopping && writer->head == NULL && !writer->send_session_end) {
+             pthread_cond_wait(&writer->cond, &writer->mutex);
+         }
+         if (writer->stopping) {
+@@ -329,6 +328,11 @@ static void *writer_main(void *argument) {
+             bool generation_changed;
+             bool end_requested;
+             pthread_mutex_lock(&writer->mutex);
++            while (!writer->stopping && writer->generation == generation &&
++                   writer->session_active && !writer->send_session_end &&
++                   writer->head == NULL) {
++                pthread_cond_wait(&writer->cond, &writer->mutex);
++            }
+             if (writer->stopping) {
+                 pthread_mutex_unlock(&writer->mutex);
+                 close_socket_once(&socket_fd);
+@@ -352,7 +356,7 @@ static void *writer_main(void *argument) {
+                 writer->discontinuity_pending = false;
+             }
+             pthread_mutex_unlock(&writer->mutex);
+-            if (frame == NULL) break;
++            if (frame == NULL) continue;
+             if (!send_frame(writer, socket_fd, frame)) {
+                 pthread_mutex_lock(&writer->mutex);
+                 writer->discontinuity_pending = true;
+diff --git a/renderers/source_clock_renderer_test.c b/renderers/source_clock_renderer_test.c
+index 5c4094f..bd41c8a 100644
+--- a/renderers/source_clock_renderer_test.c
++++ b/renderers/source_clock_renderer_test.c
+@@ -1,5 +1,8 @@
+ #include "source_clock_renderer.h"
+ 
++#ifdef NDEBUG
++#undef NDEBUG
++#endif
+ #include <assert.h>
+ #include <stdio.h>
+ #include <string.h>
+@@ -24,6 +27,7 @@ typedef struct test_server_s {
+     TEST_SOCKET listener;
+     unsigned port;
+     unsigned stream_kind;
++    volatile int accepted;
+     int hello;
+     int session_start;
+     int media;
+@@ -49,6 +53,7 @@ static void *server_main(void *argument) {
+     TEST_SOCKET client = accept(server->listener, NULL, NULL);
+     unsigned char header[40];
+     if (client == TEST_INVALID_SOCKET) return NULL;
++    server->accepted = 1;
+     while (read_full(client, header, sizeof(header))) {
+         unsigned payload_bytes;
+         if (memcmp(header, "IPAF", 4) != 0 ||
+@@ -112,15 +117,22 @@ int main(void) {
+     init_server(&audio_server, 2);
+     snprintf(video_endpoint, sizeof(video_endpoint), "127.0.0.1:%u", video_server.port);
+     snprintf(audio_endpoint, sizeof(audio_endpoint), "127.0.0.1:%u", audio_server.port);
+     assert(pthread_create(&video_thread, NULL, server_main, &video_server) == 0);
+     assert(pthread_create(&audio_thread, NULL, server_main, &audio_server) == 0);
+     renderer = source_clock_renderer_create(video_endpoint, audio_endpoint, token);
+     assert(renderer != NULL);
+     source_clock_renderer_session_start(renderer);
++#ifdef _WIN32
++    Sleep(2000);
++#else
++    usleep(2000000);
++#endif
++    assert(!video_server.accepted);
++    assert(!audio_server.accepted);
+     assert(!source_clock_renderer_push_video(renderer, NULL, 4, 0, 0));
+     assert(!source_clock_renderer_push_audio(renderer, NULL, 4, 0, 0));
+     assert(source_clock_renderer_push_video(renderer, video, sizeof(video), 1000000000ULL, 0));
+     assert(source_clock_renderer_push_audio(renderer, audio, sizeof(audio), 1000000000ULL, 0));
+ #ifdef _WIN32
+     Sleep(300);
+ #else

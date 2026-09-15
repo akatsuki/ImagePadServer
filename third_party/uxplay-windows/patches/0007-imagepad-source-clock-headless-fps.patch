@@ -1,0 +1,14 @@
+diff --git a/uxplay.cpp b/uxplay.cpp
+--- a/uxplay.cpp
++++ b/uxplay.cpp
+@@ -3079,7 +3079,9 @@
+         videosink.append("fakesink");
+ 	videosink_options.erase();
+ 	LOGI("video_disabled");
+-        display[3] = 1; /* set fps to 1 frame per sec when no video will be shown */
++        if (source_clock_video_endpoint.empty()) {
++            display[3] = 1; /* set fps to 1 frame per sec when no video will be consumed */
++        }
+     }
+ 
+     if (fullscreen && use_video) {

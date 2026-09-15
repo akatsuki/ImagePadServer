@@ -49,7 +49,7 @@ func TestProgramTrackFeederPadsFinalPartialPCMFrameFromRealFFmpeg(t *testing.T) 
 	fixture := writeUnalignedProgramFixture(t, ffmpeg)
 	feeder := NewProgramTrackFeeder(t.TempDir(), 8, 8)
 	feeder.ensureFFmpeg = func() (string, error) { return ffmpeg, nil }
-	feeder.started = func(*exec.Cmd) func() { return func() {} }
+	feeder.started = func(*exec.Cmd) (func(), error) { return func() {}, nil }
 	frames := make(chan ProgramSourceFrame, 8)
 
 	if err := feeder.Run(context.Background(), fixture, 0, frames); err != nil {
@@ -161,7 +161,7 @@ func newProgramTrackFeederWithDecoderScenario(t *testing.T, width, height int, s
 	t.Helper()
 	feeder := NewProgramTrackFeeder(t.TempDir(), width, height)
 	feeder.ensureFFmpeg = func() (string, error) { return "test-helper", nil }
-	feeder.started = func(*exec.Cmd) func() { return func() {} }
+	feeder.started = func(*exec.Cmd) (func(), error) { return func() {}, nil }
 	feeder.command = func(ctx context.Context, _ string, args ...string) *exec.Cmd {
 		role := "audio"
 		for _, arg := range args {

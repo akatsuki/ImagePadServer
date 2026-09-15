@@ -21,6 +21,8 @@ import (
 	"github.com/skip2/go-qrcode"
 
 	"imagepadserver/internal/about"
+	"imagepadserver/internal/airplay"
+	"imagepadserver/internal/airplaycontract"
 	"imagepadserver/internal/appicon"
 	"imagepadserver/internal/clipboard"
 	"imagepadserver/internal/config"
@@ -41,6 +43,8 @@ const (
 	maxMultipartMemory           = 32 << 20
 	maxLocalVideoUploadBytes     = video.MaxMediaSourceBytes
 	maxLocalVideoUploadBytesText = "4 GiB - 1 byte"
+	obsRecordingCompletionLimit  = 40
+	obsRecordingCommitAttempts   = 3
 )
 
 type shareModeContextKey struct{}
@@ -66,30 +70,47 @@ type Server struct {
 	cfg          config.Config
 	store        *library.Store
 
-	mu                    sync.RWMutex
-	upnp                  upnp.Result
-	tmpl                  *template.Template
-	lanURL                string
-	imageURLBase          string
-	previewURLBase        string
-	tunnelStatus          map[string]interface{}
-	tunnelURLBase         string
-	tunnelReconnect       chan<- struct{}
-	exitRequested         func()
-	adminToken            string
-	obs                   *obsrtmp.Manager
-	obsCommitMu           sync.Mutex
-	obsSaveWG             sync.WaitGroup
-	obsCallbackGeneration uint64
-	obsSessionActive      func(string, uint64) bool
-	obsSessionLatest      func(string, uint64) bool
-	beforeOBSCommit       func(obsrtmp.Session)
-	pairings              map[string]pairingRequest
-	relayNonces           map[string]time.Time
-	ingest                ingestStatus
+	mu                            sync.RWMutex
+	upnp                          upnp.Result
+	tmpl                          *template.Template
+	lanURL                        string
+	imageURLBase                  string
+	previewURLBase                string
+	tunnelStatus                  map[string]interface{}
+	tunnelURLBase                 string
+	tunnelReconnect               chan<- struct{}
+	exitRequested                 func()
+	adminToken                    string
+	obs                           *obsrtmp.Manager
+	airplay                       *airplay.Manager
+	airplayQualityStatus          func() airplay.Status
+	airplayDelivery               airPlayDeliveryController
+	airplayActiveMode             string
+	airplayActiveHeight           int
+	airplayActiveSet              bool
+	obsCommitMu                   sync.Mutex
+	obsSaveWG                     sync.WaitGroup
+	obsCallbackGeneration         uint64
+	obsPendingRecordings          map[string]library.CurrentImage
+	obsRecordingCompleted         map[string]struct{}
+	obsRecordingFinalizing        map[string]struct{}
+	obsRecordingInputClosed       map[string]struct{}
+	obsRecordingCompletedOrder    []string
+	obsSessionActive              func(string, uint64) bool
+	obsSessionLatest              func(string, uint64) bool
+	obsRepresentativeRecording    func(string) (string, bool)
+	obsRecordingOutcomes          func(string) []airplaycontract.RecordingOutcome
+	obsCommitVerifiedRecording    func(string, library.CurrentImage) error
+	obsRecordingCommitMaxAttempts int
+	obsRecordingCommitRetryWait   func(int)
+	beforeOBSCommit               func(obsrtmp.Session)
+	pairings                      map[string]pairingRequest
+	relayNonces                   map[string]time.Time
+	ingest                        ingestStatus
 
 	toolInstallMu    sync.Mutex
 	toolInstalling   bool
+	toolInstallError string
 	rtspMap          rtspMappingHandle
 	rtspSource       string
 	rtspSessionID    string
@@ -206,28 +227,48 @@ func New(cfg config.Config, store *library.Store, imageURLBase string) *Server {
 	}
 	activeCanonicalHeight := settings.ActiveMusicPlaylistCanonicalHeight()
 	srv := &Server{
-		cfg:                   cfg,
-		store:                 store,
-		upnp:                  upnp.Result{Message: "Checking router UPnP support..."},
-		tmpl:                  template.Must(template.New("index").Parse(indexHTML)),
-		lanURL:                lanURL,
-		imageURLBase:          imageURLBase,
-		previewURLBase:        lanURL,
-		tunnelStatus:          map[string]interface{}{"ok": false, "message": "Cloudflare Tunnel starting..."},
-		adminToken:            adminToken,
-		pairings:              make(map[string]pairingRequest),
-		relayNonces:           make(map[string]time.Time),
-		stateEvents:           make(map[chan struct{}]struct{}),
-		activeCanonicalHeight: activeCanonicalHeight,
+		cfg:                     cfg,
+		store:                   store,
+		upnp:                    upnp.Result{Message: "Checking router UPnP support..."},
+		tmpl:                    template.Must(template.New("index").Parse(indexHTML)),
+		lanURL:                  lanURL,
+		imageURLBase:            imageURLBase,
+		previewURLBase:          lanURL,
+		tunnelStatus:            map[string]interface{}{"ok": false, "message": "Cloudflare Tunnel starting..."},
+		adminToken:              adminToken,
+		pairings:                make(map[string]pairingRequest),
+		relayNonces:             make(map[string]time.Time),
+		stateEvents:             make(map[chan struct{}]struct{}),
+		obsPendingRecordings:    make(map[string]library.CurrentImage),
+		obsRecordingCompleted:   make(map[string]struct{}),
+		obsRecordingFinalizing:  make(map[string]struct{}),
+		obsRecordingInputClosed: make(map[string]struct{}),
+		activeCanonicalHeight:   activeCanonicalHeight,
 	}
+	srv.airplay = airplay.New(srv.broadcastStateChanged)
 	srv.obs = obsrtmp.New(store.Dir(), advertisedHost, 1935, obsStreamKey, srv.videoQualityPreset, srv.obsLatencyProfile, obsrtmp.Callbacks{
-		OnStart:     srv.handleOBSStreamStart,
-		OnDone:      srv.handleOBSStreamDone,
-		OnRTSPReady: srv.handleRTSPReady,
-		OnRTSPDone:  srv.handleRTSPDone,
+		OnDeliveryChanged:             srv.broadcastStateChanged,
+		OnStart:                       srv.handleOBSStreamStart,
+		OnDone:                        srv.handleOBSStreamDone,
+		OnRecordingOutcomesDone:       srv.handleOBSRecordingOutcomesDone,
+		OnRTSPReady:                   srv.handleRTSPReady,
+		OnRTSPDone:                    srv.handleRTSPDone,
+		OnContinuousPublishingTimeout: srv.handleAirPlayReconnectTimeout,
 	})
 	srv.obsSessionActive = srv.obs.IsSessionActive
+	srv.airplayDelivery = managedAirPlayDelivery{manager: srv.obs, receiver: srv.airplay}
 	srv.obsSessionLatest = srv.obs.IsLatestSession
+	srv.obsRepresentativeRecording = srv.obs.DirectRepresentativeRecording
+	srv.obsRecordingOutcomes = srv.obs.DirectRecordingOutcomes
+	srv.obsCommitVerifiedRecording = srv.store.CommitHistoryFromPathWithIDInMemory
+	srv.obsRecordingCommitMaxAttempts = obsRecordingCommitAttempts
+	srv.obsRecordingCommitRetryWait = func(failedAttempt int) {
+		delay := 100 * time.Millisecond
+		if failedAttempt > 1 {
+			delay = 500 * time.Millisecond
+		}
+		time.Sleep(delay)
+	}
 	srv.mapRTSPPort = func(protocol string, internalPort, externalPort int, description string) (rtspMappingHandle, upnp.Result) {
 		var mapping *upnp.TCPMapping
 		var result upnp.Result
@@ -278,6 +319,10 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/obs/relay-config", s.handleOBSRelayConfig)
 	mux.HandleFunc("/api/obs/start", s.admin(s.handleOBSStart))
 	mux.HandleFunc("/api/obs/end", s.admin(s.handleOBSEnd))
+	mux.HandleFunc("/api/airplay/start", s.admin(s.handleAirPlayStart))
+	mux.HandleFunc("/api/airplay/end", s.admin(s.handleAirPlayEnd))
+	mux.HandleFunc("/api/airplay/retry", s.admin(s.handleAirPlayRetry))
+	mux.HandleFunc("/api/airplay/quality", s.admin(s.handleAirPlayQuality))
 	mux.HandleFunc("/api/obs/key", s.admin(s.handleOBSKey))
 	mux.HandleFunc("/api/obs/latency", s.admin(s.handleOBSLatency))
 	mux.HandleFunc("/api/history", s.admin(s.handleHistory))
@@ -287,6 +332,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/history/publish", s.admin(s.handleHistoryPublish))
 	mux.HandleFunc("/api/copy-url", s.admin(s.handleCopyURL))
 	mux.HandleFunc("/api/about", s.admin(s.handleAbout))
+	mux.HandleFunc("/licenses/airplay", s.handleAirPlayLicenses)
 	mux.HandleFunc("/api/update-check", s.admin(s.handleUpdateCheck))
 	// SteamVR integration is frozen indefinitely. Keep internal/steamvr as an
 	// archived asset, but do not expose its management API.
@@ -450,15 +496,25 @@ func (s *Server) SyncOBSReceiver() {
 	if s.obs == nil {
 		return
 	}
-	if s.videoPlayerEnabled() {
+	if s.videoPlayerEnabled() && videoToolsReady() {
 		s.obs.Start()
 		return
+	}
+	if s.airplay != nil {
+		if !s.airplay.Stop(airPlayReceiverStopTimeout) {
+			log.Printf("AirPlay receiver did not stop during receiver synchronization")
+		}
 	}
 	s.closeRTSPMapping("", obsrtmp.RTSPEndpoint{})
 	s.obs.Stop()
 }
 
 func (s *Server) StopOBSReceiver() {
+	if s.airplay != nil {
+		if !s.airplay.StopForServerShutdown(airPlayReceiverStopTimeout) {
+			log.Printf("AirPlay receiver did not stop during application shutdown")
+		}
+	}
 	s.closeRTSPMapping("", obsrtmp.RTSPEndpoint{})
 	if s.obs != nil {
 		s.obs.StopAndWait(8 * time.Second)
@@ -1546,6 +1602,15 @@ func (s *Server) handleOBSStreamStart(session obsrtmp.Session) {
 		s.beforeOBSCommit(session)
 	}
 	s.obsCommitMu.Lock()
+	if session.RecordingVerificationRequired {
+		_, completed := s.obsRecordingCompleted[session.ID]
+		_, finalizing := s.obsRecordingFinalizing[session.ID]
+		_, inputClosed := s.obsRecordingInputClosed[session.ID]
+		if completed || finalizing || inputClosed {
+			s.obsCommitMu.Unlock()
+			return
+		}
+	}
 	if session.Generation != 0 {
 		if session.Generation < s.obsCallbackGeneration || !s.isOBSActiveSession(session.ID, session.Generation) {
 			s.obsCommitMu.Unlock()
@@ -1562,7 +1627,7 @@ func (s *Server) handleOBSStreamStart(session obsrtmp.Session) {
 		ContentType:  "video/mp4",
 		OriginalName: session.Title,
 	}
-	if err := s.store.SetCurrentInfoWithIDInMemory(info); err != nil {
+	if err := s.setOBSCurrentInfoInMemory(session, info); err != nil {
 		log.Printf("OBS history update failed for %s: %v", session.ID, err)
 	}
 	s.obsCommitMu.Unlock()
@@ -1579,8 +1644,20 @@ func (s *Server) handleOBSStreamDone(session obsrtmp.Session) {
 		return
 	}
 	current := s.store.Current()
-	thumbnail := s.createOBSVideoThumbnail(session)
+	thumbnail := ""
+	if !session.RecordingVerificationRequired {
+		thumbnail = s.createOBSVideoThumbnail(session)
+	}
 	s.obsCommitMu.Lock()
+	if session.RecordingVerificationRequired {
+		_, completed := s.obsRecordingCompleted[session.ID]
+		_, finalizing := s.obsRecordingFinalizing[session.ID]
+		_, inputClosed := s.obsRecordingInputClosed[session.ID]
+		if completed || finalizing || inputClosed {
+			s.obsCommitMu.Unlock()
+			return
+		}
+	}
 	if session.Generation != 0 {
 		if session.Generation < s.obsCallbackGeneration || !s.isOBSLatestSession(session.ID, session.Generation) {
 			s.obsCommitMu.Unlock()
@@ -1609,17 +1686,21 @@ func (s *Server) handleOBSStreamDone(session obsrtmp.Session) {
 	info.ContentType = "video/mp4"
 	info.OriginalName = session.Title
 	info.Thumbnail = thumbnail
-	if stat, err := os.Stat(session.Recording); err == nil {
-		info.SizeBytes = stat.Size()
+	if !session.RecordingVerificationRequired {
+		if stat, err := os.Stat(session.Recording); err == nil {
+			info.SizeBytes = stat.Size()
+		}
 	}
-	if err := s.store.SetCurrentInfoWithIDInMemory(info); err != nil {
+	if err := s.setOBSCurrentInfoInMemory(session, info); err != nil {
 		log.Printf("OBS history update failed for %s: %v", session.ID, err)
 	}
 	s.obsCommitMu.Unlock()
-	files := video.GeneratedFiles(s.store.Dir(), session.ID)
-	if len(files) > 0 && s.isOBSLatestSession(session.ID, session.Generation) {
-		if err := s.store.MarkConverted(session.ID, files); err != nil {
-			log.Printf("OBS conversion state update failed for %s: %v", session.ID, err)
+	if !session.RecordingVerificationRequired {
+		files := video.GeneratedFiles(s.store.Dir(), session.ID)
+		if len(files) > 0 && s.isOBSLatestSession(session.ID, session.Generation) {
+			if err := s.store.MarkConverted(session.ID, files); err != nil {
+				log.Printf("OBS conversion state update failed for %s: %v", session.ID, err)
+			}
 		}
 	}
 	s.obsSaveWG.Add(1)
@@ -1628,6 +1709,122 @@ func (s *Server) handleOBSStreamDone(session obsrtmp.Session) {
 		_ = s.store.Save()
 	}()
 	s.broadcastStateChanged()
+}
+
+func (s *Server) setOBSCurrentInfoInMemory(session obsrtmp.Session, info library.CurrentImage) error {
+	if session.RecordingVerificationRequired {
+		if err := s.store.SetPendingCurrentInfoWithIDInMemory(info); err != nil {
+			return err
+		}
+		s.obsPendingRecordings[session.ID] = info
+		return nil
+	}
+	return s.store.SetCurrentInfoWithIDInMemory(info)
+}
+
+func (s *Server) handleOBSRecordingOutcomesDone(sessionID string) {
+	if s == nil || strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	s.obsCommitMu.Lock()
+	if _, completed := s.obsRecordingCompleted[sessionID]; completed {
+		s.obsCommitMu.Unlock()
+		return
+	}
+	if _, finalizing := s.obsRecordingFinalizing[sessionID]; finalizing {
+		s.obsCommitMu.Unlock()
+		return
+	}
+	info, pending := s.obsPendingRecordings[sessionID]
+	if !pending {
+		s.markOBSRecordingCompletedLocked(sessionID)
+		s.obsCommitMu.Unlock()
+		return
+	}
+	s.obsRecordingInputClosed[sessionID] = struct{}{}
+	s.obsRecordingFinalizing[sessionID] = struct{}{}
+	s.obsCommitMu.Unlock()
+	finish := func(completed bool) {
+		s.obsCommitMu.Lock()
+		delete(s.obsRecordingFinalizing, sessionID)
+		if completed {
+			delete(s.obsRecordingInputClosed, sessionID)
+			delete(s.obsPendingRecordings, sessionID)
+			s.markOBSRecordingCompletedLocked(sessionID)
+		}
+		s.obsCommitMu.Unlock()
+	}
+	if s.obsRepresentativeRecording == nil || s.obsRecordingOutcomes == nil {
+		finish(true)
+		return
+	}
+	recording, ok := s.obsRepresentativeRecording(sessionID)
+	if !ok || strings.TrimSpace(recording) == "" {
+		finish(true)
+		return
+	}
+	outcomes := s.obsRecordingOutcomes(sessionID)
+	if len(outcomes) == 0 {
+		finish(true)
+		return
+	}
+	latest := outcomes[len(outcomes)-1]
+	if latest.Artifacts.SessionID != sessionID || latest.Artifacts.Recording != recording || latest.DurationNS == 0 {
+		finish(true)
+		return
+	}
+	info.ID = sessionID
+	info.Kind = "video"
+	info.FileName = filepath.Base(recording)
+	info.PublicName = "obs-" + sessionID + ".mp4"
+	info.ContentType = "video/mp4"
+	info.Thumbnail = ""
+	info.SizeBytes = 0
+	info.Duration = float64(latest.DurationNS) / float64(time.Second)
+	if s.obsCommitVerifiedRecording == nil {
+		finish(false)
+		return
+	}
+	maxAttempts := s.obsRecordingCommitMaxAttempts
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	committed := false
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		err := s.obsCommitVerifiedRecording(recording, info)
+		if err == nil {
+			committed = true
+			break
+		}
+		log.Printf("OBS verified recording commit failed for %s (attempt %d/%d): %v", sessionID, attempt, maxAttempts, err)
+		if attempt < maxAttempts && s.obsRecordingCommitRetryWait != nil {
+			s.obsRecordingCommitRetryWait(attempt)
+		}
+	}
+	if !committed {
+		finish(false)
+		return
+	}
+	finish(true)
+	s.obsSaveWG.Add(1)
+	go func() {
+		defer s.obsSaveWG.Done()
+		_ = s.store.Save()
+	}()
+	s.broadcastStateChanged()
+}
+
+func (s *Server) markOBSRecordingCompletedLocked(sessionID string) {
+	if _, exists := s.obsRecordingCompleted[sessionID]; exists {
+		return
+	}
+	s.obsRecordingCompleted[sessionID] = struct{}{}
+	s.obsRecordingCompletedOrder = append(s.obsRecordingCompletedOrder, sessionID)
+	for len(s.obsRecordingCompletedOrder) > obsRecordingCompletionLimit {
+		oldest := s.obsRecordingCompletedOrder[0]
+		s.obsRecordingCompletedOrder = s.obsRecordingCompletedOrder[1:]
+		delete(s.obsRecordingCompleted, oldest)
+	}
 }
 
 func (s *Server) isOBSActiveSession(sessionID string, generation uint64) bool {
@@ -1928,6 +2125,9 @@ func (s *Server) handleOBSLatency(w http.ResponseWriter, r *http.Request) {
 			return nil
 		}); err != nil {
 			http.Error(w, "failed to save settings", http.StatusInternalServerError)
+			return
+		}
+		if s.reconfigureAirPlayDelivery(w, r) {
 			return
 		}
 		if s.obs != nil {
@@ -2243,6 +2443,15 @@ func totalFileSize(paths []string) int64 {
 
 func (s *Server) handleHistoryMedia(w http.ResponseWriter, r *http.Request) {
 	pathPart := strings.TrimPrefix(r.URL.Path, "/history/")
+	if strings.Contains(pathPart, "/recordings/") {
+		sessionID, generation, ok := parseHistoryRecordingPath(pathPart)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		s.handleHistoryRecording(w, r, sessionID, generation)
+		return
+	}
 	thumbnail := false
 	if strings.HasSuffix(pathPart, "/thumbnail") {
 		thumbnail = true
@@ -2284,6 +2493,60 @@ func (s *Server) handleHistoryMedia(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "no-store, max-age=0")
 	http.ServeContent(w, r, safeFileName(item.PublicName), item.UpdatedAt, file)
+}
+
+func parseHistoryRecordingPath(pathPart string) (string, uint64, bool) {
+	parts := strings.Split(strings.Trim(pathPart, "/"), "/")
+	if len(parts) != 3 || parts[1] != "recordings" {
+		return "", 0, false
+	}
+	sessionID, err := url.PathUnescape(parts[0])
+	if err != nil || sessionID == "" || strings.ContainsAny(sessionID, "/\\") {
+		return "", 0, false
+	}
+	generation, err := strconv.ParseUint(parts[2], 10, 64)
+	if err != nil || generation == 0 {
+		return "", 0, false
+	}
+	return sessionID, generation, true
+}
+
+func (s *Server) handleHistoryRecording(w http.ResponseWriter, r *http.Request, sessionID string, generation uint64) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.obsRecordingOutcomes == nil {
+		http.NotFound(w, r)
+		return
+	}
+	var selected airplaycontract.RecordingOutcome
+	found := false
+	for _, outcome := range s.obsRecordingOutcomes(sessionID) {
+		if outcome.Artifacts.SessionID == sessionID && outcome.Artifacts.Generation == generation && directRecordingAvailable(outcome) {
+			selected = outcome
+			found = true
+			break
+		}
+	}
+	if !found {
+		http.NotFound(w, r)
+		return
+	}
+	file, err := s.store.OpenOwnedFile(selected.Artifacts.Recording)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer file.Close()
+	stat, err := file.Stat()
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "video/mp4")
+	w.Header().Set("Cache-Control", "no-store, max-age=0")
+	http.ServeContent(w, r, safeFileName(filepath.Base(selected.Artifacts.Recording)), stat.ModTime(), file)
 }
 
 func (s *Server) handleHistoryPublish(w http.ResponseWriter, r *http.Request) {
@@ -2375,9 +2638,16 @@ func (s *Server) handleVideoPlayer(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if req.Enabled && !videoToolsReady() {
-			// Tools not ready: install in the background and return now. The
-			// toggle stays OFF until install succeeds (or reverts on failure).
-			// The UI shows progress via state.toolInstall.
+			// Persist the user's intent before starting the asynchronous tool
+			// install. The intent must remain visible even when installation
+			// fails, so the UI can explain the failure and offer a retry.
+			if err := settings.Update(func(appSettings *settings.Settings) error {
+				appSettings.VideoPlayerEnabled = true
+				return nil
+			}); err != nil {
+				http.Error(w, "failed to save settings", http.StatusInternalServerError)
+				return
+			}
 			s.startVideoToolInstall()
 			writeJSON(w, s.videoPlayerState())
 			return
@@ -2419,6 +2689,10 @@ func (s *Server) handleMusicMode(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.Enabled && !s.videoPlayerEnabled() {
 			writeJSONError(w, gpu.RequiredError(), http.StatusConflict)
+			return
+		}
+		if req.Enabled && !videoToolsReady() {
+			writeJSONError(w, errVideoToolsUnavailable, http.StatusServiceUnavailable)
 			return
 		}
 		if req.Enabled && !gpu.RenderingAvailable() {
@@ -2990,8 +3264,7 @@ func (s *Server) serveLLHLSProxy(w http.ResponseWriter, r *http.Request, id stri
 		return false
 	}
 	status := s.obs.Status()
-	mode := obsrtmp.NormalizeLatencyMode(status.Latency.Mode)
-	if mode != obsrtmp.LatencyModeLLHLS && status.Latency.Transport != obsrtmp.LatencyModeRTSPT {
+	if !obsUsesMediaMTXHLS(s.obs.DirectPublishing(), status.Latency.Transport) {
 		return false
 	}
 	name := filepath.Base(r.URL.Path)
@@ -2999,6 +3272,10 @@ func (s *Server) serveLLHLSProxy(w http.ResponseWriter, r *http.Request, id stri
 		name = "index.m3u8"
 	}
 	return s.obs.ProxyLLHLS(w, r, id, name)
+}
+
+func obsUsesMediaMTXHLS(direct bool, transport string) bool {
+	return direct || transport == obsrtmp.LatencyModeLLHLS || transport == obsrtmp.LatencyModeRTSPT
 }
 
 func isOBSEntryPlaylistAlias(id, name string) bool {
@@ -3106,6 +3383,7 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 
 	localImageURL := ""
 	obsStatus := s.obsState()
+	airplayStatus := s.airplayState()
 	imageURLBase := s.imageURLBase
 	if tunnelURLBase != "" {
 		imageURLBase = tunnelURLBase
@@ -3146,17 +3424,21 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 		}
 	} else {
 		videoPlayer := s.videoPlayerEmptyState()
-		state := map[string]interface{}{
+		shareState := map[string]interface{}{
 			"imageURL":      imageURL,
 			"videoURL":      videoURL,
 			"hlsURL":        hlsURL,
 			"localImageURL": localImageURL,
 			"videoPlayer":   videoPlayer,
 			"obs":           obsStatus,
+			"airplay":       airplayStatus,
 			"obsLatency":    s.obsLatencyProfile(),
 		}
-		shareURL, shareURLLabel := primaryShareURL(state)
-		return withResolvedShareURLs(s.stateWithMedia(r, current, upnpResult, tunnelStatus, videoPlayer, obsStatus, imageURL, videoURL, hlsURL, shareURL, shareURLLabel, publicImageURL, publicVideoURL, publicHLSURL, localImageURL, previewImageURL))
+		shareURL, shareURLLabel := primaryShareURL(shareState)
+		state := s.stateWithMedia(r, current, upnpResult, tunnelStatus, videoPlayer, obsStatus, imageURL, videoURL, hlsURL, shareURL, shareURLLabel, publicImageURL, publicVideoURL, publicHLSURL, localImageURL, previewImageURL)
+		state["airplay"] = airplayStatus
+		state["airplayQuality"] = s.airplayQualityState()
+		return withResolvedShareURLs(state)
 	}
 	if imageURL == "" {
 		imageURL = ""
@@ -3201,6 +3483,8 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 		"videoPlayer":       videoPlayer,
 		"videoQuality":      s.videoQualityState(),
 		"obs":               obsStatus,
+		"airplay":           airplayStatus,
+		"airplayQuality":    s.airplayQualityState(),
 		"pairing":           s.pairingState(),
 		"videoQueue":        s.videoQueueState(),
 		"ytdlpAuth":         ytdlpauth.Status(),
@@ -3274,7 +3558,7 @@ func (s *Server) historyState() []map[string]interface{} {
 				hasThumbnail = true
 			}
 		}
-		result = append(result, map[string]interface{}{
+		state := map[string]interface{}{
 			"id":              item.ID,
 			"kind":            item.Kind,
 			"sourceKind":      item.SourceKind,
@@ -3293,9 +3577,57 @@ func (s *Server) historyState() []map[string]interface{} {
 			"address":         s.publicMediaURL(s.historyPlaybackPath(item)),
 			"thumbnailURL":    thumbnailURL,
 			"hasThumbnail":    hasThumbnail,
-		})
+		}
+		if recordings := s.historyRecordingState(item.ID); len(recordings) > 0 {
+			state["recordings"] = recordings
+		}
+		result = append(result, state)
 	}
 	return result
+}
+
+func (s *Server) historyRecordingState(sessionID string) []map[string]interface{} {
+	if s == nil || s.obsRecordingOutcomes == nil || strings.TrimSpace(sessionID) == "" {
+		return nil
+	}
+	outcomes := s.obsRecordingOutcomes(sessionID)
+	if len(outcomes) == 0 {
+		return nil
+	}
+	result := make([]map[string]interface{}, 0, len(outcomes))
+	for _, outcome := range outcomes {
+		available := s.directRecordingPlaybackAvailable(outcome)
+		recording := map[string]interface{}{
+			"generation":      outcome.Artifacts.Generation,
+			"fileName":        filepath.Base(outcome.Artifacts.Recording),
+			"available":       available,
+			"reason":          outcome.Reason,
+			"durationSeconds": float64(outcome.DurationNS) / float64(time.Second),
+			"closed":          outcome.Closed,
+			"probeOK":         outcome.ProbeOK,
+			"hasRealVideo":    outcome.HasRealVideo,
+		}
+		if available {
+			recording["playbackURL"] = s.adminPath("/history/" + url.PathEscape(sessionID) + "/recordings/" + strconv.FormatUint(outcome.Artifacts.Generation, 10))
+		}
+		result = append(result, recording)
+	}
+	return result
+}
+
+func directRecordingAvailable(outcome airplaycontract.RecordingOutcome) bool {
+	return outcome.ProbeOK && outcome.Closed && outcome.HasRealVideo && outcome.DurationNS > 0 && outcome.Reason == "verified"
+}
+
+func (s *Server) directRecordingPlaybackAvailable(outcome airplaycontract.RecordingOutcome) bool {
+	if s == nil || s.store == nil || !directRecordingAvailable(outcome) {
+		return false
+	}
+	file, err := s.store.OpenOwnedFile(outcome.Artifacts.Recording)
+	if err != nil {
+		return false
+	}
+	return file.Close() == nil
 }
 
 // ReconcileHistoryThumbnails regenerates history thumbnail files that are
@@ -3391,6 +3723,48 @@ func (s *Server) videoPlayerState() map[string]interface{} {
 	return s.videoPlayerStateForID("")
 }
 
+func (s *Server) videoToolState() map[string]interface{} {
+	ready := videoToolsReady()
+	installing := s.toolInstallingNow()
+	installStatus := video.ToolInstallStatus()
+	// The shared tracker also serves yt-dlp and other tools. Only expose an
+	// active FFmpeg-family operation as part of the video-player capability;
+	// the server-owned error is authoritative once its worker finishes.
+	if installStatus.Tool != "ffmpeg" && installStatus.Tool != "ffprobe" {
+		installStatus = video.ToolInstall{}
+	}
+	if ready {
+		installStatus = video.ToolInstall{}
+	}
+	if installing && !installStatus.Active {
+		installStatus = video.ToolInstall{
+			Active: true,
+			Tool:   "ffmpeg",
+			Phase:  "preparing",
+		}
+	}
+	state := map[string]interface{}{
+		"toolsReady":  ready,
+		"installing":  installing,
+		"toolInstall": installStatus,
+	}
+	if errText := s.videoToolInstallErrorNow(); errText != "" && !ready {
+		installStatus = video.ToolInstall{Failed: true, Tool: "ffmpeg", Message: errText}
+		state["toolInstall"] = installStatus
+		state["error"] = errText
+	} else if installStatus.Failed && installStatus.Message != "" && !ready {
+		state["error"] = installStatus.Message
+	}
+	return state
+}
+
+func musicRendererState() map[string]string {
+	if gpu.RenderingAvailable() {
+		return map[string]string{"status": "ready", "reason": ""}
+	}
+	return map[string]string{"status": "unavailable", "reason": gpu.UnavailableError().Error()}
+}
+
 func (s *Server) videoPlayerStateForID(id string) map[string]interface{} {
 	enabled := s.videoPlayerEnabled()
 	status := video.CurrentStatusForID(s.store.Dir(), id)
@@ -3400,8 +3774,12 @@ func (s *Server) videoPlayerStateForID(id string) map[string]interface{} {
 	state := map[string]interface{}{
 		"enabled":          enabled,
 		"musicModeEnabled": enabled && s.musicModeEnabled(),
+		"musicRenderer":    musicRendererState(),
 		"status":           status,
 		"quality":          s.videoQualityPreset(),
+	}
+	for key, value := range s.videoToolState() {
+		state[key] = value
 	}
 	if encoder, ok := video.CurrentVideoEncoder(); ok {
 		state["encoder"] = encoder
@@ -3415,12 +3793,17 @@ func (s *Server) videoPlayerEmptyState() map[string]interface{} {
 	if !enabled {
 		status = video.Result{Message: "VRChat video player support is disabled."}
 	}
-	return map[string]interface{}{
+	state := map[string]interface{}{
 		"enabled":          enabled,
 		"musicModeEnabled": enabled && s.musicModeEnabled(),
+		"musicRenderer":    musicRendererState(),
 		"status":           status,
 		"quality":          s.videoQualityPreset(),
 	}
+	for key, value := range s.videoToolState() {
+		state[key] = value
+	}
+	return state
 }
 
 func (s *Server) musicQualityPreset() video.QualityPreset {

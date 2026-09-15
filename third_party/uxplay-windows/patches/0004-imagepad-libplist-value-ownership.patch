@@ -1,0 +1,156 @@
+diff --git a/lib/CMakeLists.txt b/lib/CMakeLists.txt
+index 9040c519..eab74563 100644
+--- a/lib/CMakeLists.txt
++++ b/lib/CMakeLists.txt
+@@ -113,6 +113,13 @@ if ( PLIST_FOUND )
+ endif()
+ target_include_directories( airplay PRIVATE ${PLIST_INCLUDE_DIRS} )
+ 
++if (BUILD_TESTING AND WIN32)
++  add_executable(uxplay_plist_ownership_test tests/plist_ownership_test.c)
++  target_include_directories(uxplay_plist_ownership_test PRIVATE ${PLIST_INCLUDE_DIRS})
++  target_link_libraries(uxplay_plist_ownership_test PRIVATE ${LIBPLIST})
++  add_test(NAME uxplay_plist_ownership COMMAND uxplay_plist_ownership_test)
++endif()
++
+ #libcrypto
+ if( APPLE )
+   # use static linking
+diff --git a/lib/plist_ownership.h b/lib/plist_ownership.h
+new file mode 100644
+index 00000000..b7c89411
+--- /dev/null
++++ b/lib/plist_ownership.h
+@@ -0,0 +1,15 @@
++#ifndef IMAGEPAD_PLIST_OWNERSHIP_H
++#define IMAGEPAD_PLIST_OWNERSHIP_H
++
++#include <stdlib.h>
++#include <plist/plist.h>
++
++static inline void imagepad_plist_value_free(void *value) {
++#ifdef PLIST_230
++    plist_mem_free(value);
++#else
++    free(value);
++#endif
++}
++
++#endif
+diff --git a/lib/raop_handlers.h b/lib/raop_handlers.h
+index a2debc64..f3b15bae 100644
+--- a/lib/raop_handlers.h
++++ b/lib/raop_handlers.h
+@@ -19,6 +19,7 @@
+  * functions and depends on raop internals */
+ 
+ #include "dnssdint.h"
++#include "plist_ownership.h"
+ #include "utils.h"
+ #include <ctype.h>
+ #include <stdlib.h>
+@@ -318,7 +319,7 @@ raop_handler_pairsetup_pin(raop_conn_t *conn,
+         plist_get_string_val(req_method_node, &method);
+         if (strncmp(method, "pin", strlen (method))) {
+             logger_log(raop->logger, LOGGER_ERR, "error, required method is \"pin\", client requested \"%s\"", method);
+-            free (method);
++            imagepad_plist_value_free(method);
+             plist_free (req_root_node);
+             return;
+         }
+@@ -364,10 +365,10 @@ raop_handler_pairsetup_pin(raop_conn_t *conn,
+             free (str);
+         }
+         memcpy(proof, client_proof, (int) client_proof_len);
+-        free (client_proof);
++        imagepad_plist_value_free(client_proof);
+         int ret = srp_validate_proof(conn->session, raop->pairing, (const unsigned char *) client_pk,
+                                      (int) client_pk_len, proof, (int) client_proof_len, (int) sizeof(proof));
+-        free (client_pk);
++        imagepad_plist_value_free(client_pk);
+         plist_free(req_root_node);
+         if (ret < 0) {
+             logger_log(raop->logger, LOGGER_ERR, "Client Authentication Failure (client proof not validated)");
+@@ -407,8 +408,8 @@ raop_handler_pairsetup_pin(raop_conn_t *conn,
+ 
+         memcpy(epk, client_epk, ED25519_KEY_SIZE);
+         memcpy(authtag, client_authtag, GCM_AUTHTAG_SIZE);
+-        free (client_authtag);
+-        free (client_epk);
++        imagepad_plist_value_free(client_authtag);
++        imagepad_plist_value_free(client_epk);
+         plist_free(req_root_node);
+         ret = srp_confirm_pair_setup(conn->session, raop->pairing, epk, authtag);
+         if (ret < 0) {
+@@ -777,7 +778,7 @@ raop_handler_setup(raop_conn_t *conn,
+ 
+         plist_get_data_val(req_eiv_node, &eiv, &eiv_len);
+         memcpy(aesiv, eiv, 16);
+-        free(eiv);	
++        imagepad_plist_value_free(eiv);
+         logger_log(raop->logger, LOGGER_DEBUG, "eiv_len = %llu", eiv_len);
+         if (logger_debug) {
+             char* str = utils_data_to_string(aesiv, 16, 16);
+@@ -789,7 +790,7 @@ raop_handler_setup(raop_conn_t *conn,
+         uint64_t ekey_len = 0;
+         plist_get_data_val(req_ekey_node, &ekey, &ekey_len);
+         memcpy(eaeskey,ekey,72);
+-        free(ekey);
++        imagepad_plist_value_free(ekey);
+         logger_log(raop->logger, LOGGER_DEBUG, "ekey_len = %llu", ekey_len);
+         // eaeskey is 72 bytes, aeskey is 16 bytes
+         if (logger_debug) {
+diff --git a/lib/tests/plist_ownership_test.c b/lib/tests/plist_ownership_test.c
+new file mode 100644
+index 00000000..5ddb9da6
+--- /dev/null
++++ b/lib/tests/plist_ownership_test.c
+@@ -0,0 +1,48 @@
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include <plist/plist.h>
++
++#include "../plist_ownership.h"
++
++static int check_data_value(size_t length) {
++    char payload[72];
++    for (size_t i = 0; i < sizeof(payload); i++) payload[i] = (char)i;
++    plist_t data_node = plist_new_data(payload, length);
++    char *data_value = NULL;
++    uint64_t data_length = 0;
++    if (data_node == NULL) return 1;
++    plist_get_data_val(data_node, &data_value, &data_length);
++    if (data_value == NULL || data_length != length || memcmp(data_value, payload, length) != 0) {
++        return 2;
++    }
++    imagepad_plist_value_free(data_value);
++    plist_free(data_node);
++    return 0;
++}
++
++static int check_string_value(void) {
++    static const char payload[] = "imagepad-plist-ownership";
++    plist_t string_node = plist_new_string(payload);
++    char *string_value = NULL;
++    if (string_node == NULL) return 3;
++    plist_get_string_val(string_node, &string_value);
++    if (string_value == NULL || strcmp(string_value, payload) != 0) return 4;
++    imagepad_plist_value_free(string_value);
++    plist_free(string_node);
++    return 0;
++}
++
++int main(void) {
++    static const size_t lengths[] = {16, 32, 64, 72};
++    for (int iteration = 0; iteration < 1000; iteration++) {
++        for (size_t i = 0; i < sizeof(lengths) / sizeof(lengths[0]); i++) {
++            int result = check_data_value(lengths[i]);
++            if (result != 0) return result;
++        }
++        int result = check_string_value();
++        if (result != 0) return result;
++    }
++    return 0;
++}

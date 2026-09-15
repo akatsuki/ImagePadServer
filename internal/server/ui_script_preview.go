@@ -12,7 +12,7 @@ const dashboardScriptPreview = `
     }
 
     function shareModeForUpload(data) {
-      if (uploadMode !== 'obs') return uploadMode;
+      if (!isLiveInputMode(uploadMode)) return uploadMode;
       const latency = data && data.obs && data.obs.latency ? data.obs.latency : {};
       return latency.transport === 'rtspt' ? 'obs_rtsp' : 'obs_hls';
     }

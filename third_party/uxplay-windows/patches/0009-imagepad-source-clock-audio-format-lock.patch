@@ -1,0 +1,243 @@
+diff --git a/renderers/CMakeLists.txt b/renderers/CMakeLists.txt
+index 87725b5..f409e01 100644
+--- a/renderers/CMakeLists.txt
++++ b/renderers/CMakeLists.txt
+@@ -79,6 +79,9 @@ if (BUILD_TESTING)
+   add_executable(uxplay_source_clock_video_backlog_test source_clock_video_backlog_test.c)
+   target_link_libraries(uxplay_source_clock_video_backlog_test PRIVATE renderers pthread ws2_32)
+   add_test(NAME uxplay_source_clock_video_backlog COMMAND uxplay_source_clock_video_backlog_test)
++  add_executable(uxplay_source_clock_audio_format_lock_test source_clock_audio_format_lock_test.c)
++  target_link_libraries(uxplay_source_clock_audio_format_lock_test PRIVATE renderers pthread ws2_32)
++  add_test(NAME uxplay_source_clock_audio_format_lock COMMAND uxplay_source_clock_audio_format_lock_test)
+ endif()
+ 
+ if( GST_LIBRARY_DIRS MATCHES "/Library/FrameWorks/GStreamer.framework/lib" )
+diff --git a/renderers/source_clock_renderer.c b/renderers/source_clock_renderer.c
+index bc8fa89..354f9bf 100644
+--- a/renderers/source_clock_renderer.c
++++ b/renderers/source_clock_renderer.c
+@@ -542,12 +542,26 @@ void source_clock_renderer_set_audio_format(source_clock_renderer_t *renderer,
+                                             unsigned char ct, unsigned short spf,
+                                             uint32_t sample_rate, uint16_t channels) {
+     if (renderer == NULL) return;
++    pthread_mutex_lock(&renderer->audio.mutex);
+     renderer->audio_codec = (ct == 2) ? SOURCE_CLOCK_AUDIO_ALAC :
+                             (ct == 8) ? SOURCE_CLOCK_AUDIO_AAC_ELD :
+                                         SOURCE_CLOCK_AUDIO_AAC_LC_ADTS;
+     renderer->audio_spf = spf != 0 ? spf : 480;
+     renderer->audio_sample_rate = sample_rate != 0 ? sample_rate : 44100;
+     renderer->audio_channels = channels != 0 ? channels : 2;
++    pthread_mutex_unlock(&renderer->audio.mutex);
++}
++
++bool source_clock_renderer_get_audio_format(source_clock_renderer_t *renderer,
++                                            source_clock_audio_format_t *format) {
++    if (renderer == NULL || format == NULL) return false;
++    pthread_mutex_lock(&renderer->audio.mutex);
++    format->codec = (source_clock_audio_codec_t)renderer->audio_codec;
++    format->samples_per_frame = renderer->audio_spf;
++    format->sample_rate = renderer->audio_sample_rate;
++    format->channels = renderer->audio_channels;
++    pthread_mutex_unlock(&renderer->audio.mutex);
++    return true;
+ }
+ 
+ static unsigned scan_video_flags(const unsigned char *data, size_t len, uint8_t codec) {
+@@ -593,15 +607,18 @@ bool source_clock_renderer_push_video(source_clock_renderer_t *renderer,
+ bool source_clock_renderer_push_audio(source_clock_renderer_t *renderer,
+                                       const unsigned char *data, size_t data_len,
+                                       uint64_t remote_ntp_ns, unsigned flags) {
++    source_clock_audio_format_t format;
+     uint64_t duration_ns;
+     if (renderer == NULL || data == NULL || data_len == 0 ||
+-        data_len > SOURCE_CLOCK_MAX_AUDIO_PAYLOAD || renderer->audio_sample_rate == 0) return false;
+-    duration_ns = ((uint64_t)renderer->audio_spf * 1000000000ULL) /
+-                  renderer->audio_sample_rate;
++        data_len > SOURCE_CLOCK_MAX_AUDIO_PAYLOAD ||
++        !source_clock_renderer_get_audio_format(renderer, &format) ||
++        format.sample_rate == 0 || format.samples_per_frame == 0) return false;
++    duration_ns = ((uint64_t)format.samples_per_frame * 1000000000ULL) /
++                  format.sample_rate;
+     return queue_frame(&renderer->audio, data, data_len, remote_ntp_ns,
+-                       renderer->audio_codec, (uint16_t)flags,
+-                       renderer->audio_spf, renderer->audio_sample_rate,
+-                       renderer->audio_channels, duration_ns);
++                       (uint8_t)format.codec, (uint16_t)flags,
++                       format.samples_per_frame, format.sample_rate,
++                       format.channels, duration_ns);
+ }
+ 
+ size_t source_clock_renderer_video_pending(const source_clock_renderer_t *renderer) {
+diff --git a/renderers/source_clock_renderer.h b/renderers/source_clock_renderer.h
+index d346b3b..f5f4850 100644
+--- a/renderers/source_clock_renderer.h
++++ b/renderers/source_clock_renderer.h
+@@ -20,6 +20,13 @@ typedef enum source_clock_audio_codec_e {
+     SOURCE_CLOCK_AUDIO_AAC_LC_ADTS = 18
+ } source_clock_audio_codec_t;
+ 
++typedef struct source_clock_audio_format_s {
++    source_clock_audio_codec_t codec;
++    uint32_t samples_per_frame;
++    uint32_t sample_rate;
++    uint16_t channels;
++} source_clock_audio_format_t;
++
+ enum {
+     SOURCE_CLOCK_FLAG_KEYFRAME = 1u << 0,
+     SOURCE_CLOCK_FLAG_CONFIG = 1u << 1,
+@@ -42,6 +49,8 @@ void source_clock_renderer_set_audio_format(source_clock_renderer_t *renderer,
+                                             unsigned short spf,
+                                             uint32_t sample_rate,
+                                             uint16_t channels);
++bool source_clock_renderer_get_audio_format(source_clock_renderer_t *renderer,
++                                            source_clock_audio_format_t *format);
+ 
+ /* These functions copy the complete frame and return immediately. */
+ bool source_clock_renderer_push_video(source_clock_renderer_t *renderer,
+diff --git a/renderers/source_clock_audio_format_lock_test.c b/renderers/source_clock_audio_format_lock_test.c
+new file mode 100644
+index 0000000..7bc64b1
+--- /dev/null
++++ b/renderers/source_clock_audio_format_lock_test.c
+@@ -0,0 +1,140 @@
++#include "source_clock_renderer.h"
++
++#ifdef NDEBUG
++#undef NDEBUG
++#endif
++#include <assert.h>
++#include <pthread.h>
++#include <stdio.h>
++
++#ifdef _WIN32
++#include <winsock2.h>
++#include <windows.h>
++#else
++#include <sched.h>
++#endif
++
++typedef struct format_test_state_s {
++    pthread_mutex_t mutex;
++    pthread_cond_t cond;
++    unsigned ready;
++    unsigned running;
++    unsigned writes;
++    int start;
++} format_test_state_t;
++
++typedef struct format_writer_s {
++    source_clock_renderer_t *renderer;
++    format_test_state_t *state;
++    unsigned char ct;
++    unsigned short spf;
++    uint32_t sample_rate;
++    uint16_t channels;
++} format_writer_t;
++
++static void *write_format(void *argument) {
++    format_writer_t *writer = (format_writer_t *)argument;
++    unsigned i;
++    pthread_mutex_lock(&writer->state->mutex);
++    writer->state->ready++;
++    writer->state->running++;
++    pthread_cond_broadcast(&writer->state->cond);
++    while (!writer->state->start)
++        pthread_cond_wait(&writer->state->cond, &writer->state->mutex);
++    pthread_mutex_unlock(&writer->state->mutex);
++    for (i = 0; i < 200000; ++i) {
++        source_clock_renderer_set_audio_format(writer->renderer, writer->ct,
++                                               writer->spf, writer->sample_rate,
++                                               writer->channels);
++        pthread_mutex_lock(&writer->state->mutex);
++        writer->state->writes++;
++        pthread_mutex_unlock(&writer->state->mutex);
++        if ((i & 63u) == 0) {
++#ifdef _WIN32
++            Sleep(0);
++#else
++            sched_yield();
++#endif
++        }
++    }
++    pthread_mutex_lock(&writer->state->mutex);
++    writer->state->running--;
++    pthread_cond_broadcast(&writer->state->cond);
++    pthread_mutex_unlock(&writer->state->mutex);
++    return NULL;
++}
++
++static int is_tuple_a(const source_clock_audio_format_t *format) {
++    return format->codec == SOURCE_CLOCK_AUDIO_ALAC &&
++           format->samples_per_frame == 352 &&
++           format->sample_rate == 44100 &&
++           format->channels == 2;
++}
++
++static int is_tuple_b(const source_clock_audio_format_t *format) {
++    return format->codec == SOURCE_CLOCK_AUDIO_AAC_ELD &&
++           format->samples_per_frame == 480 &&
++           format->sample_rate == 48000 &&
++           format->channels == 1;
++}
++
++int main(void) {
++    const char *token = "00112233445566778899aabbccddeeff";
++    source_clock_renderer_t *renderer;
++    format_test_state_t state = { 0 };
++    format_writer_t writer_a;
++    format_writer_t writer_b;
++    pthread_t thread_a;
++    pthread_t thread_b;
++    unsigned i;
++    unsigned previous_writes = 0;
++    unsigned write_advances = 0;
++    unsigned overlap_reads = 0;
++#ifdef _WIN32
++    WSADATA wsa;
++    assert(WSAStartup(MAKEWORD(2, 2), &wsa) == 0);
++#endif
++    renderer = source_clock_renderer_create("127.0.0.1:1", "127.0.0.1:1", token);
++    assert(renderer != NULL);
++    assert(pthread_mutex_init(&state.mutex, NULL) == 0);
++    assert(pthread_cond_init(&state.cond, NULL) == 0);
++    source_clock_renderer_set_audio_format(renderer, 2, 352, 44100, 2);
++    writer_a = (format_writer_t){ renderer, &state, 2, 352, 44100, 2 };
++    writer_b = (format_writer_t){ renderer, &state, 8, 480, 48000, 1 };
++    assert(pthread_create(&thread_a, NULL, write_format, &writer_a) == 0);
++    assert(pthread_create(&thread_b, NULL, write_format, &writer_b) == 0);
++    pthread_mutex_lock(&state.mutex);
++    while (state.ready != 2)
++        pthread_cond_wait(&state.cond, &state.mutex);
++    state.start = 1;
++    pthread_cond_broadcast(&state.cond);
++    pthread_mutex_unlock(&state.mutex);
++    for (i = 0; i < 800000; ++i) {
++        source_clock_audio_format_t format;
++        unsigned writes;
++        unsigned running;
++        assert(source_clock_renderer_get_audio_format(renderer, &format));
++        assert(is_tuple_a(&format) || is_tuple_b(&format));
++        pthread_mutex_lock(&state.mutex);
++        writes = state.writes;
++        running = state.running;
++        pthread_mutex_unlock(&state.mutex);
++        if (running > 0) overlap_reads++;
++        if (writes > previous_writes) write_advances++;
++        previous_writes = writes;
++        if (running == 0) break;
++    }
++    pthread_join(thread_a, NULL);
++    pthread_join(thread_b, NULL);
++    assert(state.writes == 400000);
++    assert(overlap_reads > 1000);
++    assert(write_advances > 100);
++    pthread_cond_destroy(&state.cond);
++    pthread_mutex_destroy(&state.mutex);
++    source_clock_renderer_destroy(renderer);
++#ifdef _WIN32
++    WSACleanup();
++#endif
++    puts("source_clock_audio_format_lock: PASS");
++    return 0;
++}

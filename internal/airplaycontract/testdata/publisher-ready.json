@@ -1,0 +1,11 @@
+{
+  "schema": 2,
+  "sessionId": "obs_example",
+  "publisherGeneration": 1,
+  "event": "publisher-ready",
+  "at": "2026-09-05T00:00:00Z",
+  "protocolVersion": 1,
+  "videoListenPort": 50000,
+  "audioListenPort": 50001,
+  "pipelineStartAccepted": true
+}

@@ -24,9 +24,9 @@ const dashboardScriptOBS = `
     function updateOBSActionState(data) {
       if (!uploadButton) return;
       if (obsLatencyDetailButton) {
-        obsLatencyDetailButton.hidden = !(uploadMode === 'obs' && data && data.publishing);
+        obsLatencyDetailButton.hidden = !(isLiveInputMode(uploadMode) && data && data.publishing);
       }
-      if (uploadMode !== 'obs') return;
+      if (!isLiveInputMode(uploadMode)) return;
       const obs = data || {};
       if (obs.publishing) {
         uploadButton.textContent = '配信中...';
@@ -111,7 +111,7 @@ const dashboardScriptOBS = `
     }
 
     function applyOBSProtection() {
-      const protectedMode = uploadMode === 'obs';
+      const protectedMode = isLiveInputMode(uploadMode);
       document.body.classList.toggle('obs-protect', protectedMode);
       setPhoneProtection(protectedMode);
       document.getElementById('phoneURL').textContent = state.phoneURL || '';

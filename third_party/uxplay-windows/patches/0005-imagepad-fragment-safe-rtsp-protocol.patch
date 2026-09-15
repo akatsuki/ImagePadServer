@@ -1,0 +1,141 @@
+diff --git a/lib/CMakeLists.txt b/lib/CMakeLists.txt
+--- a/lib/CMakeLists.txt
++++ b/lib/CMakeLists.txt
+@@ -118,6 +118,12 @@ if (BUILD_TESTING AND WIN32)
+   target_include_directories(uxplay_plist_ownership_test PRIVATE ${PLIST_INCLUDE_DIRS})
+   target_link_libraries(uxplay_plist_ownership_test PRIVATE ${LIBPLIST})
+   add_test(NAME uxplay_plist_ownership COMMAND uxplay_plist_ownership_test)
++
++  add_executable(uxplay_http_request_fragmentation_test
++    tests/http_request_fragmentation_test.c
++    http_request.c)
++  target_link_libraries(uxplay_http_request_fragmentation_test PRIVATE llhttp)
++  add_test(NAME uxplay_http_request_fragmentation COMMAND uxplay_http_request_fragmentation_test)
+ endif()
+ 
+ #libcrypto
+diff --git a/lib/http_request.c b/lib/http_request.c
+--- a/lib/http_request.c
++++ b/lib/http_request.c
+@@ -31,6 +31,7 @@ struct http_request_s {
+     const char *method;
+     char *url;
+     char protocol[9];
++    bool protocol_version_started;
+ 
+     char **headers;
+     int headers_size;
+@@ -42,6 +43,40 @@ struct http_request_s {
+     int complete;
+ };
+ 
++static int
++on_protocol(llhttp_t *parser, const char *at, size_t length)
++{
++    http_request_t *request = parser->data;
++    size_t protocol_length = strlen(request->protocol);
++
++    if (length > sizeof(request->protocol) - protocol_length - 1) {
++        return HPE_USER;
++    }
++    memcpy(request->protocol + protocol_length, at, length);
++    request->protocol[protocol_length + length] = '\0';
++    return 0;
++}
++
++static int
++on_version(llhttp_t *parser, const char *at, size_t length)
++{
++    http_request_t *request = parser->data;
++    size_t protocol_length = strlen(request->protocol);
++
++    if (!request->protocol_version_started) {
++        if (protocol_length + 1 >= sizeof(request->protocol)) return HPE_USER;
++        request->protocol[protocol_length++] = '/';
++        request->protocol[protocol_length] = '\0';
++        request->protocol_version_started = true;
++    }
++    if (length > sizeof(request->protocol) - protocol_length - 1) {
++        return HPE_USER;
++    }
++    memcpy(request->protocol + protocol_length, at, length);
++    request->protocol[protocol_length + length] = '\0';
++    return 0;
++}
++
+ static int
+ on_url(llhttp_t *parser, const char *at, size_t length)
+ {
+@@ -54,8 +89,6 @@ on_url(llhttp_t *parser, const char *at, size_t length)
+     request->url[urllen] = '\0';
+     strncat(request->url, at, length);
+ 
+-    strncpy(request->protocol, at + length + 1, 8);
+-
+     return 0;
+ }
+ 
+@@ -151,6 +184,8 @@ http_request_init(void)
+     }
+ 
+     llhttp_settings_init(&request->parser_settings);
++    request->parser_settings.on_protocol = &on_protocol;
++    request->parser_settings.on_version = &on_version;
+     request->parser_settings.on_url = &on_url;
+     request->parser_settings.on_header_field = &on_header_field;
+     request->parser_settings.on_header_value = &on_header_value;
+diff --git a/lib/tests/http_request_fragmentation_test.c b/lib/tests/http_request_fragmentation_test.c
+new file mode 100644
+--- /dev/null
++++ b/lib/tests/http_request_fragmentation_test.c
+@@ -0,0 +1,50 @@
++#include <stddef.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++
++#include "../http_request.h"
++
++static int check_fragment_size(size_t fragment_size) {
++    static const char request_text[] =
++        "GET /info RTSP/1.0\r\n"
++        "CSeq: 0\r\n"
++        "Content-Length: 0\r\n"
++        "\r\n";
++    const size_t request_length = sizeof(request_text) - 1;
++    http_request_t *request = http_request_init();
++    if (request == NULL) return 1;
++
++    for (size_t offset = 0; offset < request_length;) {
++        size_t length = fragment_size;
++        if (length > request_length - offset) length = request_length - offset;
++        uint8_t fragment[64];
++        memset(fragment, 0xa5, sizeof(fragment));
++        memcpy(fragment, request_text + offset, length);
++        if (http_request_add_data(request, (const char *)fragment, (int)length) != 0) {
++            http_request_destroy(request);
++            return 2;
++        }
++        offset += length;
++    }
++
++    int result = 0;
++    if (!http_request_is_complete(request)) result = 3;
++    else if (strcmp(http_request_get_method(request), "GET") != 0) result = 4;
++    else if (strcmp(http_request_get_url(request), "/info") != 0) result = 5;
++    else if (strcmp(http_request_get_protocol(request), "RTSP/1.0") != 0) result = 6;
++    http_request_destroy(request);
++    return result;
++}
++
++int main(void) {
++    static const size_t fragment_sizes[] = {1, 2, 7, 39, 40, 41};
++    for (size_t i = 0; i < sizeof(fragment_sizes) / sizeof(fragment_sizes[0]); i++) {
++        int result = check_fragment_size(fragment_sizes[i]);
++        if (result != 0) {
++            fprintf(stderr, "fragment_size=%zu result=%d\n", fragment_sizes[i], result);
++            return result;
++        }
++    }
++    return 0;
++}

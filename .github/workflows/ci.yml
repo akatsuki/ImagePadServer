@@ -19,6 +19,10 @@ jobs:
       - name: Install ffmpeg and yt-dlp
         run: sudo apt-get update && sudo apt-get install -y ffmpeg yt-dlp
       - run: go test ./...
+      - name: Verify AirPlay runtime archive contract tests
+        run: python3 -m unittest discover -s scripts/tests -p test_verify_airplay_h264_archive.py
+      - name: Verify AirPlay same-release source and license gate tests
+        run: python3 -m unittest discover -s scripts/tests -p test_airplay_license_archive.py
       - run: go build -o imagepadserver ./cmd/imagepadserver
 
   cross-build:

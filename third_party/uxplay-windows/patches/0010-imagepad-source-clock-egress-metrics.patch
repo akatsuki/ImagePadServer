@@ -1,0 +1,1072 @@
+diff --git a/renderers/CMakeLists.txt b/renderers/CMakeLists.txt
+index f409e01..46cf1f8 100644
+--- a/renderers/CMakeLists.txt
++++ b/renderers/CMakeLists.txt
+@@ -44,6 +44,7 @@ add_library( renderers
+              video_renderer.c
+              mux_renderer.c
+-             source_clock_renderer.c )
++             source_clock_renderer.c
++             source_clock_metrics.c )
+ 
+ target_link_libraries ( renderers PUBLIC airplay )
+ 
+@@ -71,7 +72,9 @@ target_include_directories ( renderers PUBLIC \${GST_INCLUDE_DIRS} )
+ 
+ if (BUILD_TESTING)
+   enable_testing()
++  target_compile_definitions(renderers PRIVATE SOURCE_CLOCK_TEST_HOOKS)
+   add_executable(uxplay_source_clock_renderer_test source_clock_renderer_test.c)
++  target_compile_definitions(uxplay_source_clock_renderer_test PRIVATE SOURCE_CLOCK_TEST_HOOKS)
+   target_link_libraries(uxplay_source_clock_renderer_test PRIVATE renderers pthread ws2_32)
+   add_test(NAME uxplay_source_clock_renderer COMMAND uxplay_source_clock_renderer_test)
+   add_executable(uxplay_source_clock_video_backlog_test source_clock_video_backlog_test.c)
+@@ -85,6 +86,9 @@ if (BUILD_TESTING)
+   add_executable(uxplay_source_clock_audio_format_lock_test source_clock_audio_format_lock_test.c)
+   target_link_libraries(uxplay_source_clock_audio_format_lock_test PRIVATE renderers pthread ws2_32)
+   add_test(NAME uxplay_source_clock_audio_format_lock COMMAND uxplay_source_clock_audio_format_lock_test)
++  add_executable(uxplay_source_clock_metrics_contract_test source_clock_metrics_contract_test.c)
++  target_link_libraries(uxplay_source_clock_metrics_contract_test PRIVATE renderers pthread ws2_32)
++  add_test(NAME uxplay_source_clock_metrics_contract COMMAND uxplay_source_clock_metrics_contract_test)
+ endif()
+ 
+ if( GST_LIBRARY_DIRS MATCHES "/Library/FrameWorks/GStreamer.framework/lib" )
+diff --git a/renderers/source_clock_metrics.c b/renderers/source_clock_metrics.c
+new file mode 100644
+index 0000000..83cdffe
+--- /dev/null
++++ b/renderers/source_clock_metrics.c
+@@ -0,0 +1,114 @@
++#include "source_clock_metrics.h"
++
++#include <inttypes.h>
++#include <string.h>
++
++#ifdef _WIN32
++#include <windows.h>
++#else
++#include <time.h>
++#endif
++
++#define SOURCE_CLOCK_RECEIVER_ID_MAX 64u
++
++static const char *failure_reason_name(source_clock_failure_reason_t reason) {
++    switch (reason) {
++    case SOURCE_CLOCK_FAILURE_NONE:
++        return "";
++    case SOURCE_CLOCK_FAILURE_CONNECT:
++        return "connect";
++    case SOURCE_CLOCK_FAILURE_SEND:
++        return "send";
++    case SOURCE_CLOCK_FAILURE_PEER_EOF:
++        return "peer_eof";
++    case SOURCE_CLOCK_FAILURE_QUEUE_DROP:
++        return "queue_drop";
++    default:
++        return NULL;
++    }
++}
++
++bool source_clock_metrics_receiver_id_is_valid(const char *receiver_id) {
++    size_t index;
++    size_t length;
++    if (receiver_id == NULL) return false;
++    length = strlen(receiver_id);
++    if (length == 0 || length > SOURCE_CLOCK_RECEIVER_ID_MAX) return false;
++    for (index = 0; index < length; ++index) {
++        unsigned char value = (unsigned char)receiver_id[index];
++        if (!((value >= 'a' && value <= 'z') ||
++              (value >= 'A' && value <= 'Z') ||
++              (value >= '0' && value <= '9') ||
++              value == '.' || value == '_' || value == '-')) {
++            return false;
++        }
++    }
++    return true;
++}
++
++uint64_t source_clock_metrics_monotonic_time_ns(void) {
++#ifdef _WIN32
++    LARGE_INTEGER frequency;
++    LARGE_INTEGER counter;
++    uint64_t seconds;
++    uint64_t remainder;
++    if (!QueryPerformanceFrequency(&frequency) || frequency.QuadPart <= 0 ||
++        !QueryPerformanceCounter(&counter) || counter.QuadPart < 0) {
++        return 0;
++    }
++    seconds = (uint64_t)counter.QuadPart / (uint64_t)frequency.QuadPart;
++    remainder = (uint64_t)counter.QuadPart % (uint64_t)frequency.QuadPart;
++    return seconds * 1000000000ULL +
++           (remainder * 1000000000ULL) / (uint64_t)frequency.QuadPart;
++#else
++    struct timespec value;
++    if (clock_gettime(CLOCK_MONOTONIC, &value) != 0) return 0;
++    return (uint64_t)value.tv_sec * 1000000000ULL + (uint64_t)value.tv_nsec;
++#endif
++}
++
++bool source_clock_metrics_write(FILE *stream,
++                                const source_clock_metrics_snapshot_t *snapshot) {
++    const char *failure_reason;
++    char video_age[32];
++    char audio_age[32];
++    char line[1024];
++    int length;
++    if (stream == NULL || snapshot == NULL ||
++        !source_clock_metrics_receiver_id_is_valid(snapshot->receiver_id)) {
++        return false;
++    }
++    failure_reason = failure_reason_name(snapshot->last_failure_reason);
++    if (failure_reason == NULL) return false;
++    if (snapshot->has_video_age) {
++        length = snprintf(video_age, sizeof(video_age), "%" PRIu64,
++                          snapshot->video_age_ms);
++    } else {
++        length = snprintf(video_age, sizeof(video_age), "null");
++    }
++    if (length < 0 || (size_t)length >= sizeof(video_age)) return false;
++    if (snapshot->has_audio_age) {
++        length = snprintf(audio_age, sizeof(audio_age), "%" PRIu64,
++                          snapshot->audio_age_ms);
++    } else {
++        length = snprintf(audio_age, sizeof(audio_age), "null");
++    }
++    if (length < 0 || (size_t)length >= sizeof(audio_age)) return false;
++    length = snprintf(
++        line, sizeof(line),
++        SOURCE_CLOCK_METRICS_PREFIX
++        "{\"receiverId\":\"%s\",\"sequence\":%" PRIu64
++        ",\"videoFrames\":%" PRIu64 ",\"audioFrames\":%" PRIu64
++        ",\"videoAgeMs\":%s,\"audioAgeMs\":%s"
++        ",\"connectedConsumers\":%" PRIu64
++        ",\"sentFrames\":%" PRIu64 ",\"droppedFrames\":%" PRIu64
++        ",\"failureEvents\":%" PRIu64 ",\"lastSocketError\":%d,\"lastFailureReason\":\"%s\"}\n",
++        snapshot->receiver_id, snapshot->sequence, snapshot->video_frames,
++        snapshot->audio_frames, video_age, audio_age,
++        snapshot->connected_consumers, snapshot->sent_frames,
++        snapshot->dropped_frames, snapshot->failure_events, snapshot->last_socket_error,
++        failure_reason);
++    if (length < 0 || (size_t)length >= sizeof(line)) return false;
++    if (fwrite(line, 1, (size_t)length, stream) != (size_t)length) return false;
++    return fflush(stream) == 0;
++}
+diff --git a/renderers/source_clock_metrics.h b/renderers/source_clock_metrics.h
+new file mode 100644
+index 0000000..ac89108
+--- /dev/null
++++ b/renderers/source_clock_metrics.h
+@@ -0,0 +1,47 @@
++#ifndef UXPLAY_SOURCE_CLOCK_METRICS_H
++#define UXPLAY_SOURCE_CLOCK_METRICS_H
++
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define SOURCE_CLOCK_METRICS_PREFIX "IMAGEPAD_METRICS_V1 "
++
++typedef enum source_clock_failure_reason_e {
++    SOURCE_CLOCK_FAILURE_NONE = 0,
++    SOURCE_CLOCK_FAILURE_CONNECT,
++    SOURCE_CLOCK_FAILURE_SEND,
++    SOURCE_CLOCK_FAILURE_PEER_EOF,
++    SOURCE_CLOCK_FAILURE_QUEUE_DROP
++} source_clock_failure_reason_t;
++
++typedef struct source_clock_metrics_snapshot_s {
++    const char *receiver_id;
++    uint64_t sequence;
++    uint64_t video_frames;
++    uint64_t audio_frames;
++    bool has_video_age;
++    uint64_t video_age_ms;
++    bool has_audio_age;
++    uint64_t audio_age_ms;
++    uint64_t connected_consumers;
++    uint64_t sent_frames;
++    uint64_t dropped_frames, failure_events;
++    int last_socket_error;
++    source_clock_failure_reason_t last_failure_reason;
++} source_clock_metrics_snapshot_t;
++
++bool source_clock_metrics_receiver_id_is_valid(const char *receiver_id);
++uint64_t source_clock_metrics_monotonic_time_ns(void);
++bool source_clock_metrics_write(FILE *stream,
++                                const source_clock_metrics_snapshot_t *snapshot);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif
+diff --git a/renderers/source_clock_metrics_contract_test.c b/renderers/source_clock_metrics_contract_test.c
+new file mode 100644
+index 0000000..0328bbd
+--- /dev/null
++++ b/renderers/source_clock_metrics_contract_test.c
+@@ -0,0 +1,100 @@
++#include "source_clock_metrics.h"
++
++#ifdef NDEBUG
++#undef NDEBUG
++#endif
++#include <assert.h>
++#include <stdio.h>
++#include <string.h>
++
++static void read_stream(FILE *stream, char *buffer, size_t capacity) {
++    size_t length;
++    assert(fflush(stream) == 0);
++    assert(fseek(stream, 0, SEEK_SET) == 0);
++    length = fread(buffer, 1, capacity - 1, stream);
++    assert(!ferror(stream));
++    buffer[length] = '\0';
++}
++
++static source_clock_metrics_snapshot_t base_snapshot(void) {
++    source_clock_metrics_snapshot_t snapshot = { 0 };
++    snapshot.receiver_id = "receiver-01_A.test";
++    snapshot.sequence = 7;
++    snapshot.video_frames = 11;
++    snapshot.audio_frames = 0;
++    snapshot.connected_consumers = 1;
++    snapshot.sent_frames = 9;
++    snapshot.dropped_frames = 2; snapshot.failure_events = 3;
++    snapshot.last_socket_error = 0;
++    snapshot.last_failure_reason = SOURCE_CLOCK_FAILURE_NONE;
++    return snapshot;
++}
++
++int main(void) {
++    source_clock_metrics_snapshot_t snapshot = base_snapshot();
++    char output[1024];
++    FILE *stream;
++
++    assert(source_clock_metrics_receiver_id_is_valid("a"));
++    assert(source_clock_metrics_receiver_id_is_valid("receiver-01_A.test"));
++    assert(!source_clock_metrics_receiver_id_is_valid(NULL));
++    assert(!source_clock_metrics_receiver_id_is_valid(""));
++    assert(!source_clock_metrics_receiver_id_is_valid("bad\nline"));
++    assert(!source_clock_metrics_receiver_id_is_valid("bad\"quote"));
++    assert(!source_clock_metrics_receiver_id_is_valid(
++        "12345678901234567890123456789012345678901234567890123456789012345"));
++
++    stream = tmpfile();
++    assert(stream != NULL);
++    assert(source_clock_metrics_write(stream, &snapshot));
++    read_stream(stream, output, sizeof(output));
++    assert(strcmp(output,
++        "IMAGEPAD_METRICS_V1 {\"receiverId\":\"receiver-01_A.test\","
++        "\"sequence\":7,\"videoFrames\":11,\"audioFrames\":0,"
++        "\"videoAgeMs\":null,\"audioAgeMs\":null,"
++        "\"connectedConsumers\":1,\"sentFrames\":9,\"droppedFrames\":2,\"failureEvents\":3,"
++        "\"lastSocketError\":0,\"lastFailureReason\":\"\"}\n") == 0);
++    fclose(stream);
++
++    snapshot.sequence = 8;
++    snapshot.audio_frames = 4;
++    snapshot.has_video_age = true;
++    snapshot.video_age_ms = 123;
++    snapshot.has_audio_age = true;
++    snapshot.audio_age_ms = 45;
++    snapshot.last_socket_error = 10054;
++    snapshot.last_failure_reason = SOURCE_CLOCK_FAILURE_SEND;
++    stream = tmpfile();
++    assert(stream != NULL);
++    assert(source_clock_metrics_write(stream, &snapshot));
++    read_stream(stream, output, sizeof(output));
++    assert(strstr(output, "\"videoAgeMs\":123") != NULL);
++    assert(strstr(output, "\"audioAgeMs\":45") != NULL);
++    assert(strstr(output, "\"failureEvents\":3") != NULL); assert(strstr(output, "\"lastSocketError\":10054") != NULL);
++    assert(strstr(output, "\"lastFailureReason\":\"send\"") != NULL);
++    assert(strchr(output, '\n') == output + strlen(output) - 1);
++    assert(strstr(output, "token") == NULL);
++    assert(strstr(output, "payload") == NULL);
++    assert(strstr(output, "endpoint") == NULL);
++    fclose(stream);
++
++    snapshot.receiver_id = "bad\nline";
++    stream = tmpfile();
++    assert(stream != NULL);
++    assert(!source_clock_metrics_write(stream, &snapshot));
++    read_stream(stream, output, sizeof(output));
++    assert(output[0] == '\0');
++    fclose(stream);
++
++    snapshot = base_snapshot();
++    snapshot.last_failure_reason = (source_clock_failure_reason_t)999;
++    stream = tmpfile();
++    assert(stream != NULL);
++    assert(!source_clock_metrics_write(stream, &snapshot));
++    read_stream(stream, output, sizeof(output));
++    assert(output[0] == '\0');
++    fclose(stream);
++
++    puts("source_clock_metrics_contract: PASS");
++    return 0;
++}
+diff --git a/renderers/source_clock_renderer.c b/renderers/source_clock_renderer.c
+index 95809a4..65f0bac 100644
+--- a/renderers/source_clock_renderer.c
++++ b/renderers/source_clock_renderer.c
+@@ -1,4 +1,5 @@
+ #include "source_clock_renderer.h"
++#include "source_clock_metrics.h"
+ 
+ #include <ctype.h>
+ #include <errno.h>
+@@ -59,6 +60,21 @@ typedef struct source_clock_frame_s {
+ 
+ typedef struct source_clock_writer_s source_clock_writer_t;
+ 
++typedef struct source_clock_runtime_metrics_s {
++    uint64_t sequence;
++    uint64_t video_frames;
++    uint64_t audio_frames;
++    uint64_t last_video_input_ns;
++    uint64_t last_audio_input_ns;
++    uint64_t connected_consumers;
++    uint64_t sent_frames;
++    uint64_t dropped_frames, failure_events;
++    int last_socket_error;
++    source_clock_failure_reason_t last_failure_reason;
++    bool has_video_input;
++    bool has_audio_input;
++} source_clock_runtime_metrics_t;
++
+ struct source_clock_writer_s {
+     source_clock_renderer_t *owner;
+     uint8_t stream_kind;
+@@ -85,6 +101,14 @@ struct source_clock_writer_s {
+ struct source_clock_renderer_s {
+     source_clock_writer_t video;
+     source_clock_writer_t audio;
++    char *receiver_id;
++    pthread_mutex_t metrics_mutex;
++    bool metrics_mutex_initialized;
++    source_clock_runtime_metrics_t metrics;
++#ifdef SOURCE_CLOCK_TEST_HOOKS
++    source_clock_queue_commit_hook_t queue_commit_hook;
++    void *queue_commit_context;
++#endif
+     uint8_t video_codec;
+     uint8_t audio_codec;
+     uint32_t audio_sample_rate;
+@@ -167,12 +187,25 @@ static void encode_header(uint8_t out[SOURCE_CLOCK_HEADER_SIZE], uint8_t stream_
+     put_u16(out + 36, channels);
+ }
+ 
+-static bool send_all(SOURCE_CLOCK_SOCKET socket_fd, const void *data, size_t length) {
++static int socket_last_error(void) {
++#ifdef _WIN32
++    return WSAGetLastError();
++#else
++    return errno;
++#endif
++}
++
++static bool send_all(SOURCE_CLOCK_SOCKET socket_fd, const void *data, size_t length,
++                     int *socket_error) {
+     const unsigned char *bytes = (const unsigned char *)data;
++    if (socket_error != NULL) *socket_error = 0;
+     while (length > 0) {
+         int sent = send(socket_fd, (const char *)bytes,
+                         (int)(length > 1024 * 1024 ? 1024 * 1024 : length), 0);
+-        if (sent <= 0) return false;
++        if (sent <= 0) {
++            if (socket_error != NULL) *socket_error = sent < 0 ? socket_last_error() : 0;
++            return false;
++        }
+         bytes += sent;
+         length -= (size_t)sent;
+     }
+@@ -180,7 +213,7 @@ static bool send_all(SOURCE_CLOCK_SOCKET socket_fd, const void *data, size_t len
+ }
+ 
+ static bool send_control(source_clock_writer_t *writer, SOURCE_CLOCK_SOCKET socket_fd,
+-                         uint8_t opcode, uint32_t generation) {
++                         uint8_t opcode, uint32_t generation, int *socket_error) {
+     uint8_t header[SOURCE_CLOCK_HEADER_SIZE];
+     uint8_t payload[SOURCE_CLOCK_TOKEN_BYTES];
+     const uint8_t *body = NULL;
+@@ -192,11 +225,11 @@ static bool send_control(source_clock_writer_t *writer, SOURCE_CLOCK_SOCKET sock
+     }
+     encode_header(header, SOURCE_CLOCK_STREAM_CONTROL, opcode, 0, body_len,
+                   generation, 0, 0, 0, 0);
+-    if (!send_all(socket_fd, header, sizeof(header))) return false;
+-    return body_len == 0 || send_all(socket_fd, body, body_len);
++    if (!send_all(socket_fd, header, sizeof(header), socket_error)) return false;
++    return body_len == 0 || send_all(socket_fd, body, body_len, socket_error);
+ }
+ 
+-static SOURCE_CLOCK_SOCKET connect_endpoint(const char *endpoint) {
++static SOURCE_CLOCK_SOCKET connect_endpoint(const char *endpoint, int *socket_error) {
+     char *separator;
+     char *host;
+     char *port;
+@@ -204,6 +237,8 @@ static SOURCE_CLOCK_SOCKET connect_endpoint(const char *endpoint) {
+     struct addrinfo *result = NULL;
+     struct addrinfo *entry;
+     SOURCE_CLOCK_SOCKET socket_fd = SOURCE_CLOCK_INVALID_SOCKET;
++    int address_error;
++    if (socket_error != NULL) *socket_error = 0;
+     if (endpoint == NULL) return SOURCE_CLOCK_INVALID_SOCKET;
+     host = copy_string(endpoint);
+     if (host == NULL) return SOURCE_CLOCK_INVALID_SOCKET;
+@@ -217,15 +252,24 @@ static SOURCE_CLOCK_SOCKET connect_endpoint(const char *endpoint) {
+     memset(&hints, 0, sizeof(hints));
+     hints.ai_family = AF_INET;
+     hints.ai_socktype = SOCK_STREAM;
+-    if (getaddrinfo(host, port, &hints, &result) != 0) {
++    address_error = getaddrinfo(host, port, &hints, &result);
++    if (address_error != 0) {
++        if (socket_error != NULL) *socket_error = address_error;
+         free(host);
+         return SOURCE_CLOCK_INVALID_SOCKET;
+     }
+     for (entry = result; entry != NULL; entry = entry->ai_next) {
+         socket_fd = (SOURCE_CLOCK_SOCKET)socket(entry->ai_family, entry->ai_socktype,
+                                                 entry->ai_protocol);
+-        if (socket_fd == SOURCE_CLOCK_INVALID_SOCKET) continue;
+-        if (connect(socket_fd, entry->ai_addr, (int)entry->ai_addrlen) == 0) break;
++        if (socket_fd == SOURCE_CLOCK_INVALID_SOCKET) {
++            if (socket_error != NULL) *socket_error = socket_last_error();
++            continue;
++        }
++        if (connect(socket_fd, entry->ai_addr, (int)entry->ai_addrlen) == 0) {
++            if (socket_error != NULL) *socket_error = 0;
++            break;
++        }
++        if (socket_error != NULL) *socket_error = socket_last_error();
+         source_clock_close_socket(socket_fd);
+         socket_fd = SOURCE_CLOCK_INVALID_SOCKET;
+     }
+@@ -270,19 +314,71 @@ static void clear_pending(source_clock_writer_t *writer) {
+ }
+ 
+ static bool send_frame(source_clock_writer_t *writer, SOURCE_CLOCK_SOCKET socket_fd,
+-                       source_clock_frame_t *frame) {
++                       source_clock_frame_t *frame, int *socket_error) {
+     uint8_t header[SOURCE_CLOCK_HEADER_SIZE];
+     uint16_t flags = frame->flags;
+     encode_header(header, writer->stream_kind, frame->codec, flags, (uint32_t)frame->len,
+                   frame->sequence, frame->ntp_ns, frame->sample_count,
+                   frame->sample_rate, frame->channels);
+-    return send_all(socket_fd, header, sizeof(header)) && send_all(socket_fd, frame->data, frame->len);
++    return send_all(socket_fd, header, sizeof(header), socket_error) &&
++           send_all(socket_fd, frame->data, frame->len, socket_error);
++}
++
++static void metrics_record_failure(source_clock_renderer_t *renderer,
++                                   source_clock_failure_reason_t reason,
++                                   int socket_error, uint64_t dropped_frames) {
++    pthread_mutex_lock(&renderer->metrics_mutex);
++    renderer->metrics.last_failure_reason = reason; if (renderer->metrics.failure_events < UINT64_MAX) renderer->metrics.failure_events++;
++    renderer->metrics.last_socket_error = socket_error;
++    renderer->metrics.dropped_frames += dropped_frames;
++    pthread_mutex_unlock(&renderer->metrics_mutex);
++}
++
++static void metrics_record_enqueue(source_clock_renderer_t *renderer, uint8_t stream_kind,
++                                   uint64_t now_ns, uint64_t dropped_frames) {
++    pthread_mutex_lock(&renderer->metrics_mutex);
++    if (stream_kind == SOURCE_CLOCK_STREAM_VIDEO) {
++        renderer->metrics.video_frames++;
++        renderer->metrics.last_video_input_ns = now_ns;
++        renderer->metrics.has_video_input = true;
++    } else {
++        renderer->metrics.audio_frames++;
++        renderer->metrics.last_audio_input_ns = now_ns;
++        renderer->metrics.has_audio_input = true;
++    }
++    renderer->metrics.dropped_frames += dropped_frames;
++    if (dropped_frames > 0) {
++        renderer->metrics.last_failure_reason = SOURCE_CLOCK_FAILURE_QUEUE_DROP; if (renderer->metrics.failure_events < UINT64_MAX) renderer->metrics.failure_events++;
++        renderer->metrics.last_socket_error = 0;
++    }
++    pthread_mutex_unlock(&renderer->metrics_mutex);
+ }
+ 
+-static void close_socket_once(SOURCE_CLOCK_SOCKET *socket_fd) {
++static void metrics_record_sent(source_clock_renderer_t *renderer) {
++    pthread_mutex_lock(&renderer->metrics_mutex);
++    renderer->metrics.sent_frames++; renderer->metrics.last_failure_reason = SOURCE_CLOCK_FAILURE_NONE; renderer->metrics.last_socket_error = 0;
++    pthread_mutex_unlock(&renderer->metrics_mutex);
++}
++
++static void metrics_consumer_change(source_clock_renderer_t *renderer, bool connected) {
++    pthread_mutex_lock(&renderer->metrics_mutex);
++    if (connected) {
++        renderer->metrics.connected_consumers++;
++    } else if (renderer->metrics.connected_consumers > 0) {
++        renderer->metrics.connected_consumers--;
++    }
++    pthread_mutex_unlock(&renderer->metrics_mutex);
++}
++
++static void close_socket_once(source_clock_writer_t *writer, SOURCE_CLOCK_SOCKET *socket_fd,
++                              bool *consumer_connected) {
+     if (socket_fd == NULL || *socket_fd == SOURCE_CLOCK_INVALID_SOCKET) return;
+     source_clock_close_socket(*socket_fd);
+     *socket_fd = SOURCE_CLOCK_INVALID_SOCKET;
++    if (consumer_connected != NULL && *consumer_connected) {
++        metrics_consumer_change(writer->owner, false);
++        *consumer_connected = false;
++    }
+ }
+ 
+ static void *writer_main(void *argument) {
+@@ -291,8 +387,10 @@ static void *writer_main(void *argument) {
+         SOURCE_CLOCK_SOCKET socket_fd;
+         source_clock_frame_t *frame;
+         bool active;
++        bool consumer_connected = false;
+         uint32_t generation;
+         bool send_end;
++        int socket_error = 0;
+         pthread_mutex_lock(&writer->mutex);
+         while (!writer->stopping && writer->head == NULL && !writer->send_session_end) {
+             pthread_cond_wait(&writer->cond, &writer->mutex);
+@@ -307,19 +405,27 @@ static void *writer_main(void *argument) {
+         writer->send_session_end = false;
+         pthread_mutex_unlock(&writer->mutex);
+ 
+-        socket_fd = connect_endpoint(writer->endpoint);
++        socket_fd = connect_endpoint(writer->endpoint, &socket_error);
+         if (socket_fd == SOURCE_CLOCK_INVALID_SOCKET) {
++            metrics_record_failure(writer->owner, SOURCE_CLOCK_FAILURE_CONNECT, socket_error, 0);
+             sleep_retry();
+             continue;
+         }
+-        if (!send_control(writer, socket_fd, SOURCE_CLOCK_CONTROL_HELLO, generation) ||
+-            (active && !send_control(writer, socket_fd, SOURCE_CLOCK_CONTROL_SESSION_START, generation))) {
+-            close_socket_once(&socket_fd);
++        if (!send_control(writer, socket_fd, SOURCE_CLOCK_CONTROL_HELLO, generation, &socket_error) ||
++            (active && !send_control(writer, socket_fd, SOURCE_CLOCK_CONTROL_SESSION_START,
++                                     generation, &socket_error))) {
++            metrics_record_failure(writer->owner, SOURCE_CLOCK_FAILURE_SEND, socket_error, 0);
++            close_socket_once(writer, &socket_fd, &consumer_connected);
+             sleep_retry();
+             continue;
+         }
++        /* This counts handshake-complete local sockets, not verified peer liveness. */
++        metrics_consumer_change(writer->owner, true);
++        consumer_connected = true;
+-        if (send_end && !send_control(writer, socket_fd, SOURCE_CLOCK_CONTROL_SESSION_END, generation)) {
+-            close_socket_once(&socket_fd);
++        if (send_end && !send_control(writer, socket_fd, SOURCE_CLOCK_CONTROL_SESSION_END,
++                                      generation, &socket_error)) {
++            metrics_record_failure(writer->owner, SOURCE_CLOCK_FAILURE_SEND, socket_error, 0);
++            close_socket_once(writer, &socket_fd, &consumer_connected);
+             sleep_retry();
+             continue;
+         }
+@@ -334,7 +439,7 @@ static void *writer_main(void *argument) {
+             }
+             if (writer->stopping) {
+                 pthread_mutex_unlock(&writer->mutex);
+-                close_socket_once(&socket_fd);
++                close_socket_once(writer, &socket_fd, &consumer_connected);
+                 return NULL;
+             }
+             generation_changed = writer->generation != generation;
+@@ -343,9 +448,13 @@ static void *writer_main(void *argument) {
+             if (generation_changed || end_requested) {
+                 pthread_mutex_unlock(&writer->mutex);
+                 if (end_requested) {
+-                    send_control(writer, socket_fd, SOURCE_CLOCK_CONTROL_SESSION_END, generation);
++                    if (!send_control(writer, socket_fd, SOURCE_CLOCK_CONTROL_SESSION_END,
++                                      generation, &socket_error)) {
++                        metrics_record_failure(writer->owner, SOURCE_CLOCK_FAILURE_SEND,
++                                               socket_error, 0);
++                    }
+                 }
+-                close_socket_once(&socket_fd);
++                close_socket_once(writer, &socket_fd, &consumer_connected);
+                 break;
+             }
+             frame = pop_frame(writer);
+@@ -355,18 +464,20 @@ static void *writer_main(void *argument) {
+             }
+             pthread_mutex_unlock(&writer->mutex);
+             if (frame == NULL) continue;
+-            if (!send_frame(writer, socket_fd, frame)) {
++            if (!send_frame(writer, socket_fd, frame, &socket_error)) {
+                 pthread_mutex_lock(&writer->mutex);
+                 writer->discontinuity_pending = true;
+                 pthread_mutex_unlock(&writer->mutex);
++                metrics_record_failure(writer->owner, SOURCE_CLOCK_FAILURE_SEND, socket_error, 1);
+                 free_frame(frame);
+-                close_socket_once(&socket_fd);
++                close_socket_once(writer, &socket_fd, &consumer_connected);
+                 sleep_retry();
+                 break;
+             }
++            metrics_record_sent(writer->owner);
+             free_frame(frame);
+         }
+-        close_socket_once(&socket_fd);
++        close_socket_once(writer, &socket_fd, &consumer_connected);
+     }
+     return NULL;
+ }
+@@ -384,8 +495,9 @@ static void writer_init(source_clock_writer_t *writer, source_clock_renderer_t *
+ 
+ static bool queue_frame(source_clock_writer_t *writer, const unsigned char *data, size_t data_len,
+                         uint64_t ntp_ns, uint8_t codec, uint16_t flags, uint32_t sample_count,
+                         uint32_t sample_rate, uint16_t channels, uint64_t duration_ns) {
+     source_clock_frame_t *frame;
++    uint64_t dropped_before;
+     if (writer == NULL || data == NULL || data_len == 0 ||
+         data_len > (writer->stream_kind == SOURCE_CLOCK_STREAM_VIDEO ?
+                     SOURCE_CLOCK_MAX_VIDEO_PAYLOAD : SOURCE_CLOCK_MAX_AUDIO_PAYLOAD)) {
+@@ -413,6 +526,7 @@ static bool queue_frame(source_clock_writer_t *writer, const unsigned char *data
+         free_frame(frame);
+         return false;
+     }
++    dropped_before = writer->dropped;
+     frame->sequence = ++writer->sequence;
+     if (writer->stream_kind == SOURCE_CLOCK_STREAM_VIDEO) {
+         while (writer->pending_count >= SOURCE_CLOCK_VIDEO_QUEUE_FRAMES ||
+@@ -430,7 +548,16 @@ static bool queue_frame(source_clock_writer_t *writer, const unsigned char *data
+     writer->pending_count++;
+     writer->pending_bytes += data_len;
+     writer->pending_ns += duration_ns;
++    metrics_record_enqueue(writer->owner, writer->stream_kind,
++                           source_clock_metrics_monotonic_time_ns(),
++                           writer->dropped - dropped_before);
++#ifdef SOURCE_CLOCK_TEST_HOOKS
++    if (writer->owner->queue_commit_hook != NULL) {
++        writer->owner->queue_commit_hook(writer->owner, writer->stream_kind,
++                                         writer->owner->queue_commit_context);
++    }
++#endif
+     pthread_cond_signal(&writer->cond);
+     pthread_mutex_unlock(&writer->mutex);
+     return true;
+ }
+@@ -437,12 +564,25 @@ static bool queue_frame(source_clock_writer_t *writer, const unsigned char *data
+ 
+ source_clock_renderer_t *source_clock_renderer_create(const char *video_endpoint,
+                                                        const char *audio_endpoint,
+-                                                       const char *token_hex) {
++                                                       const char *token_hex,
++                                                       const char *receiver_id) {
+     source_clock_renderer_t *renderer;
+     uint8_t token[SOURCE_CLOCK_TOKEN_BYTES];
+-    if (!decode_token(token_hex, token) || video_endpoint == NULL || audio_endpoint == NULL) return NULL;
++    if (!decode_token(token_hex, token) || video_endpoint == NULL || audio_endpoint == NULL ||
++        !source_clock_metrics_receiver_id_is_valid(receiver_id)) return NULL;
+     renderer = (source_clock_renderer_t *)calloc(1, sizeof(*renderer));
+     if (renderer == NULL) return NULL;
++    renderer->receiver_id = copy_string(receiver_id);
++    if (renderer->receiver_id == NULL) {
++        free(renderer);
++        return NULL;
++    }
++    if (pthread_mutex_init(&renderer->metrics_mutex, NULL) != 0) {
++        free(renderer->receiver_id);
++        free(renderer);
++        return NULL;
++    }
++    renderer->metrics_mutex_initialized = true;
+     renderer->video_codec = SOURCE_CLOCK_VIDEO_H264;
+     renderer->audio_codec = SOURCE_CLOCK_AUDIO_AAC_ELD;
+     renderer->audio_sample_rate = 44100;
+@@ -497,9 +637,56 @@ void source_clock_renderer_destroy(source_clock_renderer_t *renderer) {
+         pthread_mutex_destroy(&writer->mutex);
+         free(writer->endpoint);
+     }
++    if (renderer->metrics_mutex_initialized) {
++        pthread_mutex_destroy(&renderer->metrics_mutex);
++        renderer->metrics_mutex_initialized = false;
++    }
++    free(renderer->receiver_id);
+     free(renderer);
+ }
+ 
++const char *source_clock_renderer_receiver_id(const source_clock_renderer_t *renderer) {
++    return renderer != NULL ? renderer->receiver_id : NULL;
++}
++
++bool source_clock_renderer_metrics_snapshot(source_clock_renderer_t *renderer,
++                                            uint64_t now_ns,
++                                            source_clock_metrics_snapshot_t *snapshot) {
++    source_clock_runtime_metrics_t metrics;
++    if (renderer == NULL || snapshot == NULL) return false;
++    pthread_mutex_lock(&renderer->metrics_mutex);
++    renderer->metrics.sequence++;
++    metrics = renderer->metrics;
++    pthread_mutex_unlock(&renderer->metrics_mutex);
++    memset(snapshot, 0, sizeof(*snapshot));
++    snapshot->receiver_id = renderer->receiver_id;
++    snapshot->sequence = metrics.sequence;
++    snapshot->video_frames = metrics.video_frames;
++    snapshot->audio_frames = metrics.audio_frames;
++    snapshot->has_video_age = metrics.has_video_input;
++    snapshot->video_age_ms = metrics.has_video_input && now_ns > metrics.last_video_input_ns ?
++                             (now_ns - metrics.last_video_input_ns) / 1000000ULL : 0;
++    snapshot->has_audio_age = metrics.has_audio_input;
++    snapshot->audio_age_ms = metrics.has_audio_input && now_ns > metrics.last_audio_input_ns ?
++                             (now_ns - metrics.last_audio_input_ns) / 1000000ULL : 0;
++    snapshot->connected_consumers = metrics.connected_consumers;
++    snapshot->sent_frames = metrics.sent_frames;
++    snapshot->dropped_frames = metrics.dropped_frames; snapshot->failure_events = metrics.failure_events;
++    snapshot->last_socket_error = metrics.last_socket_error;
++    snapshot->last_failure_reason = metrics.last_failure_reason;
++    return true;
++}
++
++#ifdef SOURCE_CLOCK_TEST_HOOKS
++void source_clock_renderer_set_queue_commit_hook(source_clock_renderer_t *renderer,
++                                                 source_clock_queue_commit_hook_t hook,
++                                                 void *context) {
++    if (renderer == NULL) return;
++    renderer->queue_commit_hook = hook;
++    renderer->queue_commit_context = context;
++} void source_clock_renderer_test_record_metrics(source_clock_renderer_t *renderer, source_clock_failure_reason_t reason, int socket_error, uint64_t dropped_frames, bool sent) { if (renderer == NULL) return; if (sent) metrics_record_sent(renderer); else if (reason == SOURCE_CLOCK_FAILURE_QUEUE_DROP) metrics_record_enqueue(renderer, SOURCE_CLOCK_STREAM_VIDEO, source_clock_metrics_monotonic_time_ns(), dropped_frames); else metrics_record_failure(renderer, reason, socket_error, dropped_frames); }
++#endif
++
+ void source_clock_renderer_session_start(source_clock_renderer_t *renderer) {
+     source_clock_writer_t *writers[2];
+     size_t i;
+diff --git a/renderers/source_clock_renderer.h b/renderers/source_clock_renderer.h
+index 4d72ffa..5cd78af 100644
+--- a/renderers/source_clock_renderer.h
++++ b/renderers/source_clock_renderer.h
+@@ -1,14 +1,15 @@
+ #ifndef UXPLAY_SOURCE_CLOCK_RENDERER_H
+ #define UXPLAY_SOURCE_CLOCK_RENDERER_H
+ 
+ #include <stdbool.h>
+ #include <stddef.h>
+ #include <stdint.h>
++#include "source_clock_metrics.h"
+ 
+ #ifdef __cplusplus
+ extern "C" {
+ #endif
+ 
+ typedef enum source_clock_video_codec_e {
+     SOURCE_CLOCK_VIDEO_H264 = 1,
+     SOURCE_CLOCK_VIDEO_H265 = 2
+@@ -30,20 +31,36 @@ typedef struct source_clock_audio_format_s {
+ enum {
+     SOURCE_CLOCK_FLAG_KEYFRAME = 1u << 0,
+     SOURCE_CLOCK_FLAG_CONFIG = 1u << 1,
+     SOURCE_CLOCK_FLAG_DISCONTINUITY = 1u << 2
+ };
+ 
+ typedef struct source_clock_renderer_s source_clock_renderer_t;
+ 
++#ifdef SOURCE_CLOCK_TEST_HOOKS
++typedef void (*source_clock_queue_commit_hook_t)(source_clock_renderer_t *renderer,
++                                                 uint8_t stream_kind,
++                                                 void *context);
++#endif
++
+ source_clock_renderer_t *source_clock_renderer_create(const char *video_endpoint,
+                                                        const char *audio_endpoint,
+-                                                       const char *token_hex);
++                                                       const char *token_hex,
++                                                       const char *receiver_id);
+ void source_clock_renderer_destroy(source_clock_renderer_t *renderer);
++const char *source_clock_renderer_receiver_id(const source_clock_renderer_t *renderer);
++bool source_clock_renderer_metrics_snapshot(source_clock_renderer_t *renderer,
++                                            uint64_t now_ns,
++                                            source_clock_metrics_snapshot_t *snapshot);
++#ifdef SOURCE_CLOCK_TEST_HOOKS
++void source_clock_renderer_set_queue_commit_hook(source_clock_renderer_t *renderer,
++                                                 source_clock_queue_commit_hook_t hook,
++                                                 void *context); void source_clock_renderer_test_record_metrics(source_clock_renderer_t *renderer, source_clock_failure_reason_t reason, int socket_error, uint64_t dropped_frames, bool sent);
++#endif
+ 
+ void source_clock_renderer_session_start(source_clock_renderer_t *renderer);
+ void source_clock_renderer_session_end(source_clock_renderer_t *renderer);
+ void source_clock_renderer_set_video_codec(source_clock_renderer_t *renderer,
+                                            source_clock_video_codec_t codec);
+ void source_clock_renderer_set_audio_format(source_clock_renderer_t *renderer,
+                                             unsigned char ct,
+                                             unsigned short spf,
+diff --git a/renderers/source_clock_renderer_test.c b/renderers/source_clock_renderer_test.c
+index 41f45a3..5ac98e0 100644
+--- a/renderers/source_clock_renderer_test.c
++++ b/renderers/source_clock_renderer_test.c
+@@ -1,9 +1,10 @@
+ #include "source_clock_renderer.h"
++#include "source_clock_metrics.h"
+ 
+ #ifdef NDEBUG
+ #undef NDEBUG
+ #endif
+ #include <assert.h>
+ #include <stdio.h>
+ #include <string.h>
+ 
+@@ -31,16 +32,36 @@ typedef struct test_server_s {
+     unsigned port;
+     unsigned stream_kind;
+     volatile int accepted;
+     int hello;
+     int session_start;
+     int media;
+ } test_server_t;
+ 
++typedef struct commit_observation_s {
++    unsigned calls;
++    int invalid;
++} commit_observation_t;
++
++static void observe_queue_commit(source_clock_renderer_t *renderer,
++                                 uint8_t stream_kind, void *context) {
++    commit_observation_t *observation = (commit_observation_t *)context;
++    source_clock_metrics_snapshot_t metrics;
++    observation->calls++;
++    if (!source_clock_renderer_metrics_snapshot(
++            renderer, source_clock_metrics_monotonic_time_ns(), &metrics) ||
++        metrics.video_frames + metrics.audio_frames < observation->calls ||
++        metrics.sent_frames > metrics.video_frames + metrics.audio_frames ||
++        (stream_kind == 1 && metrics.video_frames == 0) ||
++        (stream_kind == 2 && metrics.audio_frames == 0)) {
++        observation->invalid = 1;
++    }
++}
++
+ static unsigned read_u32(const unsigned char *p) {
+     return ((unsigned)p[0] << 24) | ((unsigned)p[1] << 16) |
+            ((unsigned)p[2] << 8) | (unsigned)p[3];
+ }
+ 
+ static int read_full(TEST_SOCKET socket_fd, unsigned char *data, size_t length) {
+     while (length > 0) {
+         int received = recv(socket_fd, (char *)data, (int)length, 0);
+@@ -103,45 +124,82 @@ int main(void) {
+     char audio_endpoint[64];
+     unsigned char video[] = { 0, 0, 0, 1, 0x65, 0x88 };
+     unsigned char audio[] = { 0x8c, 0x01, 0x02, 0x03 };
+     test_server_t video_server;
+     test_server_t audio_server;
+     pthread_t video_thread;
+     pthread_t audio_thread;
+     source_clock_renderer_t *renderer;
++    source_clock_metrics_snapshot_t metrics;
++    commit_observation_t commit_observation = { 0 };
++    char receiver_id[] = "receiver-test-1";
++    uint64_t before_push;
++    uint64_t after_push;
+ #ifdef _WIN32
+     WSADATA wsa;
+     assert(WSAStartup(MAKEWORD(2, 2), &wsa) == 0);
+ #endif
+     init_server(&video_server, 1);
+     init_server(&audio_server, 2);
+     snprintf(video_endpoint, sizeof(video_endpoint), "127.0.0.1:%u", video_server.port);
+     snprintf(audio_endpoint, sizeof(audio_endpoint), "127.0.0.1:%u", audio_server.port);
++    assert(source_clock_renderer_create(video_endpoint, audio_endpoint, token, NULL) == NULL);
++    assert(source_clock_renderer_create(video_endpoint, audio_endpoint, token, "bad\nreceiver") == NULL);
+     assert(pthread_create(&video_thread, NULL, server_main, &video_server) == 0);
+     assert(pthread_create(&audio_thread, NULL, server_main, &audio_server) == 0);
+-    renderer = source_clock_renderer_create(video_endpoint, audio_endpoint, token);
++    renderer = source_clock_renderer_create(video_endpoint, audio_endpoint, token, receiver_id);
+     assert(renderer != NULL);
++    receiver_id[0] = 'X';
++    assert(strcmp(source_clock_renderer_receiver_id(renderer), "receiver-test-1") == 0);
++    assert(source_clock_renderer_metrics_snapshot(renderer, 0, &metrics));
++    assert(metrics.sequence == 1);
++    assert(metrics.video_frames == 0 && metrics.audio_frames == 0 && metrics.failure_events == 0);
++    assert(!metrics.has_video_age && !metrics.has_audio_age);
++    source_clock_renderer_set_queue_commit_hook(renderer, observe_queue_commit,
++                                                &commit_observation);
+     source_clock_renderer_session_start(renderer);
+ #ifdef _WIN32
+     Sleep(2000);
+ #else
+     usleep(2000000);
+ #endif
+     assert(!video_server.accepted);
+     assert(!audio_server.accepted);
+     assert(!source_clock_renderer_push_video(renderer, NULL, 4, 0, 0));
+     assert(!source_clock_renderer_push_audio(renderer, NULL, 4, 0, 0));
++    assert(source_clock_renderer_metrics_snapshot(
++        renderer, source_clock_metrics_monotonic_time_ns(), &metrics));
++    assert(metrics.sequence == 2);
++    assert(metrics.video_frames == 0 && metrics.audio_frames == 0);
++    before_push = source_clock_metrics_monotonic_time_ns();
+     assert(source_clock_renderer_push_video(renderer, video, sizeof(video), 1000000000ULL, 0));
+     assert(source_clock_renderer_push_audio(renderer, audio, sizeof(audio), 1000000000ULL, 0));
++    after_push = source_clock_metrics_monotonic_time_ns();
++    assert(source_clock_renderer_metrics_snapshot(renderer, after_push + 5000000ULL, &metrics));
++    assert(metrics.sequence > 2);
++    assert(metrics.video_frames == 1 && metrics.audio_frames == 1);
++    assert(metrics.has_video_age && metrics.video_age_ms >= 5);
++    assert(metrics.has_audio_age && metrics.audio_age_ms >= 5);
++    assert(metrics.video_age_ms < 100 && metrics.audio_age_ms < 100);
++    assert(source_clock_renderer_metrics_snapshot(renderer, before_push, &metrics));
++    assert(metrics.video_age_ms == 0 && metrics.audio_age_ms == 0);
++    assert(commit_observation.calls == 2);
++    assert(!commit_observation.invalid);
+ #ifdef _WIN32
+     Sleep(300);
+ #else
+     usleep(300000);
+ #endif
++    assert(source_clock_renderer_metrics_snapshot(
++        renderer, source_clock_metrics_monotonic_time_ns(), &metrics));
++    assert(metrics.sent_frames == 2);
++    assert(metrics.sent_frames <= metrics.video_frames + metrics.audio_frames);
++    assert(metrics.connected_consumers == 2);
++    assert(metrics.dropped_frames == 0 && metrics.failure_events == 0 && metrics.last_failure_reason == SOURCE_CLOCK_FAILURE_NONE && metrics.last_socket_error == 0); source_clock_renderer_test_record_metrics(renderer, SOURCE_CLOCK_FAILURE_CONNECT, 10061, 0, false); assert(source_clock_renderer_metrics_snapshot(renderer, source_clock_metrics_monotonic_time_ns(), &metrics)); assert(metrics.failure_events == 1 && metrics.last_failure_reason == SOURCE_CLOCK_FAILURE_CONNECT && metrics.last_socket_error == 10061); source_clock_renderer_test_record_metrics(renderer, SOURCE_CLOCK_FAILURE_SEND, 10054, 0, false); assert(source_clock_renderer_metrics_snapshot(renderer, source_clock_metrics_monotonic_time_ns(), &metrics)); assert(metrics.failure_events == 2 && metrics.last_failure_reason == SOURCE_CLOCK_FAILURE_SEND && metrics.last_socket_error == 10054); source_clock_renderer_test_record_metrics(renderer, SOURCE_CLOCK_FAILURE_QUEUE_DROP, 0, 1, false); assert(source_clock_renderer_metrics_snapshot(renderer, source_clock_metrics_monotonic_time_ns(), &metrics)); assert(metrics.failure_events == 3 && metrics.last_failure_reason == SOURCE_CLOCK_FAILURE_QUEUE_DROP && metrics.dropped_frames == 1); source_clock_renderer_test_record_metrics(renderer, SOURCE_CLOCK_FAILURE_NONE, 0, 0, true); assert(source_clock_renderer_metrics_snapshot(renderer, source_clock_metrics_monotonic_time_ns(), &metrics)); assert(metrics.failure_events == 3 && metrics.last_failure_reason == SOURCE_CLOCK_FAILURE_NONE && metrics.last_socket_error == 0);
+     source_clock_renderer_destroy(renderer);
+     test_close(video_server.listener);
+     test_close(audio_server.listener);
+     pthread_join(video_thread, NULL);
+     pthread_join(audio_thread, NULL);
+     assert(video_server.hello && video_server.session_start && video_server.media);
+     assert(audio_server.hello && audio_server.session_start && audio_server.media);
+ #ifdef _WIN32
+diff --git a/renderers/source_clock_video_backlog_test.c b/renderers/source_clock_video_backlog_test.c
+index e6449b9..0a11389 100644
+--- a/renderers/source_clock_video_backlog_test.c
++++ b/renderers/source_clock_video_backlog_test.c
+@@ -1,4 +1,5 @@
+ #include "source_clock_renderer.h"
++#include "source_clock_metrics.h"
+ 
+ #include <stdio.h>
+ #include <string.h>
+@@ -143,6 +144,7 @@ int main(void) {
+     unsigned video_port;
+     unsigned audio_port;
+     source_clock_renderer_t *renderer;
++    source_clock_metrics_snapshot_t metrics;
+     video_server_t server;
+     pthread_t server_thread;
+     unsigned i;
+@@ -155,10 +157,10 @@ int main(void) {
+     CHECK(video_port != 0 && audio_port != 0 && video_port != audio_port);
+     snprintf(video_endpoint, sizeof(video_endpoint), "127.0.0.1:%u", video_port);
+     snprintf(audio_endpoint, sizeof(audio_endpoint), "127.0.0.1:%u", audio_port);
+-    renderer = source_clock_renderer_create(video_endpoint, audio_endpoint, token);
++    renderer = source_clock_renderer_create(video_endpoint, audio_endpoint, token, "backlog-test");
+     CHECK(renderer != NULL);
+     source_clock_renderer_session_start(renderer);
+-    for (i = 0; i < 64; ++i) {
++    for (i = 0; i < 65; ++i) {
+         CHECK(source_clock_renderer_push_video(renderer, frame, sizeof(frame),
+                                                1000000000ULL + i * 16666667ULL, 0));
+     }
+@@ -167,6 +169,23 @@ int main(void) {
+ #else
+     usleep(50000);
+ #endif
++    for (i = 0; i < 100; ++i) {
++        CHECK(source_clock_renderer_metrics_snapshot(
++            renderer, source_clock_metrics_monotonic_time_ns(), &metrics));
++        if (metrics.last_failure_reason == SOURCE_CLOCK_FAILURE_CONNECT) break;
++#ifdef _WIN32
++        Sleep(50);
++#else
++        usleep(50000);
++#endif
++    }
++    CHECK(metrics.video_frames == 65);
++    CHECK(metrics.audio_frames == 0);
++    CHECK(metrics.has_video_age);
++    CHECK(!metrics.has_audio_age);
++    CHECK(metrics.dropped_frames == 1);
++    CHECK(metrics.last_failure_reason == SOURCE_CLOCK_FAILURE_CONNECT); CHECK(metrics.failure_events > 0);
++    CHECK(metrics.last_socket_error != 0);
+     memset(&server, 0, sizeof(server));
+     server.listener = listen_on(video_port);
+     CHECK(server.listener != TEST_INVALID_SOCKET);
+@@ -176,13 +195,17 @@ int main(void) {
+ #else
+     usleep(1500000);
+ #endif
++    CHECK(source_clock_renderer_metrics_snapshot(
++        renderer, source_clock_metrics_monotonic_time_ns(), &metrics));
++    CHECK(metrics.sent_frames == 64); CHECK(metrics.failure_events > 0); CHECK(metrics.last_failure_reason == SOURCE_CLOCK_FAILURE_NONE); CHECK(metrics.last_socket_error == 0);
++    CHECK(metrics.connected_consumers == 1);
+     source_clock_renderer_destroy(renderer);
+     test_close(server.listener);
+     pthread_join(server_thread, NULL);
+     CHECK(server.media_count == 64);
+-    CHECK(server.first_sequence == 1);
+-    CHECK(server.last_sequence == 64);
+-    CHECK(server.discontinuities == 0);
++    CHECK(server.first_sequence == 2);
++    CHECK(server.last_sequence == 65);
++    CHECK(server.discontinuities == 1);
+ #ifdef _WIN32
+     WSACleanup();
+ #endif
+diff --git a/renderers/source_clock_audio_format_lock_test.c b/renderers/source_clock_audio_format_lock_test.c
+index c2f7940..32ba052 100644
+--- a/renderers/source_clock_audio_format_lock_test.c
++++ b/renderers/source_clock_audio_format_lock_test.c
+@@ -94,7 +94,8 @@ int main(void) {
+     WSADATA wsa;
+     assert(WSAStartup(MAKEWORD(2, 2), &wsa) == 0);
+ #endif
+-    renderer = source_clock_renderer_create("127.0.0.1:1", "127.0.0.1:1", token);
++    renderer = source_clock_renderer_create("127.0.0.1:1", "127.0.0.1:1", token,
++                                            "audio-format-test");
+     assert(renderer != NULL);
+     assert(pthread_mutex_init(&state.mutex, NULL) == 0);
+     assert(pthread_cond_init(&state.cond, NULL) == 0);
+diff --git a/uxplay.cpp b/uxplay.cpp
+index 7a8de76..f82d38b 100644
+--- a/uxplay.cpp
++++ b/uxplay.cpp
+@@ -209,6 +209,7 @@ static std::string audio_rtp_pipeline = "";
+ static std::string source_clock_video_endpoint = "";
+ static std::string source_clock_audio_endpoint = "";
+ static std::string source_clock_token = "";
++static std::string source_clock_receiver_id = "";
+ static source_clock_renderer_t *source_clock_renderer = NULL;
+ static GMainLoop *gmainloop = NULL;
+ static bool mux_to_file = false;
+@@ -987,6 +988,7 @@ static void print_info (char *name) {
+     printf("-ipscv ep Send complete video AUs with source NTP to endpoint ep\n");
+     printf("-ipsca ep Send compressed audio frames with source NTP to endpoint ep\n");
+     printf("-ipsct hx Authenticate source-clock endpoints with a 16-byte hex token\n");
++    printf("-ipscid id Attach ImagePad receiver identity to source-clock metrics\n");
+     printf("-al x     Audio latency in seconds (default 0.25) reported to client.\n");
+     printf("-ca [<fn>]In Audio (ALAC) mode, render cover-art [or write to file <fn>]\n");
+     printf("-md <fn>  In Airplay Audio (ALAC) mode, write metadata text to file <fn>\n");
+@@ -1489,6 +1491,9 @@ static void parse_arguments (int argc, char *argv[]) {
+ 	} else if (arg == "-ipsct") {
+ 	  if (!option_has_value(i, argc, arg, argv[i+1])) exit(1);
+ 	  source_clock_token = argv[++i];
++	} else if (arg == "-ipscid") {
++	  if (!option_has_value(i, argc, arg, argv[i+1])) exit(1);
++	  source_clock_receiver_id = argv[++i];
+ 	} else if (arg == "-vdmp") {
+             dump_video = true;
+             if (i < argc - 1 && *argv[i+1] != '-') {
+@@ -3179,15 +3184,16 @@ int start_uxplay (int argc, char *argv[]) {
+     }
+ 
+     if (!source_clock_video_endpoint.empty() || !source_clock_audio_endpoint.empty() ||
+-        !source_clock_token.empty()) {
++        !source_clock_token.empty() || !source_clock_receiver_id.empty()) {
+         if (source_clock_video_endpoint.empty() || source_clock_audio_endpoint.empty() ||
+-            source_clock_token.empty()) {
+-            LOGE("source-clock requires -ipscv, -ipsca, and -ipsct");
++            source_clock_token.empty() || source_clock_receiver_id.empty()) {
++            LOGE("source-clock requires -ipscv, -ipsca, -ipsct, and -ipscid");
+             exit(1);
+         }
+         source_clock_renderer = source_clock_renderer_create(source_clock_video_endpoint.c_str(),
+                                                               source_clock_audio_endpoint.c_str(),
+-                                                              source_clock_token.c_str());
++                                                              source_clock_token.c_str(),
++                                                              source_clock_receiver_id.c_str());
+         if (!source_clock_renderer) {
+             LOGE("source-clock renderer initialization failed");
+             exit(1);

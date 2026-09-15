@@ -30,6 +30,24 @@ if [ -z "$GO_VERSION" ]; then
   GO_VERSION="$(go version | awk '{print $3}')"
 fi
 
+# The runtime archive is intentionally not guessed or downloaded by the
+# release job. A maintainer may provide a pinned HTTPS asset after its
+# license/source bundle has been reviewed; otherwise the application remains
+# fail-closed and reports that the runtime bootstrap is not configured.
+AIRPLAY_RUNTIME_SET_ID="${AIRPLAY_RUNTIME_SET_ID:-$VERSION_NUMBER}"
+AIRPLAY_RUNTIME_ARCHIVE_URL="${AIRPLAY_RUNTIME_ARCHIVE_URL:-}"
+AIRPLAY_RUNTIME_ARCHIVE_SHA256="${AIRPLAY_RUNTIME_ARCHIVE_SHA256:-}"
+AIRPLAY_RUNTIME_ARCHIVE_SIZE="${AIRPLAY_RUNTIME_ARCHIVE_SIZE:-}"
+AIRPLAY_RUNTIME_LICENSE_MANIFEST_SHA256="${AIRPLAY_RUNTIME_LICENSE_MANIFEST_SHA256:-}"
+AIRPLAY_RUNTIME_SOURCE_OFFER_SHA256="${AIRPLAY_RUNTIME_SOURCE_OFFER_SHA256:-}"
+# When pins are supplied, this is the local archive copied into the Go
+# package and embedded into the Windows EXE. It is intentionally a build
+# input, never a file shipped beside the EXE.
+AIRPLAY_RUNTIME_ARCHIVE_PATH="${AIRPLAY_RUNTIME_ARCHIVE_PATH:-}"
+AIRPLAY_RUNTIME_SOURCES_PATH="${AIRPLAY_RUNTIME_SOURCES_PATH:-}"
+AIRPLAY_RUNTIME_BOOTSTRAP_B64=""
+AIRPLAY_RUNTIME_BUILD_TAG=""
+
 mkdir -p "$WIN_DIR" "$MAC_DIR" "$LINUX_DIR"
 
 platform_dir() {
@@ -57,7 +75,14 @@ build_one() {
   if [ "$goos" = "windows" ]; then
     ldflags="-H=windowsgui"
   fi
-  CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath -ldflags "$ldflags" -o "$out" "$ROOT_DIR/cmd/imagepadserver"
+  if [ -n "$AIRPLAY_RUNTIME_BOOTSTRAP_B64" ]; then
+    ldflags="$ldflags -X imagepadserver/internal/airplay.embeddedRuntimeBootstrapBase64=$AIRPLAY_RUNTIME_BOOTSTRAP_B64"
+  fi
+  if [ "$goos" = "windows" ] && [ -n "$AIRPLAY_RUNTIME_BUILD_TAG" ]; then
+    CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -tags "$AIRPLAY_RUNTIME_BUILD_TAG" -trimpath -ldflags "$ldflags" -o "$out" "$ROOT_DIR/cmd/imagepadserver"
+  else
+    CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath -ldflags "$ldflags" -o "$out" "$ROOT_DIR/cmd/imagepadserver"
+  fi
 }
 
 pack_windows_zip() {
@@ -76,6 +101,71 @@ pack_windows_zip() {
   else
     echo "warning: neither zip nor powershell available; skipping $archive"
   fi
+}
+
+write_airplay_runtime_bootstrap() {
+  if [ -z "$AIRPLAY_RUNTIME_ARCHIVE_URL$AIRPLAY_RUNTIME_ARCHIVE_SHA256$AIRPLAY_RUNTIME_ARCHIVE_SIZE$AIRPLAY_RUNTIME_LICENSE_MANIFEST_SHA256$AIRPLAY_RUNTIME_SOURCE_OFFER_SHA256" ]; then
+    echo "AirPlay runtime bootstrap: NOT_CONFIGURED (no pinned asset supplied)"
+    return
+  fi
+  if [ -z "$AIRPLAY_RUNTIME_ARCHIVE_URL" ] || [ -z "$AIRPLAY_RUNTIME_ARCHIVE_SHA256" ] ||
+     [ -z "$AIRPLAY_RUNTIME_ARCHIVE_SIZE" ] || [ -z "$AIRPLAY_RUNTIME_LICENSE_MANIFEST_SHA256" ] ||
+     [ -z "$AIRPLAY_RUNTIME_SOURCE_OFFER_SHA256" ]; then
+    echo "all AirPlay runtime archive and metadata pins must be supplied together" >&2
+    exit 1
+  fi
+  case "$AIRPLAY_RUNTIME_ARCHIVE_URL" in
+    https://*) ;;
+    *) echo "AIRPLAY_RUNTIME_ARCHIVE_URL must use HTTPS" >&2; exit 1 ;;
+  esac
+  if ! printf '%s\n' "$AIRPLAY_RUNTIME_ARCHIVE_SHA256" | grep -Eq '^[0-9a-fA-F]{64}$'; then
+    echo "AIRPLAY_RUNTIME_ARCHIVE_SHA256 must be 64 hexadecimal characters" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$AIRPLAY_RUNTIME_LICENSE_MANIFEST_SHA256" | grep -Eq '^[0-9a-fA-F]{64}$' ||
+     ! printf '%s\n' "$AIRPLAY_RUNTIME_SOURCE_OFFER_SHA256" | grep -Eq '^[0-9a-fA-F]{64}$'; then
+    echo "AirPlay runtime metadata hashes must be 64 hexadecimal characters" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$AIRPLAY_RUNTIME_ARCHIVE_SIZE" | grep -Eq '^[1-9][0-9]*$'; then
+    echo "AIRPLAY_RUNTIME_ARCHIVE_SIZE must be a positive integer" >&2
+    exit 1
+  fi
+  if [ -z "$AIRPLAY_RUNTIME_ARCHIVE_PATH" ] || [ ! -f "$AIRPLAY_RUNTIME_ARCHIVE_PATH" ]; then
+    echo "AIRPLAY_RUNTIME_ARCHIVE_PATH must point to the pinned local archive for EXE embedding" >&2
+    exit 1
+  fi
+  archive_size="$(wc -c < "$AIRPLAY_RUNTIME_ARCHIVE_PATH" | tr -d '[:space:]')"
+  archive_hash="$(python3 -c 'import hashlib,sys; print(hashlib.file_digest(open(sys.argv[1], "rb"), "sha256").hexdigest())' "$AIRPLAY_RUNTIME_ARCHIVE_PATH")"
+  if [ "$archive_size" != "$AIRPLAY_RUNTIME_ARCHIVE_SIZE" ] ||
+     ! printf '%s\n' "$archive_hash" | grep -Eiq "^$AIRPLAY_RUNTIME_ARCHIVE_SHA256$"; then
+    echo "AIRPLAY_RUNTIME_ARCHIVE_PATH does not match the pinned archive size/hash" >&2
+    exit 1
+  fi
+  # Validate the actual ZIP before staging it into the EXE. Old runtimes can
+  # have valid archive hashes while still emitting incompatible multi-slice H.264.
+  python3 "$ROOT_DIR/scripts/verify-airplay-h264-archive.py" "$AIRPLAY_RUNTIME_ARCHIVE_PATH"
+  python3 "$ROOT_DIR/scripts/verify-airplay-license-archive.py" "$AIRPLAY_RUNTIME_ARCHIVE_PATH" "$AIRPLAY_RUNTIME_SOURCES_PATH"
+  bootstrap="$WIN_DIR/airplay-runtime-bootstrap.json"
+  cat > "$bootstrap" <<JSON
+{
+  "schema": 1,
+  "runtimeSetID": "$AIRPLAY_RUNTIME_SET_ID",
+  "archiveUrl": "$AIRPLAY_RUNTIME_ARCHIVE_URL",
+  "archiveSha256": "$AIRPLAY_RUNTIME_ARCHIVE_SHA256",
+  "archiveSize": $AIRPLAY_RUNTIME_ARCHIVE_SIZE,
+  "licenseManifestSha256": "${AIRPLAY_RUNTIME_LICENSE_MANIFEST_SHA256:-}",
+  "sourceOfferSha256": "${AIRPLAY_RUNTIME_SOURCE_OFFER_SHA256:-}"
+}
+JSON
+  AIRPLAY_RUNTIME_BOOTSTRAP_B64="$(cat "$bootstrap" | base64 | tr -d '\r\n')"
+  payload_dir="$ROOT_DIR/internal/airplay/payload"
+  mkdir -p "$payload_dir"
+  cp "$AIRPLAY_RUNTIME_ARCHIVE_PATH" "$payload_dir/runtime.zip"
+  cp "$bootstrap" "$payload_dir/runtime-bootstrap.json"
+  AIRPLAY_RUNTIME_BUILD_TAG="airplay_runtime_embedded"
+  echo "AirPlay runtime payload staged for EXE embedding: $payload_dir/runtime.zip"
+  echo "AirPlay runtime bootstrap: $bootstrap"
 }
 
 build_macos_app() {
@@ -143,6 +233,7 @@ build_macos_universal_app() {
   ditto -c -k --sequesterRsrc --keepParent "$universal_dir" "$archive"
 }
 
+write_airplay_runtime_bootstrap
 build_one windows amd64 .exe
 pack_windows_zip amd64
 if [ "$(uname -s)" = "Darwin" ]; then

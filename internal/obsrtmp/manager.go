@@ -1,12 +1,15 @@
 package obsrtmp
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,14 +18,21 @@ import (
 	"sync"
 	"time"
 
+	"imagepadserver/internal/airplaycontract"
 	"imagepadserver/internal/video"
 )
 
+const publishingDisconnectTimeout = 5 * time.Minute
+
 type Callbacks struct {
-	OnStart     func(Session)
-	OnDone      func(Session)
-	OnRTSPReady func(RTSPEndpoint)
-	OnRTSPDone  func(RTSPEndpoint)
+	OnDeliveryChanged             func()
+	OnStart                       func(Session)
+	OnDone                        func(Session)
+	OnRecordingDone               func(airplaycontract.RecordingOutcome)
+	OnRecordingOutcomesDone       func(string)
+	OnRTSPReady                   func(RTSPEndpoint)
+	OnRTSPDone                    func(RTSPEndpoint)
+	OnContinuousPublishingTimeout func()
 }
 
 type RTSPEndpoint struct {
@@ -183,6 +193,7 @@ type LatencyCapability struct {
 }
 
 type Manager struct {
+	opMu    sync.Mutex
 	outDir  string
 	host    string
 	port    int
@@ -191,19 +202,29 @@ type Manager struct {
 	latency func() LatencyProfile
 	cb      Callbacks
 
-	mu                    sync.Mutex
-	running               bool
-	stop                  context.CancelFunc
-	done                  chan struct{}
-	status                Status
-	current               *Session
-	sink                  *lhlsSink
-	mtx                   *mediaMTXRuntime
-	rtspGate              *rtspGate
-	rtspEndpoint          *RTSPEndpoint
-	listenerGeneration    uint64
-	mediaGeneration       uint64
-	latestMediaGeneration uint64
+	mu                        sync.Mutex
+	running                   bool
+	stop                      context.CancelFunc
+	done                      chan struct{}
+	status                    Status
+	current                   *Session
+	sink                      *lhlsSink
+	mtx                       *mediaMTXRuntime
+	rtspGate                  *rtspGate
+	rtspEndpoint              *RTSPEndpoint
+	listenerGeneration        uint64
+	mediaGeneration           uint64
+	latestMediaGeneration     uint64
+	continuousPublishing      bool
+	publishDisconnectTimer    *time.Timer
+	directPublishing          bool
+	directHandle              DirectSessionHandle
+	directDelivery            *directDeliveryCoordinator
+	directRetiringBackends    []*mediaMTXRuntime
+	directBackendMonitorCount int
+	directBackendReservations map[*mediaMTXRuntime]*directBackendReservation
+	directRecordingOutcomes   map[string]map[uint64]airplaycontract.RecordingOutcome
+	directRecordingSessions   []string
 
 	// Test seams keep restart ownership deterministic without spawning tools.
 	loopRunner            func(context.Context, uint64)
@@ -211,16 +232,17 @@ type Manager struct {
 }
 
 type Session struct {
-	ID             string
-	Generation     uint64 `json:"-"`
-	Title          string
-	PlaylistName   string
-	Recording      string
-	HLSDirectory   string
-	Published      bool
-	StartedAt      time.Time
-	FinishedAt     time.Time
-	ActiveContract *OBSActiveSessionContract
+	ID                            string
+	Generation                    uint64 `json:"-"`
+	Title                         string
+	PlaylistName                  string
+	Recording                     string
+	RecordingVerificationRequired bool `json:"-"`
+	HLSDirectory                  string
+	Published                     bool
+	StartedAt                     time.Time
+	FinishedAt                    time.Time
+	ActiveContract                *OBSActiveSessionContract
 }
 
 // OBSActiveSessionContract freezes every desired setting consumed by one OBS
@@ -278,6 +300,19 @@ type Status struct {
 	ActiveSession  *OBSActiveSessionContract `json:"activeSession,omitempty"`
 }
 
+// InternalPublishURL returns the loopback RTMP endpoint used by local bridges.
+// The externally advertised endpoint remains available through Status.ServerAddress.
+func (m *Manager) InternalPublishURL() string {
+	m.mu.Lock()
+	port := m.port
+	key := m.key
+	m.mu.Unlock()
+	if port <= 0 || strings.TrimSpace(key) == "" {
+		return ""
+	}
+	return serverAddress("127.0.0.1", port) + "/" + url.PathEscape(key)
+}
+
 func New(outDir, host string, port int, key string, preset func() video.QualityPreset, latency func() LatencyProfile, cb Callbacks) *Manager {
 	if port <= 0 {
 		port = 1935
@@ -302,7 +337,15 @@ func New(outDir, host string, port int, key string, preset func() video.QualityP
 }
 
 func (m *Manager) Start() {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	m.reapDirectBackendCleanup()
 	m.mu.Lock()
+	if !m.running && (m.directBackendMonitorCount != 0 || len(m.directRetiringBackends) != 0 || len(m.directBackendReservations) != 0) {
+		m.status.Message = "AirPlayバックエンドの終了確認が未完了のため、新しい受信を開始できません。"
+		m.mu.Unlock()
+		return
+	}
 	if strings.TrimSpace(m.key) == "" {
 		m.status.Enabled = false
 		m.status.Listening = false
@@ -338,7 +381,10 @@ func (m *Manager) Start() {
 }
 
 func (m *Manager) Stop() {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
 	m.mu.Lock()
+	m.cancelPublishDisconnectTimerLocked()
 	cancel := m.stop
 	m.listenerGeneration++ // revoke any old finalizer before cancellation returns.
 	m.running = false
@@ -350,6 +396,7 @@ func (m *Manager) Stop() {
 	m.status.MediaID = ""
 	m.status.RTSPTURL = ""
 	m.status.Publishing = false
+	m.continuousPublishing = false
 	m.status.Message = "OBS RTMP受信は停止中です。"
 	m.current = nil
 	m.sink = nil
@@ -368,10 +415,23 @@ func (m *Manager) Restart(timeout time.Duration) {
 }
 
 func (m *Manager) StartPublishing() bool {
+	return m.startPublishing(false)
+}
+
+// StartContinuousPublishing arms publishing across input reconnects. It is
+// intended for AirPlay, whose encoder connection can briefly restart during
+// application and surface transitions.
+func (m *Manager) StartContinuousPublishing() bool {
+	return m.startPublishing(true)
+}
+
+func (m *Manager) startPublishing(continuous bool) bool {
 	var session *Session
 	var endpoint *RTSPEndpoint
 	started := false
 	m.mu.Lock()
+	m.cancelPublishDisconnectTimerLocked()
+	m.continuousPublishing = continuous
 	m.status.Publishing = true
 	m.status.Message = "OBS publishing is armed. Waiting for a stream."
 	if m.current != nil && m.status.Connected {
@@ -395,6 +455,22 @@ func (m *Manager) StartPublishing() bool {
 		m.cb.OnRTSPReady(*endpoint)
 	}
 	return started
+}
+
+// StopContinuousPublishing disarms only an AirPlay-owned continuous arm.
+// Ordinary OBS publishing is left untouched.
+func (m *Manager) StopContinuousPublishing() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.continuousPublishing {
+		return
+	}
+	m.cancelPublishDisconnectTimerLocked()
+	m.continuousPublishing = false
+	m.status.Publishing = false
+	if !m.status.Connected {
+		m.status.Message = "OBS RTMP受信は配信入力を待っています。"
+	}
 }
 
 func (m *Manager) SetRTSPURL(sessionID, publicURL, message string) bool {
@@ -506,7 +582,10 @@ func (m *Manager) SetStreamKey(key string, timeout time.Duration) {
 }
 
 func (m *Manager) StopAndWait(timeout time.Duration) {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
 	m.mu.Lock()
+	m.cancelPublishDisconnectTimerLocked()
 	cancel := m.stop
 	done := m.done
 	m.listenerGeneration++ // timeout may return, but the old generation stays revoked.
@@ -519,6 +598,7 @@ func (m *Manager) StopAndWait(timeout time.Duration) {
 	m.status.MediaID = ""
 	m.status.RTSPTURL = ""
 	m.status.Publishing = false
+	m.continuousPublishing = false
 	m.status.Message = "OBS RTMP受信を再起動しています。"
 	m.current = nil
 	m.sink = nil
@@ -567,7 +647,7 @@ func (m *Manager) ConnectionRows(timeout time.Duration) []ConnectionStatus {
 		timeout = 250 * time.Millisecond
 	}
 	m.mu.Lock()
-	runtime := m.mtx
+	runtime := m.activeMediaMTXRuntimeLocked()
 	connected := m.status.Connected
 	profile := NormalizeLatencyProfile("auto")
 	if contract, ok := m.currentSessionContractLocked(); ok {
@@ -754,6 +834,7 @@ func (m *Manager) runOneWithContract(parent context.Context, ffmpeg string, cont
 				PublicRTCPPort:  ports.RTCP,
 				BackendRTSPPort: ports.mediaMTXRTSPPort(),
 				Path:            mediaMTXPathName(id),
+				Diagnostics:     newRTSPDiagnosticsFromEnvironment(),
 			})
 			if err := gate.start(ctx); err != nil {
 				_ = runtime.stop(5 * time.Second)
@@ -815,25 +896,91 @@ func (m *Manager) runOneWithContract(parent context.Context, ffmpeg string, cont
 				return runtime.pathReady(rc)
 			}
 		}
-		args = m.ffmpegRTSPArgsForContract(contract, recording, runtime.publishURL())
+		args, err = m.ffmpegRTSPArgsForActiveContract(contract, recording, runtime.publishURL())
+		if err != nil {
+			cancel()
+			return err
+		}
 	default:
 		args = m.ffmpegArgsForContract(contract, recording)
+	}
+	debugLogPath := strings.TrimSpace(os.Getenv("IMAGEPAD_OBS_RTMP_DEBUG_LOG"))
+	if debugLogPath != "" {
+		for i := 0; i+1 < len(args); i++ {
+			if args[i] == "-loglevel" {
+				args[i+1] = "verbose"
+				break
+			}
+		}
 	}
 	cmd := exec.Command(ffmpeg, args...)
 	cmd.Dir = m.outDir
 	hideWindow(cmd)
 	stdin, _ := cmd.StdinPipe()
 
+	var debugLog *os.File
+	var debugStderr io.ReadCloser
+	if debugLogPath != "" {
+		if err := os.MkdirAll(filepath.Dir(debugLogPath), 0700); err != nil {
+			cancel()
+			return fmt.Errorf("create OBS RTMP debug log directory: %w", err)
+		}
+		var err error
+		debugLog, err = os.OpenFile(debugLogPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+		if err != nil {
+			cancel()
+			return fmt.Errorf("open OBS RTMP debug log: %w", err)
+		}
+		debugStderr, err = cmd.StderrPipe()
+		if err != nil {
+			_ = debugLog.Close()
+			cancel()
+			return fmt.Errorf("capture OBS RTMP stderr: %w", err)
+		}
+	}
+
 	if err := cmd.Start(); err != nil {
+		if debugLog != nil {
+			_ = debugLog.Close()
+		}
 		cancel()
 		return fmt.Errorf("OBS RTMP受信の開始に失敗しました: %w", err)
 	}
-	untrack := video.TrackStartedFFmpeg(cmd)
+	untrack, trackErr := video.TrackStartedFFmpeg(cmd)
+	if trackErr != nil {
+		cancel()
+		if stdin != nil {
+			_ = stdin.Close()
+		}
+		waitErr := cmd.Wait()
+		if debugLog != nil {
+			_ = debugLog.Close()
+		}
+		return errors.Join(trackErr, waitErr)
+	}
+	debugDone := make(chan struct{})
+	if debugLog != nil {
+		go func() {
+			defer close(debugDone)
+			scanner := bufio.NewScanner(debugStderr)
+			for scanner.Scan() {
+				line := redactOBSRTMPDebugLine(scanner.Text(), contract.StreamKey, rtsptURL)
+				_, _ = fmt.Fprintln(debugLog, line)
+			}
+		}()
+	} else {
+		close(debugDone)
+	}
 	errCh := make(chan error, 1)
 	waitDone := make(chan struct{})
 	go func() {
 		defer untrack()
-		errCh <- cmd.Wait()
+		processErr := cmd.Wait()
+		<-debugDone
+		if debugLog != nil {
+			_ = debugLog.Close()
+		}
+		errCh <- processErr
 		close(waitDone)
 	}()
 	go func() {
@@ -927,6 +1074,24 @@ func (m *Manager) waitForStart(ctx context.Context, generation uint64, session S
 	}
 }
 
+func stableOBSVideoFilter(height int) string {
+	width := (height*16 + 8) / 9
+	if width%2 != 0 {
+		width++
+	}
+	if width > 1920 {
+		width = 1920
+	}
+	// Pick the canvas from the input orientation: landscape (width x height) for
+	// iw >= ih, portrait (height x width) otherwise, so a portrait AirPlay mirror
+	// is not letterboxed into a 16:9 frame. The pad only fills the remainder when
+	// a source's aspect differs within its own orientation.
+	return fmt.Sprintf("scale=w='if(gte(iw,ih),%d,%d)':h='if(gte(iw,ih),%d,%d)':force_original_aspect_ratio=decrease:force_divisible_by=2:out_range=tv,"+
+		"pad=w='if(gte(iw,ih),%d,%d)':h='if(gte(iw,ih),%d,%d)':x=(ow-iw)/2:y=(oh-ih)/2:color=black,"+
+		"setsar=1,format=yuv420p,setparams=range=limited:color_primaries=bt709:color_trc=bt709:colorspace=bt709",
+		width, height, height, width, width, height, height, width)
+}
+
 func (m *Manager) ffmpegArgs(id, recording string, preset video.QualityPreset) []string {
 	return m.ffmpegArgsWithEncoder(id, recording, preset, video.CPUVideoEncoder(m.currentLatency().encoderPurpose()))
 }
@@ -946,10 +1111,11 @@ func (m *Manager) ffmpegArgsForContract(contract OBSActiveSessionContract, recor
 		"-loglevel", "warning",
 		"-y",
 		"-listen", "1",
-		"-fflags", "nobuffer",
-		"-flags", "low_delay",
-		"-analyzeduration", "100000",
-		"-probesize", "32768",
+		// Keep packets collected during probing. A portrait AirPlay IDR can be
+		// hundreds of KiB; discarding an incomplete first IDR leaves a static
+		// screen with only undecodable P-frames.
+		"-analyzeduration", "1000000",
+		"-probesize", "4194304",
 		"-i", inputURL,
 	}
 	if !latency.Reencode {
@@ -972,7 +1138,7 @@ func (m *Manager) ffmpegArgsForContract(contract OBSActiveSessionContract, recor
 		)
 		return args
 	}
-	scaleFilter := "scale=w='min(1920,iw)':h='min(" + strconv.Itoa(preset.Height) + ",ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,pad=ceil(iw/2)*2:ceil(ih/2)*2"
+	scaleFilter := stableOBSVideoFilter(preset.Height)
 	args = append(args,
 		"-map", "0:v:0",
 		"-map", "0:a:0?",
@@ -1038,13 +1204,14 @@ func (m *Manager) ffmpegLHLSArgsForContract(contract OBSActiveSessionContract, r
 		"-loglevel", "warning",
 		"-y",
 		"-listen", "1",
-		"-fflags", "nobuffer",
-		"-flags", "low_delay",
-		"-analyzeduration", "100000",
-		"-probesize", "32768",
+		// Keep packets collected during probing. A portrait AirPlay IDR can be
+		// hundreds of KiB; discarding an incomplete first IDR leaves a static
+		// screen with only undecodable P-frames.
+		"-analyzeduration", "1000000",
+		"-probesize", "4194304",
 		"-i", inputURL,
 	}
-	scaleFilter := "scale=w='min(1920,iw)':h='min(" + strconv.Itoa(preset.Height) + ",ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,pad=ceil(iw/2)*2:ceil(ih/2)*2"
+	scaleFilter := stableOBSVideoFilter(preset.Height)
 	args = append(args,
 		"-map", "0:v:0",
 		"-map", "0:a:0?",
@@ -1095,6 +1262,20 @@ func (m *Manager) ffmpegLHLSArgsForContract(contract OBSActiveSessionContract, r
 	return args
 }
 
+// rtspFastPresetArgs changes only the software preset for the RTSP publisher.
+// The shared encoder contract keeps ultrafast for HLS and AirPlay bridge paths;
+// hardware encoder presets are left untouched.
+func rtspFastPresetArgs(args []string) []string {
+	result := append([]string(nil), args...)
+	for i := 0; i+1 < len(result); i++ {
+		if result[i] == "-preset" && result[i+1] == "ultrafast" {
+			result[i+1] = "fast"
+			break
+		}
+	}
+	return result
+}
+
 // ffmpegRTSPArgs encodes the RTMP input to H.264/AAC and publishes it to the
 // app-owned MediaMTX path over RTSP/TCP at rtspURL. MediaMTX repackages the
 // stream into LL-HLS and serves the RTSP/TCP read path. A separate copy output
@@ -1113,13 +1294,14 @@ func (m *Manager) ffmpegRTSPArgsForContract(contract OBSActiveSessionContract, r
 		"-loglevel", "warning",
 		"-y",
 		"-listen", "1",
-		"-fflags", "nobuffer",
-		"-flags", "low_delay",
-		"-analyzeduration", "100000",
-		"-probesize", "32768",
+		// Keep packets collected during probing. A portrait AirPlay IDR can be
+		// hundreds of KiB; discarding an incomplete first IDR leaves a static
+		// screen with only undecodable P-frames.
+		"-analyzeduration", "1000000",
+		"-probesize", "4194304",
 		"-i", inputURL,
 	}
-	scaleFilter := "scale=w='min(1920,iw)':h='min(" + strconv.Itoa(preset.Height) + ",ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,pad=ceil(iw/2)*2:ceil(ih/2)*2"
+	scaleFilter := stableOBSVideoFilter(preset.Height)
 	args = append(args,
 		"-map", "0:v:0",
 		"-map", "0:a:0?",
@@ -1128,7 +1310,10 @@ func (m *Manager) ffmpegRTSPArgsForContract(contract OBSActiveSessionContract, r
 	)
 	encoderPreset := preset
 	encoderPreset.BufferSize = preset.VideoBitrate
-	args = append(args, encoder.FFmpegArgs(encoderPreset, "ultrafast")...)
+	args = append(args, rtspFastPresetArgs(encoder.FFmpegArgs(encoderPreset, "ultrafast"))...)
+	if !encoder.Hardware {
+		args = append(args, "-x264-params", rtspX264SingleSliceOptions)
+	}
 	args = append(args,
 		"-g", latency.GOPFrames,
 		"-keyint_min", latency.GOPFrames,
@@ -1188,18 +1373,26 @@ func (m *Manager) LHLSPublicFile(id, name string) (string, bool) {
 // generated-file path.
 func (m *Manager) ProxyLLHLS(w http.ResponseWriter, r *http.Request, id, name string) bool {
 	m.mu.Lock()
-	runtime := m.mtx
+	runtime := m.activeMediaMTXRuntimeLocked()
 	active := m.current != nil && m.current.ID == id
+	direct := m.directPublishing
 	contract, hasContract := m.currentSessionContractLocked()
 	m.mu.Unlock()
 	transport := contract.LatencyProfile.Transport
 	if !hasContract {
 		transport = m.currentLatency().Transport
 	}
-	if transport != LatencyModeLLHLS && transport != LatencyModeRTSPT {
+	if !direct && transport != LatencyModeLLHLS && transport != LatencyModeRTSPT {
 		return false
 	}
-	if !active || runtime == nil {
+	if !active {
+		return false
+	}
+	if runtime == nil {
+		if direct {
+			http.Error(w, "AirPlay delivery is switching or unavailable", http.StatusServiceUnavailable)
+			return true
+		}
 		return false
 	}
 	runtime.proxyHLS(w, r, mediaMTXHLSName(id, name))
@@ -1208,24 +1401,43 @@ func (m *Manager) ProxyLLHLS(w http.ResponseWriter, r *http.Request, id, name st
 
 func (m *Manager) HLSPreviewReady(id, name string) bool {
 	m.mu.Lock()
-	runtime := m.mtx
+	runtime := m.activeMediaMTXRuntimeLocked()
 	active := m.current != nil && m.current.ID == id
+	direct := m.directPublishing
 	contract, hasContract := m.currentSessionContractLocked()
 	m.mu.Unlock()
 	transport := contract.LatencyProfile.Transport
 	if !hasContract {
 		transport = m.currentLatency().Transport
 	}
-	if transport == LatencyModeLLHLS || transport == LatencyModeRTSPT {
+	if direct || transport == LatencyModeLLHLS || transport == LatencyModeRTSPT {
 		if !active || runtime == nil {
 			return false
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 		defer cancel()
+		// RTSP sessions use MediaMTX's standard MPEG-TS HLS muxer. A live
+		// playlist request may block until the next segment is available, so
+		// probing the HLS URL here can keep the UI in "preparing" forever and
+		// creates throwaway HLS sessions on every state poll. The MediaMTX path
+		// readiness already proves that the H264/AAC tracks are established;
+		// let the preview player wait for the first segment instead.
+		if direct || transport == LatencyModeRTSPT {
+			return runtime.pathReady(ctx)
+		}
 		return runtime.hlsArtifactReady(ctx, mediaMTXHLSName(id, name))
 	}
 	path := filepath.Join(m.outDir, video.PlaylistName(id))
 	return fileExists(path)
+}
+
+func redactOBSRTMPDebugLine(line string, secrets ...string) string {
+	for _, secret := range secrets {
+		if secret != "" {
+			line = strings.ReplaceAll(line, secret, "[redacted]")
+		}
+	}
+	return line
 }
 
 func mediaMTXHLSName(id, name string) string {
@@ -1431,12 +1643,62 @@ func (m *Manager) isPublishingArmed() bool {
 	return m.status.Publishing
 }
 
+func (m *Manager) cancelPublishDisconnectTimerLocked() {
+	if m.publishDisconnectTimer == nil {
+		return
+	}
+	m.publishDisconnectTimer.Stop()
+	m.publishDisconnectTimer = nil
+}
+
+func (m *Manager) schedulePublishDisconnectTimeoutLocked(timeout time.Duration) {
+	m.cancelPublishDisconnectTimerLocked()
+	if timeout <= 0 || !m.status.Publishing || m.status.Connected {
+		return
+	}
+	var timer *time.Timer
+	timer = time.AfterFunc(timeout, func() {
+		m.mu.Lock()
+		if m.publishDisconnectTimer != timer {
+			m.mu.Unlock()
+			return
+		}
+		m.publishDisconnectTimer = nil
+		if m.status.Connected || !m.status.Publishing || !m.continuousPublishing {
+			m.mu.Unlock()
+			return
+		}
+		m.status.Publishing = false
+		m.continuousPublishing = false
+		m.status.Message = "AirPlay stream reconnect timed out after 5 minutes. The session was released."
+		callback := m.cb.OnContinuousPublishingTimeout
+		m.mu.Unlock()
+		if callback != nil {
+			callback()
+		}
+	})
+	m.publishDisconnectTimer = timer
+}
+
 func (m *Manager) acceptSession(session *Session, generation uint64) (bool, bool) {
 	m.mu.Lock()
 	if generation != m.listenerGeneration || !m.running || session == nil {
 		m.mu.Unlock()
 		return false, false
 	}
+	armed, callbackSession := m.acceptSessionLocked(session)
+	callback := m.cb.OnStart
+	m.mu.Unlock()
+	if armed && callback != nil {
+		callback(callbackSession)
+	}
+	return armed, true
+}
+
+// Caller has validated listener/backend identity while holding Manager.mu.
+// Notification is left to the caller and must happen after unlocking.
+func (m *Manager) acceptSessionLocked(session *Session) (bool, Session) {
+	m.cancelPublishDisconnectTimerLocked()
 	armed := m.status.Publishing
 	m.mediaGeneration++
 	session.Generation = m.mediaGeneration
@@ -1454,13 +1716,7 @@ func (m *Manager) acceptSession(session *Session, generation uint64) (bool, bool
 	} else {
 		m.status.Message = "OBS stream is connected. Press publish to share it."
 	}
-	callback := m.cb.OnStart
-	callbackSession := cloneSession(*session)
-	m.mu.Unlock()
-	if armed && callback != nil {
-		callback(callbackSession)
-	}
-	return armed, true
+	return armed, cloneSession(*session)
 }
 
 func (m *Manager) finalizeAcceptedSession(session *Session, generation uint64) bool {
@@ -1482,9 +1738,16 @@ func (m *Manager) finalizeAcceptedSession(session *Session, generation uint64) b
 	m.status.Connected = false
 	m.status.MediaID = ""
 	m.status.RTSPTURL = ""
-	m.status.Publishing = false
 	m.status.FinishedAt = session.FinishedAt
-	m.status.Message = "OBS stream ended. Recording finalized as VOD."
+	if m.status.Publishing && m.continuousPublishing {
+		m.status.Message = "AirPlay stream ended. Waiting up to 5 minutes for reconnect."
+		m.schedulePublishDisconnectTimeoutLocked(publishingDisconnectTimeout)
+	} else {
+		m.cancelPublishDisconnectTimerLocked()
+		m.status.Publishing = false
+		m.continuousPublishing = false
+		m.status.Message = "OBS stream ended. Recording finalized as VOD."
+	}
 	m.current = nil
 	callback := m.cb.OnDone
 	callbackSession := cloneSession(*session)

@@ -66,7 +66,7 @@ const dashboardScriptUploadState = `
     }
 
     function uploadActionLabel() {
-      if (uploadMode === 'obs') return '配信開始';
+      if (isLiveInputMode(uploadMode)) return '配信開始';
       if (mediaIntent === 'music') {
         if (MusicController && MusicController.mode && MusicController.mode() === 'playlist') {
           return 'プレイリストに追加';
@@ -79,13 +79,37 @@ const dashboardScriptUploadState = `
       return mediaIntent === 'video' ? '動画を変換して公開' : '画像を公開';
     }
 
+    function musicRendererReady() {
+      return !!state.musicRenderer && state.musicRenderer.status === 'ready';
+    }
+
+    function videoPlayerNeedsRecovery() {
+      return !state.videoPlayerEnabled || (!state.videoPlayerToolsReady && !state.videoPlayerInstalling);
+    }
+
+    function videoPlayerReadyForMedia() {
+      return !!state.videoPlayerEnabled && !!state.videoPlayerToolsReady && !state.videoPlayerInstalling;
+    }
+
+    function musicModeCanActivate() {
+      return videoPlayerReadyForMedia() && musicRendererReady();
+    }
+
+    function mediaIntentCanUpload() {
+      if (mediaIntent === 'image') return true;
+      if (!videoPlayerReadyForMedia()) return false;
+      return mediaIntent !== 'music' || musicRendererReady();
+    }
+
     async function syncLegacyMusicMode(enabled) {
       const desired = !!enabled && !!state.videoPlayerEnabled;
       if (!musicWorkspaceEnabled) return;
       legacyMusicModeDesired = desired;
+      if (desired && !musicModeCanActivate()) return;
       if (state.musicModeEnabled === desired && !legacyMusicModeSyncPending) return;
       if (legacyMusicModeSyncPending) return;
       legacyMusicModeSyncPending = true;
+      const requestDesired = desired;
       try {
         const res = await apiFetch('/api/music-mode', {
           method: 'POST',
@@ -101,13 +125,160 @@ const dashboardScriptUploadState = `
         showToast(error.message || 'ミュージックモードの同期に失敗しました', { error: true });
       } finally {
         legacyMusicModeSyncPending = false;
-        if (legacyMusicModeDesired !== state.musicModeEnabled) {
+        if (legacyMusicModeDesired !== requestDesired) {
           syncLegacyMusicMode(legacyMusicModeDesired);
         }
       }
     }
 
-    function setMediaIntent(intent, syncLegacy = true) {
+    function mediaCapabilityMessage(data) {
+      const video = data || {};
+      if (!video.enabled) {
+        return {
+          tone: 'working',
+          text: '動画機能は無効です。動画またはミュージックを選ぶと、ここから有効化できます。'
+        };
+      }
+      if (video.installing) {
+        return {
+          tone: 'working',
+          text: '動画機能を有効化しました。FFmpeg/FFprobeを準備しています…'
+        };
+      }
+      if (!video.toolsReady) {
+        return {
+          tone: 'error',
+          text: '動画ツール（FFmpeg/FFprobe）が未準備です。動画機能の有効化意図は保持されています。'
+            + (video.error ? ' 詳細: ' + String(video.error).slice(0, 180) : '')
+        };
+      }
+      if (mediaIntent === 'music' && video.musicRenderer && video.musicRenderer.status === 'unavailable') {
+        return {
+          tone: 'error',
+          text: 'ミュージックモードを利用できません。GPU rendererが利用できないためです。'
+            + (video.musicRenderer.reason ? ' 詳細: ' + String(video.musicRenderer.reason).slice(0, 180) : '')
+        };
+      }
+      if (mediaIntent === 'music' && (!video.musicRenderer || video.musicRenderer.status !== 'ready')) {
+        return {
+          tone: 'working',
+          text: 'ミュージックモードのGPU renderer状態を確認しています。'
+        };
+      }
+      return null;
+    }
+
+    function updateMediaCapabilityStatus(data) {
+      if (!mediaCapabilityStatus) return;
+      const message = mediaCapabilityMessage(data || {
+        enabled: state.videoPlayerEnabled,
+        toolsReady: state.videoPlayerToolsReady,
+        installing: state.videoPlayerInstalling,
+        error: state.videoPlayerError,
+        musicRenderer: state.musicRenderer
+      });
+      if (!message) {
+        mediaCapabilityStatus.hidden = true;
+        mediaCapabilityStatus.textContent = '';
+        mediaCapabilityStatus.removeAttribute('data-tone');
+        return;
+      }
+      mediaCapabilityStatus.hidden = false;
+      mediaCapabilityStatus.dataset.tone = message.tone;
+      mediaCapabilityStatus.textContent = message.text;
+    }
+
+    async function enableVideoPlayerAndSelect(intent) {
+      if (videoActivationPending) return;
+      videoActivationPending = true;
+      updateMediaNavigation();
+      updateMediaCapabilityStatus({ enabled: true, toolsReady: false, installing: true });
+      try {
+        const res = await apiFetch('/api/video-player', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: true })
+        });
+        const body = await res.text();
+        let data = {};
+        try {
+          data = JSON.parse(body || '{}');
+        } catch (_) {
+          data = {};
+        }
+        if (!res.ok) throw new Error(body || ('HTTP ' + res.status));
+        applyVideoPlayer(data);
+        await refreshState();
+        if (state.videoPlayerEnabled) {
+          setMediaIntent(intent, intent !== 'music' || musicModeCanActivate());
+          showToast(intent === 'music' ? 'ミュージックモードの準備を確認しています' : '動画機能を有効化しました');
+        }
+      } catch (error) {
+        await refreshState();
+        showToast(error.message || '動画機能の有効化に失敗しました', { error: true });
+      } finally {
+        videoActivationPending = false;
+        updateMediaNavigation();
+        updateMediaCapabilityStatus();
+      }
+    }
+
+    function updateMediaNavigation() {
+      const playlistActive = mediaIntent === 'music' && typeof MusicController !== 'undefined' && MusicController.mode && MusicController.mode() === 'playlist';
+      const activeGroup = isLiveInputMode(uploadMode) || playlistActive ? 'live' : mediaIntent;
+      const videoEnabled = !!state.videoPlayerEnabled;
+      const liveInput = activeGroup === 'live';
+
+      mediaNavParentButtons.forEach((button) => {
+        const intent = button.dataset.mediaIntent;
+        const active = intent === activeGroup;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', String(active));
+        button.disabled = videoActivationPending;
+        button.title = intent === 'video' && videoPlayerNeedsRecovery()
+          ? 'クリックして動画機能を有効化'
+          : intent === 'music' && videoPlayerNeedsRecovery()
+          ? 'クリックして動画機能を有効化し、ミュージックを開く'
+          : intent === 'music' && !musicModeCanActivate()
+          ? 'クリックしてミュージックの準備状態を確認'
+          : '';
+      });
+
+      const inputModes = [
+        [fileModeButton, !liveInput],
+        [linkModeButton, !liveInput],
+        [obsModeButton, liveInput && videoEnabled],
+        [playlistModeButton, liveInput && videoEnabled && musicWorkspaceEnabled],
+        [airplayModeButton, liveInput && videoEnabled && !!(state.airplay && state.airplay.enabled)]
+      ];
+      inputModes.forEach(([button, visible]) => {
+        if (!button) return;
+        button.hidden = !visible;
+        button.disabled = !visible;
+        const mode = button.dataset.mediaInputMode;
+        const selected = mode === 'playlist'
+          ? playlistActive
+          : mode === uploadMode && !playlistActive;
+        button.classList.toggle('active', selected);
+        button.setAttribute('aria-selected', String(selected));
+        button.tabIndex = visible && selected ? 0 : -1;
+      });
+      const playlistInputModes = [
+        [playlistFileModeButton, playlistActive && uploadMode === 'file'],
+        [playlistLinkModeButton, playlistActive && uploadMode === 'link']
+      ];
+      playlistInputModes.forEach(([button, selected]) => {
+        if (!button) return;
+        button.disabled = !playlistActive;
+        button.classList.toggle('active', selected);
+        button.setAttribute('aria-selected', String(selected));
+        button.tabIndex = playlistActive && selected ? 0 : -1;
+      });
+      if (playlistInputTabs) playlistInputTabs.hidden = !playlistActive;
+      if (modeTabs) modeTabs.classList.toggle('live-input', liveInput);
+    }
+
+    function setMediaIntent(intent, syncLegacy = true, leaveLiveInput = true) {
       if (!musicWorkspaceEnabled && intent === 'music') {
         intent = 'image';
       }
@@ -116,7 +287,7 @@ const dashboardScriptUploadState = `
         : intent === 'video' && state.videoPlayerEnabled
           ? 'video'
           : 'image';
-      if (mediaIntent !== 'video' && uploadMode === 'obs') {
+      if (leaveLiveInput && isLiveInputMode(uploadMode)) {
         if (videoInfoPanel) videoInfoPanel.hidden = true;
         uploadMode = 'file';
       }
@@ -127,9 +298,12 @@ const dashboardScriptUploadState = `
       if (imageIntentButton) imageIntentButton.setAttribute('aria-pressed', String(mediaIntent === 'image'));
       if (videoIntentButton) videoIntentButton.setAttribute('aria-pressed', String(mediaIntent === 'video'));
       if (musicIntentButton) musicIntentButton.setAttribute('aria-pressed', String(mediaIntent === 'music'));
-      if (obsModeButton) obsModeButton.hidden = !state.videoPlayerEnabled || mediaIntent !== 'video';
-      if (modeTabs) modeTabs.classList.toggle('has-obs', !!state.videoPlayerEnabled && mediaIntent === 'video');
       if (MusicController) MusicController.render({ active: mediaIntent === 'music' });
+      if (playlistModeButton) {
+        const playlistActive = mediaIntent === 'music' && MusicController && MusicController.mode && MusicController.mode() === 'playlist';
+        playlistModeButton.classList.toggle('active', playlistActive);
+        playlistModeButton.setAttribute('aria-selected', String(playlistActive));
+      }
       if (dropHint) {
         dropHint.textContent = mediaIntent === 'music'
           ? '音楽ファイルをここにドロップ'
@@ -168,7 +342,7 @@ const dashboardScriptUploadState = `
       }
       if (uploadButton) {
         uploadButton.textContent = uploadActionLabel();
-        uploadButton.disabled = false;
+        uploadButton.disabled = !mediaIntentCanUpload();
       }
       if (fileModeButton) {
         fileModeButton.textContent = mediaIntent === 'music' ? 'ファイル' : 'ファイル';
@@ -177,13 +351,13 @@ const dashboardScriptUploadState = `
         imageURLInput.placeholder = 'https://example.com/music.mp3';
       }
       if (queueUploadButton) {
-        queueUploadButton.hidden = !state.videoPlayerEnabled || uploadMode === 'obs' || mediaIntent !== 'video' || mediaIntent === 'music';
+        queueUploadButton.hidden = !state.videoPlayerEnabled || isLiveInputMode(uploadMode) || mediaIntent !== 'video' || mediaIntent === 'music';
       }
       imageTransformOptions.forEach((option) => {
         option.hidden = mediaIntent !== 'image';
       });
 	if (qualityRow) {
-		qualityRow.hidden = uploadMode === 'obs' || (mediaIntent !== 'video' && mediaIntent !== 'music');
+		qualityRow.hidden = isLiveInputMode(uploadMode) || (mediaIntent !== 'video' && mediaIntent !== 'music');
 		qualityRow.classList.toggle('standalone', mediaIntent === 'video' || mediaIntent === 'music');
 	}
 	if (musicPlaylistDeliveryOption) {
@@ -193,14 +367,16 @@ const dashboardScriptUploadState = `
 	  musicPlaylistCanonicalOption.hidden = !(mediaIntent === 'music' && MusicController && MusicController.mode && MusicController.mode() === 'playlist');
 	}
       if (obsLatencyOption) {
-        obsLatencyOption.hidden = uploadMode !== 'obs';
+        obsLatencyOption.hidden = !isLiveInputMode(uploadMode);
       }
       if (videoInfoPanel) {
         videoInfoPanel.hidden = mediaIntent !== 'video';
       }
-      if (uploadMode !== 'obs') {
+      if (!isLiveInputMode(uploadMode)) {
         setUploadMode(uploadMode);
       }
+      updateMediaNavigation();
+      updateMediaCapabilityStatus();
     }
 
     function applyVideoPlayer(data) {
@@ -209,24 +385,27 @@ const dashboardScriptUploadState = `
         return;
       }
       state.videoPlayerEnabled = !!data.enabled;
+      state.videoPlayerToolsReady = !!data.toolsReady;
+      state.videoPlayerInstalling = !!data.installing;
+      state.videoPlayerError = String(data.error || '');
+      state.musicRenderer = data.musicRenderer || null;
       state.musicModeEnabled = !!data.musicModeEnabled;
       imageInput.accept = data.enabled ? '' : imageAccept;
       if (!data.enabled) mediaIntent = 'image';
-      if (mediaKindSwitch) mediaKindSwitch.hidden = !data.enabled;
+      if (mediaKindSwitch) mediaKindSwitch.hidden = false;
       if (mediaKindSwitch) mediaKindSwitch.classList.toggle('has-music', !!data.enabled && musicWorkspaceEnabled);
-      if (musicIntentButton) musicIntentButton.hidden = !data.enabled || !musicWorkspaceEnabled;
       if (mediaKindSwitch) mediaKindSwitch.dataset.enabledLabel = '画像/音声/動画';
       if (dragDropOverlayHint) dragDropOverlayHint.dataset.enabledLabel = '画像、RAW、音声、動画ファイルを選択します';
       fileModeButton.textContent = 'ファイル';
       imageURLInput.placeholder = data.enabled ? 'https://example.com/image_or_video.webp' : 'https://example.com/image.webp';
-      obsModeButton.hidden = !data.enabled || mediaIntent !== 'video';
-      if (modeTabs) {
-        modeTabs.classList.toggle('has-obs', !!data.enabled && mediaIntent === 'video');
-      }
-      if ((!data.enabled || mediaIntent !== 'video') && uploadMode === 'obs') {
+      if ((!data.enabled || mediaIntent !== 'video') && isLiveInputMode(uploadMode)) {
         setUploadMode('file');
       }
-      setMediaIntent(mediaIntent, false);
+      setMediaIntent(mediaIntent, false, false);
+      if (mediaIntent === 'music' && data.enabled && data.toolsReady && !data.installing && musicRendererReady()) {
+        syncLegacyMusicMode(true);
+      }
       updateUploadControlsVisibility();
+      updateMediaCapabilityStatus(data);
     }
 `

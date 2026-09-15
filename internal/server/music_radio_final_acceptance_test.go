@@ -658,6 +658,8 @@ func runFinalAcceptanceProfile(ctx context.Context, t *testing.T, pins map[strin
 	pathLosses, monitorDone := monitorRTSPAcceptancePath(monitorCtx, srv, path)
 	remaining := time.Until(captureStartedAt.Add(duration))
 	if remaining <= 0 {
+		stopMonitor()
+		<-monitorDone
 		return evidence, samples, errors.New("receiver capture elapsed before continuity monitoring began")
 	}
 	if err := waitFinalAcceptanceContinuity(ctx, srv, reader, profile, path, remaining, captureSample); err != nil {

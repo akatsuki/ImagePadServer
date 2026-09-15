@@ -47,20 +47,23 @@ const indexHTML = `<!doctype html>
               <h2 id="uploadHeading">画像アップロード</h2>
               <p class="section-kicker" id="uploadKicker">静止画を変換して、ImagePad URLとしてすぐ公開する</p>
             </div>
-            <div class="media-kind-switch" id="mediaKindSwitch" role="group" aria-label="メディア種別" hidden>
-              <button type="button" class="active" id="imageIntentButton" data-media-intent="image" aria-pressed="true">静止画</button>
-              <button type="button" id="videoIntentButton" data-media-intent="video" aria-pressed="false">動画</button>
-              <button type="button" id="musicIntentButton" data-media-intent="music" hidden aria-pressed="false" aria-haspopup="menu" aria-expanded="false">
-                <span>ミュージック</span>
-                <svg class="music-caret" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path fill="currentColor" d="M2.2 4.2 6 8l3.8-3.8H2.2Z"/></svg>
-              </button>
-              <div class="music-mode-menu" id="musicModeMenu" role="menu" aria-label="ミュージックモード" hidden>
-                <button type="button" role="menuitemradio" aria-checked="true" data-music-mode-choice="single">シングル</button>
-                <button type="button" role="menuitemradio" aria-checked="false" data-music-mode-choice="playlist">プレイリスト</button>
-              </div>
-            </div>
           </div>
         </div>
+        <nav class="media-hierarchy" id="mediaKindSwitch" aria-label="メディア種別">
+          <button type="button" class="media-nav-parent active" id="imageIntentButton" data-media-nav-parent data-media-intent="image" aria-pressed="true">
+            <span class="media-nav-icon" aria-hidden="true">▧</span><span>静止画</span>
+          </button>
+          <button type="button" class="media-nav-parent" id="videoIntentButton" data-media-nav-parent data-media-intent="video" aria-pressed="false">
+            <span class="media-nav-icon" aria-hidden="true">▶</span><span>動画</span>
+          </button>
+          <button type="button" class="media-nav-parent" id="musicIntentButton" data-media-nav-parent data-media-intent="music" aria-pressed="false">
+            <span class="media-nav-icon" aria-hidden="true">♫</span><span>ミュージック</span>
+          </button>
+          <button type="button" class="media-nav-parent" id="liveIntentButton" data-media-nav-parent data-media-intent="live" aria-pressed="false">
+            <span class="media-nav-icon" aria-hidden="true">●</span><span>LIVE</span>
+          </button>
+        </nav>
+        <p class="media-capability-status" id="mediaCapabilityStatus" role="status" aria-live="polite" hidden></p>
         <form id="uploadForm">
           <div class="flow-grid" id="flowGrid">
             <div class="flow-primary">
@@ -72,11 +75,16 @@ const indexHTML = `<!doctype html>
                   </svg>
                   <span>入力</span>
                 </div>
-                <div class="mode-tabs" role="tablist" aria-label="アップロード方法">
-                  <button class="mode-tab active" id="fileModeButton" type="button" role="tab" aria-selected="true" aria-controls="fileUploadPanel">画像</button>
-                  <span class="divider" aria-hidden="true">|</span>
-                  <button class="mode-tab" id="linkModeButton" type="button" role="tab" aria-selected="false" aria-controls="linkUploadPanel">リンク</button>
-                  <button class="mode-tab" id="obsModeButton" type="button" role="tab" aria-selected="false" aria-controls="obsUploadPanel" hidden>OBS</button>
+                <div class="mode-tabs" role="tablist" aria-label="入力方法">
+                  <button class="mode-tab active" id="fileModeButton" data-media-input-mode="file" type="button" role="tab" aria-selected="true" aria-controls="fileUploadPanel" tabindex="0">ファイル</button>
+                  <button class="mode-tab" id="linkModeButton" data-media-input-mode="link" type="button" role="tab" aria-selected="false" aria-controls="linkUploadPanel" tabindex="-1">リンク</button>
+                  <button class="mode-tab" id="obsModeButton" data-media-input-mode="obs" type="button" role="tab" aria-selected="false" aria-controls="obsUploadPanel" tabindex="-1" hidden>OBS</button>
+                  <button class="mode-tab" id="playlistModeButton" data-media-input-mode="playlist" type="button" role="tab" aria-selected="false" aria-controls="musicPlaylistPanel" tabindex="-1" hidden>Playlist</button>
+                  <button class="mode-tab" id="airplayModeButton" data-media-input-mode="airplay" type="button" role="tab" aria-selected="false" aria-controls="airplayUploadPanel" tabindex="-1" hidden>AirPlay</button>
+                </div>
+                <div class="playlist-input-tabs" id="playlistInputTabs" role="tablist" aria-label="プレイリスト入力方法" hidden>
+                  <button class="mode-tab playlist-input-tab active" id="playlistFileModeButton" data-playlist-input-mode="file" type="button" role="tab" aria-selected="true" aria-controls="fileUploadPanel" tabindex="0">ファイル</button>
+                  <button class="mode-tab playlist-input-tab" id="playlistLinkModeButton" data-playlist-input-mode="link" type="button" role="tab" aria-selected="false" aria-controls="linkUploadPanel" tabindex="-1">リンク</button>
                 </div>
                 <div class="upload-panel active" id="fileUploadPanel" role="tabpanel" aria-labelledby="fileModeButton">
                   <div class="drop-zone" id="fileDropZone">
@@ -117,6 +125,27 @@ const indexHTML = `<!doctype html>
                     </div>
                   </div>
                 </div>
+                <div class="upload-panel" id="airplayUploadPanel" role="tabpanel" aria-labelledby="airplayModeButton" hidden>
+                  <section class="airplay-card" id="airplayCard" hidden aria-labelledby="airplayTitle">
+                    <div class="airplay-card-heading">
+                      <svg class="airplay-graphic" viewBox="0 0 48 48" aria-hidden="true" focusable="false">
+                        <rect x="7" y="6" width="34" height="25" rx="4" fill="none" stroke="currentColor" stroke-width="2.5"/>
+                        <path d="M17 39h14M24 31v8M14 24c2.8-3.2 6.2-4.8 10-4.8s7.2 1.6 10 4.8M18.2 27.5c1.7-1.7 3.6-2.5 5.8-2.5s4.1.8 5.8 2.5" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+                      </svg>
+                      <div>
+                        <h3 id="airplayTitle">iOS AirPlay画面共有</h3>
+                        <p>同じLANのiPhone/iPadから画面ミラーリングを受け、現在のLive配信へ載せます。</p>
+                      </div>
+                    </div>
+                    <p class="airplay-status" id="airplayStatusText" role="status" aria-live="polite">AirPlay受信は無効です</p>
+                    <code class="airplay-receiver-path" id="airplayReceiverPath"></code>
+                    <div class="airplay-actions">
+                      <button type="button" id="airplayStartButton">AirPlay受信を開始</button>
+                      <button type="button" class="secondary" id="airplayRetryButton" hidden>配信を再接続</button>
+                      <button type="button" class="secondary" id="airplayEndButton" hidden>受信を停止</button>
+                    </div>
+                  </section>
+                </div>
               </div>
             </div>
             <div class="flow-secondary">
@@ -142,6 +171,10 @@ const indexHTML = `<!doctype html>
 					  <label id="musicPlaylistCanonicalOption" hidden><span>素材解像度</span><select id="musicPlaylistCanonicalHeight"><option value="360">360p</option><option value="720">720p</option><option value="1080">1080p</option></select><span id="musicPlaylistCanonicalStatus"></span></label>
                       <div class="pill"><strong>実効</strong><span id="qualityStatus">確認中</span></div>
                       <button type="button" class="secondary" id="networkCheckButton">速度チェック</button>
+                    </div>
+                    <div class="quality-row airplay-quality-options" id="airplayQualityRow" hidden>
+                      <label for="airplayQualityMode"><span>AirPlay画質</span><select id="airplayQualityMode"><option value="auto">Auto</option><option value="360">360p</option><option value="720">720p</option><option value="1080">1080p</option></select></label>
+                      <p class="airplay-quality-status" id="airplayQualityStatus" role="status" aria-live="polite"></p>
                     </div>
                     <label class="obs-latency-option" id="obsLatencyOption" hidden>
                       <span>OBSレイテンシ</span>
@@ -481,7 +514,8 @@ const indexHTML = `<!doctype html>
             <div><strong>{{.appName}} {{.version}}</strong></div>
             <div>Author: {{.author}}</div>
             <div>{{.copyright}}</div>
-            <div>License: {{.license}}</div>
+            <div>本体のライセンス: {{.license}}</div>
+            <div><a href="/licenses/airplay" target="_blank" rel="noopener">AirPlayのライセンスと対応ソース</a></div>
             <details>
               <summary>Open source notices</summary>
               <ul class="oss-list">
@@ -531,7 +565,17 @@ const indexHTML = `<!doctype html>
     <strong class="pairing-pin" id="pairingPin">0000</strong>
     <p class="pairing-detail" id="pairingDetail">Enter this code on the other computer.</p>
   </div>
-  <script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js" defer></script>
+  <script>
+    window.addEventListener('load', () => {
+      const hlsScript = document.createElement('script');
+      hlsScript.src = 'https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js';
+      hlsScript.async = true;
+      hlsScript.addEventListener('load', () => {
+        if (typeof scheduleRefresh === 'function') scheduleRefresh(0);
+      });
+      document.head.appendChild(hlsScript);
+    }, { once: true });
+  </script>
   <script>` + dashboardScript + `</script>
 </body>
 </html>`

@@ -15,6 +15,21 @@ import (
 	"imagepadserver/internal/video"
 )
 
+func TestFFmpegRTMPProbeKeepsLargeInitialIDR(t *testing.T) {
+	manager := newTestManager(t, LatencyModeHLS)
+	args := manager.ffmpegArgs("media123", "recording.mp4", video.ResolveQuality("720", 0))
+
+	if got := valueAfter(args, "-analyzeduration"); got != "1000000" {
+		t.Fatalf("-analyzeduration = %q, want 1000000; args: %s", got, strings.Join(args, " "))
+	}
+	if got := valueAfter(args, "-probesize"); got != "4194304" {
+		t.Fatalf("-probesize = %q, want 4194304; args: %s", got, strings.Join(args, " "))
+	}
+	if slices.Contains(args, "nobuffer") {
+		t.Fatalf("RTMP probe must retain the initial IDR: %s", strings.Join(args, " "))
+	}
+}
+
 func TestFFmpegArgsUseNormalHLS(t *testing.T) {
 	manager := newTestManager(t, LatencyModeHLS)
 	args := manager.ffmpegArgs("media123", "recording.mp4", video.ResolveQuality("720", 0))
@@ -44,6 +59,37 @@ func TestFFmpegArgsUseNormalHLS(t *testing.T) {
 	}
 	if !containsSubsequence(args, []string{video.PlaylistName("media123"), "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy", "-movflags", "+faststart", "recording.mp4"}) {
 		t.Fatalf("expected recording output to remain stream-copy MP4 after HLS output: %s", strings.Join(args, " "))
+	}
+}
+
+func TestFFmpegArgsUseStableAspectPreservingCanvas(t *testing.T) {
+	manager := newTestManager(t, LatencyModeHLS)
+	args := manager.ffmpegArgs("media123", "recording.mp4", video.ResolveQuality("720", 0))
+	filter := valueAfter(args, "-vf")
+	for _, want := range []string{
+		"scale=w='if(gte(iw,ih),1280,720)':h='if(gte(iw,ih),720,1280)'",
+		"force_original_aspect_ratio=decrease",
+		"out_range=tv",
+		"pad=w='if(gte(iw,ih),1280,720)':h='if(gte(iw,ih),720,1280)'",
+		"setsar=1",
+		"format=yuv420p",
+		"setparams=range=limited:color_primaries=bt709:color_trc=bt709:colorspace=bt709",
+	} {
+		if !strings.Contains(filter, want) {
+			t.Fatalf("video filter %q does not contain %q", filter, want)
+		}
+	}
+}
+
+func TestStableOBSVideoFilterIsOrientationAware(t *testing.T) {
+	filter := stableOBSVideoFilter(720)
+	for _, want := range []string{
+		"if(gte(iw,ih),1280,720)",
+		"if(gte(iw,ih),720,1280)",
+	} {
+		if !strings.Contains(filter, want) {
+			t.Fatalf("filter %q does not contain %q", filter, want)
+		}
 	}
 }
 
@@ -226,6 +272,16 @@ func newTestManager(t *testing.T, latencyMode string) *Manager {
 	}, Callbacks{})
 }
 
+func TestInternalPublishURLUsesLoopback(t *testing.T) {
+	manager := New(t.TempDir(), "192.168.0.234", 1935, "airplay-key", nil, func() LatencyProfile {
+		return NormalizeLatencyProfile(LatencyModeRTSPRealtime)
+	}, Callbacks{})
+
+	if got, want := manager.InternalPublishURL(), "rtmp://127.0.0.1:1935/live/airplay-key"; got != want {
+		t.Fatalf("InternalPublishURL() = %q, want %q", got, want)
+	}
+}
+
 func TestSetRTSPURLRejectsStaleSession(t *testing.T) {
 	manager := newTestManager(t, "rtspt")
 	manager.current = &Session{ID: "current"}
@@ -394,13 +450,26 @@ func TestOBSActiveSessionContractFreezesRunningTransportAndUsesDesiredSettingsFo
 	manager.current = &Session{ID: active.SessionID, ActiveContract: &active}
 	manager.status.Connected = true
 
+	hlsRequests := 0
 	hls := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got, want := r.URL.Path, "/obs_active/index.m3u8"; got != want {
 			t.Fatalf("proxied path = %q, want %q", got, want)
 		}
+		hlsRequests++
+		if hlsRequests > 1 {
+			http.Error(w, "blocking live playlist", http.StatusInternalServerError)
+			return
+		}
 		_, _ = w.Write([]byte("#EXTM3U\n"))
 	}))
 	t.Cleanup(hls.Close)
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.Path, "/v3/paths/get/obs_active"; got != want {
+			t.Fatalf("readiness path = %q, want %q", got, want)
+		}
+		_, _ = w.Write([]byte(`{"ready":true,"tracks":["H264","MPEG-4 Audio"]}`))
+	}))
+	t.Cleanup(api.Close)
 	_, portText, err := net.SplitHostPort(strings.TrimPrefix(hls.URL, "http://"))
 	if err != nil {
 		t.Fatalf("parse HLS test server: %v", err)
@@ -409,9 +478,17 @@ func TestOBSActiveSessionContractFreezesRunningTransportAndUsesDesiredSettingsFo
 	if err != nil {
 		t.Fatalf("parse HLS test port: %v", err)
 	}
+	_, apiPortText, err := net.SplitHostPort(strings.TrimPrefix(api.URL, "http://"))
+	if err != nil {
+		t.Fatalf("parse API test port: %v", err)
+	}
+	apiPort, err := strconv.Atoi(apiPortText)
+	if err != nil {
+		t.Fatalf("parse API test port: %v", err)
+	}
 	manager.mtx = newMediaMTXRuntime("test", mediaMTXSessionConfig{
 		Path:  "obs_active",
-		Ports: mediaMTXPorts{HLS: port},
+		Ports: mediaMTXPorts{API: apiPort, HLS: port},
 	})
 	manager.mtx.httpClient = hls.Client()
 

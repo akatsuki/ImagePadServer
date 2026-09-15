@@ -1,0 +1,44 @@
+--- a/renderers/source_clock_renderer.c
++++ b/renderers/source_clock_renderer.c
+@@ -97,6 +97,7 @@ struct source_clock_writer_s {
+     bool session_active;
+     bool send_session_end;
+     bool discontinuity_pending;
++    bool waiting_for_idr;
+     uint32_t generation;
+     uint32_t sequence;
+     uint64_t enqueue_id;
+@@ -1338,15 +1339,33 @@ bool source_clock_renderer_push_video(source_clock_renderer_t *renderer,
+             cache_result == SOURCE_CLOCK_VIDEO_BOOTSTRAP_LIMIT ||
+             cache_result == SOURCE_CLOCK_VIDEO_BOOTSTRAP_NOMEM ||
+             cache_result == SOURCE_CLOCK_VIDEO_BOOTSTRAP_STALE_SESSION) {
++            pthread_mutex_lock(&renderer->video.mutex);
++            renderer->video.waiting_for_idr = true;
++            renderer->video.discontinuity_pending = true;
++            pthread_mutex_unlock(&renderer->video.mutex);
+             pthread_mutex_unlock(&renderer->video_input_mutex);
+             return false;
+         }
+         codec_epoch = source_clock_video_bootstrap_codec_epoch(
+             renderer->video_bootstrap);
+     }
++    pthread_mutex_lock(&renderer->video.mutex);
++    if (renderer->video.waiting_for_idr &&
++        (flags & SOURCE_CLOCK_FLAG_KEYFRAME) == 0) {
++        pthread_mutex_unlock(&renderer->video.mutex);
++        pthread_mutex_unlock(&renderer->video_input_mutex);
++        return false;
++    }
++    pthread_mutex_unlock(&renderer->video.mutex);
+     queued = queue_frame(&renderer->video, data, data_len, remote_ntp_ns, codec,
+                          (uint16_t)flags, 0, 0, 0, 0,
+                          active ? session_epoch : 0, codec_epoch);
++    if (queued && (flags & SOURCE_CLOCK_FLAG_KEYFRAME) != 0) {
++        pthread_mutex_lock(&renderer->video.mutex);
++        renderer->video.waiting_for_idr = false;
++        renderer->video.discontinuity_pending = true;
++        pthread_mutex_unlock(&renderer->video.mutex);
++    }
+     pthread_mutex_unlock(&renderer->video_input_mutex);
+     return queued;
+ }

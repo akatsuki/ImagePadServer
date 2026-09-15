@@ -68,9 +68,9 @@ func TestRadioFallbackFeederRunsInjectedPipeline(t *testing.T) {
 		_, err := out.Write(r.RenderReusableRGBA(0))
 		return 15, err
 	}
-	feeder.started = func(*exec.Cmd) func() {
+	feeder.started = func(*exec.Cmd) (func(), error) {
 		tracked = true
-		return func() {}
+		return func() {}, nil
 	}
 	feeder.command = func(ctx context.Context, _ string, args ...string) *exec.Cmd {
 		gotArgs = append([]string{}, args...)
@@ -128,7 +128,7 @@ func TestRadioFallbackFeederStopsHungProcessAfterCancel(t *testing.T) {
 		<-ctx.Done()
 		return 45, nil
 	}
-	feeder.started = func(*exec.Cmd) func() { return func() {} }
+	feeder.started = func(*exec.Cmd) (func(), error) { return func() {}, nil }
 	feeder.stopTimeout = 30 * time.Millisecond
 	feeder.command = func(ctx context.Context, _ string, args ...string) *exec.Cmd {
 		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestRadioFallbackFeederHelperProcess", "--")

@@ -70,11 +70,9 @@ func executableName(base string) string {
 //  3. App bin directory (settings.Dir()/bin/)
 //  4. PATH
 func ffprobePath() (string, error) {
-	if configured := strings.TrimSpace(os.Getenv("IMAGEPAD_FFPROBE")); configured != "" {
-		if _, err := os.Stat(configured); err == nil {
-			return configured, nil
-		}
-		return "", fmt.Errorf("IMAGEPAD_FFPROBE does not exist: %s", configured)
+	configured, configuredSet, configuredErr := configuredExecutable("IMAGEPAD_FFPROBE")
+	if configuredErr == nil && configuredSet {
+		return configured, nil
 	}
 	if ffmpeg, err := ffmpegPath(); err == nil {
 		sibling := filepath.Join(filepath.Dir(ffmpeg), executableName("ffprobe"))
@@ -85,7 +83,17 @@ func ffprobePath() (string, error) {
 	if local := localFFprobePath(); fileExists(local) {
 		return local, nil
 	}
+	if configuredErr != nil {
+		return "", configuredErr
+	}
 	return "", fmt.Errorf("ffprobe not found in bundle; %s; you can also set IMAGEPAD_FFPROBE", toolInstallHint("ffmpeg"))
+}
+
+// ExistingFFprobePath resolves an already present ffprobe binary without
+// installing or executing it. Callers that run background finalization must
+// not turn a session shutdown into a tool download or validation process.
+func ExistingFFprobePath() (string, error) {
+	return ffprobePath()
 }
 
 func localFFprobePath() string {
@@ -105,7 +113,7 @@ var (
 
 func usableFFprobePath() string {
 	candidates := make([]string, 0, 4)
-	if configured := strings.TrimSpace(os.Getenv("IMAGEPAD_FFPROBE")); configured != "" {
+	if configured, configuredSet, err := configuredExecutable("IMAGEPAD_FFPROBE"); configuredSet && err == nil {
 		candidates = append(candidates, configured)
 	}
 	if ffmpeg, err := ffmpegPath(); err == nil {
@@ -206,11 +214,9 @@ func hasFFmpegAssFilter(ffmpeg string) bool {
 // ---------------------------------------------------------------------------
 
 func ffmpegPath() (string, error) {
-	if configured := strings.TrimSpace(os.Getenv("IMAGEPAD_FFMPEG")); configured != "" {
-		if _, err := os.Stat(configured); err == nil {
-			return configured, nil
-		}
-		return "", fmt.Errorf("IMAGEPAD_FFMPEG does not exist: %s", configured)
+	configured, configuredSet, configuredErr := configuredExecutable("IMAGEPAD_FFMPEG")
+	if configuredErr == nil && configuredSet {
+		return configured, nil
 	}
 	if local := localFFmpegPath(); fileExists(local) {
 		return local, nil
@@ -220,15 +226,16 @@ func ffmpegPath() (string, error) {
 	if higher := higherVersionFFmpegPath(); higher != "" {
 		return higher, nil
 	}
+	if configuredErr != nil {
+		return "", configuredErr
+	}
 	return "", fmt.Errorf("ffmpeg not found in bundle; %s; you can also set IMAGEPAD_FFMPEG", toolInstallHint("ffmpeg"))
 }
 
 func ytdlpPath() (string, error) {
-	if configured := strings.TrimSpace(os.Getenv("IMAGEPAD_YTDLP")); configured != "" {
-		if _, err := os.Stat(configured); err == nil {
-			return configured, nil
-		}
-		return "", fmt.Errorf("IMAGEPAD_YTDLP does not exist: %s", configured)
+	configured, configuredSet, configuredErr := configuredExecutable("IMAGEPAD_YTDLP")
+	if configuredErr == nil && configuredSet {
+		return configured, nil
 	}
 	if local := localYTDLPPath(); fileExists(local) {
 		return local, nil
@@ -237,7 +244,27 @@ func ytdlpPath() (string, error) {
 	if higher := higherVersionToolPath("yt-dlp"); higher != "" {
 		return higher, nil
 	}
+	if configuredErr != nil {
+		return "", configuredErr
+	}
 	return "", fmt.Errorf("yt-dlp not found in bundle; %s; you can also set IMAGEPAD_YTDLP", toolInstallHint("yt-dlp"))
+}
+
+// configuredExecutable accepts both explicit paths and command names. Bare
+// command names are resolved only when the corresponding IMAGEPAD_* override
+// is set; the normal resolver still intentionally ignores PATH.
+func configuredExecutable(envKey string) (string, bool, error) {
+	configured := strings.TrimSpace(os.Getenv(envKey))
+	if configured == "" {
+		return "", false, nil
+	}
+	if info, err := os.Stat(configured); err == nil && !info.IsDir() {
+		return configured, true, nil
+	}
+	if resolved, err := exec.LookPath(configured); err == nil {
+		return resolved, true, nil
+	}
+	return "", true, fmt.Errorf("%s does not exist and is not resolvable on PATH: %s", envKey, configured)
 }
 
 // binDir is the root tools directory (settings.Dir()/bin).
@@ -1275,6 +1302,7 @@ func runInDir(dir, ffmpeg string, args ...string) error {
 
 func runInDirContext(ctx context.Context, dir, ffmpeg string, args ...string) error {
 	cmd := exec.CommandContext(ctx, ffmpeg, args...)
+	configureFFmpegContextCancellation(cmd)
 	cmd.Dir = dir
 	hideWindow(cmd)
 	output, err := CombinedOutputTrackedFFmpeg(cmd)

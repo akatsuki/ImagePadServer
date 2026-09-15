@@ -17,6 +17,7 @@ type fakePersistentProgramEncoder struct {
 	writer            *io.PipeWriter
 	videoWrites       int
 	sourceVideoWrites int
+	opaqueVideoWrites int
 	audioWrites       int
 	failVideoAfter    int
 	closed            bool
@@ -75,6 +76,16 @@ func (e *fakePersistentProgramEncoder) WriteVideoRGBA(frame []byte, _ time.Durat
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.videoWrites++
+	opaque := len(frame) >= 4 && len(frame)%4 == 0
+	for i := 3; i < len(frame); i += 4 {
+		if frame[i] != 255 {
+			opaque = false
+			break
+		}
+	}
+	if opaque {
+		e.opaqueVideoWrites++
+	}
 	for _, value := range frame {
 		if value != 0 {
 			e.sourceVideoWrites++
@@ -91,6 +102,25 @@ func (e *fakePersistentProgramEncoder) sourceWrites() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.sourceVideoWrites
+}
+
+func (e *fakePersistentProgramEncoder) opaqueWrites() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.opaqueVideoWrites
+}
+
+func TestProgramEncoderCountsDecodedFramesSeparatelyFromTransitionFade(t *testing.T) {
+	encoder := newFakePersistentProgramEncoder()
+	defer encoder.Close()
+	for _, frame := range [][]byte{{10, 20, 30, 255}, {5, 10, 15, 127}, {0, 0, 0, 0}} {
+		if err := encoder.WriteVideoRGBA(frame, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := encoder.opaqueWrites(); got != 1 {
+		t.Fatalf("decoded frames=%d, want 1", got)
+	}
 }
 
 func (e *fakePersistentProgramEncoder) WriteAudioPCM(_ []byte, _ time.Duration) error {
@@ -350,7 +380,9 @@ func TestRadioProgramRealFFmpegUnalignedFinalPCMCompletesWithoutRetry(t *testing
 	if attempts != 1 {
 		t.Fatalf("decoder attempts = %d, want one successful completion", attempts)
 	}
-	if got := encoder.sourceWrites(); got != 4 {
+	// FFmpeg RGBA frames are opaque; generated transition frames fade alpha
+	// too and may already be written when the idle callback is received.
+	if got := encoder.opaqueWrites(); got != 4 {
 		t.Fatalf("source video frames written = %d, want 4 including final partial-audio frame", got)
 	}
 }

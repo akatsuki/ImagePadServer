@@ -3,6 +3,7 @@ package obsrtmp
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -26,7 +27,7 @@ type RadioFallbackFeeder struct {
 	writeLogo     func(outDir string) (string, error)
 	newRenderer   func(width, height int, logoPath, semiboldFontPath, mediumFontPath string) (radioFallbackRenderer, error)
 	writeFrames   func(ctx context.Context, out io.Writer, renderer radioFallbackRenderer) (int, error)
-	started       func(cmd *exec.Cmd) func()
+	started       func(cmd *exec.Cmd) (func(), error)
 	command       func(ctx context.Context, name string, args ...string) *exec.Cmd
 	stopTimeout   time.Duration
 }
@@ -96,7 +97,12 @@ func (f *RadioFallbackFeeder) Run(ctx context.Context, timestampOffset float64, 
 	if err := cmd.Start(); err != nil {
 		return 0, err
 	}
-	untrack := f.started(cmd)
+	untrack, trackErr := f.started(cmd)
+	if trackErr != nil {
+		_ = cmd.Process.Kill()
+		waitErr := cmd.Wait()
+		return 0, errors.Join(trackErr, waitErr)
+	}
 	defer untrack()
 
 	done := make(chan struct{})

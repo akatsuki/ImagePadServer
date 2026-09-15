@@ -3,6 +3,7 @@ package video
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -34,9 +35,17 @@ func runFFmpegOnce(ctx context.Context, ffmpeg string, args []string) error {
 	hideWindow(cmd)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	untrack := TrackStartedFFmpeg(cmd)
-	defer untrack()
-	if err := cmd.Run(); err != nil {
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	untrack, trackErr := TrackStartedFFmpeg(cmd)
+	if trackErr != nil {
+		waitErr := cmd.Wait()
+		return errors.Join(trackErr, waitErr)
+	}
+	err := cmd.Wait()
+	untrack()
+	if err != nil {
 		detail := stderr.String()
 		if len(detail) > 400 {
 			detail = detail[len(detail)-400:]

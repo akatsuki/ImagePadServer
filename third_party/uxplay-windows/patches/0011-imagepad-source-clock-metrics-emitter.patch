@@ -1,0 +1,564 @@
+diff --git a/renderers/CMakeLists.txt b/renderers/CMakeLists.txt
+index 068b95dd..f3dd7aac 100644
+--- a/renderers/CMakeLists.txt
++++ b/renderers/CMakeLists.txt
+@@ -86,6 +86,10 @@ if (BUILD_TESTING)
+   add_executable(uxplay_source_clock_metrics_contract_test source_clock_metrics_contract_test.c)
+   target_link_libraries(uxplay_source_clock_metrics_contract_test PRIVATE renderers pthread ws2_32)
+   add_test(NAME uxplay_source_clock_metrics_contract COMMAND uxplay_source_clock_metrics_contract_test)
++  add_executable(uxplay_source_clock_metrics_emitter_test source_clock_metrics_emitter_test.c)
++  target_compile_definitions(uxplay_source_clock_metrics_emitter_test PRIVATE SOURCE_CLOCK_TEST_HOOKS)
++  target_link_libraries(uxplay_source_clock_metrics_emitter_test PRIVATE renderers pthread ws2_32)
++  add_test(NAME uxplay_source_clock_metrics_emitter COMMAND uxplay_source_clock_metrics_emitter_test)
+ endif()
+ 
+ if( GST_LIBRARY_DIRS MATCHES "/Library/FrameWorks/GStreamer.framework/lib" )
+diff --git a/renderers/source_clock_metrics_emitter_test.c b/renderers/source_clock_metrics_emitter_test.c
+new file mode 100644
+index 00000000..64dba512
+--- /dev/null
++++ b/renderers/source_clock_metrics_emitter_test.c
+@@ -0,0 +1,263 @@
++#include "source_clock_renderer.h"
++#include "source_clock_metrics.h"
++
++#ifdef NDEBUG
++#undef NDEBUG
++#endif
++#include <assert.h>
++#include <inttypes.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#ifdef _WIN32
++#include <windows.h>
++#else
++#include <time.h>
++#include <unistd.h>
++#endif
++
++#ifdef _WIN32
++#define TEST_STRTOK strtok_s
++#else
++#define TEST_STRTOK strtok_r
++#endif
++
++static void sleep_ms(unsigned milliseconds) {
++#ifdef _WIN32
++    Sleep(milliseconds);
++#else
++    usleep(milliseconds * 1000U);
++#endif
++}
++
++static uint64_t monotonic_ms(void) {
++    return source_clock_metrics_monotonic_time_ns() / 1000000ULL;
++}
++
++static long stream_size(FILE *stream) {
++    long position;
++    assert(fflush(stream) == 0);
++    position = ftell(stream);
++    assert(position >= 0);
++    return position;
++}
++
++static size_t read_stream(FILE *stream, char *buffer, size_t capacity) {
++    size_t length;
++    assert(fflush(stream) == 0);
++    assert(fseek(stream, 0, SEEK_SET) == 0);
++    length = fread(buffer, 1, capacity - 1, stream);
++    assert(!ferror(stream));
++    buffer[length] = '\0';
++    return length;
++}
++
++static void assert_json_line(const char *line, uint64_t *sequence) {
++    const char *json;
++    const char *sequence_field;
++    char *end;
++    unsigned braces = 0;
++    unsigned quotes = 0;
++    int escaped = 0;
++    size_t index;
++
++    assert(strncmp(line, SOURCE_CLOCK_METRICS_PREFIX,
++                   strlen(SOURCE_CLOCK_METRICS_PREFIX)) == 0);
++    json = line + strlen(SOURCE_CLOCK_METRICS_PREFIX);
++    assert(json[0] == '{');
++    assert(json[strlen(json) - 2] == '}' && json[strlen(json) - 1] == '\n');
++    for (index = 0; json[index] != '\0'; ++index) {
++        if (escaped) {
++            escaped = 0;
++            continue;
++        }
++        if (json[index] == '\\') {
++            escaped = 1;
++        } else if (json[index] == '"') {
++            quotes++;
++        } else if (json[index] == '{') {
++            braces++;
++        } else if (json[index] == '}') {
++            assert(braces > 0);
++            braces--;
++        }
++    }
++    assert(braces == 0 && (quotes % 2) == 0 && !escaped);
++    assert(strstr(json, "\"receiverId\"") != NULL);
++    assert(strstr(json, "\"sequence\"") != NULL);
++    assert(strstr(json, "\"videoFrames\"") != NULL);
++    assert(strstr(json, "\"audioFrames\"") != NULL);
++    assert(strstr(json, "\"videoAgeMs\"") != NULL);
++    assert(strstr(json, "\"audioAgeMs\"") != NULL);
++    assert(strstr(json, "\"connectedConsumers\"") != NULL);
++    assert(strstr(json, "\"sentFrames\"") != NULL);
++    assert(strstr(json, "\"droppedFrames\"") != NULL); assert(strstr(json, "\"failureEvents\"") != NULL);
++    assert(strstr(json, "\"lastSocketError\"") != NULL);
++    assert(strstr(json, "\"lastFailureReason\"") != NULL);
++    assert(strstr(json, "token") == NULL);
++    assert(strstr(json, "payload") == NULL);
++    assert(strstr(json, "endpoint") == NULL);
++
++    sequence_field = strstr(json, "\"sequence\":");
++    assert(sequence_field != NULL);
++    *sequence = strtoull(sequence_field + strlen("\"sequence\":"), &end, 10);
++    assert(end != sequence_field + strlen("\"sequence\":"));
++}
++
++static unsigned inspect_stream(FILE *stream, int require_video_age, int require_audio_null,
++                               uint64_t *first_sequence) {
++    char output[8192];
++    char *line;
++    char *save = NULL;
++    uint64_t previous_sequence = 0;
++    unsigned lines = 0;
++    size_t length = read_stream(stream, output, sizeof(output));
++    assert(length < sizeof(output) - 1);
++    for (line = TEST_STRTOK(output, "\n", &save); line != NULL;
++         line = TEST_STRTOK(NULL, "\n", &save)) {
++        char line_with_newline[2048];
++        uint64_t sequence;
++        assert(strlen(line) + 2 < sizeof(line_with_newline));
++        snprintf(line_with_newline, sizeof(line_with_newline), "%s\n", line);
++        assert_json_line(line_with_newline, &sequence);
++        if (lines != 0) assert(sequence > previous_sequence);
++        previous_sequence = sequence;
++        if (lines == 0 && first_sequence != NULL) *first_sequence = sequence;
++        if (require_video_age) assert(strstr(line, "\"videoAgeMs\":null") == NULL);
++        if (require_audio_null) assert(strstr(line, "\"audioAgeMs\":null") != NULL);
++        lines++;
++    }
++    assert(lines > 0 && lines <= 3);
++    return lines;
++}
++
++static source_clock_renderer_t *create_test_renderer(void) {
++    return source_clock_renderer_create("127.0.0.1:1", "127.0.0.1:1",
++                                        "00112233445566778899aabbccddeeff",
++                                        "emitter-test");
++}
++
++static void test_explicit_start_and_no_input(void) {
++    source_clock_renderer_t *renderer = create_test_renderer();
++    FILE *stream = tmpfile();
++    uint64_t started_at;
++    uint64_t first_sequence = 0;
++    long before_start;
++    uint64_t first_output_at = 0;
++
++    assert(renderer != NULL && stream != NULL);
++    sleep_ms(1100);
++    before_start = stream_size(stream);
++    assert(before_start == 0);
++    started_at = monotonic_ms();
++    assert(source_clock_renderer_start_metrics_emitter(renderer, stream));
++    while (stream_size(stream) == 0 && monotonic_ms() - started_at < 1700) {
++        sleep_ms(50);
++    }
++    first_output_at = monotonic_ms();
++    assert(first_output_at - started_at >= 900);
++    assert(stream_size(stream) > 0);
++    while (monotonic_ms() - started_at < 2300) sleep_ms(50);
++    assert(inspect_stream(stream, 0, 1, &first_sequence) >= 1);
++    {
++        char output[8192];
++        unsigned lines = 0;
++        char *line;
++        char *save = NULL;
++        read_stream(stream, output, sizeof(output));
++        for (line = TEST_STRTOK(output, "\n", &save); line != NULL;
++             line = TEST_STRTOK(NULL, "\n", &save)) {
++            lines++;
++        }
++        assert(lines >= 1 && lines <= 2);
++    }
++    assert(first_sequence > 0);
++    source_clock_renderer_destroy(renderer);
++    fclose(stream);
++}
++
++static void test_video_only_keeps_audio_age_null(void) {
++    static const unsigned char video[] = { 0, 0, 0, 1, 0x65, 0x88 };
++    source_clock_renderer_t *renderer = create_test_renderer();
++    FILE *stream = tmpfile();
++
++    assert(renderer != NULL && stream != NULL);
++    assert(source_clock_renderer_start_metrics_emitter(renderer, stream));
++    assert(source_clock_renderer_push_video(renderer, video, sizeof(video), 1, 0));
++    sleep_ms(2200);
++    assert(inspect_stream(stream, 1, 1, NULL) >= 1);
++    source_clock_renderer_destroy(renderer);
++    fclose(stream);
++}
++
++static void test_emitter_start_failure_is_fail_closed(void) {
++    source_clock_renderer_t *renderer = create_test_renderer();
++    FILE *stream = tmpfile();
++
++    assert(renderer != NULL && stream != NULL);
++#ifdef SOURCE_CLOCK_TEST_HOOKS
++    source_clock_renderer_set_emitter_thread_create_failure(renderer, true);
++    assert(!source_clock_renderer_start_metrics_emitter(renderer, stream));
++#endif
++    source_clock_renderer_destroy(renderer);
++    fclose(stream);
++}
++
++static void test_zero_start_time_is_fail_closed(void) {
++    source_clock_renderer_t *renderer = create_test_renderer();
++    FILE *stream = tmpfile();
++
++    assert(renderer != NULL && stream != NULL);
++#ifdef SOURCE_CLOCK_TEST_HOOKS
++    source_clock_renderer_set_emitter_start_time_zero(renderer, true);
++    assert(!source_clock_renderer_start_metrics_emitter(renderer, stream));
++#endif
++    source_clock_renderer_destroy(renderer);
++    fclose(stream);
++}
++
++static void test_destroy_wakes_emitter_for_join(void) {
++    source_clock_renderer_t *renderer = create_test_renderer();
++    FILE *stream = tmpfile();
++    uint64_t started_at;
++
++    assert(renderer != NULL && stream != NULL);
++    assert(source_clock_renderer_start_metrics_emitter(renderer, stream));
++    started_at = monotonic_ms();
++    source_clock_renderer_destroy(renderer);
++    assert(monotonic_ms() - started_at < 500);
++    fclose(stream);
++}
++
++static void test_destroy_after_queued_video_frames_repeatedly(void) {
++    static const unsigned char video[] = { 0, 0, 0, 1, 0x65, 0x88 };
++    unsigned iteration;
++    for (iteration = 0; iteration < 20; ++iteration) {
++        source_clock_renderer_t *renderer = create_test_renderer();
++        FILE *stream = tmpfile();
++        uint64_t started_at;
++        unsigned frame;
++
++        assert(renderer != NULL && stream != NULL);
++        assert(source_clock_renderer_start_metrics_emitter(renderer, stream));
++        for (frame = 0; frame < 8; ++frame) {
++            assert(source_clock_renderer_push_video(renderer, video, sizeof(video), 1, 0));
++        }
++        started_at = monotonic_ms();
++        source_clock_renderer_destroy(renderer);
++        assert(monotonic_ms() - started_at < 500);
++        fclose(stream);
++    }
++}
++
++int main(void) {
++    test_explicit_start_and_no_input();
++    test_video_only_keeps_audio_age_null();
++    test_emitter_start_failure_is_fail_closed();
++    test_zero_start_time_is_fail_closed();
++    test_destroy_wakes_emitter_for_join();
++    test_destroy_after_queued_video_frames_repeatedly();
++    puts("source_clock_metrics_emitter: PASS");
++    return 0;
++}
+diff --git a/renderers/source_clock_renderer.c b/renderers/source_clock_renderer.c
+index a19d3867..5fe87def 100644
+--- a/renderers/source_clock_renderer.c
++++ b/renderers/source_clock_renderer.c
+@@ -105,9 +105,19 @@ struct source_clock_renderer_s {
+     pthread_mutex_t metrics_mutex;
+     bool metrics_mutex_initialized;
+     source_clock_runtime_metrics_t metrics;
++    FILE *metrics_stream;
++    pthread_t metrics_emitter_thread;
++    pthread_mutex_t metrics_emitter_mutex;
++    pthread_cond_t metrics_emitter_cond;
++    bool metrics_emitter_mutex_initialized;
++    bool metrics_emitter_stopping;
++    bool metrics_emitter_thread_started;
++    uint64_t metrics_emitter_next_emit_ns;
+ #ifdef SOURCE_CLOCK_TEST_HOOKS
+     source_clock_queue_commit_hook_t queue_commit_hook;
+     void *queue_commit_context;
++    bool emitter_thread_create_should_fail;
++    bool emitter_start_time_should_fail;
+ #endif
+     uint8_t video_codec;
+     uint8_t audio_codec;
+@@ -117,6 +127,13 @@ struct source_clock_renderer_s {
+     bool started;
+ };
+ 
++static void metrics_emitter_notify(source_clock_renderer_t *renderer) {
++    if (renderer == NULL || !renderer->metrics_emitter_mutex_initialized) return;
++    pthread_mutex_lock(&renderer->metrics_emitter_mutex);
++    pthread_cond_signal(&renderer->metrics_emitter_cond);
++    pthread_mutex_unlock(&renderer->metrics_emitter_mutex);
++}
++
+ static void sleep_retry(void) {
+ #ifdef _WIN32
+     Sleep((DWORD)(SOURCE_CLOCK_RETRY_NS / 1000000ULL));
+@@ -336,6 +353,7 @@ static void metrics_record_failure(source_clock_renderer_t *renderer,
+     renderer->metrics.last_socket_error = socket_error;
+     renderer->metrics.dropped_frames += dropped_frames;
+     pthread_mutex_unlock(&renderer->metrics_mutex);
++    metrics_emitter_notify(renderer);
+ }
+ 
+ static void metrics_record_enqueue(source_clock_renderer_t *renderer, uint8_t stream_kind,
+@@ -356,12 +374,14 @@ static void metrics_record_enqueue(source_clock_renderer_t *renderer, uint8_t st
+         renderer->metrics.last_socket_error = 0;
+     }
+     pthread_mutex_unlock(&renderer->metrics_mutex);
++    metrics_emitter_notify(renderer);
+ }
+ 
+ static void metrics_record_sent(source_clock_renderer_t *renderer) {
+     pthread_mutex_lock(&renderer->metrics_mutex);
+     renderer->metrics.sent_frames++; renderer->metrics.last_failure_reason = SOURCE_CLOCK_FAILURE_NONE; renderer->metrics.last_socket_error = 0;
+     pthread_mutex_unlock(&renderer->metrics_mutex);
++    metrics_emitter_notify(renderer);
+ }
+ 
+ static void metrics_consumer_change(source_clock_renderer_t *renderer, bool connected) {
+@@ -372,6 +392,7 @@ static void metrics_consumer_change(source_clock_renderer_t *renderer, bool conn
+         renderer->metrics.connected_consumers--;
+     }
+     pthread_mutex_unlock(&renderer->metrics_mutex);
++    metrics_emitter_notify(renderer);
+ }
+ 
+ static void close_socket_once(source_clock_writer_t *writer, SOURCE_CLOCK_SOCKET *socket_fd,
+@@ -562,6 +583,49 @@ static bool queue_frame(source_clock_writer_t *writer, const unsigned char *data
+     return true;
+ }
+ 
++static void metrics_emitter_wait_tick(source_clock_renderer_t *renderer) {
++    struct timespec deadline;
++    if (timespec_get(&deadline, TIME_UTC) != TIME_UTC) return;
++    deadline.tv_nsec += 100000000L;
++    if (deadline.tv_nsec >= 1000000000L) {
++        deadline.tv_sec++;
++        deadline.tv_nsec -= 1000000000L;
++    }
++    pthread_cond_timedwait(&renderer->metrics_emitter_cond,
++                           &renderer->metrics_emitter_mutex, &deadline);
++}
++
++static void *metrics_emitter_main(void *argument) {
++    source_clock_renderer_t *renderer = (source_clock_renderer_t *)argument;
++    for (;;) {
++        source_clock_metrics_snapshot_t snapshot;
++        FILE *stream;
++        uint64_t now_ns;
++
++        pthread_mutex_lock(&renderer->metrics_emitter_mutex);
++        for (;;) {
++            now_ns = source_clock_metrics_monotonic_time_ns();
++            if (renderer->metrics_emitter_stopping ||
++                now_ns >= renderer->metrics_emitter_next_emit_ns) {
++                break;
++            }
++            metrics_emitter_wait_tick(renderer);
++        }
++        if (renderer->metrics_emitter_stopping) {
++            pthread_mutex_unlock(&renderer->metrics_emitter_mutex);
++            break;
++        }
++        stream = renderer->metrics_stream;
++        renderer->metrics_emitter_next_emit_ns = now_ns + 1000000000ULL;
++        pthread_mutex_unlock(&renderer->metrics_emitter_mutex);
++
++        if (stream != NULL && source_clock_renderer_metrics_snapshot(renderer, now_ns, &snapshot)) {
++            (void)source_clock_metrics_write(stream, &snapshot);
++        }
++    }
++    return NULL;
++}
++
+ source_clock_renderer_t *source_clock_renderer_create(const char *video_endpoint,
+                                                        const char *audio_endpoint,
+                                                        const char *token_hex,
+@@ -583,6 +647,23 @@ source_clock_renderer_t *source_clock_renderer_create(const char *video_endpoint
+         return NULL;
+     }
+     renderer->metrics_mutex_initialized = true;
++    if (pthread_mutex_init(&renderer->metrics_emitter_mutex, NULL) != 0) {
++        pthread_mutex_destroy(&renderer->metrics_mutex);
++        renderer->metrics_mutex_initialized = false;
++        free(renderer->receiver_id);
++        free(renderer);
++        return NULL;
++    }
++    renderer->metrics_emitter_mutex_initialized = true;
++    if (pthread_cond_init(&renderer->metrics_emitter_cond, NULL) != 0) {
++        pthread_mutex_destroy(&renderer->metrics_emitter_mutex);
++        renderer->metrics_emitter_mutex_initialized = false;
++        pthread_mutex_destroy(&renderer->metrics_mutex);
++        renderer->metrics_mutex_initialized = false;
++        free(renderer->receiver_id);
++        free(renderer);
++        return NULL;
++    }
+     renderer->video_codec = SOURCE_CLOCK_VIDEO_H264;
+     renderer->audio_codec = SOURCE_CLOCK_AUDIO_AAC_ELD;
+     renderer->audio_sample_rate = 44100;
+@@ -608,11 +689,63 @@ source_clock_renderer_t *source_clock_renderer_create(const char *video_endpoint
+     return renderer;
+ }
+ 
++bool source_clock_renderer_start_metrics_emitter(source_clock_renderer_t *renderer,
++                                                 FILE *stream) {
++    uint64_t now_ns;
++    if (renderer == NULL || stream == NULL ||
++        !renderer->metrics_emitter_mutex_initialized) return false;
++    pthread_mutex_lock(&renderer->metrics_emitter_mutex);
++    if (renderer->metrics_emitter_thread_started || renderer->metrics_emitter_stopping) {
++        pthread_mutex_unlock(&renderer->metrics_emitter_mutex);
++        return false;
++    }
++#ifdef SOURCE_CLOCK_TEST_HOOKS
++    if (renderer->emitter_thread_create_should_fail) {
++        renderer->metrics_emitter_stopping = true;
++        pthread_mutex_unlock(&renderer->metrics_emitter_mutex);
++        return false;
++    }
++#endif
++#ifdef SOURCE_CLOCK_TEST_HOOKS
++    now_ns = renderer->emitter_start_time_should_fail ? 0 :
++             source_clock_metrics_monotonic_time_ns();
++#else
++    now_ns = source_clock_metrics_monotonic_time_ns();
++#endif
++    if (now_ns == 0) {
++        renderer->metrics_emitter_stopping = true;
++        pthread_mutex_unlock(&renderer->metrics_emitter_mutex);
++        return false;
++    }
++    renderer->metrics_stream = stream;
++    renderer->metrics_emitter_next_emit_ns = now_ns + 1000000000ULL;
++    if (pthread_create(&renderer->metrics_emitter_thread, NULL,
++                       metrics_emitter_main, renderer) != 0) {
++        renderer->metrics_stream = NULL;
++        renderer->metrics_emitter_stopping = true;
++        pthread_mutex_unlock(&renderer->metrics_emitter_mutex);
++        return false;
++    }
++    renderer->metrics_emitter_thread_started = true;
++    pthread_mutex_unlock(&renderer->metrics_emitter_mutex);
++    return true;
++}
++
+ void source_clock_renderer_destroy(source_clock_renderer_t *renderer) {
+     source_clock_writer_t *writers[2];
+     source_clock_frame_t *frame;
+     size_t i;
+     if (renderer == NULL) return;
++    if (renderer->metrics_emitter_mutex_initialized) {
++        pthread_mutex_lock(&renderer->metrics_emitter_mutex);
++        renderer->metrics_emitter_stopping = true;
++        pthread_cond_signal(&renderer->metrics_emitter_cond);
++        pthread_mutex_unlock(&renderer->metrics_emitter_mutex);
++        if (renderer->metrics_emitter_thread_started) {
++            pthread_join(renderer->metrics_emitter_thread, NULL);
++            renderer->metrics_emitter_thread_started = false;
++        }
++    }
+     writers[0] = &renderer->video;
+     writers[1] = &renderer->audio;
+     for (i = 0; i < 2; ++i) {
+@@ -630,6 +763,11 @@ void source_clock_renderer_destroy(source_clock_renderer_t *renderer) {
+         pthread_join(renderer->audio.thread, NULL);
+         renderer->audio.thread_started = false;
+     }
++    if (renderer->metrics_emitter_mutex_initialized) {
++        pthread_cond_destroy(&renderer->metrics_emitter_cond);
++        pthread_mutex_destroy(&renderer->metrics_emitter_mutex);
++        renderer->metrics_emitter_mutex_initialized = false;
++    }
+     for (i = 0; i < 2; ++i) {
+         source_clock_writer_t *writer = writers[i];
+         while ((frame = pop_frame(writer)) != NULL) free_frame(frame);
+@@ -685,6 +823,22 @@ void source_clock_renderer_set_queue_commit_hook(source_clock_renderer_t *render
+     renderer->queue_commit_hook = hook;
+     renderer->queue_commit_context = context;
+ } void source_clock_renderer_test_record_metrics(source_clock_renderer_t *renderer, source_clock_failure_reason_t reason, int socket_error, uint64_t dropped_frames, bool sent) { if (renderer == NULL) return; if (sent) metrics_record_sent(renderer); else if (reason == SOURCE_CLOCK_FAILURE_QUEUE_DROP) metrics_record_enqueue(renderer, SOURCE_CLOCK_STREAM_VIDEO, source_clock_metrics_monotonic_time_ns(), dropped_frames); else metrics_record_failure(renderer, reason, socket_error, dropped_frames); }
++
++void source_clock_renderer_set_emitter_thread_create_failure(source_clock_renderer_t *renderer,
++                                                             bool fail) {
++    if (renderer == NULL || !renderer->metrics_emitter_mutex_initialized) return;
++    pthread_mutex_lock(&renderer->metrics_emitter_mutex);
++    renderer->emitter_thread_create_should_fail = fail;
++    pthread_mutex_unlock(&renderer->metrics_emitter_mutex);
++}
++
++void source_clock_renderer_set_emitter_start_time_zero(source_clock_renderer_t *renderer,
++                                                        bool fail) {
++    if (renderer == NULL || !renderer->metrics_emitter_mutex_initialized) return;
++    pthread_mutex_lock(&renderer->metrics_emitter_mutex);
++    renderer->emitter_start_time_should_fail = fail;
++    pthread_mutex_unlock(&renderer->metrics_emitter_mutex);
++}
+ #endif
+ 
+ void source_clock_renderer_session_start(source_clock_renderer_t *renderer) {
+diff --git a/renderers/source_clock_renderer.h b/renderers/source_clock_renderer.h
+index 5cd78af2..407c6635 100644
+--- a/renderers/source_clock_renderer.h
++++ b/renderers/source_clock_renderer.h
+@@ -51,10 +51,16 @@ const char *source_clock_renderer_receiver_id(const source_clock_renderer_t *ren
+ bool source_clock_renderer_metrics_snapshot(source_clock_renderer_t *renderer,
+                                             uint64_t now_ns,
+                                             source_clock_metrics_snapshot_t *snapshot);
++bool source_clock_renderer_start_metrics_emitter(source_clock_renderer_t *renderer,
++                                                 FILE *stream);
+ #ifdef SOURCE_CLOCK_TEST_HOOKS
+ void source_clock_renderer_set_queue_commit_hook(source_clock_renderer_t *renderer,
+                                                  source_clock_queue_commit_hook_t hook,
+                                                  void *context); void source_clock_renderer_test_record_metrics(source_clock_renderer_t *renderer, source_clock_failure_reason_t reason, int socket_error, uint64_t dropped_frames, bool sent);
++void source_clock_renderer_set_emitter_thread_create_failure(source_clock_renderer_t *renderer,
++                                                             bool fail);
++void source_clock_renderer_set_emitter_start_time_zero(source_clock_renderer_t *renderer,
++                                                        bool fail);
+ #endif
+ 
+ void source_clock_renderer_session_start(source_clock_renderer_t *renderer);
+diff --git a/uxplay.cpp b/uxplay.cpp
+index f82d38b3..09d5a869 100644
+--- a/uxplay.cpp
++++ b/uxplay.cpp
+@@ -3198,6 +3198,12 @@ int start_uxplay (int argc, char *argv[]) {
+             LOGE("source-clock renderer initialization failed");
+             exit(1);
+         }
++        if (!source_clock_renderer_start_metrics_emitter(source_clock_renderer, stderr)) {
++            LOGE("source-clock metrics emitter initialization failed");
++            source_clock_renderer_destroy(source_clock_renderer);
++            source_clock_renderer = NULL;
++            exit(1);
++        }
+         LOGI("source-clock egress enabled: video=%s audio=%s", source_clock_video_endpoint.c_str(),
+              source_clock_audio_endpoint.c_str());
+     }

@@ -2,6 +2,7 @@ package obsrtmp
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -24,16 +25,25 @@ type fakeProcess struct {
 	stopCalls  atomic.Int32
 	killCalls  atomic.Int32
 	exitOnStop bool
+	exitOnKill bool
+	stopDelay  time.Duration
+	killDelay  time.Duration
+	killSeen   chan time.Time
 	mu         sync.Mutex
 	closed     bool
 }
 
-func newFakeProcess() *fakeProcess { return &fakeProcess{exit: make(chan error, 1)} }
+func newFakeProcess() *fakeProcess {
+	return &fakeProcess{exit: make(chan error, 1), exitOnKill: true, killSeen: make(chan time.Time, 1)}
+}
 
 func (f *fakeProcess) pid() int { return f.processID }
 
 func (f *fakeProcess) stop() error {
 	f.stopCalls.Add(1)
+	if f.stopDelay > 0 {
+		time.Sleep(f.stopDelay)
+	}
 	if f.exitOnStop {
 		f.finish(nil)
 	}
@@ -42,7 +52,16 @@ func (f *fakeProcess) stop() error {
 
 func (f *fakeProcess) kill() error {
 	f.killCalls.Add(1)
-	f.finish(nil)
+	select {
+	case f.killSeen <- time.Now():
+	default:
+	}
+	if f.killDelay > 0 {
+		time.Sleep(f.killDelay)
+	}
+	if f.exitOnKill {
+		f.finish(nil)
+	}
 	return nil
 }
 
@@ -76,8 +95,10 @@ func defaultTestConfig() mediaMTXSessionConfig {
 }
 
 func TestRenderMediaMTXConfigDisablesAndRestricts(t *testing.T) {
+	t.Setenv("IMAGEPAD_RTSP_DIAGNOSTICS", "")
 	out := renderMediaMTXConfig(defaultTestConfig())
 	mustContain := []string{
+		"logLevel: info",
 		"rtmp: no",
 		"webrtc: no",
 		"srt: no",
@@ -101,6 +122,46 @@ func TestRenderMediaMTXConfigDisablesAndRestricts(t *testing.T) {
 	}
 	if strings.Count(out, "source: publisher") != 1 {
 		t.Fatalf("expected exactly one publisher path:\n%s", out)
+	}
+}
+
+func TestRenderMediaMTXConfigEnablesDebugOnlyForDiagnostics(t *testing.T) {
+	t.Setenv("IMAGEPAD_RTSP_DIAGNOSTICS", "1")
+	out := renderMediaMTXConfig(defaultTestConfig())
+	if !strings.Contains(out, "logLevel: debug\n") {
+		t.Fatalf("diagnostic config must enable debug logging:\n%s", out)
+	}
+	t.Setenv("IMAGEPAD_RTSP_DIAGNOSTICS", "0")
+	out = renderMediaMTXConfig(defaultTestConfig())
+	if !strings.Contains(out, "logLevel: info\n") {
+		t.Fatalf("normal config must keep info logging:\n%s", out)
+	}
+}
+
+func TestRenderMediaMTXConfigDirectUsesTCPOnly(t *testing.T) {
+	cfg := defaultTestConfig()
+	cfg.RTSPTCPOnly = true
+	out := renderMediaMTXConfig(cfg)
+	if !strings.Contains(out, "rtspTransports: [tcp]\n") {
+		t.Fatalf("direct config is not TCP-only:\n%s", out)
+	}
+	if strings.Contains(out, "rtspTransports: [tcp, udp]") {
+		t.Fatalf("direct config still enables UDP:\n%s", out)
+	}
+}
+
+func TestRenderMediaMTXConfigUsesConfiguredUDPReadBuffer(t *testing.T) {
+	cfg := defaultTestConfig()
+	cfg.UDPReadBufferSize = 64 * 1024 * 1024
+	out := renderMediaMTXConfig(cfg)
+	if !strings.Contains(out, "udpReadBufferSize: 67108864\n") {
+		t.Fatalf("configured UDP read buffer is missing:\n%s", out)
+	}
+
+	cfg.UDPReadBufferSize = 0
+	out = renderMediaMTXConfig(cfg)
+	if strings.Contains(out, "udpReadBufferSize:") {
+		t.Fatalf("zero UDP read buffer must retain MediaMTX default:\n%s", out)
 	}
 }
 
@@ -243,6 +304,95 @@ func TestMediaMTXForcedStopEscalatesToKill(t *testing.T) {
 	}
 	if proc.killCalls.Load() == 0 {
 		t.Fatal("forced stop should escalate to kill")
+	}
+}
+
+func TestMediaMTXStopReturnsUnconfirmedAndRetainsRetiringState(t *testing.T) {
+	rt := testRuntime(defaultTestConfig())
+	proc := newFakeProcess()
+	proc.exitOnKill = false
+	rt.startProcess = func(context.Context, string, string) (managedProcess, error) { return proc, nil }
+	rt.checkHealth = func(context.Context, string) error { return nil }
+	if err := rt.start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	started := time.Now()
+	err := rt.stop(100 * time.Millisecond)
+	if !errors.Is(err, errMediaMTXProcessExitUnconfirmed) {
+		t.Fatalf("stop error = %v, want %v", err, errMediaMTXProcessExitUnconfirmed)
+	}
+	if elapsed := time.Since(started); elapsed > 180*time.Millisecond {
+		t.Fatalf("unconfirmed stop took %s, exceeded absolute deadline", elapsed)
+	}
+	rt.mu.Lock()
+	procRetained := rt.proc == proc
+	dirRetained := rt.dir != ""
+	configRetained := rt.configPath != ""
+	rt.mu.Unlock()
+	if !procRetained || !dirRetained || !configRetained {
+		t.Fatalf("retiring state not retained: proc=%v dir=%v config=%v", procRetained, dirRetained, configRetained)
+	}
+
+	proc.finish(nil)
+	if err := rt.stop(time.Second); err != nil {
+		t.Fatalf("late-exit stop: %v", err)
+	}
+	rt.mu.Lock()
+	dirRetained = rt.dir != ""
+	configRetained = rt.configPath != ""
+	rt.mu.Unlock()
+	if dirRetained || configRetained {
+		t.Fatal("confirmed retiring stop did not clean runtime artifacts")
+	}
+}
+
+func TestMediaMTXStopReservesKillConfirmationWindow(t *testing.T) {
+	rt := testRuntime(defaultTestConfig())
+	proc := newFakeProcess()
+	rt.startProcess = func(context.Context, string, string) (managedProcess, error) { return proc, nil }
+	rt.checkHealth = func(context.Context, string) error { return nil }
+	if err := rt.start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	started := time.Now()
+	if err := rt.stop(250 * time.Millisecond); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	select {
+	case killStarted := <-proc.killSeen:
+		elapsed := killStarted.Sub(started)
+		if elapsed < 150*time.Millisecond || elapsed >= 250*time.Millisecond {
+			t.Fatalf("kill started after %s, want inside reserved kill window", elapsed)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("kill was not observed")
+	}
+}
+
+func TestMediaMTXStopIncludesStopRequestInGracefulDeadline(t *testing.T) {
+	rt := testRuntime(defaultTestConfig())
+	proc := newFakeProcess()
+	proc.stopDelay = 100 * time.Millisecond
+	rt.startProcess = func(context.Context, string, string) (managedProcess, error) { return proc, nil }
+	rt.checkHealth = func(context.Context, string) error { return nil }
+	if err := rt.start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	started := time.Now()
+	if err := rt.stop(250 * time.Millisecond); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	select {
+	case killStarted := <-proc.killSeen:
+		elapsed := killStarted.Sub(started)
+		if elapsed < 150*time.Millisecond || elapsed >= 250*time.Millisecond {
+			t.Fatalf("kill started after %s, stop request was not included in graceful deadline", elapsed)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("kill was not observed")
 	}
 }
 

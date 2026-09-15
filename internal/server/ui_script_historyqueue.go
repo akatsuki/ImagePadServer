@@ -77,6 +77,41 @@ const dashboardScriptHistoryQueue = `
         detail.textContent = historyDetail(item);
         meta.appendChild(title);
         meta.appendChild(detail);
+		if (item.recordings && item.recordings.length) {
+		  const recordings = document.createElement('details');
+		  recordings.className = 'history-recordings';
+		  recordings.addEventListener('click', (event) => event.stopPropagation());
+		  const recordingsSummary = document.createElement('summary');
+		  recordingsSummary.textContent = '録画 ' + item.recordings.length + '件';
+		  recordings.appendChild(recordingsSummary);
+		  const recordingList = document.createElement('div');
+		  recordingList.className = 'history-recording-list';
+		  for (const recording of item.recordings) {
+		    const recordingRow = document.createElement('div');
+		    recordingRow.className = 'history-recording-item';
+		    const recordingLabel = document.createElement('span');
+		    recordingLabel.textContent = '世代 ' + (recording.generation || '?') + (recording.durationSeconds ? ' / ' + formatMediaDuration(recording.durationSeconds) : '');
+		    recordingRow.appendChild(recordingLabel);
+		    if (recording.available && recording.playbackURL) {
+		      const recordingLink = document.createElement('a');
+		      recordingLink.href = recording.playbackURL;
+		      recordingLink.target = '_blank';
+		      recordingLink.rel = 'noopener';
+		      recordingLink.className = 'history-recording-link';
+		      recordingLink.setAttribute('data-history-recording', String(recording.generation || ''));
+		      recordingLink.textContent = '再生';
+		      recordingRow.appendChild(recordingLink);
+		    } else {
+		      const recordingFailure = document.createElement('span');
+		      recordingFailure.className = 'history-recording-failure';
+		      recordingFailure.textContent = '利用不可' + (recording.reason ? ' / ' + recording.reason : '');
+		      recordingRow.appendChild(recordingFailure);
+		    }
+		    recordingList.appendChild(recordingRow);
+		  }
+		  recordings.appendChild(recordingList);
+		  meta.appendChild(recordings);
+		}
 
         const actions = document.createElement('div');
         actions.className = 'history-actions';
@@ -224,6 +259,13 @@ const dashboardScriptHistoryQueue = `
           persistent: !!item.persistent,
           published: !!item.published,
           address: item.address || '',
+		  recordings: (item.recordings || []).map((recording) => ({
+		    generation: recording.generation || 0,
+		    available: !!recording.available,
+		    reason: recording.reason || '',
+		    durationSeconds: recording.durationSeconds || 0,
+		    playbackURL: recording.playbackURL || '',
+		  })),
         })),
       });
     }

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -16,6 +18,55 @@ import (
 	"imagepadserver/internal/server"
 	"imagepadserver/internal/tunnel"
 )
+
+func TestIsolatedLifecycleRunRequiresExplicitDataRootAndNonDefaultPort(t *testing.T) {
+	t.Setenv("IMAGEPAD_TEST_ISOLATED_LIFECYCLE", "1")
+	t.Setenv("IMAGEPAD_DATA_DIR", filepath.Join(t.TempDir(), "isolated-data"))
+	if !isolatedLifecycleRun(config.Config{Host: "127.0.0.1", Port: 49152}) {
+		t.Fatal("explicit isolated lifecycle run was not recognized")
+	}
+
+	t.Setenv("IMAGEPAD_DATA_DIR", "")
+	if isolatedLifecycleRun(config.Config{Host: "127.0.0.1", Port: 49152}) {
+		t.Fatal("isolated lifecycle run accepted an empty data root")
+	}
+	t.Setenv("IMAGEPAD_DATA_DIR", filepath.Join(t.TempDir(), "isolated-data"))
+	if isolatedLifecycleRun(config.Config{Host: "127.0.0.1", Port: 8080}) {
+		t.Fatal("isolated lifecycle run accepted the default server port")
+	}
+	t.Setenv("IMAGEPAD_TEST_ISOLATED_LIFECYCLE", "0")
+	if isolatedLifecycleRun(config.Config{Host: "127.0.0.1", Port: 49152}) {
+		t.Fatal("isolated lifecycle run activated without the test flag")
+	}
+}
+
+func TestIsolatedLifecycleServicesDisableInteractiveAndExternalWork(t *testing.T) {
+	isolated := lifecycleServicePlan(true)
+	if isolated.OpenBrowser || isolated.StartTray || isolated.StartDiscovery || isolated.StartTunnel || isolated.MeasureNetwork || isolated.PrepareTools {
+		t.Fatalf("isolated lifecycle service plan leaked interactive or external work: %+v", isolated)
+	}
+	if !isolated.PrepareAirPlay || !isolated.StartHTTP {
+		t.Fatalf("isolated lifecycle service plan disabled required receiver or HTTP work: %+v", isolated)
+	}
+
+	normal := lifecycleServicePlan(false)
+	if !normal.OpenBrowser || !normal.StartTray || !normal.StartDiscovery || !normal.StartTunnel || !normal.MeasureNetwork || !normal.PrepareTools || !normal.PrepareAirPlay || !normal.StartHTTP {
+		t.Fatalf("normal lifecycle service plan unexpectedly disabled work: %+v", normal)
+	}
+}
+
+func TestShutdownMarksAirPlayBeforeCancelingLifecycle(t *testing.T) {
+	source, err := os.ReadFile("app.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	stopIndex := strings.Index(text, "srv.StopOBSReceiver()")
+	cancelIndex := strings.LastIndex(text, "cancelLifecycle()")
+	if stopIndex < 0 || cancelIndex < 0 || stopIndex > cancelIndex {
+		t.Fatalf("shutdown order must stop AirPlay before lifecycle cancellation: stop=%d cancel=%d", stopIndex, cancelIndex)
+	}
+}
 
 func TestStartupCleanupRunsFFmpegThenMediaMTXAndContinuesOnErrors(t *testing.T) {
 	oldTracked := cleanupTrackedFFmpeg

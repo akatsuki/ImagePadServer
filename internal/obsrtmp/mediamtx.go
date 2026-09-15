@@ -48,19 +48,29 @@ type mediaMTXSessionConfig struct {
 	HLSDirectory       string
 	HLSSegmentCount    int
 	HLSSegmentDuration string
+	// UDPReadBufferSize increases only the app-owned MediaMTX UDP socket
+	// receive budget. Zero retains the MediaMTX/OS default.
+	UDPReadBufferSize int
+	// RTSPTCPOnly remains available for sessions that explicitly prohibit UDP;
+	// direct AirPlay enables UDP only on its app-owned loopback ingress.
+	RTSPTCPOnly bool
 	// EnableRTMP opens a loopback RTMP ingest (the playlist radio's
 	// persistent publisher pushes FLV there).
 	EnableRTMP bool
 }
 
 // renderMediaMTXConfig renders a minimal MediaMTX YAML configuration. Only the
-// loopback API, the loopback LL-HLS server, and the advertised RTSP/TCP server
+// loopback API, the loopback LL-HLS server, and the advertised RTSP server
 // are enabled; RTMP, WebRTC, SRT, and MoQ listeners are disabled. Publishing is
 // restricted to the single app-owned path with a per-session credential from
 // loopback only.
 func renderMediaMTXConfig(cfg mediaMTXSessionConfig) string {
 	var b strings.Builder
-	b.WriteString("logLevel: debug\n")
+	logLevel := "info"
+	if diagnosticEnvTruthy(os.Getenv("IMAGEPAD_RTSP_DIAGNOSTICS")) {
+		logLevel = "debug"
+	}
+	fmt.Fprintf(&b, "logLevel: %s\n", logLevel)
 	if cfg.DebugLogPath != "" {
 		b.WriteString("logDestinations: [stdout, file]\n")
 		fmt.Fprintf(&b, "logFile: %q\n", filepath.ToSlash(cfg.DebugLogPath))
@@ -69,6 +79,9 @@ func renderMediaMTXConfig(cfg mediaMTXSessionConfig) string {
 	}
 	b.WriteString("readTimeout: 10s\n")
 	b.WriteString("writeTimeout: 10s\n")
+	if cfg.UDPReadBufferSize > 0 {
+		fmt.Fprintf(&b, "udpReadBufferSize: %d\n", cfg.UDPReadBufferSize)
+	}
 
 	b.WriteString("api: yes\n")
 	fmt.Fprintf(&b, "apiAddress: 127.0.0.1:%d\n", cfg.Ports.API)
@@ -86,7 +99,11 @@ func renderMediaMTXConfig(cfg mediaMTXSessionConfig) string {
 	b.WriteString("moq: no\n")
 
 	b.WriteString("rtsp: yes\n")
-	b.WriteString("rtspTransports: [tcp, udp]\n")
+	if cfg.RTSPTCPOnly {
+		b.WriteString("rtspTransports: [tcp]\n")
+	} else {
+		b.WriteString("rtspTransports: [tcp, udp]\n")
+	}
 	b.WriteString("rtspEncryption: \"no\"\n")
 	fmt.Fprintf(&b, "rtspAddress: 127.0.0.1:%d\n", cfg.Ports.mediaMTXRTSPPort())
 	fmt.Fprintf(&b, "rtpAddress: 127.0.0.1:%d\n", cfg.Ports.mediaMTXRTPPort())
@@ -239,16 +256,33 @@ type mediaMTXRuntime struct {
 	cfg        mediaMTXSessionConfig
 	httpClient *http.Client
 	stopGrace  time.Duration
+	// Candidate generations keep HLS files inside their unique workdir. This
+	// flag is immutable before start; legacy runtime output paths are unchanged.
+	isolatedHLS bool
 
 	startProcess func(ctx context.Context, exe, configPath string) (managedProcess, error)
 	checkHealth  func(ctx context.Context, apiBase string) error
 
-	mu         sync.Mutex
-	proc       managedProcess
-	dir        string
-	configPath string
-	stopped    bool
+	mu           sync.Mutex
+	proc         managedProcess
+	dir          string
+	configPath   string
+	stopped      bool
+	retiring     bool
+	retiringDone <-chan error
+	stopMu       sync.Mutex
 }
+
+// diagnosticsConfigFingerprint identifies the exact rendered configuration
+// without exposing paths, credentials, or other configuration values.
+func (r *mediaMTXRuntime) diagnosticsConfigFingerprint() string {
+	if r == nil {
+		return ""
+	}
+	return rtspDiagnosticsConfigFingerprint([]byte(renderMediaMTXConfig(r.cfg)))
+}
+
+var errMediaMTXProcessExitUnconfirmed = errors.New("MediaMTX process exit was not confirmed before stop deadline")
 
 func newMediaMTXRuntime(exe string, cfg mediaMTXSessionConfig) *mediaMTXRuntime {
 	return &mediaMTXRuntime{
@@ -270,6 +304,29 @@ func (r *mediaMTXRuntime) ownedMediaMTXPIDs() []int {
 	return []int{r.proc.pid()}
 }
 
+func (r *mediaMTXRuntime) processID() int {
+	if r == nil {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.proc == nil {
+		return 0
+	}
+	return r.proc.pid()
+}
+
+func mediaMTXProcessExitCode(err error) (int, bool) {
+	if err == nil {
+		return 0, true
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ProcessState == nil {
+		return 0, false
+	}
+	return exitErr.ExitCode(), true
+}
+
 func defaultMediaMTXHealthCheck(ctx context.Context, apiBase string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiBase+"/v3/config/global/get", nil)
 	if err != nil {
@@ -289,18 +346,29 @@ func defaultMediaMTXHealthCheck(ctx context.Context, apiBase string) error {
 
 // start writes the config, launches the owned process, and waits until the API
 // reports healthy, the process exits early (e.g. a port conflict), or ctx is
-// done. On any failure it tears the process down before returning.
+// done. Failed cleanup retains the runtime and reports unconfirmed ownership.
 func (r *mediaMTXRuntime) start(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	dir, err := os.MkdirTemp("", "imagepad-mediamtx-")
 	if err != nil {
 		return fmt.Errorf("create MediaMTX work directory: %w", err)
 	}
 	configPath := filepath.Join(dir, "mediamtx.yml")
-	if err := os.WriteFile(configPath, []byte(renderMediaMTXConfig(r.cfg)), 0o600); err != nil {
+	cfg := r.cfg
+	if r.isolatedHLS {
+		cfg.HLSDirectory = filepath.Join(dir, "hls")
+	}
+	if err := os.WriteFile(configPath, []byte(renderMediaMTXConfig(cfg)), 0o600); err != nil {
 		_ = os.RemoveAll(dir)
 		return fmt.Errorf("write MediaMTX config: %w", err)
 	}
 
+	if err := ctx.Err(); err != nil {
+		_ = os.RemoveAll(dir)
+		return err
+	}
 	proc, err := r.startProcess(ctx, r.exe, configPath)
 	if err != nil {
 		_ = os.RemoveAll(dir)
@@ -315,22 +383,36 @@ func (r *mediaMTXRuntime) start(ctx context.Context) error {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	apiBase := r.apiBaseURL()
+	done := proc.done()
+	earlyExit := func(err error) error {
+		r.confirmStopped()
+		if err != nil {
+			return fmt.Errorf("MediaMTX exited before becoming healthy: %w", err)
+		}
+		return errors.New("MediaMTX exited before becoming healthy")
+	}
 	for {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(err, r.stop(r.stopGrace))
+		}
 		select {
 		case <-ctx.Done():
-			_ = r.stop(r.stopGrace)
-			return ctx.Err()
-		case err := <-proc.done():
-			r.cleanupDir()
-			if err != nil {
-				return fmt.Errorf("MediaMTX exited before becoming healthy: %w", err)
-			}
-			return errors.New("MediaMTX exited before becoming healthy")
+			return errors.Join(ctx.Err(), r.stop(r.stopGrace))
+		case err := <-done:
+			return earlyExit(err)
 		case <-ticker.C:
 			healthCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 			err := r.checkHealth(healthCtx, apiBase)
 			cancel()
 			if err == nil {
+				if err := ctx.Err(); err != nil {
+					return errors.Join(err, r.stop(r.stopGrace))
+				}
+				select {
+				case err := <-done:
+					return earlyExit(err)
+				default:
+				}
 				return nil
 			}
 		}
@@ -350,44 +432,138 @@ func (r *mediaMTXRuntime) wait() <-chan error {
 	return r.proc.done()
 }
 
-// stop gracefully terminates the owned process, escalating to kill after the
-// timeout, then removes the work directory. It only ever acts on the process
-// this runtime started.
+// stop gracefully terminates the owned process within one absolute deadline.
+// An unconfirmed process remains attached to the runtime for a later retry.
 func (r *mediaMTXRuntime) stop(timeout time.Duration) error {
+	r.stopMu.Lock()
+	defer r.stopMu.Unlock()
+
+	if timeout <= 0 {
+		timeout = r.stopGrace
+	}
+	if timeout <= 0 {
+		timeout = time.Nanosecond
+	}
+	deadline := time.Now().Add(timeout)
+
 	r.mu.Lock()
 	if r.stopped {
 		r.mu.Unlock()
 		return nil
 	}
-	r.stopped = true
 	proc := r.proc
+	retiring := r.retiring
 	r.mu.Unlock()
 
 	if proc == nil {
-		r.cleanupDir()
+		r.confirmStopped()
 		return nil
 	}
 
-	_ = proc.stop()
-	if timeout <= 0 {
-		timeout = r.stopGrace
+	done := proc.done()
+	if retiring {
+		if waitMediaMTXProcessExitUntil(done, deadline) {
+			r.confirmStopped()
+			return nil
+		}
+		return errMediaMTXProcessExitUnconfirmed
 	}
-	timer := time.NewTimer(timeout)
+
+	killReserve := timeout / 5
+	if killReserve > 2*time.Second {
+		killReserve = 2 * time.Second
+	}
+	if killReserve <= 0 {
+		killReserve = time.Nanosecond
+	}
+	gracefulDeadline := deadline.Add(-killReserve)
+	go func() {
+		_ = proc.stop()
+	}()
+	if waitMediaMTXProcessExitUntil(done, gracefulDeadline) {
+		r.confirmStopped()
+		return nil
+	}
+
+	go func() {
+		_ = proc.kill()
+	}()
+	if waitMediaMTXProcessExitUntil(done, deadline) {
+		r.confirmStopped()
+		return nil
+	}
+
+	r.mu.Lock()
+	r.retiring = true
+	r.retiringDone = done
+	r.mu.Unlock()
+	return errMediaMTXProcessExitUnconfirmed
+}
+
+func waitMediaMTXProcessExitUntil(done <-chan error, deadline time.Time) bool {
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	}
+	timer := time.NewTimer(remaining)
 	defer timer.Stop()
 	select {
-	case <-proc.done():
+	case <-done:
+		return true
 	case <-timer.C:
-		_ = proc.kill()
-		<-proc.done()
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
 	}
+}
+
+func (r *mediaMTXRuntime) confirmStopped() {
+	r.mu.Lock()
+	r.stopped = true
+	r.retiring = false
+	r.retiringDone = nil
+	r.mu.Unlock()
 	r.cleanupDir()
-	return nil
+}
+
+// A failed stop already owns a process-exit subscription. Poll that one
+// without spawning another waiter, sending another signal or blocking a start.
+func (r *mediaMTXRuntime) reapRetired() bool {
+	if !r.stopMu.TryLock() {
+		return false
+	}
+	defer r.stopMu.Unlock()
+	r.mu.Lock()
+	stopped, retiring, done := r.stopped, r.retiring, r.retiringDone
+	r.mu.Unlock()
+	if stopped {
+		return true
+	}
+	if !retiring {
+		return false
+	}
+	select {
+	case <-done:
+		r.confirmStopped()
+		return true
+	default:
+		return false
+	}
 }
 
 func (r *mediaMTXRuntime) cleanupDir() {
 	r.mu.Lock()
 	dir := r.dir
 	r.dir = ""
+	r.configPath = ""
 	r.mu.Unlock()
 	if dir != "" {
 		_ = os.RemoveAll(dir)
@@ -407,6 +583,13 @@ func (r *mediaMTXRuntime) hlsBaseURL() string {
 func (r *mediaMTXRuntime) publishURL() string {
 	return fmt.Sprintf("rtsp://%s:%s@127.0.0.1:%d/%s",
 		r.cfg.PublishUser, r.cfg.PublishPass, r.cfg.Ports.mediaMTXRTSPPort(), r.cfg.Path)
+}
+
+// directPublishURL is the loopback RTSP target used by the native GStreamer
+// AirPlay publisher. Keep the credentialed URL separate from the public read
+// URL so the publisher never has to know about advertised or mapped ports.
+func (r *mediaMTXRuntime) directPublishURL() string {
+	return r.publishURL()
 }
 
 // rtmpPublishURL is the loopback RTMP target for the playlist radio's
@@ -450,7 +633,16 @@ func (r *mediaMTXRuntime) proxyHLS(w http.ResponseWriter, req *http.Request, nam
 	if im := req.Header.Get("If-None-Match"); im != "" {
 		outReq.Header.Set("If-None-Match", im)
 	}
-	resp, err := r.httpClient.Do(outReq)
+	// HLS startup/blocking reload can span two segment boundaries. Keep the
+	// control API's short timeout unchanged; only this proxy request may wait
+	// longer. Clamp before multiplication so even invalidly large durations
+	// cannot overflow or create an unbounded request. Caller cancellation wins.
+	client := *r.httpClient
+	client.Timeout = 5 * time.Second
+	if segment, parseErr := time.ParseDuration(r.cfg.HLSSegmentDuration); parseErr == nil && segment > 0 {
+		client.Timeout = max(client.Timeout, 2*min(segment, 6500*time.Millisecond)+2*time.Second)
+	}
+	resp, err := client.Do(outReq)
 	if err != nil {
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return
@@ -980,12 +1172,23 @@ func freeUDPPortPair(seen map[int]bool) (int, int, error) {
 	return 0, 0, fmt.Errorf("no free UDP RTP/RTCP port pair found")
 }
 
-func allocMediaMTXPorts() (mediaMTXPorts, error) {
+func allocMediaMTXPorts(excluded ...mediaMTXPorts) (mediaMTXPorts, error) {
+	return allocMediaMTXPortsUsing(excluded, freeLoopbackPort, freeUDPPortPair)
+}
+
+func allocMediaMTXPortsUsing(excluded []mediaMTXPorts, nextTCP func() (int, error), nextUDP func(map[int]bool) (int, int, error)) (mediaMTXPorts, error) {
 	var ports mediaMTXPorts
 	seen := map[int]bool{}
+	for _, old := range excluded {
+		for _, port := range []int{old.API, old.HLS, old.RTMP, old.RTSP, old.RTP, old.RTCP, old.BackendRTSP, old.BackendRTP, old.BackendRTCP} {
+			if port > 0 {
+				seen[port] = true
+			}
+		}
+	}
 	for _, target := range []*int{&ports.API, &ports.HLS, &ports.RTMP, &ports.RTSP, &ports.BackendRTSP} {
 		for {
-			port, err := freeLoopbackPort()
+			port, err := nextTCP()
 			if err != nil {
 				return mediaMTXPorts{}, err
 			}
@@ -998,7 +1201,7 @@ func allocMediaMTXPorts() (mediaMTXPorts, error) {
 		}
 	}
 	for _, pair := range [][2]*int{{&ports.RTP, &ports.RTCP}, {&ports.BackendRTP, &ports.BackendRTCP}} {
-		rtp, rtcp, err := freeUDPPortPair(seen)
+		rtp, rtcp, err := nextUDP(seen)
 		if err != nil {
 			return mediaMTXPorts{}, err
 		}

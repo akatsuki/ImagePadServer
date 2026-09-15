@@ -16,6 +16,7 @@ type Settings struct {
 	VideoPlayerEnabled           bool          `json:"videoPlayerEnabled"`
 	MusicModeEnabled             bool          `json:"musicModeEnabled"`
 	VideoQualityMode             string        `json:"videoQualityMode,omitempty"`
+	AirPlayQualityMode           string        `json:"airplayQualityMode,omitempty"`
 	MusicPlaylistLatencyMode     string        `json:"musicPlaylistLatencyMode,omitempty"`
 	MusicPlaylistDeliveryProfile string        `json:"musicPlaylistDeliveryProfile,omitempty"`
 	MusicPlaylistCanonicalHeight int           `json:"musicPlaylistCanonicalHeight,omitempty"`
@@ -62,6 +63,15 @@ func NormalizeEncoderMode(mode string) string {
 		return "gpu"
 	default:
 		return "gpu"
+	}
+}
+
+func NormalizeAirPlayQualityMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "auto", "360", "720", "1080":
+		return strings.ToLower(strings.TrimSpace(mode))
+	default:
+		return "auto"
 	}
 }
 
@@ -189,7 +199,11 @@ func RotateOBSStreamKey() (string, error) {
 }
 
 func loadUnlocked() (Settings, error) {
-	settings := Settings{MusicPlaylistCanonicalHeight: 720}
+	settings := Settings{
+		VideoPlayerEnabled:           true,
+		AirPlayQualityMode:           "auto",
+		MusicPlaylistCanonicalHeight: 720,
+	}
 	data, err := os.ReadFile(path())
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -201,11 +215,13 @@ func loadUnlocked() (Settings, error) {
 		return Settings{}, err
 	}
 	settings.MusicPlaylistCanonicalHeight = NormalizeMusicPlaylistCanonicalHeight(settings.MusicPlaylistCanonicalHeight)
+	settings.AirPlayQualityMode = NormalizeAirPlayQualityMode(settings.AirPlayQualityMode)
 	return settings, nil
 }
 
 func saveUnlocked(settings Settings) error {
 	settings.MusicPlaylistCanonicalHeight = NormalizeMusicPlaylistCanonicalHeight(settings.MusicPlaylistCanonicalHeight)
+	settings.AirPlayQualityMode = NormalizeAirPlayQualityMode(settings.AirPlayQualityMode)
 	settingsPath := path()
 	if err := os.MkdirAll(filepath.Dir(settingsPath), 0755); err != nil {
 		return err

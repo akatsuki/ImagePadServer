@@ -18,6 +18,12 @@ import (
 // PlaylistGPUMuxProcess is the explicit evaluation-only H.264/PCM to MPEG-TS
 // bridge. Loopback TCP is used instead of extra OS file descriptors so the
 // process works on Windows as well as Unix.
+var (
+	playlistGPUMuxCommand            = exec.Command
+	playlistGPUMuxDial               = dialPlaylistGPUMuxURL
+	playlistGPUMuxTrackStartedFFmpeg = video.TrackStartedFFmpeg
+)
+
 type PlaylistGPUMuxProcess struct {
 	cmd         *exec.Cmd
 	video       net.Conn
@@ -37,6 +43,8 @@ type PlaylistGPUMuxProcess struct {
 	sequence       uint64
 	ptsNS          int64
 	closeOnce      sync.Once
+	untrackOnce    sync.Once
+	untrack        func()
 	audioReadyOnce sync.Once
 	audioReadyErr  error
 	tracePath      string
@@ -58,7 +66,7 @@ func StartPlaylistGPUMuxProcess(ffmpeg string, width, height, fps, sampleRate, c
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.Command(ffmpeg, args...)
+	cmd := playlistGPUMuxCommand(ffmpeg, args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("create playlist GPU mux stdout: %w", err)
@@ -68,8 +76,19 @@ func StartPlaylistGPUMuxProcess(ffmpeg string, width, height, fps, sampleRate, c
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start playlist GPU mux: %w", err)
 	}
+	untrack, trackErr := playlistGPUMuxTrackStartedFFmpeg(cmd)
+	if trackErr != nil {
+		waitErr := cmd.Wait()
+		return nil, errors.Join(fmt.Errorf("protect playlist GPU mux: %w", trackErr), waitErr)
+	}
+	trackingTransferred := false
+	defer func() {
+		if !trackingTransferred {
+			untrack()
+		}
+	}()
 	videoCtx, cancelVideo := context.WithTimeout(context.Background(), 15*time.Second)
-	videoConn, err := dialPlaylistGPUMuxURL(videoCtx, videoURL)
+	videoConn, err := playlistGPUMuxDial(videoCtx, videoURL)
 	cancelVideo()
 	if err != nil {
 		_ = cmd.Process.Kill()
@@ -85,6 +104,7 @@ func StartPlaylistGPUMuxProcess(ffmpeg string, width, height, fps, sampleRate, c
 		done:        make(chan error, 1),
 		audioReady:  make(chan error, 1),
 		audioCancel: cancelAudio,
+		untrack:     untrack,
 		tracePath:   playlistGPUTracePathFromEnv(),
 	}
 	_ = recordPlaylistGPUTrace(p.tracePath, "gpu_mux_process_started", map[string]any{
@@ -92,6 +112,7 @@ func StartPlaylistGPUMuxProcess(ffmpeg string, width, height, fps, sampleRate, c
 	})
 	go func() {
 		err := cmd.Wait()
+		p.releaseTracking()
 		cancelAudio()
 		_ = recordPlaylistGPUTrace(p.tracePath, "gpu_mux_process_exit", map[string]any{
 			"error": errorString(err),
@@ -99,7 +120,7 @@ func StartPlaylistGPUMuxProcess(ffmpeg string, width, height, fps, sampleRate, c
 		p.done <- err
 	}()
 	go func() {
-		audioConn, dialErr := dialPlaylistGPUMuxURL(audioCtx, audioURL)
+		audioConn, dialErr := playlistGPUMuxDial(audioCtx, audioURL)
 		p.mu.Lock()
 		if dialErr == nil && !p.closed && !p.inputsClosed {
 			p.audio = audioConn
@@ -109,7 +130,19 @@ func StartPlaylistGPUMuxProcess(ffmpeg string, width, height, fps, sampleRate, c
 		p.mu.Unlock()
 		p.audioReady <- dialErr
 	}()
+	trackingTransferred = true
 	return p, nil
+}
+
+func (p *PlaylistGPUMuxProcess) releaseTracking() {
+	if p == nil {
+		return
+	}
+	p.untrackOnce.Do(func() {
+		if p.untrack != nil {
+			p.untrack()
+		}
+	})
 }
 
 func reservePlaylistGPUMuxTCPURL() (string, error) {
