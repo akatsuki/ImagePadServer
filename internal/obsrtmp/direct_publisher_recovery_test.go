@@ -2,6 +2,7 @@ package obsrtmp
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -9,6 +10,9 @@ import (
 )
 
 func TestManagedPublisherRecoveryUsesFreshGenerationAndCannotLoop(t *testing.T) {
+	// Backend startup fails before probing; resolve a known fixture executable
+	// so this ownership test does not depend on a prior FFmpeg installation.
+	t.Setenv("IMAGEPAD_FFPROBE", os.Args[0])
 	c, _ := directCompensationFixture(t)
 	old := c.active.ArtifactPaths
 	c.gate.backendRouter.snapshot().runtime.exe = filepath.Join(t.TempDir(), "missing-mediamtx.exe")
@@ -16,11 +20,12 @@ func TestManagedPublisherRecoveryUsesFreshGenerationAndCannotLoop(t *testing.T) 
 		t.Error("missing backend started a publisher")
 		return nil
 	}}
-	if err := c.RecoverPublisher(t.Context(), old, executor); err == nil {
+	recoveryErr := c.RecoverPublisher(t.Context(), old, executor)
+	if recoveryErr == nil {
 		t.Fatal("missing backend recovered")
 	}
 	if snapshot := c.ledger.Snapshot(); snapshot.LastAllocatedGeneration != 4 || snapshot.ActiveGeneration != 2 || snapshot.PreparedGeneration != 0 {
-		t.Fatalf("recovery did not burn one fresh owned generation: %+v", snapshot)
+		t.Fatalf("recovery did not burn one fresh owned generation: %+v; error=%v", snapshot, recoveryErr)
 	}
 	descriptor := c.observer.deliveryGenerations[4]
 	if descriptor.Output.Height != 360 || descriptor.Profile.Mode != "rtsp-ultra" || descriptor.ArtifactPaths == old {

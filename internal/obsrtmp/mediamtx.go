@@ -1172,12 +1172,23 @@ func freeUDPPortPair(seen map[int]bool) (int, int, error) {
 	return 0, 0, fmt.Errorf("no free UDP RTP/RTCP port pair found")
 }
 
-func allocMediaMTXPorts() (mediaMTXPorts, error) {
+func allocMediaMTXPorts(excluded ...mediaMTXPorts) (mediaMTXPorts, error) {
+	return allocMediaMTXPortsUsing(excluded, freeLoopbackPort, freeUDPPortPair)
+}
+
+func allocMediaMTXPortsUsing(excluded []mediaMTXPorts, nextTCP func() (int, error), nextUDP func(map[int]bool) (int, int, error)) (mediaMTXPorts, error) {
 	var ports mediaMTXPorts
 	seen := map[int]bool{}
+	for _, old := range excluded {
+		for _, port := range []int{old.API, old.HLS, old.RTMP, old.RTSP, old.RTP, old.RTCP, old.BackendRTSP, old.BackendRTP, old.BackendRTCP} {
+			if port > 0 {
+				seen[port] = true
+			}
+		}
+	}
 	for _, target := range []*int{&ports.API, &ports.HLS, &ports.RTMP, &ports.RTSP, &ports.BackendRTSP} {
 		for {
-			port, err := freeLoopbackPort()
+			port, err := nextTCP()
 			if err != nil {
 				return mediaMTXPorts{}, err
 			}
@@ -1190,7 +1201,7 @@ func allocMediaMTXPorts() (mediaMTXPorts, error) {
 		}
 	}
 	for _, pair := range [][2]*int{{&ports.RTP, &ports.RTCP}, {&ports.BackendRTP, &ports.BackendRTCP}} {
-		rtp, rtcp, err := freeUDPPortPair(seen)
+		rtp, rtcp, err := nextUDP(seen)
 		if err != nil {
 			return mediaMTXPorts{}, err
 		}

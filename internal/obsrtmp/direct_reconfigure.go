@@ -239,7 +239,7 @@ func (c *directDeliveryCoordinator) prepareDirectReconfigureLocked(expected uint
 	if err := c.observer.PrepareDeliveryGeneration(c.ctx, descriptor); err != nil {
 		return fail(err)
 	}
-	ports, err := allocMediaMTXPorts()
+	ports, err := allocMediaMTXPorts(route.runtime.cfg.Ports)
 	if err != nil {
 		return fail(err)
 	}
