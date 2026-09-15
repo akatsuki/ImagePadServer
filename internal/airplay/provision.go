@@ -111,16 +111,29 @@ func hasExplicitReceiverPath() bool {
 		strings.TrimSpace(os.Getenv("IMAGEPAD_AIRPLAY_RECEIVER")) != ""
 }
 
-// PrepareOnStartup warms the verified Windows receiver bundle when AirPlay is
-// explicitly enabled and no receiver path was supplied by the user. It is a
-// no-op for disabled AirPlay, an explicit receiver, or an already available
-// receiver on PATH/cache.
+// PrepareOnStartup warms the descriptor-backed AirPlay runtime when AirPlay is
+// enabled and no explicit receiver was supplied. Legacy PATH/cache discovery
+// is intentionally not part of the default path because it can mix binaries.
 func PrepareOnStartup(ctx context.Context) (string, error) {
 	if !FeatureEnabled() || hasExplicitReceiverPath() {
 		return "", nil
 	}
-	if path, err := resolveReceiverOnPATH(); err == nil {
-		return path, nil
+	setRuntimePreparation(RuntimePreparationStatus{
+		State:   runtimePreparationPreparing,
+		Message: "AirPlayランタイムを準備しています。",
+	})
+	runtimeSet, err := preparePinnedAirPlayRuntime(ctx)
+	if err != nil {
+		setRuntimePreparation(RuntimePreparationStatus{
+			State:   runtimePreparationFailed,
+			Message: "AirPlayランタイムの準備に失敗しました: " + err.Error(),
+		})
+		return "", err
 	}
-	return EnsureUxPlay(ctx)
+	setRuntimePreparation(RuntimePreparationStatus{
+		State:        runtimePreparationReady,
+		Message:      "AirPlayランタイムの準備が完了しました。",
+		RuntimeSetID: runtimeSet.Descriptor.RuntimeSetID,
+	})
+	return runtimeSet.ReceiverPath, nil
 }

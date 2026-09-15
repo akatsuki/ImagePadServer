@@ -183,6 +183,10 @@ func TestUIPreviewControllerOwnsHLSLifecycle(t *testing.T) {
 		`let previewHLS = null`,
 		`function destroyPreviewHLS()`,
 		`window.Hls && window.Hls.isSupported()`,
+		`lowLatencyMode: true`,
+		`liveSyncDurationCount: 2`,
+		`maxLiveSyncPlaybackRate: 1.0`,
+		`maxBufferLength: 6`,
 		`if (video.canPlayType('application/vnd.apple.mpegurl'))`,
 		`PreviewController.render(data, {`,
 	} {
@@ -214,6 +218,36 @@ func TestUIPreviewControllerRendersPlayableVideo(t *testing.T) {
 	if strings.Contains(html, `video.muted = true;
           video.preload = 'metadata';`) {
 		t.Fatal("regular video preview must not force mute before user playback")
+	}
+}
+
+func TestUIAirPlayPreviewRetriesMutedAutoplay(t *testing.T) {
+	html := getIndexHTML(t)
+	for _, want := range []string{
+		`function requestPreviewPlayback(video)`,
+		`video.defaultMuted = true`,
+		`const playPromise = video.play()`,
+		`video.addEventListener('loadedmetadata', () => requestPreviewPlayback(video))`,
+		`video.addEventListener('canplay', () => requestPreviewPlayback(video))`,
+		`requestPreviewPlayback(video);`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("AirPlay preview autoplay retry missing %q", want)
+		}
+	}
+	start := strings.Index(html, `function requestPreviewPlayback(video)`)
+	if start < 0 {
+		t.Fatal("AirPlay preview playback function bounds missing")
+	}
+	end := strings.Index(html[start:], `function renderOBSPreview`)
+	if end < 0 {
+		t.Fatal("AirPlay preview playback function end missing")
+	}
+	retry := html[start : start+end]
+	for _, forbidden := range []string{"video.defaultMuted = true", "video.muted = true", "video.autoplay = true"} {
+		if strings.Contains(retry, forbidden) {
+			t.Fatalf("AirPlay playback retry must not overwrite user state: %q", forbidden)
+		}
 	}
 }
 
@@ -546,6 +580,45 @@ func TestVideoAndMusicModeTogglesAreNotInSettings(t *testing.T) {
 		}
 	}
 }
+
+func TestUIMediaFeatureGateRemainsActionable(t *testing.T) {
+	html := getIndexHTML(t)
+	for _, want := range []string{
+		`id="mediaCapabilityStatus"`,
+		`function enableVideoPlayerAndSelect(`,
+		`/api/video-player`,
+		`videoActivationPending`,
+		`toolsReady`,
+		`musicRenderer`,
+		`button.disabled = videoActivationPending`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("feature-gated media recovery wiring is missing %q", want)
+		}
+	}
+	if strings.Contains(html, `button.disabled = intent !== 'image' && (!videoEnabled`) {
+		t.Fatal("video and music intents must remain actionable while video support is disabled")
+	}
+}
+
+func TestUIMediaFeatureGateRetriesStalledToolsWithoutMusicLoop(t *testing.T) {
+	html := getIndexHTML(t)
+	for _, want := range []string{
+		`(!state.videoPlayerToolsReady && !state.videoPlayerInstalling)`,
+		`enableVideoPlayerAndSelect(intent)`,
+		`function musicRendererReady()`,
+		`const requestDesired = desired`,
+		`legacyMusicModeDesired !== requestDesired`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("media recovery/loop guard is missing %q", want)
+		}
+	}
+	if strings.Contains(html, `legacyMusicModeDesired !== state.musicModeEnabled`) {
+		t.Fatal("a rejected music-mode request must not recursively retry the unchanged desired state")
+	}
+}
+
 func TestUIContainsEncoderModeSetting(t *testing.T) {
 	html := getIndexHTML(t)
 	for _, want := range []string{
@@ -784,6 +857,19 @@ func TestOBSConnectionDetailsUIAndUnifiedRTSPURL(t *testing.T) {
 		if strings.Contains(html, forbidden) {
 			t.Fatalf("old dedicated RTSPT URL UI remains: %q", forbidden)
 		}
+	}
+}
+
+func TestHLSLibraryDoesNotBlockDashboardInitialization(t *testing.T) {
+	html := getIndexHTML(t)
+	if strings.Contains(html, `<script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"`) {
+		t.Fatal("HLS.js must not be a parser-managed external script")
+	}
+	loadHandler := strings.Index(html, `window.addEventListener('load', () => {`)
+	createScript := strings.Index(html, `document.createElement('script')`)
+	dashboard := strings.Index(html, `const state = {`)
+	if loadHandler < 0 || createScript < loadHandler || dashboard < 0 {
+		t.Fatal("HLS.js must load asynchronously after the dashboard has initialized")
 	}
 }
 

@@ -120,6 +120,9 @@ func extractUxPlayArchive(archivePath, destination string) (bundleManifest, erro
 	}
 	seen := make(map[string]struct{})
 	var expanded uint64
+	if len(reader.File) > 10000 {
+		return bundleManifest{}, fmt.Errorf("AirPlay archive contains too many entries")
+	}
 	for _, entry := range reader.File {
 		cleanName, err := safeZipPath(entry.Name)
 		if err != nil {
@@ -128,10 +131,11 @@ func extractUxPlayArchive(archivePath, destination string) (bundleManifest, erro
 		if cleanName == uxPlayCompletionFile {
 			return bundleManifest{}, fmt.Errorf("archive entry %q is reserved", entry.Name)
 		}
-		if _, ok := seen[cleanName]; ok {
+		canonicalName := strings.ToLower(cleanName)
+		if _, ok := seen[canonicalName]; ok {
 			return bundleManifest{}, fmt.Errorf("duplicate archive entry %q", cleanName)
 		}
-		seen[cleanName] = struct{}{}
+		seen[canonicalName] = struct{}{}
 
 		target := filepath.Join(destination, filepath.FromSlash(cleanName))
 		if entry.FileInfo().IsDir() {
@@ -193,8 +197,19 @@ func safeZipPath(name string) (string, error) {
 		return "", fmt.Errorf("absolute path")
 	}
 	for _, part := range strings.Split(name, "/") {
+		if part == "" {
+			continue
+		}
 		if part == ".." || strings.Contains(part, ":") {
 			return "", fmt.Errorf("path traversal")
+		}
+		if strings.HasSuffix(part, ".") || strings.HasSuffix(part, " ") {
+			return "", fmt.Errorf("Windows path component has a trailing dot or space")
+		}
+		base := strings.TrimSuffix(part, filepath.Ext(part))
+		switch strings.ToUpper(base) {
+		case "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9":
+			return "", fmt.Errorf("Windows reserved path component")
 		}
 	}
 	clean := path.Clean(name)
@@ -252,10 +267,11 @@ func validateBundleManifest(root string, manifest bundleManifest) error {
 		if err != nil || clean != file.Path || file.Size < 0 || uint64(file.Size) > uxPlayFileLimit {
 			return fmt.Errorf("invalid AirPlay manifest entry %q", file.Path)
 		}
-		if _, ok := seen[file.Path]; ok {
+		canonicalName := strings.ToLower(file.Path)
+		if _, ok := seen[canonicalName]; ok {
 			return fmt.Errorf("duplicate AirPlay manifest entry %q", file.Path)
 		}
-		seen[file.Path] = file
+		seen[canonicalName] = file
 		actual := filepath.Join(root, filepath.FromSlash(file.Path))
 		info, err := os.Stat(actual)
 		if err != nil || !info.Mode().IsRegular() || info.Size() != file.Size {
@@ -300,7 +316,7 @@ func rejectUnexpectedBundleFiles(root string, manifest map[string]bundleFile) er
 		if entry.IsDir() {
 			return nil
 		}
-		if _, ok := manifest[rel]; !ok {
+		if _, ok := manifest[strings.ToLower(rel)]; !ok {
 			return fmt.Errorf("AirPlay bundle contains unexpected file %q", rel)
 		}
 		return nil
@@ -309,7 +325,7 @@ func rejectUnexpectedBundleFiles(root string, manifest map[string]bundleFile) er
 
 func validateRequiredUxPlayFiles(root string, manifest map[string]bundleFile) error {
 	for _, required := range requiredUxPlayFiles {
-		if _, ok := manifest[required]; !ok {
+		if _, ok := manifest[strings.ToLower(required)]; !ok {
 			return fmt.Errorf("AirPlay bundle is missing required file %q", required)
 		}
 		info, err := os.Stat(filepath.Join(root, filepath.FromSlash(required)))

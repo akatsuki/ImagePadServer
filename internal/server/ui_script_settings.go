@@ -231,17 +231,21 @@ const dashboardScriptSettings = `
     if (playlistFileModeButton) playlistFileModeButton.addEventListener('click', () => setUploadMode('file'));
     if (playlistLinkModeButton) playlistLinkModeButton.addEventListener('click', () => setUploadMode('link'));
     obsModeButton.addEventListener('click', () => {
-      if (!state.videoPlayerEnabled) return;
+      if (!videoPlayerReadyForMedia()) return;
       if (mediaIntent !== 'video') setMediaIntent('video');
       setUploadMode('obs');
     });
     airplayModeButton.addEventListener('click', () => {
-      if (!state.videoPlayerEnabled || !state.airplay || !state.airplay.enabled) return;
+      if (!videoPlayerReadyForMedia() || !state.airplay || !state.airplay.enabled) return;
       if (mediaIntent !== 'video') setMediaIntent('video');
       setUploadMode('airplay');
     });
     if (playlistModeButton) playlistModeButton.addEventListener('click', () => {
-      if (!state.videoPlayerEnabled || !musicWorkspaceEnabled) return;
+      if (!musicModeCanActivate()) {
+        setMediaIntent('music', false);
+        updateMediaCapabilityStatus();
+        return;
+      }
       if (typeof MusicController !== 'undefined' && MusicController.setMode) {
         MusicController.setMode('playlist');
       }
@@ -251,15 +255,32 @@ const dashboardScriptSettings = `
         button.addEventListener('click', () => {
           const intent = button.dataset.mediaIntent;
           if (intent === 'live') {
-            if (!state.videoPlayerEnabled) return;
+            if (videoPlayerNeedsRecovery()) {
+              enableVideoPlayerAndSelect('video');
+              return;
+            }
+            if (!videoPlayerReadyForMedia()) return;
             setMediaIntent('video');
             setUploadMode('obs');
             return;
           }
           if (intent === 'music') {
+            if (videoPlayerNeedsRecovery()) {
+              enableVideoPlayerAndSelect('music');
+              return;
+            }
+            if (!musicModeCanActivate()) {
+              setMediaIntent('music', false);
+              updateMediaCapabilityStatus();
+              return;
+            }
             if (typeof MusicController !== 'undefined' && MusicController.setMode) {
               MusicController.setMode('single');
             }
+            return;
+          }
+          if (intent === 'video' && videoPlayerNeedsRecovery()) {
+            enableVideoPlayerAndSelect('video');
             return;
           }
           setMediaIntent(intent);
@@ -268,7 +289,6 @@ const dashboardScriptSettings = `
     }
     bindMediaHierarchyNavigation();
     if (imageIntentButton) imageIntentButton.addEventListener('click', () => setMediaIntent('image'));
-    if (videoIntentButton) videoIntentButton.addEventListener('click', () => setMediaIntent('video'));
     formatSelect.addEventListener('change', updateQualityOptions);
     updateQualityOptions();
     imageInput.addEventListener('change', ensureFFmpegForRAWSelection);

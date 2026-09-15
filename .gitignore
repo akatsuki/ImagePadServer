@@ -1,5 +1,7 @@
 /imagepadserver
 /dist/
+/build/
+/internal/airplay/payload/
 /.DS_Store
 /.idea/
 /.vscode/

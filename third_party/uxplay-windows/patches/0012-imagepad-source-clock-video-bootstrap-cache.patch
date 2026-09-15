@@ -1,0 +1,1447 @@
+diff --git a/renderers/CMakeLists.txt b/renderers/CMakeLists.txt
+index f821f867..d91653f3 100644
+--- a/renderers/CMakeLists.txt
++++ b/renderers/CMakeLists.txt
+@@ -41,10 +41,11 @@ pkg_check_modules(GST REQUIRED    gstreamer-1.0>=1.4
+ add_library( renderers
+              STATIC
+              audio_renderer.c
+-             video_renderer.c
+-             mux_renderer.c
+-             source_clock_renderer.c
+-             source_clock_metrics.c )
++             video_renderer.c
++             mux_renderer.c
++             source_clock_renderer.c
++             source_clock_metrics.c
++             source_clock_video_bootstrap.c )
+ 
+ target_link_libraries ( renderers PUBLIC airplay )
+ 
+@@ -87,9 +88,20 @@ if (BUILD_TESTING)
+   target_link_libraries(uxplay_source_clock_metrics_contract_test PRIVATE renderers pthread ws2_32)
+   add_test(NAME uxplay_source_clock_metrics_contract COMMAND uxplay_source_clock_metrics_contract_test)
+   add_executable(uxplay_source_clock_metrics_emitter_test source_clock_metrics_emitter_test.c)
+-  target_compile_definitions(uxplay_source_clock_metrics_emitter_test PRIVATE SOURCE_CLOCK_TEST_HOOKS)
+-  target_link_libraries(uxplay_source_clock_metrics_emitter_test PRIVATE renderers pthread ws2_32)
++  target_compile_definitions(uxplay_source_clock_metrics_emitter_test PRIVATE SOURCE_CLOCK_TEST_HOOKS)
++  target_link_libraries(uxplay_source_clock_metrics_emitter_test PRIVATE renderers pthread ws2_32)
+   add_test(NAME uxplay_source_clock_metrics_emitter COMMAND uxplay_source_clock_metrics_emitter_test)
++  add_executable(uxplay_source_clock_video_bootstrap_test source_clock_video_bootstrap_test.c)
++  target_compile_definitions(uxplay_source_clock_video_bootstrap_test PRIVATE SOURCE_CLOCK_TEST_HOOKS)
++  target_link_libraries(uxplay_source_clock_video_bootstrap_test PRIVATE renderers pthread ws2_32)
++  add_test(NAME uxplay_source_clock_video_bootstrap COMMAND uxplay_source_clock_video_bootstrap_test)
++  add_executable(uxplay_source_clock_video_bootstrap_renderer_first_test source_clock_video_bootstrap_include_order_test.c)
++  target_link_libraries(uxplay_source_clock_video_bootstrap_renderer_first_test PRIVATE renderers pthread ws2_32)
++  add_test(NAME uxplay_source_clock_video_bootstrap_renderer_first COMMAND uxplay_source_clock_video_bootstrap_renderer_first_test)
++  add_executable(uxplay_source_clock_video_bootstrap_first_test source_clock_video_bootstrap_include_order_test.c)
++  target_compile_definitions(uxplay_source_clock_video_bootstrap_first_test PRIVATE SOURCE_CLOCK_BOOTSTRAP_FIRST)
++  target_link_libraries(uxplay_source_clock_video_bootstrap_first_test PRIVATE renderers pthread ws2_32)
++  add_test(NAME uxplay_source_clock_video_bootstrap_first COMMAND uxplay_source_clock_video_bootstrap_first_test)
+ endif()
+ 
+ if( GST_LIBRARY_DIRS MATCHES "/Library/FrameWorks/GStreamer.framework/lib" )
+diff --git a/renderers/source_clock_video_bootstrap.c b/renderers/source_clock_video_bootstrap.c
+new file mode 100644
+index 00000000..82d68d50
+--- /dev/null
++++ b/renderers/source_clock_video_bootstrap.c
+@@ -0,0 +1,530 @@
++#include "source_clock_video_bootstrap.h"
++
++#include <limits.h>
++#include <pthread.h>
++#include <stdbool.h>
++#include <stdlib.h>
++#include <string.h>
++
++#define NAL_SPS 7U
++#define NAL_PPS 8U
++
++typedef struct parameter_set_s {
++    unsigned char nal_type;
++    uint32_t id;
++    uint32_t referenced_sps_id;
++    unsigned char *data;
++    size_t size;
++} parameter_set_t;
++
++typedef struct parsed_set_s {
++    unsigned char nal_type;
++    uint32_t id;
++    uint32_t referenced_sps_id;
++    const unsigned char *data;
++    size_t size;
++} parsed_set_t;
++
++struct source_clock_video_bootstrap_s {
++    pthread_mutex_t mutex;
++    bool active;
++    uint64_t session_epoch;
++    source_clock_video_bootstrap_codec_t codec;
++    uint64_t codec_epoch;
++    parameter_set_t entries[SOURCE_CLOCK_VIDEO_BOOTSTRAP_MAX_PARAMETER_SETS];
++    size_t entry_count;
++    size_t total_bytes;
++#ifdef SOURCE_CLOCK_TEST_HOOKS
++    int64_t fail_alloc_after;
++    uint64_t allocation_count;
++#endif
++};
++
++typedef struct bit_reader_s {
++    const unsigned char *data;
++    size_t bit_count;
++    size_t bit_position;
++} bit_reader_t;
++
++static void free_entries(parameter_set_t *entries, size_t count) {
++    size_t index;
++    for (index = 0; index < count; ++index) {
++        free(entries[index].data);
++        memset(&entries[index], 0, sizeof(entries[index]));
++    }
++}
++
++static void clear_locked(source_clock_video_bootstrap_t *cache) {
++    free_entries(cache->entries, cache->entry_count);
++    cache->entry_count = 0;
++    cache->total_bytes = 0;
++    cache->codec_epoch = 0;
++}
++
++static bool find_start_code(const unsigned char *data, size_t size, size_t from,
++                            size_t *position, size_t *length) {
++    size_t index;
++    if (data == NULL || position == NULL || length == NULL) return false;
++    for (index = from; index + 3U <= size; ++index) {
++        if (index + 4U <= size && data[index] == 0 && data[index + 1U] == 0 &&
++            data[index + 2U] == 0 && data[index + 3U] == 1) {
++            *position = index;
++            *length = 4U;
++            return true;
++        }
++        if (data[index] == 0 && data[index + 1U] == 0 && data[index + 2U] == 1) {
++            *position = index;
++            *length = 3U;
++            return true;
++        }
++    }
++    return false;
++}
++
++static void *cache_alloc(source_clock_video_bootstrap_t *cache, size_t size) {
++#ifdef SOURCE_CLOCK_TEST_HOOKS
++    if (cache->fail_alloc_after >= 0 &&
++        cache->allocation_count++ >= (uint64_t)cache->fail_alloc_after) return NULL;
++#else
++    (void)cache;
++#endif
++    return malloc(size);
++}
++
++static source_clock_video_bootstrap_result_t ebsp_to_rbsp(
++                         source_clock_video_bootstrap_t *cache,
++                         const unsigned char *ebsp, size_t ebsp_size,
++                         unsigned char **rbsp, size_t *rbsp_size) {
++    unsigned char *output;
++    size_t input_index;
++    size_t output_index = 0;
++    unsigned zero_count = 0;
++    if (cache == NULL || ebsp == NULL || ebsp_size == 0 || rbsp == NULL || rbsp_size == NULL)
++        return SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID;
++    output = (unsigned char *)cache_alloc(cache, ebsp_size);
++    if (output == NULL) return SOURCE_CLOCK_VIDEO_BOOTSTRAP_NOMEM;
++    for (input_index = 0; input_index < ebsp_size; ++input_index) {
++        unsigned char value = ebsp[input_index];
++        if (zero_count >= 2U && value == 3U) {
++            if (input_index + 1U >= ebsp_size || ebsp[input_index + 1U] > 3U) {
++                free(output);
++                return SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID;
++            }
++            zero_count = 0;
++            continue;
++        }
++        if (zero_count >= 2U && value <= 2U) {
++            free(output);
++            return SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID;
++        }
++        output[output_index++] = value;
++        if (value == 0) zero_count++;
++        else zero_count = 0;
++    }
++    *rbsp = output;
++    *rbsp_size = output_index;
++    return SOURCE_CLOCK_VIDEO_BOOTSTRAP_UNCHANGED;
++}
++
++static bool read_bit(bit_reader_t *reader, unsigned *value) {
++    size_t byte_index;
++    unsigned shift;
++    if (reader == NULL || value == NULL || reader->bit_position >= reader->bit_count) return false;
++    byte_index = reader->bit_position / 8U;
++    shift = 7U - (unsigned)(reader->bit_position % 8U);
++    *value = (reader->data[byte_index] >> shift) & 1U;
++    reader->bit_position++;
++    return true;
++}
++
++static bool skip_bits(bit_reader_t *reader, size_t count) {
++    if (reader == NULL || count > reader->bit_count - reader->bit_position) return false;
++    reader->bit_position += count;
++    return true;
++}
++
++static bool read_ue(bit_reader_t *reader, uint32_t *value) {
++    unsigned bit;
++    unsigned leading_zeroes = 0;
++    uint64_t suffix = 0;
++    unsigned index;
++    if (reader == NULL || value == NULL) return false;
++    while (true) {
++        if (!read_bit(reader, &bit)) return false;
++        if (bit != 0) break;
++        if (++leading_zeroes > 31U) return false;
++    }
++    for (index = 0; index < leading_zeroes; ++index) {
++        if (!read_bit(reader, &bit)) return false;
++        suffix = (suffix << 1U) | bit;
++    }
++    suffix += ((uint64_t)1U << leading_zeroes) - 1U;
++    if (suffix > UINT32_MAX) return false;
++    *value = (uint32_t)suffix;
++    return true;
++}
++
++static source_clock_video_bootstrap_result_t parse_ids(
++                      source_clock_video_bootstrap_t *cache,
++                      unsigned char nal_type, const unsigned char *nal, size_t size,
++                      uint32_t *id, uint32_t *referenced_sps_id) {
++    unsigned char *rbsp = NULL;
++    size_t rbsp_size = 0;
++    bit_reader_t reader;
++    uint32_t first = 0;
++    uint32_t second = 0;
++    bool ok = false;
++    source_clock_video_bootstrap_result_t result;
++    if (nal == NULL || size < 2U || id == NULL || referenced_sps_id == NULL ||
++        (nal[0] & 0x80U) != 0 || (nal[0] & 0x1fU) != nal_type)
++        return SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID;
++    result = ebsp_to_rbsp(cache, nal + 1U, size - 1U, &rbsp, &rbsp_size);
++    if (result < 0) return result;
++    reader.data = rbsp;
++    reader.bit_count = rbsp_size * 8U;
++    reader.bit_position = 0;
++    if (nal_type == NAL_SPS) {
++        ok = skip_bits(&reader, 24U) && read_ue(&reader, &first) && first <= 31U;
++        if (ok) second = first;
++    } else if (nal_type == NAL_PPS) {
++        ok = read_ue(&reader, &first) && read_ue(&reader, &second) &&
++             first <= 255U && second <= 31U;
++    }
++    free(rbsp);
++    if (!ok) return SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID;
++    *id = first;
++    *referenced_sps_id = second;
++    return SOURCE_CLOCK_VIDEO_BOOTSTRAP_UNCHANGED;
++}
++
++static source_clock_video_bootstrap_result_t parse_annexb(
++    source_clock_video_bootstrap_t *cache,
++    const unsigned char *data, size_t size, parsed_set_t *sets,
++    size_t *set_count) {
++    size_t position;
++    size_t start_length;
++    size_t next_position;
++    size_t next_length;
++    size_t nal_count = 0;
++    size_t count = 0;
++    size_t index;
++    if (cache == NULL || data == NULL || size == 0 || sets == NULL || set_count == NULL)
++        return SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID;
++    if (size > SOURCE_CLOCK_VIDEO_BOOTSTRAP_MAX_INPUT_SIZE)
++        return SOURCE_CLOCK_VIDEO_BOOTSTRAP_LIMIT;
++    if (!find_start_code(data, size, 0, &position, &start_length)) return SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID;
++    for (index = 0; index < position; ++index) if (data[index] != 0) return SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID;
++    while (true) {
++        size_t nal_start = position + start_length;
++        size_t nal_end;
++        bool has_next = find_start_code(data, size, nal_start, &next_position, &next_length);
++        nal_end = has_next ? next_position : size;
++        while (nal_end > nal_start && data[nal_end - 1U] == 0) nal_end--;
++        if (++nal_count > SOURCE_CLOCK_VIDEO_BOOTSTRAP_MAX_NALS) return SOURCE_CLOCK_VIDEO_BOOTSTRAP_LIMIT;
++        if (nal_end <= nal_start) return SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID;
++        {
++            unsigned char nal_type = data[nal_start] & 0x1fU;
++            if (nal_type == NAL_SPS || nal_type == NAL_PPS) {
++                parsed_set_t *parsed;
++                if (nal_end - nal_start > SOURCE_CLOCK_VIDEO_BOOTSTRAP_MAX_NAL_SIZE) return SOURCE_CLOCK_VIDEO_BOOTSTRAP_LIMIT;
++                parsed = &sets[count++];
++                parsed->nal_type = nal_type;
++                parsed->data = data + nal_start;
++                parsed->size = nal_end - nal_start;
++                source_clock_video_bootstrap_result_t parse_result =
++                    parse_ids(cache, nal_type, parsed->data, parsed->size,
++                              &parsed->id, &parsed->referenced_sps_id);
++                if (parse_result < 0) return parse_result;
++            }
++        }
++        if (!has_next) break;
++        position = next_position;
++        start_length = next_length;
++    }
++    *set_count = count;
++    return SOURCE_CLOCK_VIDEO_BOOTSTRAP_UNCHANGED;
++}
++
++static source_clock_video_bootstrap_result_t clone_entries(
++    source_clock_video_bootstrap_t *cache, parameter_set_t *entries) {
++    size_t index;
++    memset(entries, 0, sizeof(parameter_set_t) * SOURCE_CLOCK_VIDEO_BOOTSTRAP_MAX_PARAMETER_SETS);
++    for (index = 0; index < cache->entry_count; ++index) {
++        entries[index] = cache->entries[index];
++        entries[index].data = (unsigned char *)cache_alloc(cache, cache->entries[index].size);
++        if (entries[index].data == NULL) {
++            free_entries(entries, index);
++            return SOURCE_CLOCK_VIDEO_BOOTSTRAP_NOMEM;
++        }
++        memcpy(entries[index].data, cache->entries[index].data, cache->entries[index].size);
++    }
++    return SOURCE_CLOCK_VIDEO_BOOTSTRAP_UNCHANGED;
++}
++
++static size_t find_entry(parameter_set_t *entries, size_t count,
++                         unsigned char nal_type, uint32_t id) {
++    size_t index;
++    for (index = 0; index < count; ++index) {
++        if (entries[index].nal_type == nal_type && entries[index].id == id) return index;
++    }
++    return SIZE_MAX;
++}
++
++source_clock_video_bootstrap_t *source_clock_video_bootstrap_create(void) {
++    source_clock_video_bootstrap_t *cache =
++        (source_clock_video_bootstrap_t *)calloc(1U, sizeof(*cache));
++    if (cache == NULL) return NULL;
++#ifdef SOURCE_CLOCK_TEST_HOOKS
++    cache->fail_alloc_after = -1;
++#endif
++    if (pthread_mutex_init(&cache->mutex, NULL) != 0) {
++        free(cache);
++        return NULL;
++    }
++    return cache;
++}
++
++void source_clock_video_bootstrap_destroy(source_clock_video_bootstrap_t *cache) {
++    if (cache == NULL) return;
++    pthread_mutex_lock(&cache->mutex);
++    clear_locked(cache);
++    pthread_mutex_unlock(&cache->mutex);
++    pthread_mutex_destroy(&cache->mutex);
++    free(cache);
++}
++
++source_clock_video_bootstrap_result_t source_clock_video_bootstrap_session_start_for_codec(
++    source_clock_video_bootstrap_t *cache, uint64_t session_epoch,
++    source_clock_video_bootstrap_codec_t codec) {
++    if (cache == NULL || session_epoch == 0) return SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID;
++    if (codec != SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264) return SOURCE_CLOCK_VIDEO_BOOTSTRAP_UNSUPPORTED;
++    pthread_mutex_lock(&cache->mutex);
++    if (session_epoch <= cache->session_epoch) {
++        pthread_mutex_unlock(&cache->mutex);
++        return SOURCE_CLOCK_VIDEO_BOOTSTRAP_STALE_SESSION;
++    }
++    clear_locked(cache);
++    cache->active = true;
++    cache->session_epoch = session_epoch;
++    cache->codec = codec;
++    pthread_mutex_unlock(&cache->mutex);
++    return SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED;
++}
++
++source_clock_video_bootstrap_result_t source_clock_video_bootstrap_session_end_for_epoch(
++    source_clock_video_bootstrap_t *cache, uint64_t expected_session_epoch) {
++    if (cache == NULL) return SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID;
++    pthread_mutex_lock(&cache->mutex);
++    if (!cache->active || cache->session_epoch != expected_session_epoch) {
++        pthread_mutex_unlock(&cache->mutex);
++        return SOURCE_CLOCK_VIDEO_BOOTSTRAP_STALE_SESSION;
++    }
++    clear_locked(cache);
++    cache->active = false;
++    pthread_mutex_unlock(&cache->mutex);
++    return SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED;
++}
++
++source_clock_video_bootstrap_result_t source_clock_video_bootstrap_push_annexb_for_session(
++    source_clock_video_bootstrap_t *cache, uint64_t expected_session_epoch,
++    source_clock_video_bootstrap_codec_t codec,
++    const unsigned char *data, size_t size) {
++    parsed_set_t parsed[SOURCE_CLOCK_VIDEO_BOOTSTRAP_MAX_NALS];
++    parameter_set_t candidate[SOURCE_CLOCK_VIDEO_BOOTSTRAP_MAX_PARAMETER_SETS];
++    size_t parsed_count = 0;
++    size_t candidate_count;
++    size_t candidate_bytes;
++    size_t index;
++    size_t unique_count = 0;
++    bool changed = false;
++    source_clock_video_bootstrap_result_t result;
++    if (cache == NULL) return SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID;
++    if (codec != SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264) return SOURCE_CLOCK_VIDEO_BOOTSTRAP_UNSUPPORTED;
++    pthread_mutex_lock(&cache->mutex);
++    if (!cache->active || cache->session_epoch != expected_session_epoch || cache->codec != codec) {
++        pthread_mutex_unlock(&cache->mutex);
++        return SOURCE_CLOCK_VIDEO_BOOTSTRAP_STALE_SESSION;
++    }
++    result = parse_annexb(cache, data, size, parsed, &parsed_count);
++    if (result < 0) {
++        pthread_mutex_unlock(&cache->mutex);
++        return result;
++    }
++    for (index = 0; index < parsed_count; ++index) {
++        size_t existing;
++        for (existing = 0; existing < unique_count; ++existing) {
++            if (parsed[existing].nal_type == parsed[index].nal_type &&
++                parsed[existing].id == parsed[index].id) break;
++        }
++        if (existing < unique_count) parsed[existing] = parsed[index];
++        else parsed[unique_count++] = parsed[index];
++    }
++    parsed_count = unique_count;
++    if (parsed_count == 0) {
++        pthread_mutex_unlock(&cache->mutex);
++        return SOURCE_CLOCK_VIDEO_BOOTSTRAP_UNCHANGED;
++    }
++    result = clone_entries(cache, candidate);
++    if (result < 0) {
++        pthread_mutex_unlock(&cache->mutex);
++        return result;
++    }
++    candidate_count = cache->entry_count;
++    candidate_bytes = cache->total_bytes;
++    for (index = 0; index < parsed_count; ++index) {
++        size_t found = find_entry(candidate, candidate_count, parsed[index].nal_type, parsed[index].id);
++        unsigned char *copy;
++        if (found != SIZE_MAX && candidate[found].size == parsed[index].size &&
++            candidate[found].referenced_sps_id == parsed[index].referenced_sps_id &&
++            memcmp(candidate[found].data, parsed[index].data, parsed[index].size) == 0) continue;
++        if (found == SIZE_MAX) {
++            if (candidate_count >= SOURCE_CLOCK_VIDEO_BOOTSTRAP_MAX_PARAMETER_SETS) {
++                free_entries(candidate, candidate_count);
++                pthread_mutex_unlock(&cache->mutex);
++                return SOURCE_CLOCK_VIDEO_BOOTSTRAP_LIMIT;
++            }
++            found = candidate_count++;
++            memset(&candidate[found], 0, sizeof(candidate[found]));
++        } else {
++            candidate_bytes -= candidate[found].size;
++        }
++        if (parsed[index].size > SOURCE_CLOCK_VIDEO_BOOTSTRAP_MAX_TOTAL_SIZE - candidate_bytes) {
++            free_entries(candidate, candidate_count);
++            pthread_mutex_unlock(&cache->mutex);
++            return SOURCE_CLOCK_VIDEO_BOOTSTRAP_LIMIT;
++        }
++        copy = (unsigned char *)cache_alloc(cache, parsed[index].size);
++        if (copy == NULL) {
++            free_entries(candidate, candidate_count);
++            pthread_mutex_unlock(&cache->mutex);
++            return SOURCE_CLOCK_VIDEO_BOOTSTRAP_NOMEM;
++        }
++        memcpy(copy, parsed[index].data, parsed[index].size);
++        free(candidate[found].data);
++        candidate[found].nal_type = parsed[index].nal_type;
++        candidate[found].id = parsed[index].id;
++        candidate[found].referenced_sps_id = parsed[index].referenced_sps_id;
++        candidate[found].data = copy;
++        candidate[found].size = parsed[index].size;
++        candidate_bytes += parsed[index].size;
++        changed = true;
++    }
++    if (!changed) {
++        free_entries(candidate, candidate_count);
++        pthread_mutex_unlock(&cache->mutex);
++        return SOURCE_CLOCK_VIDEO_BOOTSTRAP_UNCHANGED;
++    }
++    if (cache->codec_epoch == UINT64_MAX) {
++        free_entries(candidate, candidate_count);
++        pthread_mutex_unlock(&cache->mutex);
++        return SOURCE_CLOCK_VIDEO_BOOTSTRAP_LIMIT;
++    }
++    free_entries(cache->entries, cache->entry_count);
++    memcpy(cache->entries, candidate, sizeof(candidate));
++    cache->entry_count = candidate_count;
++    cache->total_bytes = candidate_bytes;
++    cache->codec_epoch++;
++    pthread_mutex_unlock(&cache->mutex);
++    return SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED;
++}
++
++source_clock_video_bootstrap_result_t source_clock_video_bootstrap_snapshot_copy_for_pps(
++    source_clock_video_bootstrap_t *cache, uint64_t expected_session_epoch,
++    source_clock_video_bootstrap_codec_t codec, uint32_t pps_id,
++    source_clock_video_bootstrap_snapshot_t *snapshot) {
++    size_t pps_index;
++    size_t sps_index;
++    if (cache == NULL || snapshot == NULL) return SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID;
++    if (snapshot->sps != NULL || snapshot->pps != NULL || snapshot->sps_size != 0 ||
++        snapshot->pps_size != 0 || snapshot->session_epoch != 0 ||
++        snapshot->codec_epoch != 0 || snapshot->sps_id != 0 || snapshot->pps_id != 0)
++        return SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID;
++    memset(snapshot, 0, sizeof(*snapshot));
++    if (codec != SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264) return SOURCE_CLOCK_VIDEO_BOOTSTRAP_UNSUPPORTED;
++    pthread_mutex_lock(&cache->mutex);
++    if (!cache->active || cache->session_epoch != expected_session_epoch || cache->codec != codec) {
++        pthread_mutex_unlock(&cache->mutex);
++        return SOURCE_CLOCK_VIDEO_BOOTSTRAP_STALE_SESSION;
++    }
++    pps_index = find_entry(cache->entries, cache->entry_count, NAL_PPS, pps_id);
++    if (pps_index == SIZE_MAX) {
++        pthread_mutex_unlock(&cache->mutex);
++        return SOURCE_CLOCK_VIDEO_BOOTSTRAP_NOT_READY;
++    }
++    sps_index = find_entry(cache->entries, cache->entry_count, NAL_SPS,
++                           cache->entries[pps_index].referenced_sps_id);
++    if (sps_index == SIZE_MAX) {
++        pthread_mutex_unlock(&cache->mutex);
++        return SOURCE_CLOCK_VIDEO_BOOTSTRAP_NOT_READY;
++    }
++    snapshot->sps = (unsigned char *)cache_alloc(cache, cache->entries[sps_index].size);
++    snapshot->pps = (unsigned char *)cache_alloc(cache, cache->entries[pps_index].size);
++    if (snapshot->sps == NULL || snapshot->pps == NULL) {
++        source_clock_video_bootstrap_snapshot_free(snapshot);
++        pthread_mutex_unlock(&cache->mutex);
++        return SOURCE_CLOCK_VIDEO_BOOTSTRAP_NOMEM;
++    }
++    memcpy(snapshot->sps, cache->entries[sps_index].data, cache->entries[sps_index].size);
++    memcpy(snapshot->pps, cache->entries[pps_index].data, cache->entries[pps_index].size);
++    snapshot->session_epoch = cache->session_epoch;
++    snapshot->codec_epoch = cache->codec_epoch;
++    snapshot->sps_id = cache->entries[sps_index].id;
++    snapshot->pps_id = cache->entries[pps_index].id;
++    snapshot->sps_size = cache->entries[sps_index].size;
++    snapshot->pps_size = cache->entries[pps_index].size;
++    pthread_mutex_unlock(&cache->mutex);
++    return SOURCE_CLOCK_VIDEO_BOOTSTRAP_READY;
++}
++
++void source_clock_video_bootstrap_snapshot_free(source_clock_video_bootstrap_snapshot_t *snapshot) {
++    if (snapshot == NULL) return;
++    free(snapshot->sps);
++    free(snapshot->pps);
++    memset(snapshot, 0, sizeof(*snapshot));
++}
++
++size_t source_clock_video_bootstrap_entry_count(source_clock_video_bootstrap_t *cache) {
++    size_t value = 0;
++    if (cache == NULL) return 0;
++    pthread_mutex_lock(&cache->mutex);
++    value = cache->entry_count;
++    pthread_mutex_unlock(&cache->mutex);
++    return value;
++}
++
++size_t source_clock_video_bootstrap_total_bytes(source_clock_video_bootstrap_t *cache) {
++    size_t value = 0;
++    if (cache == NULL) return 0;
++    pthread_mutex_lock(&cache->mutex);
++    value = cache->total_bytes;
++    pthread_mutex_unlock(&cache->mutex);
++    return value;
++}
++
++uint64_t source_clock_video_bootstrap_codec_epoch(source_clock_video_bootstrap_t *cache) {
++    uint64_t value = 0;
++    if (cache == NULL) return 0;
++    pthread_mutex_lock(&cache->mutex);
++    value = cache->codec_epoch;
++    pthread_mutex_unlock(&cache->mutex);
++    return value;
++}
++
++#ifdef SOURCE_CLOCK_TEST_HOOKS
++void source_clock_video_bootstrap_test_fail_alloc_after(
++    source_clock_video_bootstrap_t *cache, int64_t successful_allocations) {
++    if (cache == NULL) return;
++    pthread_mutex_lock(&cache->mutex);
++    cache->fail_alloc_after = successful_allocations;
++    cache->allocation_count = 0;
++    pthread_mutex_unlock(&cache->mutex);
++}
++
++void source_clock_video_bootstrap_test_set_codec_epoch(
++    source_clock_video_bootstrap_t *cache, uint64_t codec_epoch) {
++    if (cache == NULL) return;
++    pthread_mutex_lock(&cache->mutex);
++    cache->codec_epoch = codec_epoch;
++    pthread_mutex_unlock(&cache->mutex);
++}
++#endif
+diff --git a/renderers/source_clock_video_bootstrap.h b/renderers/source_clock_video_bootstrap.h
+new file mode 100644
+index 00000000..552c39e6
+--- /dev/null
++++ b/renderers/source_clock_video_bootstrap.h
+@@ -0,0 +1,91 @@
++#ifndef SOURCE_CLOCK_VIDEO_BOOTSTRAP_H
++#define SOURCE_CLOCK_VIDEO_BOOTSTRAP_H
++
++#include <stddef.h>
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define SOURCE_CLOCK_VIDEO_BOOTSTRAP_MAX_PARAMETER_SETS 32U
++#define SOURCE_CLOCK_VIDEO_BOOTSTRAP_MAX_NAL_SIZE (128U * 1024U)
++#define SOURCE_CLOCK_VIDEO_BOOTSTRAP_MAX_TOTAL_SIZE (256U * 1024U)
++#define SOURCE_CLOCK_VIDEO_BOOTSTRAP_MAX_NALS 64U
++#define SOURCE_CLOCK_VIDEO_BOOTSTRAP_MAX_INPUT_SIZE (64U * 1024U * 1024U)
++
++typedef enum source_clock_video_bootstrap_codec_e {
++    SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264 = 1,
++    SOURCE_CLOCK_VIDEO_BOOTSTRAP_HEVC = 2
++} source_clock_video_bootstrap_codec_t;
++
++typedef enum source_clock_video_bootstrap_result_e {
++    SOURCE_CLOCK_VIDEO_BOOTSTRAP_UNCHANGED = 0,
++    SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED = 1,
++    SOURCE_CLOCK_VIDEO_BOOTSTRAP_READY = 2,
++    SOURCE_CLOCK_VIDEO_BOOTSTRAP_NOT_READY = -1,
++    SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID = -2,
++    SOURCE_CLOCK_VIDEO_BOOTSTRAP_LIMIT = -3,
++    SOURCE_CLOCK_VIDEO_BOOTSTRAP_NOMEM = -4,
++    SOURCE_CLOCK_VIDEO_BOOTSTRAP_STALE_SESSION = -5,
++    SOURCE_CLOCK_VIDEO_BOOTSTRAP_UNSUPPORTED = -6
++} source_clock_video_bootstrap_result_t;
++
++typedef struct source_clock_video_bootstrap_s source_clock_video_bootstrap_t;
++
++typedef struct source_clock_video_bootstrap_snapshot_s {
++    uint64_t session_epoch;
++    uint64_t codec_epoch;
++    uint32_t sps_id;
++    uint32_t pps_id;
++    unsigned char *sps;
++    size_t sps_size;
++    unsigned char *pps;
++    size_t pps_size;
++} source_clock_video_bootstrap_snapshot_t;
++
++source_clock_video_bootstrap_t *source_clock_video_bootstrap_create(void);
++void source_clock_video_bootstrap_destroy(source_clock_video_bootstrap_t *cache);
++source_clock_video_bootstrap_result_t source_clock_video_bootstrap_session_start_for_codec(
++    source_clock_video_bootstrap_t *cache, uint64_t session_epoch,
++    source_clock_video_bootstrap_codec_t codec);
++source_clock_video_bootstrap_result_t source_clock_video_bootstrap_session_end_for_epoch(
++    source_clock_video_bootstrap_t *cache, uint64_t expected_session_epoch);
++source_clock_video_bootstrap_result_t source_clock_video_bootstrap_push_annexb_for_session(
++    source_clock_video_bootstrap_t *cache, uint64_t expected_session_epoch,
++    source_clock_video_bootstrap_codec_t codec,
++    const unsigned char *data, size_t size);
++source_clock_video_bootstrap_result_t source_clock_video_bootstrap_snapshot_copy_for_pps(
++    source_clock_video_bootstrap_t *cache, uint64_t expected_session_epoch,
++    source_clock_video_bootstrap_codec_t codec, uint32_t pps_id,
++    source_clock_video_bootstrap_snapshot_t *snapshot);
++/*
++ * The parser validates Annex-B boundaries, H.264 NAL headers, EBSP escaping,
++ * parameter-set IDs and PPS-to-SPS references. It does not validate the full
++ * SPS/PPS syntax beyond the fields required for bootstrap selection.
++ *
++ * snapshot must be zero-initialized. On READY it owns independent SPS/PPS
++ * copies and must be released with snapshot_free before reuse. Cache APIs may
++ * run concurrently; cache destruction requires external lifetime exclusion.
++ */
++void source_clock_video_bootstrap_snapshot_free(
++    source_clock_video_bootstrap_snapshot_t *snapshot);
++size_t source_clock_video_bootstrap_entry_count(
++    source_clock_video_bootstrap_t *cache);
++size_t source_clock_video_bootstrap_total_bytes(
++    source_clock_video_bootstrap_t *cache);
++uint64_t source_clock_video_bootstrap_codec_epoch(
++    source_clock_video_bootstrap_t *cache);
++
++#ifdef SOURCE_CLOCK_TEST_HOOKS
++void source_clock_video_bootstrap_test_fail_alloc_after(
++    source_clock_video_bootstrap_t *cache, int64_t successful_allocations);
++void source_clock_video_bootstrap_test_set_codec_epoch(
++    source_clock_video_bootstrap_t *cache, uint64_t codec_epoch);
++#endif
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif
+diff --git a/renderers/source_clock_video_bootstrap_include_order_test.c b/renderers/source_clock_video_bootstrap_include_order_test.c
+new file mode 100644
+index 00000000..457ec59f
+--- /dev/null
++++ b/renderers/source_clock_video_bootstrap_include_order_test.c
+@@ -0,0 +1,14 @@
++#ifdef SOURCE_CLOCK_BOOTSTRAP_FIRST
++#include "source_clock_video_bootstrap.h"
++#include "source_clock_renderer.h"
++#else
++#include "source_clock_renderer.h"
++#include "source_clock_video_bootstrap.h"
++#endif
++
++int main(void) {
++    source_clock_video_bootstrap_codec_t codec = SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264;
++    source_clock_video_codec_t renderer_codec = SOURCE_CLOCK_VIDEO_H264;
++    return codec == SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264 &&
++           renderer_codec == SOURCE_CLOCK_VIDEO_H264 ? 0 : 1;
++}
+diff --git a/renderers/source_clock_video_bootstrap_test.c b/renderers/source_clock_video_bootstrap_test.c
+new file mode 100644
+index 00000000..734b6c0f
+--- /dev/null
++++ b/renderers/source_clock_video_bootstrap_test.c
+@@ -0,0 +1,744 @@
++#include "source_clock_video_bootstrap.h"
++
++#ifdef NDEBUG
++#undef NDEBUG
++#endif
++#include <assert.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++static void write_bits(unsigned char *bytes, size_t *bit_position,
++                       unsigned value, unsigned count) {
++    unsigned index;
++    for (index = count; index != 0; --index) {
++        unsigned bit = (value >> (index - 1U)) & 1U;
++        size_t byte_index = *bit_position / 8U;
++        unsigned shift = 7U - (unsigned)(*bit_position % 8U);
++        bytes[byte_index] = (unsigned char)(bytes[byte_index] | (bit << shift));
++        (*bit_position)++;
++    }
++}
++
++static void write_ue(unsigned char *bytes, size_t *bit_position, unsigned value) {
++    unsigned code_num = value + 1U;
++    unsigned bits = 0;
++    unsigned copy = code_num;
++    unsigned index;
++    while (copy != 0) {
++        bits++;
++        copy >>= 1U;
++    }
++    for (index = 1; index < bits; ++index) write_bits(bytes, bit_position, 0, 1);
++    write_bits(bytes, bit_position, code_num, bits);
++}
++
++static unsigned char *rbsp_to_ebsp(const unsigned char *rbsp, size_t rbsp_size,
++                                   size_t minimum_size, size_t *ebsp_size) {
++    size_t capacity = rbsp_size * 2U + minimum_size + 8U;
++    unsigned char *ebsp = (unsigned char *)calloc(capacity, 1U);
++    size_t input_index;
++    size_t output_index = 0;
++    unsigned zero_count = 0;
++    assert(ebsp != NULL);
++    for (input_index = 0; input_index < rbsp_size; ++input_index) {
++        unsigned char byte = rbsp[input_index];
++        if (zero_count >= 2U && byte <= 3U) {
++            ebsp[output_index++] = 3U;
++            zero_count = 0;
++        }
++        ebsp[output_index++] = byte;
++        if (byte == 0) zero_count++; else zero_count = 0;
++    }
++    if (output_index < minimum_size) {
++        memset(ebsp + output_index, 0x55, minimum_size - output_index);
++        output_index = minimum_size;
++    }
++    *ebsp_size = output_index;
++    return ebsp;
++}
++
++static unsigned char *make_sps(unsigned id, size_t minimum_size, int with_epb,
++                               size_t *nal_size) {
++    unsigned char rbsp[32] = { 0 };
++    unsigned char *payload;
++    unsigned char *nal;
++    size_t bit_position = 0;
++    size_t rbsp_size;
++    size_t payload_size;
++
++    write_bits(rbsp, &bit_position, with_epb ? 0U : 100U, 8);
++    write_bits(rbsp, &bit_position, 0U, 8);
++    write_bits(rbsp, &bit_position, with_epb ? 1U : 0U, 8);
++    write_ue(rbsp, &bit_position, id);
++    write_bits(rbsp, &bit_position, 1U, 1);
++    while ((bit_position % 8U) != 0) write_bits(rbsp, &bit_position, 0U, 1);
++    rbsp_size = bit_position / 8U;
++    if (with_epb) {
++        payload = rbsp_to_ebsp(rbsp, rbsp_size,
++                               minimum_size > 0 ? minimum_size - 1U : 0U,
++                               &payload_size);
++    } else {
++        payload_size = rbsp_size;
++        if (payload_size + 1U < minimum_size) payload_size = minimum_size - 1U;
++        payload = (unsigned char *)malloc(payload_size);
++        assert(payload != NULL);
++        memset(payload, 0x55, payload_size);
++        memcpy(payload, rbsp, rbsp_size);
++    }
++    nal = (unsigned char *)malloc(payload_size + 1U);
++    assert(nal != NULL);
++    nal[0] = 0x67U;
++    memcpy(nal + 1U, payload, payload_size);
++    free(payload);
++    *nal_size = payload_size + 1U;
++    return nal;
++}
++
++static unsigned char *make_pps(unsigned pps_id, unsigned sps_id,
++                               size_t minimum_size, size_t *nal_size) {
++    unsigned char bits[32] = { 0 };
++    unsigned char *nal;
++    size_t bit_position = 0;
++    size_t payload_size;
++    write_ue(bits, &bit_position, pps_id);
++    write_ue(bits, &bit_position, sps_id);
++    write_bits(bits, &bit_position, 1U, 1);
++    while ((bit_position % 8U) != 0) write_bits(bits, &bit_position, 0U, 1);
++    payload_size = bit_position / 8U;
++    if (payload_size + 1U < minimum_size) payload_size = minimum_size - 1U;
++    nal = (unsigned char *)malloc(payload_size + 1U);
++    assert(nal != NULL);
++    memset(nal, 0x55, payload_size + 1U);
++    nal[0] = 0x68U;
++    memcpy(nal + 1U, bits, bit_position / 8U);
++    *nal_size = payload_size + 1U;
++    return nal;
++}
++
++static source_clock_video_bootstrap_result_t push_nal(
++    source_clock_video_bootstrap_t *cache, uint64_t session_epoch,
++    const unsigned char *nal,
++    size_t nal_size, unsigned start_code_size) {
++    unsigned char *annexb;
++    source_clock_video_bootstrap_result_t result;
++    assert(start_code_size == 3U || start_code_size == 4U);
++    annexb = (unsigned char *)calloc(nal_size + start_code_size, 1U);
++    assert(annexb != NULL);
++    annexb[start_code_size - 1U] = 1U;
++    memcpy(annexb + start_code_size, nal, nal_size);
++    result = source_clock_video_bootstrap_push_annexb_for_session(
++        cache, session_epoch, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264,
++        annexb, nal_size + start_code_size);
++    free(annexb);
++    return result;
++}
++
++static source_clock_video_bootstrap_result_t push_two_nals(
++    source_clock_video_bootstrap_t *cache, uint64_t session_epoch,
++    const unsigned char *first, size_t first_size,
++    const unsigned char *second, size_t second_size) {
++    size_t annexb_size = 4U + first_size + 4U + second_size;
++    unsigned char *annexb = (unsigned char *)calloc(annexb_size, 1U);
++    source_clock_video_bootstrap_result_t result;
++    assert(annexb != NULL);
++    annexb[3] = 1U;
++    memcpy(annexb + 4U, first, first_size);
++    annexb[4U + first_size + 3U] = 1U;
++    memcpy(annexb + 4U + first_size + 4U, second, second_size);
++    result = source_clock_video_bootstrap_push_annexb_for_session(
++        cache, session_epoch, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264,
++        annexb, annexb_size);
++    free(annexb);
++    return result;
++}
++
++static int contains_bytes(const unsigned char *data, size_t size,
++                          const unsigned char *needle, size_t needle_size) {
++    size_t index;
++    if (needle_size > size) return 0;
++    for (index = 0; index <= size - needle_size; ++index) {
++        if (memcmp(data + index, needle, needle_size) == 0) return 1;
++    }
++    return 0;
++}
++
++static void assert_same_snapshot(const source_clock_video_bootstrap_snapshot_t *left,
++                                 const source_clock_video_bootstrap_snapshot_t *right) {
++    assert(left->session_epoch == right->session_epoch);
++    assert(left->codec_epoch == right->codec_epoch);
++    assert(left->sps_id == right->sps_id);
++    assert(left->pps_id == right->pps_id);
++    assert(left->sps_size == right->sps_size);
++    assert(left->pps_size == right->pps_size);
++    assert(memcmp(left->sps, right->sps, left->sps_size) == 0);
++    assert(memcmp(left->pps, right->pps, left->pps_size) == 0);
++}
++
++static void test_separate_out_of_order_epb_and_caller_copy(void) {
++    source_clock_video_bootstrap_t *cache = source_clock_video_bootstrap_create();
++    unsigned char *sps;
++    unsigned char *replacement;
++    unsigned char *pps;
++    size_t sps_size;
++    size_t replacement_size;
++    size_t pps_size;
++    source_clock_video_bootstrap_snapshot_t before = { 0 };
++    source_clock_video_bootstrap_snapshot_t after = { 0 };
++    static const unsigned char idr[] = { 0x65U, 0x88U, 0x84U };
++    static const unsigned char epb[] = { 0x00U, 0x00U, 0x03U };
++
++    assert(cache != NULL);
++    assert(source_clock_video_bootstrap_session_start_for_codec(
++               cache, 17U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    sps = make_sps(3U, 20U, 1, &sps_size);
++    replacement = make_sps(3U, 24U, 0, &replacement_size);
++    pps = make_pps(9U, 3U, 8U, &pps_size);
++    assert(contains_bytes(sps, sps_size, epb, sizeof(epb)));
++    assert(push_nal(cache, 17U, pps, pps_size, 3U) == SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    assert(source_clock_video_bootstrap_snapshot_copy_for_pps(
++               cache, 17U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264, 9U, &before) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_NOT_READY);
++    assert(push_nal(cache, 17U, sps, sps_size, 4U) == SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    assert(source_clock_video_bootstrap_snapshot_copy_for_pps(
++               cache, 17U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264, 9U, &before) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_READY);
++    assert(before.session_epoch == 17U && before.sps_id == 3U && before.pps_id == 9U);
++    assert(before.codec_epoch == 2U);
++    assert(push_nal(cache, 17U, replacement, replacement_size, 4U) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    assert(source_clock_video_bootstrap_snapshot_copy_for_pps(
++               cache, 17U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264, 9U, &after) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_READY);
++    assert(after.codec_epoch == 3U);
++    assert(after.sps_size == replacement_size);
++    assert(before.sps_size == sps_size && memcmp(before.sps, sps, sps_size) == 0);
++    source_clock_video_bootstrap_snapshot_free(&after);
++    assert(push_nal(cache, 17U, idr, sizeof(idr), 3U) == SOURCE_CLOCK_VIDEO_BOOTSTRAP_UNCHANGED);
++    assert(source_clock_video_bootstrap_snapshot_copy_for_pps(
++               cache, 17U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264, 9U, &after) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_READY);
++    assert(after.codec_epoch == 3U);
++    source_clock_video_bootstrap_snapshot_free(&before);
++    source_clock_video_bootstrap_snapshot_free(&after);
++    free(sps);
++    free(replacement);
++    free(pps);
++    source_clock_video_bootstrap_destroy(cache);
++}
++
++static void test_mixed_start_codes_and_pps_sps_integrity(void) {
++    source_clock_video_bootstrap_t *cache = source_clock_video_bootstrap_create();
++    unsigned char *sps;
++    unsigned char *wrong_pps;
++    unsigned char *right_pps;
++    unsigned char *annexb;
++    size_t sps_size;
++    size_t wrong_size;
++    size_t right_size;
++    size_t total;
++    source_clock_video_bootstrap_snapshot_t snapshot = { 0 };
++
++    assert(cache != NULL);
++    assert(source_clock_video_bootstrap_session_start_for_codec(
++               cache, 18U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    sps = make_sps(2U, 12U, 0, &sps_size);
++    wrong_pps = make_pps(4U, 3U, 6U, &wrong_size);
++    right_pps = make_pps(5U, 2U, 6U, &right_size);
++    total = 4U + sps_size + 3U + wrong_size;
++    annexb = (unsigned char *)calloc(total, 1U);
++    assert(annexb != NULL);
++    annexb[3] = 1U;
++    memcpy(annexb + 4U, sps, sps_size);
++    annexb[4U + sps_size + 2U] = 1U;
++    memcpy(annexb + 4U + sps_size + 3U, wrong_pps, wrong_size);
++    assert(source_clock_video_bootstrap_push_annexb_for_session(
++               cache, 18U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264, annexb, total) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    assert(source_clock_video_bootstrap_snapshot_copy_for_pps(
++               cache, 18U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264, 4U, &snapshot) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_NOT_READY);
++    assert(push_nal(cache, 18U, right_pps, right_size, 3U) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    assert(source_clock_video_bootstrap_snapshot_copy_for_pps(
++               cache, 18U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264, 5U, &snapshot) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_READY);
++    assert(snapshot.sps_id == 2U && snapshot.pps_id == 5U);
++    source_clock_video_bootstrap_snapshot_free(&snapshot);
++    free(annexb);
++    free(sps);
++    free(wrong_pps);
++    free(right_pps);
++    source_clock_video_bootstrap_destroy(cache);
++}
++
++static void test_session_reset_and_hevc_gate(void) {
++    source_clock_video_bootstrap_t *cache = source_clock_video_bootstrap_create();
++    unsigned char *sps;
++    unsigned char *pps;
++    size_t sps_size;
++    size_t pps_size;
++    source_clock_video_bootstrap_snapshot_t snapshot = { 0 };
++    uint64_t codec_epoch;
++
++    assert(cache != NULL);
++    assert(source_clock_video_bootstrap_session_start_for_codec(
++               cache, 1U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    sps = make_sps(0U, 12U, 0, &sps_size);
++    pps = make_pps(0U, 0U, 6U, &pps_size);
++    assert(push_nal(cache, 1U, sps, sps_size, 4U) == SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    assert(push_nal(cache, 1U, pps, pps_size, 4U) == SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    assert(source_clock_video_bootstrap_snapshot_copy_for_pps(
++               cache, 1U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264, 0U, &snapshot) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_READY);
++    source_clock_video_bootstrap_snapshot_free(&snapshot);
++    codec_epoch = source_clock_video_bootstrap_codec_epoch(cache);
++    assert(source_clock_video_bootstrap_snapshot_copy_for_pps(
++               cache, 1U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_HEVC, 0U, &snapshot) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_UNSUPPORTED);
++    assert(source_clock_video_bootstrap_codec_epoch(cache) == codec_epoch);
++    assert(source_clock_video_bootstrap_session_end_for_epoch(cache, 1U) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    assert(source_clock_video_bootstrap_snapshot_copy_for_pps(
++               cache, 1U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264, 0U, &snapshot) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_STALE_SESSION);
++    assert(source_clock_video_bootstrap_session_start_for_codec(
++               cache, 2U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    assert(source_clock_video_bootstrap_snapshot_copy_for_pps(
++               cache, 2U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264, 0U, &snapshot) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_NOT_READY);
++    free(sps);
++    free(pps);
++    source_clock_video_bootstrap_destroy(cache);
++}
++
++static void test_invalid_and_limit_updates_are_transactional(void) {
++    source_clock_video_bootstrap_t *cache = source_clock_video_bootstrap_create();
++    unsigned char *sps;
++    unsigned char *replacement;
++    unsigned char *pps;
++    unsigned char *oversized;
++    unsigned char *transaction;
++    size_t sps_size;
++    size_t replacement_size;
++    size_t pps_size;
++    size_t oversized_size;
++    size_t transaction_size;
++    source_clock_video_bootstrap_snapshot_t before = { 0 };
++    source_clock_video_bootstrap_snapshot_t after = { 0 };
++    static const unsigned char truncated_sps[] = { 0x67U, 0x64U, 0x00U };
++
++    assert(cache != NULL);
++    assert(source_clock_video_bootstrap_session_start_for_codec(
++               cache, 4U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    sps = make_sps(1U, 12U, 0, &sps_size);
++    replacement = make_sps(1U, 20U, 0, &replacement_size);
++    pps = make_pps(1U, 1U, 6U, &pps_size);
++    assert(push_nal(cache, 4U, sps, sps_size, 4U) == SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    assert(push_nal(cache, 4U, pps, pps_size, 4U) == SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    assert(source_clock_video_bootstrap_snapshot_copy_for_pps(
++               cache, 4U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264, 1U, &before) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_READY);
++
++    transaction_size = 4U + replacement_size + 3U + sizeof(truncated_sps);
++    transaction = (unsigned char *)calloc(transaction_size, 1U);
++    assert(transaction != NULL);
++    transaction[3] = 1U;
++    memcpy(transaction + 4U, replacement, replacement_size);
++    transaction[4U + replacement_size + 2U] = 1U;
++    memcpy(transaction + 4U + replacement_size + 3U,
++           truncated_sps, sizeof(truncated_sps));
++    assert(source_clock_video_bootstrap_push_annexb_for_session(
++               cache, 4U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264,
++               transaction, transaction_size) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID);
++    assert(source_clock_video_bootstrap_snapshot_copy_for_pps(
++               cache, 4U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264, 1U, &after) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_READY);
++    assert_same_snapshot(&before, &after);
++    source_clock_video_bootstrap_snapshot_free(&after);
++
++    oversized = make_sps(1U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_MAX_NAL_SIZE + 1U,
++                         0, &oversized_size);
++    assert(oversized_size == SOURCE_CLOCK_VIDEO_BOOTSTRAP_MAX_NAL_SIZE + 1U);
++    assert(push_nal(cache, 4U, oversized, oversized_size, 4U) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_LIMIT);
++    assert(source_clock_video_bootstrap_snapshot_copy_for_pps(
++               cache, 4U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264, 1U, &after) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_READY);
++    assert_same_snapshot(&before, &after);
++    assert(source_clock_video_bootstrap_push_annexb_for_session(
++               cache, 4U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264, NULL, SIZE_MAX) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID);
++    source_clock_video_bootstrap_snapshot_free(&before);
++    source_clock_video_bootstrap_snapshot_free(&after);
++    free(sps);
++    free(replacement);
++    free(pps);
++    free(oversized);
++    free(transaction);
++    source_clock_video_bootstrap_destroy(cache);
++}
++
++static void test_parameter_set_and_nal_count_limits(void) {
++    source_clock_video_bootstrap_t *cache = source_clock_video_bootstrap_create();
++    unsigned id;
++    unsigned char *sps;
++    unsigned char *pps;
++    unsigned char *many;
++    size_t sps_size;
++    size_t pps_size;
++    size_t many_size = 4U;
++
++    assert(cache != NULL);
++    assert(source_clock_video_bootstrap_session_start_for_codec(
++               cache, 5U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    sps = make_sps(0U, 12U, 0, &sps_size);
++    assert(push_nal(cache, 5U, sps, sps_size, 4U) == SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    free(sps);
++    for (id = 0; id < SOURCE_CLOCK_VIDEO_BOOTSTRAP_MAX_PARAMETER_SETS - 1U; ++id) {
++        pps = make_pps(id, 0U, 8U, &pps_size);
++        assert(push_nal(cache, 5U, pps, pps_size, 4U) ==
++               SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++        free(pps);
++    }
++    pps = make_pps(SOURCE_CLOCK_VIDEO_BOOTSTRAP_MAX_PARAMETER_SETS - 1U,
++                   0U, 8U, &pps_size);
++    assert(push_nal(cache, 5U, pps, pps_size, 4U) == SOURCE_CLOCK_VIDEO_BOOTSTRAP_LIMIT);
++    free(pps);
++
++    many = (unsigned char *)calloc(
++        4U + (SOURCE_CLOCK_VIDEO_BOOTSTRAP_MAX_NALS + 1U) * 6U, 1U);
++    assert(many != NULL);
++    many[3] = 1U;
++    for (id = 0; id < SOURCE_CLOCK_VIDEO_BOOTSTRAP_MAX_NALS + 1U; ++id) {
++        many[many_size++] = 0x65U;
++        many[many_size++] = (unsigned char)id;
++        many[many_size++] = 0x88U;
++        many[many_size++] = 0U;
++        many[many_size++] = 0U;
++        many[many_size++] = 1U;
++    }
++    assert(source_clock_video_bootstrap_push_annexb_for_session(
++               cache, 5U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264, many, many_size) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_LIMIT);
++    free(many);
++    source_clock_video_bootstrap_destroy(cache);
++}
++
++static void test_total_limit_is_transactional(void) {
++    source_clock_video_bootstrap_t *cache = source_clock_video_bootstrap_create();
++    unsigned char *sps;
++    unsigned char *pps;
++    unsigned char *third;
++    size_t sps_size;
++    size_t pps_size;
++    size_t third_size;
++    source_clock_video_bootstrap_snapshot_t before = { 0 };
++    source_clock_video_bootstrap_snapshot_t after = { 0 };
++
++    assert(cache != NULL);
++    assert(source_clock_video_bootstrap_session_start_for_codec(
++               cache, 6U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    sps = make_sps(0U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_MAX_NAL_SIZE,
++                   0, &sps_size);
++    pps = make_pps(0U, 0U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_MAX_NAL_SIZE, &pps_size);
++    assert(sps_size == SOURCE_CLOCK_VIDEO_BOOTSTRAP_MAX_NAL_SIZE);
++    assert(pps_size == SOURCE_CLOCK_VIDEO_BOOTSTRAP_MAX_NAL_SIZE);
++    assert(push_nal(cache, 6U, sps, sps_size, 4U) == SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    assert(push_nal(cache, 6U, pps, pps_size, 4U) == SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    assert(source_clock_video_bootstrap_snapshot_copy_for_pps(
++               cache, 6U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264, 0U, &before) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_READY);
++    third = make_sps(1U, 12U, 0, &third_size);
++    assert(push_nal(cache, 6U, third, third_size, 4U) == SOURCE_CLOCK_VIDEO_BOOTSTRAP_LIMIT);
++    assert(source_clock_video_bootstrap_snapshot_copy_for_pps(
++               cache, 6U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264, 0U, &after) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_READY);
++    assert_same_snapshot(&before, &after);
++    source_clock_video_bootstrap_snapshot_free(&before);
++    source_clock_video_bootstrap_snapshot_free(&after);
++    free(sps);
++    free(pps);
++    free(third);
++    source_clock_video_bootstrap_destroy(cache);
++}
++
++static void test_epoch_scoped_pps_selection(void) {
++    source_clock_video_bootstrap_t *cache = source_clock_video_bootstrap_create();
++    unsigned char *sps0;
++    unsigned char *sps1;
++    unsigned char *pps7;
++    unsigned char *pps8;
++    size_t sps0_size, sps1_size, pps7_size, pps8_size;
++    source_clock_video_bootstrap_snapshot_t snapshot = { 0 };
++
++    assert(cache != NULL);
++    assert(source_clock_video_bootstrap_session_start_for_codec(
++               cache, 30U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    sps0 = make_sps(0U, 12U, 0, &sps0_size);
++    sps1 = make_sps(1U, 12U, 0, &sps1_size);
++    pps7 = make_pps(7U, 0U, 6U, &pps7_size);
++    pps8 = make_pps(8U, 1U, 6U, &pps8_size);
++    assert(push_nal(cache, 30U, sps0, sps0_size, 4U) == SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    assert(push_nal(cache, 30U, sps1, sps1_size, 4U) == SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    assert(push_nal(cache, 30U, pps7, pps7_size, 4U) == SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    assert(push_nal(cache, 30U, pps8, pps8_size, 4U) == SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    assert(source_clock_video_bootstrap_snapshot_copy_for_pps(
++               cache, 30U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264, 7U, &snapshot) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_READY);
++    assert(snapshot.pps_id == 7U && snapshot.sps_id == 0U);
++    source_clock_video_bootstrap_snapshot_free(&snapshot);
++    assert(source_clock_video_bootstrap_snapshot_copy_for_pps(
++               cache, 30U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264, 8U, &snapshot) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_READY);
++    assert(snapshot.pps_id == 8U && snapshot.sps_id == 1U);
++    source_clock_video_bootstrap_snapshot_free(&snapshot);
++    assert(source_clock_video_bootstrap_snapshot_copy_for_pps(
++               cache, 29U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264, 8U, &snapshot) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_STALE_SESSION);
++    assert(source_clock_video_bootstrap_session_end_for_epoch(cache, 29U) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_STALE_SESSION);
++    assert(source_clock_video_bootstrap_session_end_for_epoch(cache, 30U) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    assert(push_nal(cache, 30U, sps0, sps0_size, 4U) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_STALE_SESSION);
++    free(sps0);
++    free(sps1);
++    free(pps7);
++    free(pps8);
++    source_clock_video_bootstrap_destroy(cache);
++}
++
++static void test_allocation_failures_preserve_cache(void) {
++    source_clock_video_bootstrap_t *cache = source_clock_video_bootstrap_create();
++    unsigned char *sps;
++    unsigned char *pps;
++    unsigned char *replacement;
++    size_t sps_size, pps_size, replacement_size;
++    source_clock_video_bootstrap_snapshot_t before = { 0 };
++    source_clock_video_bootstrap_snapshot_t after = { 0 };
++    uint64_t epoch;
++    size_t count, total;
++    int fail_after;
++
++    assert(cache != NULL);
++    assert(source_clock_video_bootstrap_session_start_for_codec(
++               cache, 40U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    sps = make_sps(0U, 12U, 0, &sps_size);
++    pps = make_pps(0U, 0U, 6U, &pps_size);
++    replacement = make_sps(0U, 20U, 0, &replacement_size);
++    assert(push_nal(cache, 40U, sps, sps_size, 4U) == SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    assert(push_nal(cache, 40U, pps, pps_size, 4U) == SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    assert(source_clock_video_bootstrap_snapshot_copy_for_pps(
++               cache, 40U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264, 0U, &before) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_READY);
++    epoch = source_clock_video_bootstrap_codec_epoch(cache);
++    count = source_clock_video_bootstrap_entry_count(cache);
++    total = source_clock_video_bootstrap_total_bytes(cache);
++    for (fail_after = 0; fail_after < 4; ++fail_after) {
++        source_clock_video_bootstrap_test_fail_alloc_after(cache, fail_after);
++        assert(push_nal(cache, 40U, replacement, replacement_size, 4U) ==
++               SOURCE_CLOCK_VIDEO_BOOTSTRAP_NOMEM);
++        source_clock_video_bootstrap_test_fail_alloc_after(cache, -1);
++        assert(source_clock_video_bootstrap_codec_epoch(cache) == epoch);
++        assert(source_clock_video_bootstrap_entry_count(cache) == count);
++        assert(source_clock_video_bootstrap_total_bytes(cache) == total);
++        memset(&after, 0, sizeof(after));
++        assert(source_clock_video_bootstrap_snapshot_copy_for_pps(
++                   cache, 40U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264, 0U, &after) ==
++               SOURCE_CLOCK_VIDEO_BOOTSTRAP_READY);
++        assert_same_snapshot(&before, &after);
++        source_clock_video_bootstrap_snapshot_free(&after);
++    }
++    for (fail_after = 0; fail_after < 2; ++fail_after) {
++        memset(&after, 0, sizeof(after));
++        source_clock_video_bootstrap_test_fail_alloc_after(cache, fail_after);
++        assert(source_clock_video_bootstrap_snapshot_copy_for_pps(
++                   cache, 40U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264, 0U, &after) ==
++               SOURCE_CLOCK_VIDEO_BOOTSTRAP_NOMEM);
++        assert(after.sps == NULL && after.pps == NULL && after.sps_size == 0 && after.pps_size == 0);
++    }
++    source_clock_video_bootstrap_test_fail_alloc_after(cache, -1);
++    source_clock_video_bootstrap_snapshot_free(&before);
++    free(sps);
++    free(pps);
++    free(replacement);
++    source_clock_video_bootstrap_destroy(cache);
++}
++
++static void test_invalid_headers_escaping_bounds_and_snapshot_reuse(void) {
++    source_clock_video_bootstrap_t *cache = source_clock_video_bootstrap_create();
++    unsigned char forbidden[] = { 0xe7U, 0x42U, 0x00U, 0x1eU, 0x80U };
++    unsigned char missing_epb[] = { 0x67U, 0x00U, 0x00U, 0x02U, 0x80U };
++    unsigned char invalid_epb[] = { 0x67U, 0x00U, 0x00U, 0x03U, 0x04U };
++    unsigned char *sps;
++    unsigned char *pps;
++    size_t sps_size, pps_size;
++    source_clock_video_bootstrap_snapshot_t snapshot = { 0 };
++    assert(cache != NULL);
++    assert(source_clock_video_bootstrap_session_start_for_codec(
++               cache, 50U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    assert(push_nal(cache, 50U, forbidden, sizeof(forbidden), 4U) == SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID);
++    assert(push_nal(cache, 50U, missing_epb, sizeof(missing_epb), 4U) == SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID);
++    assert(push_nal(cache, 50U, invalid_epb, sizeof(invalid_epb), 4U) == SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID);
++    sps = make_sps(32U, 12U, 0, &sps_size);
++    assert(push_nal(cache, 50U, sps, sps_size, 4U) == SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID);
++    free(sps);
++    pps = make_pps(256U, 0U, 8U, &pps_size);
++    assert(push_nal(cache, 50U, pps, pps_size, 4U) == SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID);
++    free(pps);
++    sps = make_sps(31U, 12U, 0, &sps_size);
++    pps = make_pps(255U, 31U, 8U, &pps_size);
++    assert(push_nal(cache, 50U, sps, sps_size, 4U) == SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    assert(push_nal(cache, 50U, pps, pps_size, 4U) == SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    memset(&snapshot, 0, sizeof(snapshot));
++    assert(source_clock_video_bootstrap_snapshot_copy_for_pps(
++               cache, 50U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264, 255U, &snapshot) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_READY);
++    assert(source_clock_video_bootstrap_snapshot_copy_for_pps(
++               cache, 50U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264, 255U, &snapshot) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID);
++    source_clock_video_bootstrap_snapshot_free(&snapshot);
++    assert(source_clock_video_bootstrap_push_annexb_for_session(
++               cache, 50U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264,
++               forbidden, SOURCE_CLOCK_VIDEO_BOOTSTRAP_MAX_INPUT_SIZE + 1U) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_LIMIT);
++    source_clock_video_bootstrap_test_set_codec_epoch(cache, UINT64_MAX);
++    sps[5] ^= 0x11U;
++    assert(push_nal(cache, 50U, sps, sps_size, 4U) == SOURCE_CLOCK_VIDEO_BOOTSTRAP_LIMIT);
++    assert(source_clock_video_bootstrap_codec_epoch(cache) == UINT64_MAX);
++    free(sps);
++    free(pps);
++    source_clock_video_bootstrap_destroy(cache);
++}
++
++static void test_unresolved_pps_allocation_failures_are_transactional(void) {
++    source_clock_video_bootstrap_t *cache = source_clock_video_bootstrap_create();
++    unsigned char *sps;
++    unsigned char *pps;
++    size_t sps_size, pps_size;
++    size_t count, total;
++    uint64_t epoch;
++    int fail_after;
++    source_clock_video_bootstrap_snapshot_t snapshot = { 0 };
++
++    assert(cache != NULL);
++    assert(source_clock_video_bootstrap_session_start_for_codec(
++               cache, 60U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    sps = make_sps(4U, 16U, 0, &sps_size);
++    pps = make_pps(11U, 4U, 8U, &pps_size);
++    assert(push_nal(cache, 60U, pps, pps_size, 4U) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    assert(source_clock_video_bootstrap_snapshot_copy_for_pps(
++               cache, 60U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264, 11U, &snapshot) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_NOT_READY);
++    count = source_clock_video_bootstrap_entry_count(cache);
++    total = source_clock_video_bootstrap_total_bytes(cache);
++    epoch = source_clock_video_bootstrap_codec_epoch(cache);
++    for (fail_after = 0; fail_after < 3; ++fail_after) {
++        source_clock_video_bootstrap_test_fail_alloc_after(cache, fail_after);
++        assert(push_nal(cache, 60U, sps, sps_size, 4U) ==
++               SOURCE_CLOCK_VIDEO_BOOTSTRAP_NOMEM);
++        source_clock_video_bootstrap_test_fail_alloc_after(cache, -1);
++        assert(source_clock_video_bootstrap_entry_count(cache) == count);
++        assert(source_clock_video_bootstrap_total_bytes(cache) == total);
++        assert(source_clock_video_bootstrap_codec_epoch(cache) == epoch);
++        memset(&snapshot, 0, sizeof(snapshot));
++        assert(source_clock_video_bootstrap_snapshot_copy_for_pps(
++                   cache, 60U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264, 11U, &snapshot) ==
++               SOURCE_CLOCK_VIDEO_BOOTSTRAP_NOT_READY);
++    }
++    assert(push_nal(cache, 60U, sps, sps_size, 4U) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    assert(source_clock_video_bootstrap_snapshot_copy_for_pps(
++               cache, 60U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264, 11U, &snapshot) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_READY);
++    assert(snapshot.sps_id == 4U && snapshot.pps_id == 11U);
++    source_clock_video_bootstrap_snapshot_free(&snapshot);
++    free(sps);
++    free(pps);
++    source_clock_video_bootstrap_destroy(cache);
++}
++
++static void test_same_id_multi_update_uses_final_set_only(void) {
++    source_clock_video_bootstrap_t *cache = source_clock_video_bootstrap_create();
++    unsigned char *original;
++    unsigned char *updated;
++    unsigned char *pps;
++    size_t original_size, updated_size, pps_size;
++    uint64_t epoch;
++    source_clock_video_bootstrap_snapshot_t before = { 0 };
++    source_clock_video_bootstrap_snapshot_t after = { 0 };
++
++    assert(cache != NULL);
++    assert(source_clock_video_bootstrap_session_start_for_codec(
++               cache, 70U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    original = make_sps(0U, 12U, 0, &original_size);
++    updated = make_sps(0U, 20U, 0, &updated_size);
++    pps = make_pps(0U, 0U, 8U, &pps_size);
++    assert(push_nal(cache, 70U, original, original_size, 4U) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    assert(push_nal(cache, 70U, pps, pps_size, 4U) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    assert(source_clock_video_bootstrap_snapshot_copy_for_pps(
++               cache, 70U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264, 0U, &before) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_READY);
++    epoch = source_clock_video_bootstrap_codec_epoch(cache);
++    assert(push_nal(cache, 70U, original, original_size, 4U) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_UNCHANGED);
++    assert(source_clock_video_bootstrap_codec_epoch(cache) == epoch);
++    assert(push_two_nals(cache, 70U, updated, updated_size,
++                         original, original_size) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_UNCHANGED);
++    assert(source_clock_video_bootstrap_codec_epoch(cache) == epoch);
++    assert(source_clock_video_bootstrap_snapshot_copy_for_pps(
++               cache, 70U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264, 0U, &after) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_READY);
++    assert_same_snapshot(&before, &after);
++    source_clock_video_bootstrap_snapshot_free(&after);
++    assert(push_two_nals(cache, 70U, original, original_size,
++                         updated, updated_size) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    assert(source_clock_video_bootstrap_codec_epoch(cache) == epoch + 1U);
++    assert(source_clock_video_bootstrap_snapshot_copy_for_pps(
++               cache, 70U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264, 0U, &after) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_READY);
++    assert(after.sps_size == updated_size);
++    assert(memcmp(after.sps, updated, updated_size) == 0);
++    source_clock_video_bootstrap_snapshot_free(&before);
++    source_clock_video_bootstrap_snapshot_free(&after);
++    free(original);
++    free(updated);
++    free(pps);
++    source_clock_video_bootstrap_destroy(cache);
++}
++
++int main(void) {
++    test_separate_out_of_order_epb_and_caller_copy();
++    test_mixed_start_codes_and_pps_sps_integrity();
++    test_session_reset_and_hevc_gate();
++    test_invalid_and_limit_updates_are_transactional();
++    test_parameter_set_and_nal_count_limits();
++    test_total_limit_is_transactional();
++    test_epoch_scoped_pps_selection();
++    test_allocation_failures_preserve_cache();
++    test_invalid_headers_escaping_bounds_and_snapshot_reuse();
++    test_unresolved_pps_allocation_failures_are_transactional();
++    test_same_id_multi_update_uses_final_set_only();
++    puts("source_clock_video_bootstrap: PASS");
++    return 0;
++}
+

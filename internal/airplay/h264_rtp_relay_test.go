@@ -98,7 +98,7 @@ func TestH264RTPRelayStateRepeatsParameterSetsBeforeLaterIDR(t *testing.T) {
 		{sequence: 103, nal: 1},
 	}
 	for _, packet := range initial {
-		outputs := state.forward(testRTPPacket(packet.sequence, 42, []byte{packet.nal, 0xaa}))
+		outputs := state.forward(testMarkedRTPPacket(packet.sequence, 42, []byte{packet.nal, 0xaa}))
 		wantCount := 1
 		if packet.nal == 5 {
 			wantCount = 3
@@ -108,7 +108,7 @@ func TestH264RTPRelayStateRepeatsParameterSetsBeforeLaterIDR(t *testing.T) {
 		}
 	}
 
-	outputs := state.forward(testRTPPacket(104, 99, []byte{5, 0xbb}))
+	outputs := state.forward(testMarkedRTPPacket(104, 99, []byte{5, 0xbb}))
 	if len(outputs) != 3 {
 		t.Fatalf("later IDR produced %d packets; want SPS, PPS, IDR", len(outputs))
 	}
@@ -137,6 +137,7 @@ func TestH264RTPRelayStateReplaysParameterSetsWithConstantTimestamp(t *testing.T
 	}
 	wantCounts := []int{1, 1, 3}
 	for i, packet := range packets {
+		packet[1] |= 0x80
 		outputs := state.forward(packet)
 		if len(outputs) != wantCounts[i] {
 			t.Fatalf("packet %d produced %d outputs; want %d", i, len(outputs), wantCounts[i])
@@ -151,8 +152,12 @@ func TestH264RTPRelayStateRecognizesFUStartAsIDR(t *testing.T) {
 
 	fuAIDRStart := []byte{28, 0x80 | 5, 0xcc}
 	outputs := state.forward(testRTPPacket(3, 2, fuAIDRStart))
-	if len(outputs) != 3 {
-		t.Fatalf("FU-A IDR start produced %d packets; want 3", len(outputs))
+	if len(outputs) != 0 {
+		t.Fatalf("FU-A IDR start produced %d packets; want none before marker", len(outputs))
+	}
+	outputs = state.forward(testMarkedRTPPacket(4, 2, []byte{28, 0x40 | 5, 0xdd}))
+	if len(outputs) != 4 {
+		t.Fatalf("complete FU-A IDR produced %d packets; want SPS, PPS, and two IDR fragments", len(outputs))
 	}
 }
 
@@ -174,7 +179,7 @@ func TestH264RTPRelayStateReassemblesFUParameterSets(t *testing.T) {
 		}
 	}
 
-	outputs := state.forward(testRTPPacket(5, 20, []byte{5, 0xbb}))
+	outputs := state.forward(testMarkedRTPPacket(5, 20, []byte{5, 0xbb}))
 	if len(outputs) != 3 {
 		t.Fatalf("IDR after FU-A parameter sets produced %d packets; want 3", len(outputs))
 	}
@@ -211,6 +216,16 @@ func TestH264RTPRelayStateWaitsForIDRToSatisfyReplay(t *testing.T) {
 	}
 }
 
+func TestH264RTPRelayStateMarksFirstCompleteIDRVideoReadyWithoutReplay(t *testing.T) {
+	var state h264RTPRelayState
+	state.forward(testRTPPacket(1, 10, []byte{7, 1}))
+	state.forward(testRTPPacket(2, 10, []byte{8, 2}))
+	state.forward(testMarkedRTPPacket(3, 20, []byte{5, 3}))
+	if !state.videoReady {
+		t.Fatal("complete IDR did not mark video ready without a replay request")
+	}
+}
+
 func TestH264RTPRelayStateReplaysCompleteCachedIDRAccessUnit(t *testing.T) {
 	var state h264RTPRelayState
 	state.forward(testMarkedRTPPacket(1, 100, []byte{7, 1}))
@@ -224,7 +239,7 @@ func TestH264RTPRelayStateReplaysCompleteCachedIDRAccessUnit(t *testing.T) {
 		t.Fatal("complete IDR access unit was not cached")
 	}
 
-	outputs, replayed := state.forwardWithReplay(testRTPPacket(5, 100, []byte{1, 5}), true)
+	outputs, replayed := state.forwardWithReplay(testMarkedRTPPacket(5, 100, []byte{1, 5}), true)
 	if !replayed {
 		t.Fatal("replay request was not satisfied")
 	}
@@ -255,14 +270,14 @@ func TestH264RTPRelayStateReplaysCompleteCachedIDRAccessUnit(t *testing.T) {
 		t.Fatal("last cached IDR fragment lost its RTP marker")
 	}
 
-	dropped, replayed := state.forwardWithReplay(testMarkedRTPPacket(6, 100, []byte{1, 6}), false)
+	dropped, replayed := state.forwardWithReplay(testRTPPacket(6, 200, []byte{1, 6}), false)
 	if replayed {
 		t.Fatal("partial access unit tail unexpectedly satisfied a replay request")
 	}
 	if len(dropped) != 0 {
 		t.Fatalf("partial access unit tail produced %d packets after replay; want none", len(dropped))
 	}
-	next := state.forward(testMarkedRTPPacket(7, 100, []byte{1, 7}))
+	next := state.forward(testMarkedRTPPacket(7, 300, []byte{1, 7}))
 	if len(next) != 1 {
 		t.Fatalf("next complete access unit produced %d packets; want 1", len(next))
 	}
@@ -350,11 +365,19 @@ func TestH264RTPRelayStateKeepsPacketsInAccessUnitAtSameTimestamp(t *testing.T) 
 	first := state.forward(testRTPPacket(1, 700, []byte{1, 1}))
 	last := state.forward(testMarkedRTPPacket(2, 700, []byte{1, 2}))
 	next := state.forward(testMarkedRTPPacket(3, 700, []byte{1, 3}))
-	if got := binary.BigEndian.Uint32(first[0][4:8]); got != 0 {
-		t.Fatalf("first packet timestamp = %d; want 0 (zero-based origin)", got)
+	if len(first) != 0 {
+		t.Fatalf("incomplete access unit produced %d packets; want none", len(first))
 	}
-	if got := binary.BigEndian.Uint32(last[0][4:8]); got != 0 {
-		t.Fatalf("last packet timestamp = %d; want 0 (zero-based origin)", got)
+	if len(last) != 2 {
+		t.Fatalf("complete access unit produced %d packets; want 2", len(last))
+	}
+	for i, packet := range last {
+		if got := binary.BigEndian.Uint32(packet[4:8]); got != 0 {
+			t.Fatalf("complete access-unit packet %d timestamp = %d; want 0", i, got)
+		}
+	}
+	if len(next) != 1 {
+		t.Fatalf("next access unit produced %d packets; want 1", len(next))
 	}
 	if got := binary.BigEndian.Uint32(next[0][4:8]); got != 3000 {
 		t.Fatalf("next access unit timestamp = %d; want 3000", got)
@@ -367,8 +390,8 @@ func TestH264RTPRelayStateDropsDamagedAccessUnitAndWaitsForIDR(t *testing.T) {
 	state.forward(testMarkedRTPPacket(2, 100, []byte{8, 2}))
 	state.forward(testMarkedRTPPacket(3, 100, []byte{5, 3}))
 
-	if outputs := state.forward(testRTPPacket(4, 200, []byte{1, 4})); len(outputs) != 1 {
-		t.Fatalf("first access-unit fragment produced %d packets; want 1", len(outputs))
+	if outputs := state.forward(testRTPPacket(4, 200, []byte{1, 4})); len(outputs) != 0 {
+		t.Fatalf("incomplete access-unit fragment produced %d packets; want none", len(outputs))
 	}
 	if outputs := state.forward(testMarkedRTPPacket(6, 200, []byte{1, 6})); len(outputs) != 0 {
 		t.Fatalf("damaged access-unit tail produced %d packets; want none", len(outputs))
@@ -418,6 +441,13 @@ func TestH264RTPRelayStateDropsMalformedRTP(t *testing.T) {
 	}
 }
 
+func TestAirPlayRTPRelayUsesSixteenMegabyteSocketBuffers(t *testing.T) {
+	const want = 16 * 1024 * 1024
+	if airplayRTPRelaySocketBufferSize != want {
+		t.Fatalf("RTP relay socket buffer = %d; want %d", airplayRTPRelaySocketBufferSize, want)
+	}
+}
+
 func TestH264RTPRelayStateNormalizesToZeroOrigin(t *testing.T) {
 	state := readyH264RTPRelayState()
 	// iOS starts its RTP timeline at an arbitrary offset (e.g. 1407000 = 15.6 s
@@ -450,10 +480,13 @@ func TestH264RTPRelayStateAcceptsFragmentedRecoveryIDRAfterGap(t *testing.T) {
 	// fragment, so the old logic discarded the whole IDR and then dropped every
 	// P frame until the next keyframe).
 	outputs := state.forward(testRTPPacket(6, 500, []byte{28, 0x80 | 5, 6}))
-	if len(outputs) != 3 {
-		t.Fatalf("recovery IDR start produced %d packets; want SPS, PPS, IDR", len(outputs))
+	if len(outputs) != 0 {
+		t.Fatalf("recovery IDR start produced %d packets; want none before marker", len(outputs))
 	}
-	state.forward(testMarkedRTPPacket(7, 500, []byte{28, 0x40 | 5, 7}))
+	outputs = state.forward(testMarkedRTPPacket(7, 500, []byte{28, 0x40 | 5, 7}))
+	if len(outputs) != 4 {
+		t.Fatalf("complete recovery IDR produced %d packets; want SPS, PPS, and two IDR fragments", len(outputs))
+	}
 
 	if outputs := state.forward(testMarkedRTPPacket(8, 800, []byte{1, 8})); len(outputs) != 1 {
 		t.Fatalf("P-frame after recovery produced %d packets; want 1", len(outputs))
@@ -510,7 +543,7 @@ func testRTPPacket(sequence uint16, timestamp uint32, payload []byte) []byte {
 	copy(packet[12:], payload)
 	return packet
 }
-func TestH264RTPRelaySignalsFormatChange(t *testing.T) {
+func TestH264RTPRelaySignalsFormatChangeOnlyForParameterSets(t *testing.T) {
 	outputConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
 	if err != nil {
 		t.Fatal(err)
@@ -564,7 +597,14 @@ func TestH264RTPRelaySignalsFormatChange(t *testing.T) {
 	send(testMarkedRTPPacket(3, 100, []byte{5, 3})) // IDR
 	assertNoSignal()
 
-	// Phase 2: an SSRC switch is an input discontinuity and must signal.
+	// Phase 2: a sequence gap is an input discontinuity, but not a format
+	// change. A brief iPhone pause must not restart the bridge and attempt to
+	// replay a cached IDR.
+	send(testMarkedRTPPacket(5, 200, []byte{1, 4}))
+	assertNoSignal()
+
+	// Phase 3: an SSRC switch is also an input discontinuity, but still not a
+	// format change. App transitions must be recovered in the relay.
 	newSSRC := uint32(0x87654321)
 	withSSRC := func(packet []byte) []byte {
 		binary.BigEndian.PutUint32(packet[8:12], newSSRC)
@@ -573,9 +613,9 @@ func TestH264RTPRelaySignalsFormatChange(t *testing.T) {
 	send(withSSRC(testRTPPacket(1, 100, []byte{7, 1})))
 	send(withSSRC(testRTPPacket(2, 100, []byte{8, 1})))
 	send(withSSRC(testMarkedRTPPacket(3, 100, []byte{5, 3})))
-	waitSignal()
+	assertNoSignal()
 
-	// Phase 3: a parameter-set change on the same SSRC (the real rotation:
+	// Phase 4: a parameter-set change on the same SSRC (the real rotation:
 	// the receiver emits fresh SPS/PPS without changing SSRC) must signal.
 	send(withSSRC(testRTPPacket(4, 200, []byte{7, 2})))
 	send(withSSRC(testRTPPacket(5, 200, []byte{8, 2})))

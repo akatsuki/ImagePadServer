@@ -63,6 +63,7 @@ const indexHTML = `<!doctype html>
             <span class="media-nav-icon" aria-hidden="true">●</span><span>LIVE</span>
           </button>
         </nav>
+        <p class="media-capability-status" id="mediaCapabilityStatus" role="status" aria-live="polite" hidden></p>
         <form id="uploadForm">
           <div class="flow-grid" id="flowGrid">
             <div class="flow-primary">
@@ -140,6 +141,7 @@ const indexHTML = `<!doctype html>
                     <code class="airplay-receiver-path" id="airplayReceiverPath"></code>
                     <div class="airplay-actions">
                       <button type="button" id="airplayStartButton">AirPlay受信を開始</button>
+                      <button type="button" class="secondary" id="airplayRetryButton" hidden>配信を再接続</button>
                       <button type="button" class="secondary" id="airplayEndButton" hidden>受信を停止</button>
                     </div>
                   </section>
@@ -169,6 +171,10 @@ const indexHTML = `<!doctype html>
 					  <label id="musicPlaylistCanonicalOption" hidden><span>素材解像度</span><select id="musicPlaylistCanonicalHeight"><option value="360">360p</option><option value="720">720p</option><option value="1080">1080p</option></select><span id="musicPlaylistCanonicalStatus"></span></label>
                       <div class="pill"><strong>実効</strong><span id="qualityStatus">確認中</span></div>
                       <button type="button" class="secondary" id="networkCheckButton">速度チェック</button>
+                    </div>
+                    <div class="quality-row airplay-quality-options" id="airplayQualityRow" hidden>
+                      <label for="airplayQualityMode"><span>AirPlay画質</span><select id="airplayQualityMode"><option value="auto">Auto</option><option value="360">360p</option><option value="720">720p</option><option value="1080">1080p</option></select></label>
+                      <p class="airplay-quality-status" id="airplayQualityStatus" role="status" aria-live="polite"></p>
                     </div>
                     <label class="obs-latency-option" id="obsLatencyOption" hidden>
                       <span>OBSレイテンシ</span>
@@ -508,7 +514,8 @@ const indexHTML = `<!doctype html>
             <div><strong>{{.appName}} {{.version}}</strong></div>
             <div>Author: {{.author}}</div>
             <div>{{.copyright}}</div>
-            <div>License: {{.license}}</div>
+            <div>本体のライセンス: {{.license}}</div>
+            <div><a href="/licenses/airplay" target="_blank" rel="noopener">AirPlayのライセンスと対応ソース</a></div>
             <details>
               <summary>Open source notices</summary>
               <ul class="oss-list">
@@ -558,7 +565,17 @@ const indexHTML = `<!doctype html>
     <strong class="pairing-pin" id="pairingPin">0000</strong>
     <p class="pairing-detail" id="pairingDetail">Enter this code on the other computer.</p>
   </div>
-  <script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js" defer></script>
+  <script>
+    window.addEventListener('load', () => {
+      const hlsScript = document.createElement('script');
+      hlsScript.src = 'https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js';
+      hlsScript.async = true;
+      hlsScript.addEventListener('load', () => {
+        if (typeof scheduleRefresh === 'function') scheduleRefresh(0);
+      });
+      document.head.appendChild(hlsScript);
+    }, { once: true });
+  </script>
   <script>` + dashboardScript + `</script>
 </body>
 </html>`

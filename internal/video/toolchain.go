@@ -89,6 +89,13 @@ func ffprobePath() (string, error) {
 	return "", fmt.Errorf("ffprobe not found in bundle; %s; you can also set IMAGEPAD_FFPROBE", toolInstallHint("ffmpeg"))
 }
 
+// ExistingFFprobePath resolves an already present ffprobe binary without
+// installing or executing it. Callers that run background finalization must
+// not turn a session shutdown into a tool download or validation process.
+func ExistingFFprobePath() (string, error) {
+	return ffprobePath()
+}
+
 func localFFprobePath() string {
 	return filepath.Join(toolVersionDir(), executableName("ffprobe"))
 }
@@ -1295,6 +1302,7 @@ func runInDir(dir, ffmpeg string, args ...string) error {
 
 func runInDirContext(ctx context.Context, dir, ffmpeg string, args ...string) error {
 	cmd := exec.CommandContext(ctx, ffmpeg, args...)
+	configureFFmpegContextCancellation(cmd)
 	cmd.Dir = dir
 	hideWindow(cmd)
 	output, err := CombinedOutputTrackedFFmpeg(cmd)

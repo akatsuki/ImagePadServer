@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -220,6 +221,321 @@ func (s *Store) SetCurrentInfoWithIDInMemory(info CurrentImage) error {
 		info.ID = randomID()
 	}
 	return s.setCurrentInfoInMemory(info)
+}
+
+// SetPendingCurrentInfoWithIDInMemory updates the current item without adding
+// a history entry even when the referenced file already exists. Live
+// recordings use this until an independent close/probe result verifies them.
+func (s *Store) SetPendingCurrentInfoWithIDInMemory(info CurrentImage) error {
+	if s == nil || !validHistoryItemID(info.ID) ||
+		(info.FileName != "" && filepath.Base(info.FileName) != info.FileName) ||
+		(info.Thumbnail != "" && filepath.Base(info.Thumbnail) != info.Thumbnail) {
+		return os.ErrInvalid
+	}
+	info.UpdatedAt = time.Now()
+	info.Published = true
+	if info.Kind == "" {
+		info.Kind = "image"
+	}
+	if info.PublicName == "" {
+		info.PublicName = info.FileName
+	}
+	s.mu.Lock()
+	s.current = &info
+	s.publishedRevision++
+	s.mu.Unlock()
+	return nil
+}
+
+// CommitHistoryInfoWithIDInMemory verifies that the source file is readable,
+// upserts one history entry for the supplied ID, and updates current only when
+// that same item is still selected.
+func (s *Store) CommitHistoryInfoWithIDInMemory(info CurrentImage) error {
+	if s == nil {
+		return os.ErrInvalid
+	}
+	if err := validateHistoryCommitInfo(info); err != nil {
+		return err
+	}
+	thumbnailPath := ""
+	if info.Thumbnail != "" {
+		thumbnailPath = filepath.Join(s.dir, info.Thumbnail)
+	}
+	return s.commitHistoryFromPathWithIDInMemory(filepath.Join(s.dir, info.FileName), thumbnailPath, info, false)
+}
+
+// CommitHistoryFromPathWithIDInMemory admits a verified recording from a
+// nested path inside the Store directory. The committed history artifact also
+// becomes the playable current file; callers cannot import arbitrary files
+// from outside the Store ownership boundary.
+func (s *Store) CommitHistoryFromPathWithIDInMemory(sourcePath string, info CurrentImage) error {
+	if s == nil {
+		return os.ErrInvalid
+	}
+	if err := validateHistoryCommitInfo(info); err != nil {
+		return err
+	}
+	sourceSnapshot, err := snapshotStoreFile(s.dir, sourcePath)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(sourceSnapshot)
+	thumbnailSnapshot := ""
+	if info.Thumbnail != "" {
+		thumbnailSnapshot, err = snapshotStoreFile(s.dir, info.Thumbnail)
+		if err != nil {
+			return err
+		}
+		defer os.Remove(thumbnailSnapshot)
+	}
+	return s.commitHistoryFromPathWithIDInMemory(sourceSnapshot, thumbnailSnapshot, info, true)
+}
+
+func validateHistoryCommitInfo(info CurrentImage) error {
+	if !validHistoryItemID(info.ID) || info.FileName == "" || filepath.Base(info.FileName) != info.FileName {
+		return os.ErrInvalid
+	}
+	if info.Thumbnail != "" && filepath.Base(info.Thumbnail) != info.Thumbnail {
+		return os.ErrInvalid
+	}
+	return nil
+}
+
+func (s *Store) commitHistoryFromPathWithIDInMemory(srcPath, thumbnailSourcePath string, info CurrentImage, useHistoryAsCurrent bool) error {
+	if s == nil {
+		return os.ErrInvalid
+	}
+	info.UpdatedAt = time.Now()
+	info.Published = true
+	if info.Kind == "" {
+		info.Kind = "image"
+	}
+	if info.PublicName == "" {
+		info.PublicName = info.FileName
+	}
+	stat, err := os.Stat(srcPath)
+	if err != nil {
+		return err
+	}
+	if stat.IsDir() {
+		return os.ErrInvalid
+	}
+	info.SizeBytes = stat.Size()
+
+	s.mu.Lock()
+	item := HistoryItem{CurrentImage: info, HistoryFileName: historyFileName(info)}
+	historyIndex := -1
+	for index := range s.history {
+		if s.history[index].ID != info.ID {
+			continue
+		}
+		historyIndex = index
+		item.HistoryFileName = s.history[index].HistoryFileName
+		item.Favorite = s.history[index].Favorite
+		item.Persistent = s.history[index].Persistent
+		item.Published = s.history[index].Published
+		if item.Thumbnail == "" {
+			item.Thumbnail = s.history[index].Thumbnail
+		}
+		if s.history[index].Converted {
+			item.Converted = true
+			if len(item.Resolutions) == 0 {
+				item.Resolutions = append([]string(nil), s.history[index].Resolutions...)
+			}
+		}
+		break
+	}
+	if useHistoryAsCurrent {
+		item.FileName = item.HistoryFileName
+	}
+	baseDir := s.dir
+	if item.Persistent {
+		baseDir = s.favoriteDir
+	}
+	replacements := make([]historyFileReplacement, 0, 2)
+	recordingTarget := filepath.Join(baseDir, item.HistoryFileName)
+	var recordingReplacement historyFileReplacement
+	if useHistoryAsCurrent && !item.Persistent {
+		// CommitHistoryFromPathWithIDInMemory already produced an owned,
+		// synced snapshot. Adopt it as the stage so large AirPlay recordings
+		// are not copied a second time while the Store mutex is held.
+		recordingReplacement = historyFileReplacement{
+			target: recordingTarget,
+			stage:  srcPath,
+			backup: recordingTarget + ".backup-" + randomID(),
+		}
+	} else {
+		recordingReplacement, err = prepareHistoryFileReplacement(srcPath, recordingTarget)
+		if err != nil {
+			s.mu.Unlock()
+			return err
+		}
+	}
+	replacements = append(replacements, recordingReplacement)
+	if useHistoryAsCurrent && item.Persistent {
+		currentReplacement, err := prepareHistoryFileReplacement(srcPath, filepath.Join(s.dir, item.HistoryFileName))
+		if err != nil {
+			cleanupHistoryFileReplacements(replacements)
+			s.mu.Unlock()
+			return err
+		}
+		replacements = append(replacements, currentReplacement)
+	}
+	if info.Thumbnail != "" {
+		thumbnailName := thumbnailFileName(info)
+		thumbnailReplacement, err := prepareHistoryFileReplacement(thumbnailSourcePath, filepath.Join(baseDir, thumbnailName))
+		if err != nil {
+			cleanupHistoryFileReplacements(replacements)
+			s.mu.Unlock()
+			return err
+		}
+		replacements = append(replacements, thumbnailReplacement)
+		if useHistoryAsCurrent && item.Persistent {
+			currentThumbnailReplacement, err := prepareHistoryFileReplacement(thumbnailSourcePath, filepath.Join(s.dir, thumbnailName))
+			if err != nil {
+				cleanupHistoryFileReplacements(replacements)
+				s.mu.Unlock()
+				return err
+			}
+			replacements = append(replacements, currentThumbnailReplacement)
+		}
+		item.Thumbnail = thumbnailName
+	}
+	if err := commitHistoryFileReplacements(replacements); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	if historyIndex >= 0 {
+		s.history[historyIndex] = item
+	} else {
+		s.history = append([]HistoryItem{item}, s.history...)
+		s.pruneHistoryLocked(40)
+	}
+	if s.current != nil && s.current.ID == info.ID {
+		current := item.CurrentImage
+		s.current = &current
+	}
+	s.publishedRevision++
+	s.mu.Unlock()
+	return nil
+}
+
+func storeRelativePath(baseDir, sourcePath string) (string, error) {
+	if strings.TrimSpace(baseDir) == "" || strings.TrimSpace(sourcePath) == "" {
+		return "", os.ErrInvalid
+	}
+	resolvedBase, err := filepath.Abs(baseDir)
+	if err != nil {
+		return "", err
+	}
+	resolvedSource := sourcePath
+	if !filepath.IsAbs(resolvedSource) {
+		resolvedSource = filepath.Join(resolvedBase, resolvedSource)
+	}
+	resolvedSource, err = filepath.Abs(resolvedSource)
+	if err != nil {
+		return "", err
+	}
+	relative, err := filepath.Rel(resolvedBase, resolvedSource)
+	if err != nil {
+		return "", err
+	}
+	if relative == ".." || filepath.IsAbs(relative) || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", os.ErrPermission
+	}
+	return filepath.Clean(relative), nil
+}
+
+func snapshotStoreFile(baseDir, sourcePath string) (snapshotPath string, resultErr error) {
+	relative, err := storeRelativePath(baseDir, sourcePath)
+	if err != nil {
+		return "", err
+	}
+	root, err := os.OpenRoot(baseDir)
+	if err != nil {
+		return "", err
+	}
+	defer root.Close()
+	source, err := root.Open(relative)
+	if err != nil {
+		return "", err
+	}
+	defer source.Close()
+	stat, err := source.Stat()
+	if err != nil {
+		return "", err
+	}
+	if stat.IsDir() {
+		return "", os.ErrInvalid
+	}
+	snapshot, err := os.CreateTemp(baseDir, ".verified-history-*")
+	if err != nil {
+		return "", err
+	}
+	snapshotPath = snapshot.Name()
+	defer func() {
+		if closeErr := snapshot.Close(); resultErr == nil && closeErr != nil {
+			resultErr = closeErr
+		}
+		if resultErr != nil {
+			_ = os.Remove(snapshotPath)
+			snapshotPath = ""
+		}
+	}()
+	if _, err := io.Copy(snapshot, source); err != nil {
+		return snapshotPath, err
+	}
+	if err := snapshot.Sync(); err != nil {
+		return snapshotPath, err
+	}
+	return snapshotPath, nil
+}
+
+// OpenOwnedFile opens a regular file through the Store root so callers can
+// read nested AirPlay artifacts without accepting an escaping path or symlink.
+func (s *Store) OpenOwnedFile(sourcePath string) (*os.File, error) {
+	if s == nil {
+		return nil, os.ErrInvalid
+	}
+	relative, err := storeRelativePath(s.dir, sourcePath)
+	if err != nil {
+		return nil, err
+	}
+	root, err := os.OpenRoot(s.dir)
+	if err != nil {
+		return nil, err
+	}
+	file, openErr := root.Open(relative)
+	closeErr := root.Close()
+	if openErr != nil {
+		return nil, openErr
+	}
+	if closeErr != nil {
+		_ = file.Close()
+		return nil, closeErr
+	}
+	stat, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	if !stat.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, os.ErrInvalid
+	}
+	return file, nil
+}
+
+func validHistoryItemID(id string) bool {
+	if len(id) == 0 || len(id) > 64 {
+		return false
+	}
+	for _, char := range id {
+		if (char < 'a' || char > 'z') && (char < '0' || char > '9') && char != '-' && char != '_' {
+			return false
+		}
+	}
+	return true
 }
 
 // Save persists the current store snapshot.
@@ -693,7 +1009,8 @@ func (s *Store) pruneHistoryLocked(limit int) {
 			continue
 		}
 		normalCount++
-		if normalCount <= limit {
+		currentUsesHistoryArtifact := s.current != nil && s.current.ID == item.ID && s.current.FileName == item.HistoryFileName
+		if normalCount <= limit || currentUsesHistoryArtifact {
 			kept = append(kept, item)
 			continue
 		}
@@ -782,6 +1099,109 @@ func copyFile(dst, src string) error {
 		return err
 	}
 	return out.Close()
+}
+
+type historyFileReplacement struct {
+	target      string
+	stage       string
+	backup      string
+	targetMoved bool
+	installed   bool
+}
+
+func prepareHistoryFileReplacement(source, target string) (historyFileReplacement, error) {
+	replacement := historyFileReplacement{
+		target: target,
+		stage:  target + ".pending-" + randomID(),
+		backup: target + ".backup-" + randomID(),
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
+		return historyFileReplacement{}, err
+	}
+	if err := copyFile(replacement.stage, source); err != nil {
+		_ = os.Remove(replacement.stage)
+		return historyFileReplacement{}, err
+	}
+	return replacement, nil
+}
+
+func commitHistoryFileReplacements(replacements []historyFileReplacement) error {
+	for index := range replacements {
+		replacement := &replacements[index]
+		if info, err := os.Stat(replacement.target); err == nil {
+			if info.IsDir() {
+				rollbackErr := rollbackHistoryFileReplacements(replacements[:index])
+				cleanupHistoryFileReplacements(replacements)
+				return errors.Join(os.ErrInvalid, rollbackErr)
+			}
+			if err := os.Rename(replacement.target, replacement.backup); err != nil {
+				rollbackErr := rollbackHistoryFileReplacements(replacements[:index])
+				cleanupHistoryFileReplacements(replacements)
+				return errors.Join(err, rollbackErr)
+			}
+			replacement.targetMoved = true
+		} else if !os.IsNotExist(err) {
+			rollbackErr := rollbackHistoryFileReplacements(replacements[:index])
+			cleanupHistoryFileReplacements(replacements)
+			return errors.Join(err, rollbackErr)
+		}
+		if err := os.Rename(replacement.stage, replacement.target); err != nil {
+			rollbackErr := rollbackHistoryFileReplacements(replacements[:index+1])
+			cleanupHistoryFileReplacements(replacements)
+			return errors.Join(err, rollbackErr)
+		}
+		replacement.installed = true
+	}
+	discardHistoryFileReplacementBackups(replacements)
+	cleanupHistoryFileReplacements(replacements)
+	return nil
+}
+
+func rollbackHistoryFileReplacements(replacements []historyFileReplacement) error {
+	var rollbackErr error
+	for index := len(replacements) - 1; index >= 0; index-- {
+		replacement := &replacements[index]
+		if replacement.installed {
+			if err := os.Remove(replacement.target); err != nil && !os.IsNotExist(err) {
+				rollbackErr = errors.Join(rollbackErr, err)
+				// Keep both flags set so cleanup preserves the backup for
+				// manual recovery when the installed target cannot be removed.
+				continue
+			}
+			replacement.installed = false
+		}
+		if replacement.targetMoved {
+			if err := os.Rename(replacement.backup, replacement.target); err != nil {
+				rollbackErr = errors.Join(rollbackErr, err)
+			} else {
+				replacement.targetMoved = false
+			}
+		}
+	}
+	return rollbackErr
+}
+
+func discardHistoryFileReplacementBackups(replacements []historyFileReplacement) {
+	for index := range replacements {
+		replacement := &replacements[index]
+		if !replacement.targetMoved {
+			continue
+		}
+		if err := os.Remove(replacement.backup); err == nil || os.IsNotExist(err) {
+			replacement.targetMoved = false
+		}
+	}
+}
+
+func cleanupHistoryFileReplacements(replacements []historyFileReplacement) {
+	for _, replacement := range replacements {
+		_ = os.Remove(replacement.stage)
+		// A set targetMoved flag means rollback could not restore this
+		// backup. Never delete the only recoverable copy in cleanup.
+		if !replacement.targetMoved {
+			_ = os.Remove(replacement.backup)
+		}
+	}
 }
 
 func copyDir(dst, src string) error {

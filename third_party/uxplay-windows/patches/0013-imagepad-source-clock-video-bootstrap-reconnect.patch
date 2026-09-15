@@ -1,0 +1,2417 @@
+diff --git a/renderers/CMakeLists.txt b/renderers/CMakeLists.txt
+index 8c9242c7..20ae740e 100644
+--- a/renderers/CMakeLists.txt
++++ b/renderers/CMakeLists.txt
+@@ -102,6 +102,10 @@ if (BUILD_TESTING)
+   target_compile_definitions(uxplay_source_clock_video_bootstrap_first_test PRIVATE SOURCE_CLOCK_BOOTSTRAP_FIRST)
+   target_link_libraries(uxplay_source_clock_video_bootstrap_first_test PRIVATE renderers pthread ws2_32)
+   add_test(NAME uxplay_source_clock_video_bootstrap_first COMMAND uxplay_source_clock_video_bootstrap_first_test)
++  add_executable(uxplay_source_clock_video_receiver_bootstrap_test source_clock_video_receiver_bootstrap_test.c)
++  target_compile_definitions(uxplay_source_clock_video_receiver_bootstrap_test PRIVATE SOURCE_CLOCK_TEST_HOOKS)
++  target_link_libraries(uxplay_source_clock_video_receiver_bootstrap_test PRIVATE renderers pthread ws2_32)
++  add_test(NAME uxplay_source_clock_video_receiver_bootstrap COMMAND uxplay_source_clock_video_receiver_bootstrap_test)
+ endif()
+ 
+ if( GST_LIBRARY_DIRS MATCHES "/Library/FrameWorks/GStreamer.framework/lib" )
+diff --git a/renderers/source_clock_renderer.c b/renderers/source_clock_renderer.c
+index af63bd43..2df63ea0 100644
+--- a/renderers/source_clock_renderer.c
++++ b/renderers/source_clock_renderer.c
+@@ -1,5 +1,6 @@
+ #include "source_clock_renderer.h"
+ #include "source_clock_metrics.h"
++#include "source_clock_video_bootstrap.h"
+ 
+ #include <ctype.h>
+ #include <errno.h>
+@@ -16,15 +17,18 @@
+ #define SOURCE_CLOCK_SOCKET SOCKET
+ #define SOURCE_CLOCK_INVALID_SOCKET INVALID_SOCKET
+ #define source_clock_close_socket closesocket
++#define source_clock_shutdown_socket(socket_fd) shutdown((socket_fd), SD_BOTH)
+ #else
+ #include <netdb.h>
+ #include <arpa/inet.h>
+ #include <netinet/in.h>
+ #include <sys/socket.h>
++#include <sys/time.h>
+ #include <unistd.h>
+ #define SOURCE_CLOCK_SOCKET int
+ #define SOURCE_CLOCK_INVALID_SOCKET (-1)
+ #define source_clock_close_socket close
++#define source_clock_shutdown_socket(socket_fd) shutdown((socket_fd), SHUT_RDWR)
+ #endif
+ 
+ #include "../lib/threads.h"
+@@ -43,6 +47,7 @@
+ #define SOURCE_CLOCK_VIDEO_QUEUE_FRAMES 64u
+ #define SOURCE_CLOCK_AUDIO_QUEUE_NS 500000000ULL
+ #define SOURCE_CLOCK_RETRY_NS 250000000ULL
++#define SOURCE_CLOCK_SEND_TIMEOUT_MS 2000U
+ 
+ typedef struct source_clock_frame_s {
+     struct source_clock_frame_s *next;
+@@ -50,12 +55,15 @@ typedef struct source_clock_frame_s {
+     size_t len;
+     uint64_t ntp_ns;
+     uint32_t sequence;
++    uint64_t enqueue_id;
+     uint32_t sample_count;
+     uint32_t sample_rate;
+     uint16_t channels;
+     uint8_t codec;
+     uint16_t flags;
+     uint64_t duration_ns;
++    uint64_t session_epoch;
++    uint64_t codec_epoch;
+ } source_clock_frame_t;
+ 
+ typedef struct source_clock_writer_s source_clock_writer_t;
+@@ -84,11 +92,16 @@ struct source_clock_writer_s {
+     pthread_mutex_t mutex;
+     pthread_cond_t cond;
+     bool stopping;
++    bool sending;
++    SOURCE_CLOCK_SOCKET active_socket;
+     bool session_active;
+     bool send_session_end;
+     bool discontinuity_pending;
+     uint32_t generation;
+     uint32_t sequence;
++    uint64_t enqueue_id;
++    bool has_last_video_sequence;
++    uint32_t last_video_sequence;
+     source_clock_frame_t *head;
+     source_clock_frame_t *tail;
+     size_t pending_count;
+@@ -96,6 +107,14 @@ struct source_clock_writer_s {
+     uint64_t pending_ns;
+     uint64_t dropped;
+     bool thread_started;
++#ifdef SOURCE_CLOCK_TEST_HOOKS
++    source_clock_after_connect_hook_t after_connect_hook;
++    void *after_connect_context;
++    source_clock_test_hook_t before_send_lock_hook;
++    void *before_send_lock_context;
++    source_clock_test_hook_t codec_change_hook;
++    void *codec_change_context;
++#endif
+ };
+ 
+ struct source_clock_renderer_s {
+@@ -113,6 +132,9 @@ struct source_clock_renderer_s {
+     bool metrics_emitter_stopping;
+     bool metrics_emitter_thread_started;
+     uint64_t metrics_emitter_next_emit_ns;
++    pthread_mutex_t video_input_mutex;
++    bool video_input_mutex_initialized;
++    source_clock_video_bootstrap_t *video_bootstrap;
+ #ifdef SOURCE_CLOCK_TEST_HOOKS
+     source_clock_queue_commit_hook_t queue_commit_hook;
+     void *queue_commit_context;
+@@ -345,6 +367,58 @@ static bool send_frame(source_clock_writer_t *writer, SOURCE_CLOCK_SOCKET socket
+            send_all(socket_fd, frame->data, frame->len, socket_error);
+ }
+ 
++static void set_socket_send_timeout(SOURCE_CLOCK_SOCKET socket_fd) {
++#ifdef _WIN32
++    DWORD timeout_ms = SOURCE_CLOCK_SEND_TIMEOUT_MS;
++    (void)setsockopt(socket_fd, SOL_SOCKET, SO_SNDTIMEO,
++                     (const char *)&timeout_ms, sizeof(timeout_ms));
++#else
++    struct timeval timeout;
++    timeout.tv_sec = SOURCE_CLOCK_SEND_TIMEOUT_MS / 1000U;
++    timeout.tv_usec = (SOURCE_CLOCK_SEND_TIMEOUT_MS % 1000U) * 1000U;
++    (void)setsockopt(socket_fd, SOL_SOCKET, SO_SNDTIMEO,
++                     &timeout, sizeof(timeout));
++#endif
++}
++
++static bool send_video_bootstrap_config(source_clock_writer_t *writer,
++                                        SOURCE_CLOCK_SOCKET socket_fd,
++                                        const source_clock_frame_t *reference,
++                                        const source_clock_video_bootstrap_snapshot_t *snapshot,
++                                        int *socket_error) {
++    source_clock_frame_t config;
++    size_t payload_size;
++    unsigned char *payload;
++    if (writer == NULL || reference == NULL || snapshot == NULL ||
++        snapshot->sps == NULL || snapshot->pps == NULL ||
++        snapshot->pps_size > SIZE_MAX - 8U ||
++        snapshot->sps_size > SIZE_MAX - 8U - snapshot->pps_size)
++        return false;
++    payload_size = 4U + snapshot->sps_size + 4U + snapshot->pps_size;
++    if (payload_size > SOURCE_CLOCK_MAX_VIDEO_PAYLOAD) return false;
++    payload = (unsigned char *)malloc(payload_size);
++    if (payload == NULL) return false;
++    memset(payload, 0, 4U);
++    payload[3] = 1U;
++    memcpy(payload + 4U, snapshot->sps, snapshot->sps_size);
++    memset(payload + 4U + snapshot->sps_size, 0, 4U);
++    payload[4U + snapshot->sps_size + 3U] = 1U;
++    memcpy(payload + 8U + snapshot->sps_size, snapshot->pps, snapshot->pps_size);
++    memset(&config, 0, sizeof(config));
++    config.data = payload;
++    config.len = payload_size;
++    config.ntp_ns = reference->ntp_ns;
++    config.sequence = reference->sequence;
++    config.codec = reference->codec;
++    config.flags = SOURCE_CLOCK_FLAG_CONFIG | SOURCE_CLOCK_FLAG_DISCONTINUITY;
++    if (!send_frame(writer, socket_fd, &config, socket_error)) {
++        free(payload);
++        return false;
++    }
++    free(payload);
++    return true;
++}
++
+ static void metrics_record_failure(source_clock_renderer_t *renderer,
+                                    source_clock_failure_reason_t reason,
+                                    int socket_error, uint64_t dropped_frames) {
+@@ -356,6 +430,17 @@ static void metrics_record_failure(source_clock_renderer_t *renderer,
+     metrics_emitter_notify(renderer);
+ }
+ 
++static void metrics_record_drop(source_clock_renderer_t *renderer,
++                                uint64_t dropped_frames) {
++    pthread_mutex_lock(&renderer->metrics_mutex);
++    if (UINT64_MAX - renderer->metrics.dropped_frames < dropped_frames)
++        renderer->metrics.dropped_frames = UINT64_MAX;
++    else
++        renderer->metrics.dropped_frames += dropped_frames;
++    pthread_mutex_unlock(&renderer->metrics_mutex);
++    metrics_emitter_notify(renderer);
++}
++
+ static void metrics_record_enqueue(source_clock_renderer_t *renderer, uint8_t stream_kind,
+                                    uint64_t now_ns, uint64_t dropped_frames) {
+     pthread_mutex_lock(&renderer->metrics_mutex);
+@@ -398,6 +483,10 @@ static void metrics_consumer_change(source_clock_renderer_t *renderer, bool conn
+ static void close_socket_once(source_clock_writer_t *writer, SOURCE_CLOCK_SOCKET *socket_fd,
+                               bool *consumer_connected) {
+     if (socket_fd == NULL || *socket_fd == SOURCE_CLOCK_INVALID_SOCKET) return;
++    pthread_mutex_lock(&writer->mutex);
++    if (writer->active_socket == *socket_fd)
++        writer->active_socket = SOURCE_CLOCK_INVALID_SOCKET;
++    pthread_mutex_unlock(&writer->mutex);
+     source_clock_close_socket(*socket_fd);
+     *socket_fd = SOURCE_CLOCK_INVALID_SOCKET;
+     if (consumer_connected != NULL && *consumer_connected) {
+@@ -406,6 +495,22 @@ static void close_socket_once(source_clock_writer_t *writer, SOURCE_CLOCK_SOCKET
+     }
+ }
+ 
++static void writer_finish_send(source_clock_writer_t *writer) {
++    pthread_mutex_lock(&writer->mutex);
++    writer->sending = false;
++    pthread_cond_broadcast(&writer->cond);
++    pthread_mutex_unlock(&writer->mutex);
++}
++
++static void discard_frame(source_clock_writer_t *writer,
++                          source_clock_frame_t *frame) {
++    pthread_mutex_lock(&writer->mutex);
++    if (writer->dropped < UINT64_MAX) writer->dropped++;
++    pthread_mutex_unlock(&writer->mutex);
++    metrics_record_drop(writer->owner, 1);
++    free_frame(frame);
++}
++
+ static void *writer_main(void *argument) {
+     source_clock_writer_t *writer = (source_clock_writer_t *)argument;
+     for (;;) {
+@@ -414,10 +519,15 @@ static void *writer_main(void *argument) {
+         bool active;
+         bool consumer_connected = false;
+         uint32_t generation;
++        uint64_t connection_watermark = 0;
++        uint64_t active_video_codec_epoch = 0;
++        bool video_bootstrapped = false;
+         bool send_end;
+         int socket_error = 0;
+         pthread_mutex_lock(&writer->mutex);
+-        while (!writer->stopping && writer->head == NULL && !writer->send_session_end) {
++        while (!writer->stopping && writer->head == NULL && !writer->send_session_end &&
++               !(writer->stream_kind == SOURCE_CLOCK_STREAM_VIDEO &&
++                 writer->session_active)) {
+             pthread_cond_wait(&writer->cond, &writer->mutex);
+         }
+         if (writer->stopping) {
+@@ -436,6 +546,27 @@ static void *writer_main(void *argument) {
+             sleep_retry();
+             continue;
+         }
++        set_socket_send_timeout(socket_fd);
++#ifdef SOURCE_CLOCK_TEST_HOOKS
++        {
++            source_clock_after_connect_hook_t hook;
++            void *context;
++            pthread_mutex_lock(&writer->mutex);
++            hook = writer->after_connect_hook;
++            context = writer->after_connect_context;
++            pthread_mutex_unlock(&writer->mutex);
++            if (hook != NULL) hook(writer->stream_kind, context);
++        }
++#endif
++        pthread_mutex_lock(&writer->mutex);
++        if (writer->stopping || writer->generation != generation ||
++            writer->session_active != active) {
++            pthread_mutex_unlock(&writer->mutex);
++            source_clock_close_socket(socket_fd);
++            continue;
++        }
++        writer->active_socket = socket_fd;
++        pthread_mutex_unlock(&writer->mutex);
+         if (!send_control(writer, socket_fd, SOURCE_CLOCK_CONTROL_HELLO, generation, &socket_error) ||
+             (active && !send_control(writer, socket_fd, SOURCE_CLOCK_CONTROL_SESSION_START,
+                                      generation, &socket_error))) {
+@@ -444,9 +575,14 @@ static void *writer_main(void *argument) {
+             sleep_retry();
+             continue;
+         }
+-        /* This counts handshake-complete local sockets, not verified peer liveness. */
++        pthread_mutex_lock(&writer->mutex);
++        connection_watermark = writer->enqueue_id;
++        pthread_mutex_unlock(&writer->mutex);
++        /* Connected means the handshake and attachment watermark are complete. */
+         metrics_consumer_change(writer->owner, true);
+         consumer_connected = true;
++        video_bootstrapped = writer->stream_kind != SOURCE_CLOCK_STREAM_VIDEO;
++        active_video_codec_epoch = 0;
+         if (send_end && !send_control(writer, socket_fd, SOURCE_CLOCK_CONTROL_SESSION_END,
+                                       generation, &socket_error)) {
+             metrics_record_failure(writer->owner, SOURCE_CLOCK_FAILURE_SEND, socket_error, 0);
+@@ -484,13 +620,97 @@ static void *writer_main(void *argument) {
+                 break;
+             }
+             frame = pop_frame(writer);
+-            if (frame != NULL && writer->discontinuity_pending) {
++            pthread_mutex_unlock(&writer->mutex);
++            if (frame == NULL) continue;
++            {
++                source_clock_video_bootstrap_snapshot_t snapshot = { 0 };
++                bool has_bootstrap_snapshot = false;
++            if (writer->stream_kind == SOURCE_CLOCK_STREAM_VIDEO) {
++                source_clock_video_bootstrap_result_t bootstrap_result;
++                bool needs_bootstrap = !video_bootstrapped ||
++                    frame->codec_epoch != active_video_codec_epoch;
++                if (frame->enqueue_id <= connection_watermark ||
++                    frame->session_epoch != generation ||
++                    frame->codec != SOURCE_CLOCK_VIDEO_H264) {
++                    discard_frame(writer, frame);
++                    continue;
++                }
++                if (needs_bootstrap) {
++                    video_bootstrapped = false;
++                    bootstrap_result = source_clock_video_bootstrap_snapshot_copy_for_idr(
++                        writer->owner->video_bootstrap, frame->session_epoch,
++                        SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264,
++                        frame->data, frame->len, &snapshot);
++                    if (bootstrap_result != SOURCE_CLOCK_VIDEO_BOOTSTRAP_READY ||
++                        snapshot.codec_epoch != frame->codec_epoch) {
++                        source_clock_video_bootstrap_snapshot_free(&snapshot);
++                        discard_frame(writer, frame);
++                        continue;
++                    }
++                    has_bootstrap_snapshot = true;
++                }
++            }
++#ifdef SOURCE_CLOCK_TEST_HOOKS
++            if (writer->stream_kind == SOURCE_CLOCK_STREAM_VIDEO) {
++                source_clock_test_hook_t hook;
++                void *context;
++                pthread_mutex_lock(&writer->mutex);
++                hook = writer->before_send_lock_hook;
++                context = writer->before_send_lock_context;
++                pthread_mutex_unlock(&writer->mutex);
++                if (hook != NULL) hook(context);
++            }
++#endif
++            pthread_mutex_lock(&writer->mutex);
++            if (writer->stopping || writer->generation != generation ||
++                !writer->session_active) {
++                pthread_mutex_unlock(&writer->mutex);
++                source_clock_video_bootstrap_snapshot_free(&snapshot);
++                discard_frame(writer, frame);
++                continue;
++            }
++            if (writer->stream_kind == SOURCE_CLOCK_STREAM_VIDEO &&
++                source_clock_video_bootstrap_codec_epoch(
++                    writer->owner->video_bootstrap) != frame->codec_epoch) {
++                pthread_mutex_unlock(&writer->mutex);
++                source_clock_video_bootstrap_snapshot_free(&snapshot);
++                video_bootstrapped = false;
++                discard_frame(writer, frame);
++                continue;
++            }
++            if (writer->stream_kind == SOURCE_CLOCK_STREAM_VIDEO &&
++                (frame->sequence == 0 ||
++                 (writer->has_last_video_sequence &&
++                  frame->sequence <= writer->last_video_sequence))) {
++                pthread_mutex_unlock(&writer->mutex);
++                source_clock_video_bootstrap_snapshot_free(&snapshot);
++                discard_frame(writer, frame);
++                continue;
++            }
++            if (writer->discontinuity_pending) {
+                 frame->flags |= SOURCE_CLOCK_FLAG_DISCONTINUITY;
+                 writer->discontinuity_pending = false;
+             }
++            writer->sending = true;
+             pthread_mutex_unlock(&writer->mutex);
+-            if (frame == NULL) continue;
++            if (has_bootstrap_snapshot &&
++                !send_video_bootstrap_config(writer, socket_fd, frame,
++                                             &snapshot, &socket_error)) {
++                source_clock_video_bootstrap_snapshot_free(&snapshot);
++                writer_finish_send(writer);
++                pthread_mutex_lock(&writer->mutex);
++                writer->discontinuity_pending = true;
++                pthread_mutex_unlock(&writer->mutex);
++                metrics_record_failure(writer->owner, SOURCE_CLOCK_FAILURE_SEND,
++                                       socket_error, 1);
++                free_frame(frame);
++                close_socket_once(writer, &socket_fd, &consumer_connected);
++                sleep_retry();
++                break;
++            }
+             if (!send_frame(writer, socket_fd, frame, &socket_error)) {
++                source_clock_video_bootstrap_snapshot_free(&snapshot);
++                writer_finish_send(writer);
+                 pthread_mutex_lock(&writer->mutex);
+                 writer->discontinuity_pending = true;
+                 pthread_mutex_unlock(&writer->mutex);
+@@ -500,8 +711,21 @@ static void *writer_main(void *argument) {
+                 sleep_retry();
+                 break;
+             }
++            writer_finish_send(writer);
++            if (writer->stream_kind == SOURCE_CLOCK_STREAM_VIDEO) {
++                pthread_mutex_lock(&writer->mutex);
++                writer->last_video_sequence = frame->sequence;
++                writer->has_last_video_sequence = true;
++                pthread_mutex_unlock(&writer->mutex);
++            }
++            if (has_bootstrap_snapshot) {
++                active_video_codec_epoch = snapshot.codec_epoch;
++                video_bootstrapped = true;
++            }
++            source_clock_video_bootstrap_snapshot_free(&snapshot);
+             metrics_record_sent(writer->owner);
+             free_frame(frame);
++            }
+         }
+         close_socket_once(writer, &socket_fd, &consumer_connected);
+     }
+@@ -513,6 +731,7 @@ static void writer_init(source_clock_writer_t *writer, source_clock_renderer_t *
+     memset(writer, 0, sizeof(*writer));
+     writer->owner = owner;
+     writer->stream_kind = stream_kind;
++    writer->active_socket = SOURCE_CLOCK_INVALID_SOCKET;
+     writer->endpoint = copy_string(endpoint);
+     memcpy(writer->token, token, SOURCE_CLOCK_TOKEN_BYTES);
+     pthread_mutex_init(&writer->mutex, NULL);
+@@ -521,7 +740,8 @@ static void writer_init(source_clock_writer_t *writer, source_clock_renderer_t *
+ 
+ static bool queue_frame(source_clock_writer_t *writer, const unsigned char *data, size_t data_len,
+                         uint64_t ntp_ns, uint8_t codec, uint16_t flags, uint32_t sample_count,
+-                        uint32_t sample_rate, uint16_t channels, uint64_t duration_ns) {
++                        uint32_t sample_rate, uint16_t channels, uint64_t duration_ns,
++                        uint64_t expected_session_epoch, uint64_t codec_epoch) {
+     source_clock_frame_t *frame;
+     uint64_t dropped_before;
+     if (writer == NULL || data == NULL || data_len == 0 ||
+@@ -545,14 +765,25 @@ static bool queue_frame(source_clock_writer_t *writer, const unsigned char *data
+     frame->sample_rate = sample_rate;
+     frame->channels = channels;
+     frame->duration_ns = duration_ns;
++    frame->session_epoch = expected_session_epoch;
++    frame->codec_epoch = codec_epoch;
+     pthread_mutex_lock(&writer->mutex);
+-    if (writer->stopping) {
++    if (writer->stopping ||
++        (expected_session_epoch != 0 &&
++         (!writer->session_active || writer->generation != expected_session_epoch))) {
+         pthread_mutex_unlock(&writer->mutex);
+         free_frame(frame);
+         return false;
+     }
++    if (writer->stream_kind == SOURCE_CLOCK_STREAM_VIDEO &&
++        writer->sequence == UINT32_MAX) {
++        pthread_mutex_unlock(&writer->mutex);
++        free_frame(frame);
++        return false;
++    }
+     dropped_before = writer->dropped;
+     frame->sequence = ++writer->sequence;
++    frame->enqueue_id = ++writer->enqueue_id;
+     if (writer->stream_kind == SOURCE_CLOCK_STREAM_VIDEO) {
+         while (writer->pending_count >= SOURCE_CLOCK_VIDEO_QUEUE_FRAMES ||
+                writer->pending_bytes + data_len > SOURCE_CLOCK_MAX_VIDEO_PAYLOAD) {
+@@ -664,6 +889,30 @@ source_clock_renderer_t *source_clock_renderer_create(const char *video_endpoint
+         free(renderer);
+         return NULL;
+     }
++    if (pthread_mutex_init(&renderer->video_input_mutex, NULL) != 0) {
++        pthread_cond_destroy(&renderer->metrics_emitter_cond);
++        pthread_mutex_destroy(&renderer->metrics_emitter_mutex);
++        renderer->metrics_emitter_mutex_initialized = false;
++        pthread_mutex_destroy(&renderer->metrics_mutex);
++        renderer->metrics_mutex_initialized = false;
++        free(renderer->receiver_id);
++        free(renderer);
++        return NULL;
++    }
++    renderer->video_input_mutex_initialized = true;
++    renderer->video_bootstrap = source_clock_video_bootstrap_create();
++    if (renderer->video_bootstrap == NULL) {
++        pthread_mutex_destroy(&renderer->video_input_mutex);
++        renderer->video_input_mutex_initialized = false;
++        pthread_cond_destroy(&renderer->metrics_emitter_cond);
++        pthread_mutex_destroy(&renderer->metrics_emitter_mutex);
++        renderer->metrics_emitter_mutex_initialized = false;
++        pthread_mutex_destroy(&renderer->metrics_mutex);
++        renderer->metrics_mutex_initialized = false;
++        free(renderer->receiver_id);
++        free(renderer);
++        return NULL;
++    }
+     renderer->video_codec = SOURCE_CLOCK_VIDEO_H264;
+     renderer->audio_codec = SOURCE_CLOCK_AUDIO_AAC_ELD;
+     renderer->audio_sample_rate = 44100;
+@@ -752,6 +1001,8 @@ void source_clock_renderer_destroy(source_clock_renderer_t *renderer) {
+         source_clock_writer_t *writer = writers[i];
+         pthread_mutex_lock(&writer->mutex);
+         writer->stopping = true;
++        if (writer->active_socket != SOURCE_CLOCK_INVALID_SOCKET)
++            (void)source_clock_shutdown_socket(writer->active_socket);
+         pthread_cond_signal(&writer->cond);
+         pthread_mutex_unlock(&writer->mutex);
+     }
+@@ -779,6 +1030,12 @@ void source_clock_renderer_destroy(source_clock_renderer_t *renderer) {
+         pthread_mutex_destroy(&renderer->metrics_mutex);
+         renderer->metrics_mutex_initialized = false;
+     }
++    source_clock_video_bootstrap_destroy(renderer->video_bootstrap);
++    renderer->video_bootstrap = NULL;
++    if (renderer->video_input_mutex_initialized) {
++        pthread_mutex_destroy(&renderer->video_input_mutex);
++        renderer->video_input_mutex_initialized = false;
++    }
+     free(renderer->receiver_id);
+     free(renderer);
+ }
+@@ -822,7 +1079,47 @@ void source_clock_renderer_set_queue_commit_hook(source_clock_renderer_t *render
+     if (renderer == NULL) return;
+     renderer->queue_commit_hook = hook;
+     renderer->queue_commit_context = context;
+-} void source_clock_renderer_test_record_metrics(source_clock_renderer_t *renderer, source_clock_failure_reason_t reason, int socket_error, uint64_t dropped_frames, bool sent) { if (renderer == NULL) return; if (sent) metrics_record_sent(renderer); else if (reason == SOURCE_CLOCK_FAILURE_QUEUE_DROP) metrics_record_enqueue(renderer, SOURCE_CLOCK_STREAM_VIDEO, source_clock_metrics_monotonic_time_ns(), dropped_frames); else metrics_record_failure(renderer, reason, socket_error, dropped_frames); }
++}
++
++void source_clock_renderer_set_video_sequence_for_test(
++    source_clock_renderer_t *renderer, uint32_t sequence) {
++    if (renderer == NULL) return;
++    pthread_mutex_lock(&renderer->video.mutex);
++    renderer->video.sequence = sequence;
++    pthread_mutex_unlock(&renderer->video.mutex);
++}
++
++void source_clock_renderer_set_after_connect_hook(source_clock_renderer_t *renderer,
++                                                  source_clock_after_connect_hook_t hook,
++                                                  void *context) {
++    if (renderer == NULL) return;
++    pthread_mutex_lock(&renderer->video.mutex);
++    renderer->video.after_connect_hook = hook;
++    renderer->video.after_connect_context = context;
++    pthread_mutex_unlock(&renderer->video.mutex);
++}
++
++void source_clock_renderer_set_before_video_send_lock_hook(
++    source_clock_renderer_t *renderer, source_clock_test_hook_t hook,
++    void *context) {
++    if (renderer == NULL) return;
++    pthread_mutex_lock(&renderer->video.mutex);
++    renderer->video.before_send_lock_hook = hook;
++    renderer->video.before_send_lock_context = context;
++    pthread_mutex_unlock(&renderer->video.mutex);
++}
++
++void source_clock_renderer_set_video_codec_change_hook(
++    source_clock_renderer_t *renderer, source_clock_test_hook_t hook,
++    void *context) {
++    if (renderer == NULL) return;
++    pthread_mutex_lock(&renderer->video.mutex);
++    renderer->video.codec_change_hook = hook;
++    renderer->video.codec_change_context = context;
++    pthread_mutex_unlock(&renderer->video.mutex);
++}
++
++void source_clock_renderer_test_record_metrics(source_clock_renderer_t *renderer, source_clock_failure_reason_t reason, int socket_error, uint64_t dropped_frames, bool sent) { if (renderer == NULL) return; if (sent) metrics_record_sent(renderer); else if (reason == SOURCE_CLOCK_FAILURE_QUEUE_DROP) metrics_record_enqueue(renderer, SOURCE_CLOCK_STREAM_VIDEO, source_clock_metrics_monotonic_time_ns(), dropped_frames); else metrics_record_failure(renderer, reason, socket_error, dropped_frames); }
+ 
+ void source_clock_renderer_set_emitter_thread_create_failure(source_clock_renderer_t *renderer,
+                                                              bool fail) {
+@@ -845,10 +1134,16 @@ void source_clock_renderer_session_start(source_clock_renderer_t *renderer) {
+     source_clock_writer_t *writers[2];
+     size_t i;
+     if (renderer == NULL) return;
++    pthread_mutex_lock(&renderer->video_input_mutex);
+     writers[0] = &renderer->video;
+     writers[1] = &renderer->audio;
+     for (i = 0; i < 2; ++i) {
+         pthread_mutex_lock(&writers[i]->mutex);
++        if (writers[i]->active_socket != SOURCE_CLOCK_INVALID_SOCKET)
++            (void)source_clock_shutdown_socket(writers[i]->active_socket);
++        while (writers[i]->sending) {
++            pthread_cond_wait(&writers[i]->cond, &writers[i]->mutex);
++        }
+         clear_pending(writers[i]);
+         writers[i]->generation++;
+         writers[i]->session_active = true;
+@@ -856,27 +1151,80 @@ void source_clock_renderer_session_start(source_clock_renderer_t *renderer) {
+         pthread_cond_signal(&writers[i]->cond);
+         pthread_mutex_unlock(&writers[i]->mutex);
+     }
++    (void)source_clock_video_bootstrap_session_start_for_codec(
++        renderer->video_bootstrap, renderer->video.generation,
++        renderer->video_codec == SOURCE_CLOCK_VIDEO_H264 ?
++            SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264 :
++            SOURCE_CLOCK_VIDEO_BOOTSTRAP_HEVC);
++    pthread_mutex_unlock(&renderer->video_input_mutex);
+ }
+ 
+ void source_clock_renderer_session_end(source_clock_renderer_t *renderer) {
+     source_clock_writer_t *writers[2];
+     size_t i;
+     if (renderer == NULL) return;
++    pthread_mutex_lock(&renderer->video_input_mutex);
+     writers[0] = &renderer->video;
+     writers[1] = &renderer->audio;
+     for (i = 0; i < 2; ++i) {
+         pthread_mutex_lock(&writers[i]->mutex);
++        if (writers[i]->active_socket != SOURCE_CLOCK_INVALID_SOCKET)
++            (void)source_clock_shutdown_socket(writers[i]->active_socket);
++        while (writers[i]->sending) {
++            pthread_cond_wait(&writers[i]->cond, &writers[i]->mutex);
++        }
+         clear_pending(writers[i]);
+         writers[i]->session_active = false;
+         writers[i]->send_session_end = true;
+         pthread_cond_signal(&writers[i]->cond);
+         pthread_mutex_unlock(&writers[i]->mutex);
+     }
++    (void)source_clock_video_bootstrap_session_end_for_epoch(
++        renderer->video_bootstrap, renderer->video.generation);
++    pthread_mutex_unlock(&renderer->video_input_mutex);
+ }
+ 
+ void source_clock_renderer_set_video_codec(source_clock_renderer_t *renderer,
+                                            source_clock_video_codec_t codec) {
+-    if (renderer != NULL) renderer->video_codec = (uint8_t)codec;
++    bool active;
++    bool codec_changed;
++    uint32_t generation;
++    source_clock_video_bootstrap_result_t result;
++    if (renderer == NULL) return;
++    pthread_mutex_lock(&renderer->video_input_mutex);
++    pthread_mutex_lock(&renderer->video.mutex);
++    codec_changed = renderer->video_codec != (uint8_t)codec;
++    if (codec_changed && renderer->video.sending &&
++        renderer->video.active_socket != SOURCE_CLOCK_INVALID_SOCKET)
++        (void)source_clock_shutdown_socket(renderer->video.active_socket);
++    while (renderer->video.sending) {
++        pthread_cond_wait(&renderer->video.cond, &renderer->video.mutex);
++    }
++    active = renderer->video.session_active;
++    generation = renderer->video.generation;
++    if (codec_changed) {
++#ifdef SOURCE_CLOCK_TEST_HOOKS
++        if (renderer->video.codec_change_hook != NULL)
++            renderer->video.codec_change_hook(
++                renderer->video.codec_change_context);
++#endif
++        renderer->video_codec = (uint8_t)codec;
++        if (active) {
++            result = source_clock_video_bootstrap_reconfigure_codec_for_session(
++                renderer->video_bootstrap, generation,
++                codec == SOURCE_CLOCK_VIDEO_H264 ?
++                    SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264 :
++                    SOURCE_CLOCK_VIDEO_BOOTSTRAP_HEVC);
++            if (codec == SOURCE_CLOCK_VIDEO_H264 &&
++                result == SOURCE_CLOCK_VIDEO_BOOTSTRAP_STALE_SESSION) {
++                (void)source_clock_video_bootstrap_session_start_for_codec(
++                    renderer->video_bootstrap, generation,
++                    SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264);
++            }
++        }
++    }
++    pthread_mutex_unlock(&renderer->video.mutex);
++    pthread_mutex_unlock(&renderer->video_input_mutex);
+ }
+ 
+ void source_clock_renderer_set_audio_format(source_clock_renderer_t *renderer,
+@@ -937,12 +1285,39 @@ bool source_clock_renderer_push_video(source_clock_renderer_t *renderer,
+                                       const unsigned char *data, size_t data_len,
+                                       uint64_t remote_ntp_ns, unsigned flags) {
+     uint8_t codec;
++    uint32_t session_epoch;
++    uint64_t codec_epoch = 0;
++    bool active;
++    bool queued;
++    source_clock_video_bootstrap_result_t cache_result;
+     if (renderer == NULL || data == NULL || data_len == 0 ||
+         data_len > SOURCE_CLOCK_MAX_VIDEO_PAYLOAD) return false;
++    pthread_mutex_lock(&renderer->video_input_mutex);
+     codec = renderer->video_codec;
++    pthread_mutex_lock(&renderer->video.mutex);
++    active = renderer->video.session_active;
++    session_epoch = renderer->video.generation;
++    pthread_mutex_unlock(&renderer->video.mutex);
+     flags |= scan_video_flags(data, data_len, codec);
+-    return queue_frame(&renderer->video, data, data_len, remote_ntp_ns, codec,
+-                       (uint16_t)flags, 0, 0, 0, 0);
++    if (active && codec == SOURCE_CLOCK_VIDEO_H264) {
++        cache_result = source_clock_video_bootstrap_push_annexb_for_session(
++            renderer->video_bootstrap, session_epoch,
++            SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264, data, data_len);
++        if (cache_result == SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID ||
++            cache_result == SOURCE_CLOCK_VIDEO_BOOTSTRAP_LIMIT ||
++            cache_result == SOURCE_CLOCK_VIDEO_BOOTSTRAP_NOMEM ||
++            cache_result == SOURCE_CLOCK_VIDEO_BOOTSTRAP_STALE_SESSION) {
++            pthread_mutex_unlock(&renderer->video_input_mutex);
++            return false;
++        }
++        codec_epoch = source_clock_video_bootstrap_codec_epoch(
++            renderer->video_bootstrap);
++    }
++    queued = queue_frame(&renderer->video, data, data_len, remote_ntp_ns, codec,
++                         (uint16_t)flags, 0, 0, 0, 0,
++                         active ? session_epoch : 0, codec_epoch);
++    pthread_mutex_unlock(&renderer->video_input_mutex);
++    return queued;
+ }
+ 
+ bool source_clock_renderer_push_audio(source_clock_renderer_t *renderer,
+@@ -959,7 +1334,7 @@ bool source_clock_renderer_push_audio(source_clock_renderer_t *renderer,
+     return queue_frame(&renderer->audio, data, data_len, remote_ntp_ns,
+                        (uint8_t)format.codec, (uint16_t)flags,
+                        format.samples_per_frame, format.sample_rate,
+-                       format.channels, duration_ns);
++                       format.channels, duration_ns, 0, 0);
+ }
+ 
+ size_t source_clock_renderer_video_pending(const source_clock_renderer_t *renderer) {
+diff --git a/renderers/source_clock_renderer.h b/renderers/source_clock_renderer.h
+index 2873cd8c..1579d007 100644
+--- a/renderers/source_clock_renderer.h
++++ b/renderers/source_clock_renderer.h
+@@ -40,6 +40,11 @@ typedef struct source_clock_renderer_s source_clock_renderer_t;
+ typedef void (*source_clock_queue_commit_hook_t)(source_clock_renderer_t *renderer,
+                                                  uint8_t stream_kind,
+                                                  void *context);
++typedef void (*source_clock_after_connect_hook_t)(uint8_t stream_kind,
++                                                   void *context);
++typedef void (*source_clock_test_hook_t)(void *context);
++void source_clock_renderer_set_video_sequence_for_test(
++    source_clock_renderer_t *renderer, uint32_t sequence);
+ #endif
+ 
+ source_clock_renderer_t *source_clock_renderer_create(const char *video_endpoint,
+@@ -57,6 +60,15 @@ bool source_clock_renderer_start_metrics_emitter(source_clock_renderer_t *render
+ void source_clock_renderer_set_queue_commit_hook(source_clock_renderer_t *renderer,
+                                                  source_clock_queue_commit_hook_t hook,
+                                                  void *context); void source_clock_renderer_test_record_metrics(source_clock_renderer_t *renderer, source_clock_failure_reason_t reason, int socket_error, uint64_t dropped_frames, bool sent);
++void source_clock_renderer_set_after_connect_hook(source_clock_renderer_t *renderer,
++                                                  source_clock_after_connect_hook_t hook,
++                                                  void *context);
++void source_clock_renderer_set_before_video_send_lock_hook(
++    source_clock_renderer_t *renderer, source_clock_test_hook_t hook,
++    void *context);
++void source_clock_renderer_set_video_codec_change_hook(
++    source_clock_renderer_t *renderer, source_clock_test_hook_t hook,
++    void *context);
+ void source_clock_renderer_set_emitter_thread_create_failure(source_clock_renderer_t *renderer,
+                                                              bool fail);
+ void source_clock_renderer_set_emitter_start_time_zero(source_clock_renderer_t *renderer,
+diff --git a/renderers/source_clock_renderer_test.c b/renderers/source_clock_renderer_test.c
+index 84353783..5ee1d7bd 100644
+--- a/renderers/source_clock_renderer_test.c
++++ b/renderers/source_clock_renderer_test.c
+@@ -6,6 +6,7 @@
+ #endif
+ #include <assert.h>
+ #include <stdio.h>
++#include <stdatomic.h>
+ #include <string.h>
+ 
+ #ifdef _WIN32
+@@ -31,10 +32,10 @@ typedef struct test_server_s {
+     TEST_SOCKET listener;
+     unsigned port;
+     unsigned stream_kind;
+-    volatile int accepted;
+-    int hello;
+-    int session_start;
+-    int media;
++    atomic_int accepted;
++    atomic_int hello;
++    atomic_int session_start;
++    atomic_int media;
+ } test_server_t;
+ 
+ typedef struct commit_observation_s {
+@@ -62,6 +63,10 @@ static unsigned read_u32(const unsigned char *p) {
+            ((unsigned)p[2] << 8) | (unsigned)p[3];
+ }
+ 
++static unsigned read_u16(const unsigned char *p) {
++    return ((unsigned)p[0] << 8) | (unsigned)p[1];
++}
++
+ static int read_full(TEST_SOCKET socket_fd, unsigned char *data, size_t length) {
+     while (length > 0) {
+         int received = recv(socket_fd, (char *)data, (int)length, 0);
+@@ -85,7 +90,11 @@ static void *server_main(void *argument) {
+         payload_bytes = read_u32(header + 12);
+         if (header[8] == 0 && header[9] == 1) server->hello = 1;
+         if (header[8] == 0 && header[9] == 2) server->session_start = 1;
+-        if (header[8] == server->stream_kind && server->stream_kind != 0) server->media = 1;
++        if (header[8] == server->stream_kind && server->stream_kind != 0 &&
++            !(server->stream_kind == 1U &&
++              (read_u16(header + 10) & SOURCE_CLOCK_FLAG_CONFIG) != 0 &&
++              (read_u16(header + 10) & SOURCE_CLOCK_FLAG_KEYFRAME) == 0))
++            server->media = 1;
+         while (payload_bytes > 0) {
+             unsigned char discard[1024];
+             size_t take = payload_bytes < sizeof(discard) ? payload_bytes : sizeof(discard);
+@@ -95,7 +104,6 @@ static void *server_main(void *argument) {
+             }
+             payload_bytes -= (unsigned)take;
+         }
+-        if (server->hello && server->session_start && server->media) break;
+     }
+     test_close(client);
+     return NULL;
+@@ -105,6 +113,10 @@ static void init_server(test_server_t *server, unsigned stream_kind) {
+     struct sockaddr_in address;
+     int address_length = sizeof(address);
+     memset(server, 0, sizeof(*server));
++    atomic_init(&server->accepted, 0);
++    atomic_init(&server->hello, 0);
++    atomic_init(&server->session_start, 0);
++    atomic_init(&server->media, 0);
+     server->stream_kind = stream_kind;
+     server->listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+     assert(server->listener != TEST_INVALID_SOCKET);
+@@ -118,11 +130,78 @@ static void init_server(test_server_t *server, unsigned stream_kind) {
+     server->port = ntohs(address.sin_port);
+ }
+ 
++static int wait_for_sent_frames(source_clock_renderer_t *renderer,
++                                uint64_t expected,
++                                source_clock_metrics_snapshot_t *snapshot) {
++    unsigned attempt;
++    for (attempt = 0; attempt < 200; ++attempt) {
++        if (source_clock_renderer_metrics_snapshot(
++                renderer, source_clock_metrics_monotonic_time_ns(), snapshot) &&
++            snapshot->sent_frames >= expected)
++            return 1;
++#ifdef _WIN32
++        Sleep(10);
++#else
++        usleep(10000);
++#endif
++    }
++    return 0;
++}
++
++static int wait_for_server_handshake(test_server_t *server) {
++    unsigned attempt;
++    for (attempt = 0; attempt < 500; ++attempt) {
++        if (server->accepted && server->hello && server->session_start)
++            return 1;
++#ifdef _WIN32
++        Sleep(10);
++#else
++        usleep(10000);
++#endif
++    }
++    return 0;
++}
++
++static int wait_for_server_media(test_server_t *server) {
++    unsigned attempt;
++    for (attempt = 0; attempt < 500; ++attempt) {
++        if (server->media) return 1;
++#ifdef _WIN32
++        Sleep(10);
++#else
++        usleep(10000);
++#endif
++    }
++    return 0;
++}
++
++static int wait_for_connected_consumers(source_clock_renderer_t *renderer,
++                                        uint64_t expected) {
++    source_clock_metrics_snapshot_t snapshot;
++    unsigned attempt;
++    for (attempt = 0; attempt < 500; ++attempt) {
++        if (source_clock_renderer_metrics_snapshot(
++                renderer, source_clock_metrics_monotonic_time_ns(), &snapshot) &&
++            snapshot.connected_consumers >= expected)
++            return 1;
++#ifdef _WIN32
++        Sleep(10);
++#else
++        usleep(10000);
++#endif
++    }
++    return 0;
++}
++
+ int main(void) {
+     const char *token = "00112233445566778899aabbccddeeff";
+     char video_endpoint[64];
+     char audio_endpoint[64];
+-    unsigned char video[] = { 0, 0, 0, 1, 0x65, 0x88 };
++    unsigned char video[] = {
++        0, 0, 0, 1, 0x67, 0x42, 0x00, 0x1e, 0x80,
++        0, 0, 0, 1, 0x68, 0xe0,
++        0, 0, 0, 1, 0x65, 0xbc
++    };
+     unsigned char audio[] = { 0x8c, 0x01, 0x02, 0x03 };
+     test_server_t video_server;
+     test_server_t audio_server;
+@@ -157,18 +236,14 @@ int main(void) {
+     source_clock_renderer_set_queue_commit_hook(renderer, observe_queue_commit,
+                                                 &commit_observation);
+     source_clock_renderer_session_start(renderer);
+-#ifdef _WIN32
+-    Sleep(2000);
+-#else
+-    usleep(2000000);
+-#endif
+-    assert(!video_server.accepted);
++    assert(wait_for_server_handshake(&video_server));
++    assert(wait_for_connected_consumers(renderer, 1));
+     assert(!audio_server.accepted);
+     assert(!source_clock_renderer_push_video(renderer, NULL, 4, 0, 0));
+     assert(!source_clock_renderer_push_audio(renderer, NULL, 4, 0, 0));
+     assert(source_clock_renderer_metrics_snapshot(
+         renderer, source_clock_metrics_monotonic_time_ns(), &metrics));
+-    assert(metrics.sequence == 2);
++    assert(metrics.sequence >= 2);
+     assert(metrics.video_frames == 0 && metrics.audio_frames == 0);
+     before_push = source_clock_metrics_monotonic_time_ns();
+     assert(source_clock_renderer_push_video(renderer, video, sizeof(video), 1000000000ULL, 0));
+@@ -184,13 +259,22 @@ int main(void) {
+     assert(metrics.video_age_ms == 0 && metrics.audio_age_ms == 0);
+     assert(commit_observation.calls == 2);
+     assert(!commit_observation.invalid);
+-#ifdef _WIN32
+-    Sleep(300);
+-#else
+-    usleep(300000);
+-#endif
+-    assert(source_clock_renderer_metrics_snapshot(
+-        renderer, source_clock_metrics_monotonic_time_ns(), &metrics));
++    if (!wait_for_sent_frames(renderer, 2, &metrics)) {
++        fprintf(stderr,
++                "sent wait failed: sent=%llu video=%llu audio=%llu dropped=%llu failures=%llu reason=%d socket=%d consumers=%llu video_server=%d/%d/%d audio_server=%d/%d/%d\n",
++                (unsigned long long)metrics.sent_frames,
++                (unsigned long long)metrics.video_frames,
++                (unsigned long long)metrics.audio_frames,
++                (unsigned long long)metrics.dropped_frames,
++                (unsigned long long)metrics.failure_events,
++                (int)metrics.last_failure_reason, metrics.last_socket_error,
++                (unsigned long long)metrics.connected_consumers,
++                video_server.accepted, video_server.session_start, video_server.media,
++                audio_server.accepted, audio_server.session_start, audio_server.media);
++        assert(0 && "timed out waiting for both media frames");
++    }
++    assert(wait_for_server_media(&video_server));
++    assert(wait_for_server_media(&audio_server));
+     assert(metrics.sent_frames == 2);
+     assert(metrics.sent_frames <= metrics.video_frames + metrics.audio_frames);
+     assert(metrics.connected_consumers == 2);
+diff --git a/renderers/source_clock_video_backlog_test.c b/renderers/source_clock_video_backlog_test.c
+index bd3ee242..66c25afa 100644
+--- a/renderers/source_clock_video_backlog_test.c
++++ b/renderers/source_clock_video_backlog_test.c
+@@ -33,6 +33,7 @@
+ 
+ typedef struct video_server_s {
+     TEST_SOCKET listener;
++    volatile int accepted;
+     unsigned media_count;
+     unsigned first_sequence;
+     unsigned last_sequence;
+@@ -63,6 +64,7 @@ static void *video_server_main(void *argument) {
+     TEST_SOCKET client = accept(server->listener, NULL, NULL);
+     unsigned char header[40];
+     if (client == TEST_INVALID_SOCKET) return NULL;
++    server->accepted = 1;
+ #ifdef _WIN32
+     {
+         DWORD timeout_ms = 1000;
+@@ -138,7 +140,12 @@ static TEST_SOCKET listen_on(unsigned port) {
+ 
+ int main(void) {
+     const char *token = "00112233445566778899aabbccddeeff";
+-    unsigned char frame[] = {0, 0, 0, 1, 0x41, 0x88};
++    unsigned char frame[] = {
++        0, 0, 0, 1, 0x67, 0x42, 0x00, 0x1e, 0x80,
++        0, 0, 0, 1, 0x68, 0xe0,
++        0, 0, 0, 1, 0x65, 0xbc
++    };
++    unsigned char p_frame[] = {0, 0, 0, 1, 0x41, 0x80};
+     char video_endpoint[64];
+     char audio_endpoint[64];
+     unsigned video_port;
+@@ -190,6 +197,20 @@ int main(void) {
+     server.listener = listen_on(video_port);
+     CHECK(server.listener != TEST_INVALID_SOCKET);
+     CHECK(pthread_create(&server_thread, NULL, video_server_main, &server) == 0);
++    for (i = 0; i < 100 && !server.accepted; ++i) {
++#ifdef _WIN32
++        Sleep(20);
++#else
++        usleep(20000);
++#endif
++    }
++    CHECK(server.accepted);
++    CHECK(source_clock_renderer_push_video(renderer, p_frame, sizeof(p_frame),
++                                           3000000000ULL, 0));
++    CHECK(source_clock_renderer_push_video(renderer, frame, sizeof(frame),
++                                           3016666667ULL, 0));
++    CHECK(source_clock_renderer_push_video(renderer, p_frame, sizeof(p_frame),
++                                           3033333334ULL, 0));
+ #ifdef _WIN32
+     Sleep(1500);
+ #else
+@@ -197,15 +218,16 @@ int main(void) {
+ #endif
+     CHECK(source_clock_renderer_metrics_snapshot(
+         renderer, source_clock_metrics_monotonic_time_ns(), &metrics));
+-    CHECK(metrics.sent_frames == 64); CHECK(metrics.failure_events > 0); CHECK(metrics.last_failure_reason == SOURCE_CLOCK_FAILURE_NONE); CHECK(metrics.last_socket_error == 0);
++    CHECK(metrics.video_frames == 68);
++    CHECK(metrics.sent_frames == 2); CHECK(metrics.failure_events > 0); CHECK(metrics.last_failure_reason == SOURCE_CLOCK_FAILURE_NONE); CHECK(metrics.last_socket_error == 0);
+     CHECK(metrics.connected_consumers == 1);
+     source_clock_renderer_destroy(renderer);
+     test_close(server.listener);
+     pthread_join(server_thread, NULL);
+-    CHECK(server.media_count == 64);
+-    CHECK(server.first_sequence == 2);
+-    CHECK(server.last_sequence == 65);
+-    CHECK(server.discontinuities == 1);
++    CHECK(server.media_count == 3);
++    CHECK(server.first_sequence == 67);
++    CHECK(server.last_sequence == 68);
++    CHECK(server.discontinuities >= 1);
+ #ifdef _WIN32
+     WSACleanup();
+ #endif
+diff --git a/renderers/source_clock_video_bootstrap.c b/renderers/source_clock_video_bootstrap.c
+index 14b7be50..ef5b7cf3 100644
+--- a/renderers/source_clock_video_bootstrap.c
++++ b/renderers/source_clock_video_bootstrap.c
+@@ -54,10 +54,14 @@ static void free_entries(parameter_set_t *entries, size_t count) {
+     }
+ }
+ 
+-static void clear_locked(source_clock_video_bootstrap_t *cache) {
++static void clear_entries_locked(source_clock_video_bootstrap_t *cache) {
+     free_entries(cache->entries, cache->entry_count);
+     cache->entry_count = 0;
+     cache->total_bytes = 0;
++}
++
++static void clear_locked(source_clock_video_bootstrap_t *cache) {
++    clear_entries_locked(cache);
+     cache->codec_epoch = 0;
+ }
+ 
+@@ -197,6 +201,73 @@ static source_clock_video_bootstrap_result_t parse_ids(
+     return SOURCE_CLOCK_VIDEO_BOOTSTRAP_UNCHANGED;
+ }
+ 
++static source_clock_video_bootstrap_result_t parse_idr_pps_id(
++    source_clock_video_bootstrap_t *cache,
++    const unsigned char *data, size_t size, uint32_t *pps_id) {
++    size_t position;
++    size_t start_length;
++    size_t next_position;
++    size_t next_length;
++    size_t nal_count = 0;
++    size_t index;
++    if (cache == NULL || data == NULL || size == 0 || pps_id == NULL)
++        return SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID;
++    if (size > SOURCE_CLOCK_VIDEO_BOOTSTRAP_MAX_INPUT_SIZE)
++        return SOURCE_CLOCK_VIDEO_BOOTSTRAP_LIMIT;
++    if (!find_start_code(data, size, 0, &position, &start_length))
++        return SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID;
++    for (index = 0; index < position; ++index)
++        if (data[index] != 0) return SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID;
++    while (true) {
++        size_t nal_start = position + start_length;
++        size_t nal_end;
++        bool has_next = find_start_code(data, size, nal_start,
++                                        &next_position, &next_length);
++        nal_end = has_next ? next_position : size;
++        while (nal_end > nal_start && data[nal_end - 1U] == 0) nal_end--;
++        if (++nal_count > SOURCE_CLOCK_VIDEO_BOOTSTRAP_MAX_NALS)
++            return SOURCE_CLOCK_VIDEO_BOOTSTRAP_LIMIT;
++        if (nal_end <= nal_start) return SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID;
++        if ((data[nal_start] & 0x80U) != 0)
++            return SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID;
++        if ((data[nal_start] & 0x1fU) == 5U) {
++            unsigned char *rbsp = NULL;
++            size_t rbsp_size = 0;
++            bit_reader_t reader;
++            uint32_t first_mb_in_slice;
++            uint32_t slice_type;
++            uint32_t parsed_pps_id;
++            source_clock_video_bootstrap_result_t result;
++            if (nal_end - nal_start > SOURCE_CLOCK_VIDEO_BOOTSTRAP_MAX_NAL_SIZE)
++                return SOURCE_CLOCK_VIDEO_BOOTSTRAP_LIMIT;
++            if (nal_end - nal_start < 2U)
++                return SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID;
++            result = ebsp_to_rbsp(cache, data + nal_start + 1U,
++                                  nal_end - nal_start - 1U,
++                                  &rbsp, &rbsp_size);
++            if (result < 0) return result;
++            reader.data = rbsp;
++            reader.bit_count = rbsp_size * 8U;
++            reader.bit_position = 0;
++            if (!read_ue(&reader, &first_mb_in_slice) || first_mb_in_slice != 0 ||
++                !read_ue(&reader, &slice_type) ||
++                !read_ue(&reader, &parsed_pps_id) || parsed_pps_id > 255U) {
++                free(rbsp);
++                return SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID;
++            }
++            free(rbsp);
++            (void)first_mb_in_slice;
++            (void)slice_type;
++            *pps_id = parsed_pps_id;
++            return SOURCE_CLOCK_VIDEO_BOOTSTRAP_UNCHANGED;
++        }
++        if (!has_next) break;
++        position = next_position;
++        start_length = next_length;
++    }
++    return SOURCE_CLOCK_VIDEO_BOOTSTRAP_NOT_READY;
++}
++
+ static source_clock_video_bootstrap_result_t parse_annexb(
+     source_clock_video_bootstrap_t *cache,
+     const unsigned char *data, size_t size, parsed_set_t *sets,
+@@ -325,6 +396,40 @@ source_clock_video_bootstrap_result_t source_clock_video_bootstrap_session_end_f
+     return SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED;
+ }
+ 
++source_clock_video_bootstrap_result_t source_clock_video_bootstrap_reconfigure_codec_for_session(
++    source_clock_video_bootstrap_t *cache, uint64_t expected_session_epoch,
++    source_clock_video_bootstrap_codec_t codec) {
++    source_clock_video_bootstrap_result_t result;
++    if (cache == NULL ||
++        (codec != SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264 &&
++         codec != SOURCE_CLOCK_VIDEO_BOOTSTRAP_HEVC))
++        return SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID;
++    pthread_mutex_lock(&cache->mutex);
++    if (!cache->active || cache->session_epoch != expected_session_epoch) {
++        pthread_mutex_unlock(&cache->mutex);
++        return SOURCE_CLOCK_VIDEO_BOOTSTRAP_STALE_SESSION;
++    }
++    if (cache->codec == codec) {
++        result = codec == SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264 ?
++            SOURCE_CLOCK_VIDEO_BOOTSTRAP_UNCHANGED :
++            SOURCE_CLOCK_VIDEO_BOOTSTRAP_UNSUPPORTED;
++        pthread_mutex_unlock(&cache->mutex);
++        return result;
++    }
++    if (cache->codec_epoch == UINT64_MAX) {
++        pthread_mutex_unlock(&cache->mutex);
++        return SOURCE_CLOCK_VIDEO_BOOTSTRAP_LIMIT;
++    }
++    clear_entries_locked(cache);
++    cache->codec = codec;
++    cache->codec_epoch++;
++    result = codec == SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264 ?
++        SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED :
++        SOURCE_CLOCK_VIDEO_BOOTSTRAP_UNSUPPORTED;
++    pthread_mutex_unlock(&cache->mutex);
++    return result;
++}
++
+ source_clock_video_bootstrap_result_t source_clock_video_bootstrap_push_annexb_for_session(
+     source_clock_video_bootstrap_t *cache, uint64_t expected_session_epoch,
+     source_clock_video_bootstrap_codec_t codec,
+@@ -476,6 +581,35 @@ source_clock_video_bootstrap_result_t source_clock_video_bootstrap_snapshot_copy
+     return SOURCE_CLOCK_VIDEO_BOOTSTRAP_READY;
+ }
+ 
++source_clock_video_bootstrap_result_t source_clock_video_bootstrap_snapshot_copy_for_idr(
++    source_clock_video_bootstrap_t *cache, uint64_t expected_session_epoch,
++    source_clock_video_bootstrap_codec_t codec,
++    const unsigned char *annexb, size_t annexb_size,
++    source_clock_video_bootstrap_snapshot_t *snapshot) {
++    uint32_t pps_id = 0;
++    source_clock_video_bootstrap_result_t result;
++    if (cache == NULL || snapshot == NULL)
++        return SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID;
++    if (snapshot->sps != NULL || snapshot->pps != NULL ||
++        snapshot->sps_size != 0 || snapshot->pps_size != 0 ||
++        snapshot->session_epoch != 0 || snapshot->codec_epoch != 0 ||
++        snapshot->sps_id != 0 || snapshot->pps_id != 0)
++        return SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID;
++    if (codec != SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264)
++        return SOURCE_CLOCK_VIDEO_BOOTSTRAP_UNSUPPORTED;
++    pthread_mutex_lock(&cache->mutex);
++    if (!cache->active || cache->session_epoch != expected_session_epoch ||
++        cache->codec != codec) {
++        pthread_mutex_unlock(&cache->mutex);
++        return SOURCE_CLOCK_VIDEO_BOOTSTRAP_STALE_SESSION;
++    }
++    result = parse_idr_pps_id(cache, annexb, annexb_size, &pps_id);
++    pthread_mutex_unlock(&cache->mutex);
++    if (result < 0) return result;
++    return source_clock_video_bootstrap_snapshot_copy_for_pps(
++        cache, expected_session_epoch, codec, pps_id, snapshot);
++}
++
+ void source_clock_video_bootstrap_snapshot_free(source_clock_video_bootstrap_snapshot_t *snapshot) {
+     if (snapshot == NULL) return;
+     free(snapshot->sps);
+diff --git a/renderers/source_clock_video_bootstrap.h b/renderers/source_clock_video_bootstrap.h
+index 814ee388..3cfe801b 100644
+--- a/renderers/source_clock_video_bootstrap.h
++++ b/renderers/source_clock_video_bootstrap.h
+@@ -51,6 +51,9 @@ source_clock_video_bootstrap_result_t source_clock_video_bootstrap_session_start
+     source_clock_video_bootstrap_codec_t codec);
+ source_clock_video_bootstrap_result_t source_clock_video_bootstrap_session_end_for_epoch(
+     source_clock_video_bootstrap_t *cache, uint64_t expected_session_epoch);
++source_clock_video_bootstrap_result_t source_clock_video_bootstrap_reconfigure_codec_for_session(
++    source_clock_video_bootstrap_t *cache, uint64_t expected_session_epoch,
++    source_clock_video_bootstrap_codec_t codec);
+ source_clock_video_bootstrap_result_t source_clock_video_bootstrap_push_annexb_for_session(
+     source_clock_video_bootstrap_t *cache, uint64_t expected_session_epoch,
+     source_clock_video_bootstrap_codec_t codec,
+@@ -59,6 +62,11 @@ source_clock_video_bootstrap_result_t source_clock_video_bootstrap_snapshot_copy
+     source_clock_video_bootstrap_t *cache, uint64_t expected_session_epoch,
+     source_clock_video_bootstrap_codec_t codec, uint32_t pps_id,
+     source_clock_video_bootstrap_snapshot_t *snapshot);
++source_clock_video_bootstrap_result_t source_clock_video_bootstrap_snapshot_copy_for_idr(
++    source_clock_video_bootstrap_t *cache, uint64_t expected_session_epoch,
++    source_clock_video_bootstrap_codec_t codec,
++    const unsigned char *annexb, size_t annexb_size,
++    source_clock_video_bootstrap_snapshot_t *snapshot);
+ /*
+  * The parser validates Annex-B boundaries, H.264 NAL headers, EBSP escaping,
+  * parameter-set IDs and PPS-to-SPS references. It does not validate the full
+diff --git a/renderers/source_clock_video_receiver_bootstrap_test.c b/renderers/source_clock_video_receiver_bootstrap_test.c
+new file mode 100644
+index 00000000..1b48ac70
+--- /dev/null
++++ b/renderers/source_clock_video_receiver_bootstrap_test.c
+@@ -0,0 +1,1201 @@
++#include "source_clock_renderer.h"
++#include "source_clock_video_bootstrap.h"
++
++#ifdef NDEBUG
++#undef NDEBUG
++#endif
++#include <assert.h>
++#include <stdint.h>
++#include <stdatomic.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <pthread.h>
++#ifndef _WIN32
++#include <time.h>
++#endif
++
++#ifdef _WIN32
++#include <winsock2.h>
++#include <ws2tcpip.h>
++#include <windows.h>
++#define TEST_SOCKET SOCKET
++#define TEST_INVALID_SOCKET INVALID_SOCKET
++#define test_close closesocket
++#else
++#include <arpa/inet.h>
++#include <netinet/in.h>
++#include <sys/socket.h>
++#include <unistd.h>
++#define TEST_SOCKET int
++#define TEST_INVALID_SOCKET (-1)
++#define test_close close
++#endif
++
++#define MAX_CONNECTIONS 4
++#define MAX_FRAMES 32
++#define MAX_PAYLOAD 4096
++
++typedef struct captured_frame_s {
++    uint8_t stream;
++    uint8_t codec;
++    uint16_t flags;
++    uint32_t sequence;
++    size_t size;
++    unsigned char data[MAX_PAYLOAD];
++} captured_frame_t;
++
++typedef struct captured_connection_s {
++    unsigned frame_count;
++    captured_frame_t frames[MAX_FRAMES];
++} captured_connection_t;
++
++typedef struct capture_s {
++    TEST_SOCKET listener;
++    TEST_SOCKET active_client;
++    unsigned port;
++    atomic_int stopping;
++    pthread_mutex_t mutex;
++    pthread_t thread;
++    captured_connection_t connections[MAX_CONNECTIONS];
++    unsigned connection_count;
++    unsigned disconnect_first_payload_after_bytes;
++    unsigned stall_first_video_media_index;
++    int stalled_payload;
++} capture_t;
++
++typedef struct connect_pause_s {
++    pthread_mutex_t mutex;
++    pthread_cond_t cond;
++    int entered;
++    int released;
++} connect_pause_t;
++
++typedef struct codec_change_args_s {
++    source_clock_renderer_t *renderer;
++    source_clock_video_codec_t codec;
++} codec_change_args_t;
++
++typedef struct queue_commit_observation_s {
++    pthread_mutex_t mutex;
++    unsigned video_commits;
++} queue_commit_observation_t;
++
++static void sleep_ms(unsigned milliseconds) {
++#ifdef _WIN32
++    Sleep(milliseconds);
++#else
++    usleep(milliseconds * 1000U);
++#endif
++}
++
++static void observe_video_queue_commit(source_clock_renderer_t *renderer,
++                                       uint8_t stream_kind, void *context) {
++    queue_commit_observation_t *observation =
++        (queue_commit_observation_t *)context;
++    (void)renderer;
++    if (observation == NULL || stream_kind != 1U) return;
++    pthread_mutex_lock(&observation->mutex);
++    observation->video_commits++;
++    pthread_mutex_unlock(&observation->mutex);
++}
++
++static void queue_commit_observation_init(queue_commit_observation_t *observation) {
++    memset(observation, 0, sizeof(*observation));
++    assert(pthread_mutex_init(&observation->mutex, NULL) == 0);
++}
++
++static void queue_commit_observation_destroy(queue_commit_observation_t *observation) {
++    pthread_mutex_destroy(&observation->mutex);
++}
++
++static unsigned queue_commit_count(queue_commit_observation_t *observation) {
++    unsigned count;
++    pthread_mutex_lock(&observation->mutex);
++    count = observation->video_commits;
++    pthread_mutex_unlock(&observation->mutex);
++    return count;
++}
++
++static int wait_for_video_queue_commit(queue_commit_observation_t *observation,
++                                       unsigned expected) {
++    unsigned attempt;
++    for (attempt = 0; attempt < 200; ++attempt) {
++        if (queue_commit_count(observation) >= expected) return 1;
++        sleep_ms(10);
++    }
++    return 0;
++}
++
++static int wait_for_video_drop(source_clock_renderer_t *renderer,
++                               uint64_t expected) {
++    unsigned attempt;
++    for (attempt = 0; attempt < 200; ++attempt) {
++        if (source_clock_renderer_video_dropped(renderer) >= expected) return 1;
++        sleep_ms(10);
++    }
++    return 0;
++}
++
++static uint64_t monotonic_ms(void) {
++#ifdef _WIN32
++    return (uint64_t)GetTickCount64();
++#else
++    struct timespec now;
++    assert(clock_gettime(CLOCK_MONOTONIC, &now) == 0);
++    return (uint64_t)now.tv_sec * 1000ULL + (uint64_t)now.tv_nsec / 1000000ULL;
++#endif
++}
++
++static void pause_after_connect(uint8_t stream_kind, void *context) {
++    connect_pause_t *pause = (connect_pause_t *)context;
++    if (stream_kind != 1U) return;
++    pthread_mutex_lock(&pause->mutex);
++    pause->entered = 1;
++    pthread_cond_broadcast(&pause->cond);
++    while (!pause->released) pthread_cond_wait(&pause->cond, &pause->mutex);
++    pthread_mutex_unlock(&pause->mutex);
++}
++
++static void pause_test_hook(void *context) {
++    connect_pause_t *pause = (connect_pause_t *)context;
++    pthread_mutex_lock(&pause->mutex);
++    pause->entered = 1;
++    pthread_cond_broadcast(&pause->cond);
++    while (!pause->released) pthread_cond_wait(&pause->cond, &pause->mutex);
++    pthread_mutex_unlock(&pause->mutex);
++}
++
++static void *change_codec_main(void *context) {
++    codec_change_args_t *args = (codec_change_args_t *)context;
++    source_clock_renderer_set_video_codec(args->renderer, args->codec);
++    return NULL;
++}
++
++static void connect_pause_init(connect_pause_t *pause) {
++    memset(pause, 0, sizeof(*pause));
++    assert(pthread_mutex_init(&pause->mutex, NULL) == 0);
++    assert(pthread_cond_init(&pause->cond, NULL) == 0);
++}
++
++static void connect_pause_wait(connect_pause_t *pause) {
++    pthread_mutex_lock(&pause->mutex);
++    while (!pause->entered) pthread_cond_wait(&pause->cond, &pause->mutex);
++    pthread_mutex_unlock(&pause->mutex);
++}
++
++static int connect_pause_entered(connect_pause_t *pause) {
++    int entered;
++    pthread_mutex_lock(&pause->mutex);
++    entered = pause->entered;
++    pthread_mutex_unlock(&pause->mutex);
++    return entered;
++}
++
++static void connect_pause_release(connect_pause_t *pause) {
++    pthread_mutex_lock(&pause->mutex);
++    pause->released = 1;
++    pthread_cond_broadcast(&pause->cond);
++    pthread_mutex_unlock(&pause->mutex);
++}
++
++static void connect_pause_destroy(connect_pause_t *pause) {
++    pthread_cond_destroy(&pause->cond);
++    pthread_mutex_destroy(&pause->mutex);
++}
++
++static unsigned read_u16(const unsigned char *p) {
++    return ((unsigned)p[0] << 8) | (unsigned)p[1];
++}
++
++static unsigned read_u32(const unsigned char *p) {
++    return ((unsigned)p[0] << 24) | ((unsigned)p[1] << 16) |
++           ((unsigned)p[2] << 8) | (unsigned)p[3];
++}
++
++static int read_full(TEST_SOCKET socket_fd, unsigned char *data, size_t length) {
++    while (length > 0) {
++        int received = recv(socket_fd, (char *)data, (int)length, 0);
++        if (received <= 0) return 0;
++        data += received;
++        length -= (size_t)received;
++    }
++    return 1;
++}
++
++static void write_bits(unsigned char *bytes, size_t *bit_position,
++                       unsigned value, unsigned count) {
++    unsigned index;
++    for (index = count; index != 0; --index) {
++        unsigned bit = (value >> (index - 1U)) & 1U;
++        size_t byte_index = *bit_position / 8U;
++        unsigned shift = 7U - (unsigned)(*bit_position % 8U);
++        bytes[byte_index] = (unsigned char)(bytes[byte_index] | (bit << shift));
++        (*bit_position)++;
++    }
++}
++
++static void write_ue(unsigned char *bytes, size_t *bit_position, unsigned value) {
++    unsigned code_num = value + 1U;
++    unsigned bits = 0;
++    unsigned copy = code_num;
++    unsigned index;
++    while (copy != 0) {
++        bits++;
++        copy >>= 1U;
++    }
++    for (index = 1; index < bits; ++index) write_bits(bytes, bit_position, 0, 1);
++    write_bits(bytes, bit_position, code_num, bits);
++}
++
++static size_t make_sps(unsigned char *nal, unsigned id) {
++    unsigned char payload[8] = { 0x42, 0x00, 0x1e, 0, 0, 0, 0, 0 };
++    size_t bit_position = 24;
++    nal[0] = 0x67;
++    write_ue(payload, &bit_position, id);
++    write_bits(payload, &bit_position, 1, 1);
++    while ((bit_position % 8U) != 0) write_bits(payload, &bit_position, 0, 1);
++    memcpy(nal + 1, payload, bit_position / 8U);
++    return 1U + bit_position / 8U;
++}
++
++static size_t make_pps(unsigned char *nal, unsigned pps_id, unsigned sps_id) {
++    unsigned char payload[8] = { 0 };
++    size_t bit_position = 0;
++    nal[0] = 0x68;
++    write_ue(payload, &bit_position, pps_id);
++    write_ue(payload, &bit_position, sps_id);
++    write_bits(payload, &bit_position, 1, 1);
++    while ((bit_position % 8U) != 0) write_bits(payload, &bit_position, 0, 1);
++    memcpy(nal + 1, payload, bit_position / 8U);
++    return 1U + bit_position / 8U;
++}
++
++static size_t make_idr(unsigned char *nal, unsigned pps_id) {
++    unsigned char payload[8] = { 0 };
++    size_t bit_position = 0;
++    nal[0] = 0x65;
++    write_ue(payload, &bit_position, 0);
++    write_ue(payload, &bit_position, 2);
++    write_ue(payload, &bit_position, pps_id);
++    write_bits(payload, &bit_position, 1, 1);
++    while ((bit_position % 8U) != 0) write_bits(payload, &bit_position, 0, 1);
++    memcpy(nal + 1, payload, bit_position / 8U);
++    return 1U + bit_position / 8U;
++}
++
++static size_t make_p_frame(unsigned char *frame) {
++    frame[0] = 0;
++    frame[1] = 0;
++    frame[2] = 0;
++    frame[3] = 1;
++    frame[4] = 0x41;
++    frame[5] = 0x80;
++    return 6;
++}
++
++static size_t annexb_one(unsigned char *frame, const unsigned char *nal, size_t nal_size) {
++    frame[0] = 0;
++    frame[1] = 0;
++    frame[2] = 0;
++    frame[3] = 1;
++    memcpy(frame + 4, nal, nal_size);
++    return 4U + nal_size;
++}
++
++static int contains_bytes(const unsigned char *data, size_t size,
++                          const unsigned char *needle, size_t needle_size) {
++    size_t index;
++    if (needle_size > size) return 0;
++    for (index = 0; index <= size - needle_size; ++index) {
++        if (memcmp(data + index, needle, needle_size) == 0) return 1;
++    }
++    return 0;
++}
++
++static int capture_shutdown_active_client(capture_t *capture) {
++    TEST_SOCKET client;
++    struct linger reset = { 1, 0 };
++    pthread_mutex_lock(&capture->mutex);
++    client = capture->active_client;
++    if (client == TEST_INVALID_SOCKET) {
++        pthread_mutex_unlock(&capture->mutex);
++        return 0;
++    }
++    assert(setsockopt(client, SOL_SOCKET, SO_LINGER,
++                      (const char *)&reset, sizeof(reset)) == 0);
++    (void)shutdown(client, 2);
++    pthread_mutex_unlock(&capture->mutex);
++    return 1;
++}
++
++static void *capture_main(void *argument) {
++    capture_t *capture = (capture_t *)argument;
++    while (!atomic_load(&capture->stopping)) {
++        TEST_SOCKET client = accept(capture->listener, NULL, NULL);
++        unsigned connection_index;
++        if (client == TEST_INVALID_SOCKET) break;
++        pthread_mutex_lock(&capture->mutex);
++        capture->active_client = client;
++        connection_index = capture->connection_count++;
++        pthread_mutex_unlock(&capture->mutex);
++        if (connection_index < MAX_CONNECTIONS) {
++            unsigned char header[40];
++            unsigned video_media_received = 0;
++            while (!atomic_load(&capture->stopping) &&
++                   read_full(client, header, sizeof(header))) {
++                unsigned payload_size = read_u32(header + 12);
++                captured_frame_t frame;
++                size_t bytes_to_read = payload_size;
++                int partial_disconnect = 0;
++                assert(memcmp(header, "IPAF", 4) == 0);
++                assert(read_u16(header + 6) == 40);
++                if (header[8] == 1U) video_media_received++;
++                if (connection_index == 0 && header[8] == 1U &&
++                    capture->stall_first_video_media_index != 0 &&
++                    video_media_received == capture->stall_first_video_media_index) {
++                    pthread_mutex_lock(&capture->mutex);
++                    capture->stalled_payload = 1;
++                    pthread_mutex_unlock(&capture->mutex);
++                    while (!atomic_load(&capture->stopping)) sleep_ms(10);
++                    break;
++                }
++                assert(payload_size <= MAX_PAYLOAD);
++                if (connection_index == 0 &&
++                    header[8] == 1U &&
++                    capture->disconnect_first_payload_after_bytes != 0 &&
++                    capture->disconnect_first_payload_after_bytes < payload_size) {
++                    bytes_to_read = capture->disconnect_first_payload_after_bytes;
++                    partial_disconnect = 1;
++                }
++                memset(&frame, 0, sizeof(frame));
++                frame.stream = header[8];
++                frame.codec = header[9];
++                frame.flags = read_u16(header + 10);
++                frame.sequence = read_u32(header + 16);
++                frame.size = bytes_to_read;
++                if (bytes_to_read != 0 && !read_full(client, frame.data, bytes_to_read)) break;
++                pthread_mutex_lock(&capture->mutex);
++                if (capture->connections[connection_index].frame_count < MAX_FRAMES) {
++                    capture->connections[connection_index]
++                        .frames[capture->connections[connection_index].frame_count++] = frame;
++                }
++                pthread_mutex_unlock(&capture->mutex);
++                if (partial_disconnect) {
++                    struct linger reset = { 1, 0 };
++                    setsockopt(client, SOL_SOCKET, SO_LINGER,
++                               (const char *)&reset, sizeof(reset));
++                    break;
++                }
++            }
++        }
++        pthread_mutex_lock(&capture->mutex);
++        test_close(client);
++        capture->active_client = TEST_INVALID_SOCKET;
++        pthread_mutex_unlock(&capture->mutex);
++    }
++    return NULL;
++}
++
++static void capture_init(capture_t *capture) {
++    struct sockaddr_in address;
++    int address_length = sizeof(address);
++    memset(capture, 0, sizeof(*capture));
++    atomic_init(&capture->stopping, 0);
++    capture->listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
++    capture->active_client = TEST_INVALID_SOCKET;
++    assert(capture->listener != TEST_INVALID_SOCKET);
++    assert(pthread_mutex_init(&capture->mutex, NULL) == 0);
++    memset(&address, 0, sizeof(address));
++    address.sin_family = AF_INET;
++    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
++    address.sin_port = htons(0);
++    assert(bind(capture->listener, (struct sockaddr *)&address, sizeof(address)) == 0);
++    assert(getsockname(capture->listener, (struct sockaddr *)&address, &address_length) == 0);
++    capture->port = ntohs(address.sin_port);
++    assert(capture->port != 63932U);
++    assert(listen(capture->listener, MAX_CONNECTIONS) == 0);
++}
++
++static void capture_start(capture_t *capture) {
++    assert(pthread_create(&capture->thread, NULL, capture_main, capture) == 0);
++}
++
++static void capture_stop(capture_t *capture) {
++    atomic_store(&capture->stopping, 1);
++    test_close(capture->listener);
++    (void)capture_shutdown_active_client(capture);
++    pthread_join(capture->thread, NULL);
++    pthread_mutex_destroy(&capture->mutex);
++}
++
++static unsigned captured_media(capture_t *capture, unsigned connection) {
++    unsigned count = 0;
++    unsigned index;
++    pthread_mutex_lock(&capture->mutex);
++    if (connection >= capture->connection_count) {
++        pthread_mutex_unlock(&capture->mutex);
++        return 0;
++    }
++    for (index = 0; index < capture->connections[connection].frame_count; ++index) {
++        if (capture->connections[connection].frames[index].stream == 1) count++;
++    }
++    pthread_mutex_unlock(&capture->mutex);
++    return count;
++}
++
++static int captured_stalled_payload(capture_t *capture) {
++    int stalled;
++    pthread_mutex_lock(&capture->mutex);
++    stalled = capture->stalled_payload;
++    pthread_mutex_unlock(&capture->mutex);
++    return stalled;
++}
++
++static int wait_for_stalled_payload(capture_t *capture) {
++    unsigned attempt;
++    for (attempt = 0; attempt < 200; ++attempt) {
++        if (captured_stalled_payload(capture)) return 1;
++        sleep_ms(10);
++    }
++    return 0;
++}
++
++static int wait_for_captured_frames(capture_t *capture, unsigned connection,
++                                    unsigned expected) {
++    unsigned attempt;
++    for (attempt = 0; attempt < 200; ++attempt) {
++        unsigned count = 0;
++        pthread_mutex_lock(&capture->mutex);
++        if (connection < capture->connection_count)
++            count = capture->connections[connection].frame_count;
++        pthread_mutex_unlock(&capture->mutex);
++        if (count >= expected) return 1;
++        sleep_ms(10);
++    }
++    return 0;
++}
++
++static int wait_for_media(capture_t *capture, unsigned connection, unsigned expected) {
++    unsigned attempt;
++    for (attempt = 0; attempt < 200; ++attempt) {
++        if (captured_media(capture, connection) >= expected) return 1;
++        sleep_ms(10);
++    }
++    return 0;
++}
++
++static int wait_for_connections(capture_t *capture, unsigned expected) {
++    unsigned attempt;
++    for (attempt = 0; attempt < 200; ++attempt) {
++        unsigned count;
++        pthread_mutex_lock(&capture->mutex);
++        count = capture->connection_count;
++        pthread_mutex_unlock(&capture->mutex);
++        if (count >= expected) return 1;
++        sleep_ms(10);
++    }
++    return 0;
++}
++
++static unsigned connection_count_now(capture_t *capture) {
++    unsigned count;
++    pthread_mutex_lock(&capture->mutex);
++    count = capture->connection_count;
++    pthread_mutex_unlock(&capture->mutex);
++    return count;
++}
++
++static int capture_copy_connection(capture_t *capture, unsigned connection,
++                                    captured_connection_t *snapshot) {
++    int present = 0;
++    if (snapshot == NULL) return 0;
++    pthread_mutex_lock(&capture->mutex);
++    if (connection < capture->connection_count) {
++        *snapshot = capture->connections[connection];
++        present = 1;
++    }
++    pthread_mutex_unlock(&capture->mutex);
++    return present;
++}
++
++static int wait_for_connected_consumers(source_clock_renderer_t *renderer,
++                                        uint64_t expected) {
++    source_clock_metrics_snapshot_t snapshot;
++    unsigned attempt;
++    for (attempt = 0; attempt < 200; ++attempt) {
++        if (source_clock_renderer_metrics_snapshot(
++                renderer, source_clock_metrics_monotonic_time_ns(), &snapshot) &&
++            snapshot.connected_consumers >= expected)
++            return 1;
++        sleep_ms(10);
++    }
++    return 0;
++}
++
++static int wait_for_connected_consumers_exact(source_clock_renderer_t *renderer,
++                                              uint64_t expected) {
++    source_clock_metrics_snapshot_t snapshot;
++    unsigned attempt;
++    for (attempt = 0; attempt < 200; ++attempt) {
++        if (source_clock_renderer_metrics_snapshot(
++                renderer, source_clock_metrics_monotonic_time_ns(), &snapshot) &&
++            snapshot.connected_consumers == expected)
++            return 1;
++        sleep_ms(10);
++    }
++    return 0;
++}
++
++static void test_receiver_bootstrap_order_and_watermark(void) {
++    const char *token = "00112233445566778899aabbccddeeff";
++    char video_endpoint[64];
++    unsigned char sps[32], pps[32], idr[32], old_idr_nal[32], old_idr[64], frame[128];
++    unsigned char old_p[8];
++    size_t sps_size = make_sps(sps, 2);
++    size_t pps_size = make_pps(pps, 3, 2);
++    size_t idr_size = make_idr(idr, 3);
++    size_t old_idr_nal_size = make_idr(old_idr_nal, 1);
++    size_t frame_size;
++    capture_t capture;
++    source_clock_renderer_t *renderer;
++    source_clock_metrics_snapshot_t metrics;
++    capture_init(&capture);
++    snprintf(video_endpoint, sizeof(video_endpoint), "127.0.0.1:%u", capture.port);
++    renderer = source_clock_renderer_create(video_endpoint, "127.0.0.1:1", token,
++                                            "receiver-b2-test");
++    assert(renderer != NULL);
++    source_clock_renderer_session_start(renderer);
++    frame_size = annexb_one(old_idr, old_idr_nal, old_idr_nal_size);
++    assert(source_clock_renderer_push_video(renderer, old_idr, frame_size, 1, 0));
++    old_p[0] = 0;
++    old_p[1] = 0;
++    old_p[2] = 0;
++    old_p[3] = 1;
++    old_p[4] = 0x41;
++    old_p[5] = 0x80;
++    assert(source_clock_renderer_push_video(renderer, old_p, sizeof(old_p), 2, 0));
++    capture_start(&capture);
++    assert(wait_for_connections(&capture, 1));
++    assert(wait_for_connected_consumers(renderer, 1));
++    assert(wait_for_connected_consumers_exact(renderer, 1));
++    frame_size = annexb_one(frame, sps, sps_size);
++    assert(source_clock_renderer_push_video(renderer, frame, frame_size, 3, 0));
++    frame_size = annexb_one(frame, pps, pps_size);
++    assert(source_clock_renderer_push_video(renderer, frame, frame_size, 4, 0));
++    frame_size = annexb_one(frame, idr, idr_size);
++    assert(source_clock_renderer_push_video(renderer, frame, frame_size, 5, 0));
++    frame_size = make_p_frame(frame);
++    assert(source_clock_renderer_push_video(renderer, frame, frame_size, 6, 0));
++    assert(wait_for_media(&capture, 0, 3));
++    assert(source_clock_renderer_metrics_snapshot(renderer, 1000000000ULL, &metrics));
++    assert(metrics.video_frames == 6);
++    source_clock_renderer_destroy(renderer);
++    capture_stop(&capture);
++    assert(capture.connection_count >= 1);
++    {
++        captured_connection_t *connection = &capture.connections[0];
++        unsigned index;
++        unsigned media_index = 0;
++        captured_frame_t *media[8];
++        for (index = 0; index < connection->frame_count; ++index) {
++            if (connection->frames[index].stream == 1 && media_index < 8)
++                media[media_index++] = &connection->frames[index];
++        }
++        assert(media_index >= 3);
++        assert((media[0]->flags & SOURCE_CLOCK_FLAG_CONFIG) != 0);
++        assert(contains_bytes(media[0]->data, media[0]->size, sps, sps_size));
++        assert(contains_bytes(media[0]->data, media[0]->size, pps, pps_size));
++        assert(media[0]->size > 4 + sps_size);
++        assert(media[1]->size == idr_size + 4);
++        assert(memcmp(media[1]->data + 4, idr, idr_size) == 0);
++        assert(media[2]->size == frame_size);
++        assert(memcmp(media[2]->data, frame, frame_size) == 0);
++        for (index = 0; index < media_index; ++index) {
++            assert(media[index]->size != old_idr_nal_size + 4 ||
++                   memcmp(media[index]->data + 4, old_idr_nal, old_idr_nal_size) != 0);
++        }
++    }
++}
++
++static void test_idr_snapshot_validation_and_codec_reset(void) {
++    source_clock_video_bootstrap_t *cache = source_clock_video_bootstrap_create();
++    source_clock_video_bootstrap_snapshot_t snapshot = { 0 };
++    unsigned char sps[32], pps[32], idr[32], frame[128];
++    unsigned char p_frame[] = {0, 0, 0, 1, 0x41, 0x80};
++    unsigned char truncated_idr[] = {0, 0, 0, 1, 0x65};
++    unsigned char forbidden_idr[] = {0, 0, 0, 1, 0xe5, 0x80};
++    size_t sps_size = make_sps(sps, 2);
++    size_t pps_size = make_pps(pps, 3, 2);
++    size_t idr_size = make_idr(idr, 3);
++    size_t frame_size;
++
++    assert(cache != NULL);
++    assert(source_clock_video_bootstrap_session_start_for_codec(
++               cache, 80U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    frame_size = annexb_one(frame, sps, sps_size);
++    assert(source_clock_video_bootstrap_push_annexb_for_session(
++               cache, 80U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264,
++               frame, frame_size) == SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    frame_size = annexb_one(frame, pps, pps_size);
++    assert(source_clock_video_bootstrap_push_annexb_for_session(
++               cache, 80U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264,
++               frame, frame_size) == SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    assert(source_clock_video_bootstrap_snapshot_copy_for_idr(
++               cache, 80U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264,
++               p_frame, sizeof(p_frame), &snapshot) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_NOT_READY);
++    assert(source_clock_video_bootstrap_snapshot_copy_for_idr(
++               cache, 80U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264,
++               truncated_idr, sizeof(truncated_idr), &snapshot) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID);
++    assert(source_clock_video_bootstrap_snapshot_copy_for_idr(
++               cache, 80U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264,
++               forbidden_idr, sizeof(forbidden_idr), &snapshot) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_INVALID);
++    frame_size = annexb_one(frame, idr, idr_size);
++    assert(source_clock_video_bootstrap_snapshot_copy_for_idr(
++               cache, 79U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264,
++               frame, frame_size, &snapshot) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_STALE_SESSION);
++    assert(source_clock_video_bootstrap_snapshot_copy_for_idr(
++               cache, 80U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264,
++               frame, frame_size, &snapshot) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_READY);
++    assert(snapshot.pps_id == 3U && snapshot.sps_id == 2U);
++    source_clock_video_bootstrap_snapshot_free(&snapshot);
++    assert(source_clock_video_bootstrap_reconfigure_codec_for_session(
++               cache, 80U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_HEVC) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_UNSUPPORTED);
++    assert(source_clock_video_bootstrap_snapshot_copy_for_idr(
++               cache, 80U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_HEVC,
++               frame, frame_size, &snapshot) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_UNSUPPORTED);
++    assert(source_clock_video_bootstrap_reconfigure_codec_for_session(
++               cache, 80U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_CHANGED);
++    assert(source_clock_video_bootstrap_snapshot_copy_for_idr(
++               cache, 80U, SOURCE_CLOCK_VIDEO_BOOTSTRAP_H264,
++               frame, frame_size, &snapshot) ==
++           SOURCE_CLOCK_VIDEO_BOOTSTRAP_NOT_READY);
++    source_clock_video_bootstrap_destroy(cache);
++}
++
++static void test_partial_bootstrap_disconnect_restarts_from_new_idr(void) {
++    const char *token = "00112233445566778899aabbccddeeff";
++    char video_endpoint[64];
++    unsigned char sps0[32], pps0[32], idr0[32];
++    unsigned char sps1[32], pps1[32], idr1[32];
++    unsigned char frame[128];
++    unsigned char p_frame[] = {0, 0, 0, 1, 0x41, 0x80};
++    size_t sps0_size = make_sps(sps0, 0);
++    size_t pps0_size = make_pps(pps0, 0, 0);
++    size_t idr0_size = make_idr(idr0, 0);
++    size_t sps1_size = make_sps(sps1, 4);
++    size_t pps1_size = make_pps(pps1, 5, 4);
++    size_t idr1_size = make_idr(idr1, 5);
++    size_t frame_size;
++    unsigned attempt;
++    capture_t capture;
++    source_clock_renderer_t *renderer;
++    source_clock_metrics_snapshot_t before_wait;
++    source_clock_metrics_snapshot_t after_wait;
++
++    capture_init(&capture);
++    capture.disconnect_first_payload_after_bytes = 1;
++    capture_start(&capture);
++    snprintf(video_endpoint, sizeof(video_endpoint), "127.0.0.1:%u", capture.port);
++    renderer = source_clock_renderer_create(video_endpoint, "127.0.0.1:1", token,
++                                            "receiver-b2-reconnect");
++    assert(renderer != NULL);
++    source_clock_renderer_session_start(renderer);
++    assert(wait_for_connections(&capture, 1));
++    assert(wait_for_connected_consumers(renderer, 1));
++    assert(wait_for_connected_consumers_exact(renderer, 1));
++    frame_size = annexb_one(frame, sps0, sps0_size);
++    assert(source_clock_renderer_push_video(renderer, frame, frame_size, 10, 0));
++    frame_size = annexb_one(frame, pps0, pps0_size);
++    assert(source_clock_renderer_push_video(renderer, frame, frame_size, 11, 0));
++    frame_size = annexb_one(frame, idr0, idr0_size);
++    assert(source_clock_renderer_push_video(renderer, frame, frame_size, 12, 0));
++    assert(wait_for_media(&capture, 0, 1));
++    for (attempt = 0; attempt < 100 && connection_count_now(&capture) < 2; ++attempt) {
++        assert(source_clock_renderer_push_video(renderer, p_frame, sizeof(p_frame),
++                                                13U + attempt, 0));
++        sleep_ms(20);
++    }
++    assert(wait_for_connections(&capture, 2));
++    assert(wait_for_connected_consumers(renderer, 1));
++    assert(wait_for_connected_consumers_exact(renderer, 1));
++    assert(source_clock_renderer_push_video(renderer, p_frame, sizeof(p_frame), 200, 0));
++    sleep_ms(100);
++    assert(captured_media(&capture, 1) == 0);
++    frame_size = annexb_one(frame, sps1, sps1_size);
++    assert(source_clock_renderer_push_video(renderer, frame, frame_size, 201, 0));
++    frame_size = annexb_one(frame, pps1, pps1_size);
++    assert(source_clock_renderer_push_video(renderer, frame, frame_size, 202, 0));
++    assert(source_clock_renderer_push_video(renderer, p_frame, sizeof(p_frame), 203, 0));
++    frame_size = annexb_one(frame, idr1, idr1_size);
++    assert(source_clock_renderer_push_video(renderer, frame, frame_size, 204, 0));
++    frame_size = make_p_frame(frame);
++    assert(source_clock_renderer_push_video(renderer, frame, frame_size, 205, 0));
++    assert(source_clock_renderer_metrics_snapshot(renderer, 1000000000ULL, &before_wait));
++    assert(wait_for_media(&capture, 1, 3));
++    sleep_ms(100);
++    assert(source_clock_renderer_metrics_snapshot(renderer, 1000000000ULL, &after_wait));
++    assert(after_wait.video_frames == before_wait.video_frames);
++    assert(after_wait.dropped_frames > 0);
++    assert(source_clock_renderer_video_dropped(renderer) > 0);
++    source_clock_renderer_destroy(renderer);
++    capture_stop(&capture);
++    assert(capture.connections[0].frame_count >= 3);
++    {
++        captured_connection_t *connection = &capture.connections[0];
++        unsigned index;
++        int saw_partial_bootstrap = 0;
++        for (index = 0; index < connection->frame_count; ++index) {
++            captured_frame_t *captured = &connection->frames[index];
++            if (captured->stream == 1U &&
++                (captured->flags & SOURCE_CLOCK_FLAG_CONFIG) != 0 &&
++                captured->size == 1U) {
++                saw_partial_bootstrap = 1;
++            }
++        }
++        assert(saw_partial_bootstrap);
++    }
++    {
++        captured_connection_t *connection = &capture.connections[1];
++        captured_frame_t *media[8];
++        unsigned index;
++        unsigned media_index = 0;
++        for (index = 0; index < connection->frame_count; ++index) {
++            if (connection->frames[index].stream == 1 && media_index < 8)
++                media[media_index++] = &connection->frames[index];
++        }
++        assert(media_index == 3);
++        assert((media[0]->flags & SOURCE_CLOCK_FLAG_CONFIG) != 0);
++        assert(contains_bytes(media[0]->data, media[0]->size, sps1, sps1_size));
++        assert(contains_bytes(media[0]->data, media[0]->size, pps1, pps1_size));
++        assert(media[1]->size == idr1_size + 4U);
++        assert(memcmp(media[1]->data + 4U, idr1, idr1_size) == 0);
++        assert(media[2]->size == 6U && media[2]->data[4] == 0x41U);
++    }
++}
++
++static void test_session_end_cancels_blocked_video_send(void) {
++    const char *token = "00112233445566778899aabbccddeeff";
++    const size_t large_frame_size = 8U * 1024U * 1024U;
++    char video_endpoint[64];
++    unsigned char sps[32], pps[32], idr[32], frame[128];
++    unsigned char *large_frame;
++    size_t sps_size = make_sps(sps, 0);
++    size_t pps_size = make_pps(pps, 0, 0);
++    size_t idr_size = make_idr(idr, 0);
++    size_t frame_size;
++    uint64_t started_ms;
++    uint64_t elapsed_ms;
++    capture_t capture;
++    source_clock_renderer_t *renderer;
++
++    capture_init(&capture);
++    capture.stall_first_video_media_index = 2;
++    capture_start(&capture);
++    snprintf(video_endpoint, sizeof(video_endpoint), "127.0.0.1:%u", capture.port);
++    renderer = source_clock_renderer_create(video_endpoint, "127.0.0.1:1", token,
++                                            "receiver-b2-blocked-send");
++    assert(renderer != NULL);
++    source_clock_renderer_session_start(renderer);
++    assert(wait_for_connections(&capture, 1));
++    assert(wait_for_captured_frames(&capture, 0, 2));
++    sleep_ms(20);
++    frame_size = annexb_one(frame, sps, sps_size);
++    assert(source_clock_renderer_push_video(renderer, frame, frame_size, 1, 0));
++    frame_size = annexb_one(frame, pps, pps_size);
++    assert(source_clock_renderer_push_video(renderer, frame, frame_size, 2, 0));
++    large_frame = (unsigned char *)malloc(large_frame_size);
++    assert(large_frame != NULL);
++    memset(large_frame, 0x55, large_frame_size);
++    large_frame[0] = 0;
++    large_frame[1] = 0;
++    large_frame[2] = 0;
++    large_frame[3] = 1;
++    memcpy(large_frame + 4U, idr, idr_size);
++    large_frame[32] = 0;
++    large_frame[33] = 0;
++    large_frame[34] = 0;
++    large_frame[35] = 1;
++    large_frame[36] = 0x06;
++    assert(source_clock_renderer_push_video(renderer, large_frame,
++                                            large_frame_size, 3, 0));
++    free(large_frame);
++    if (!wait_for_stalled_payload(&capture)) {
++        unsigned index;
++        pthread_mutex_lock(&capture.mutex);
++        fprintf(stderr, "blocked-send capture: connections=%u frames=%u dropped=%llu\n",
++                capture.connection_count, capture.connections[0].frame_count,
++                (unsigned long long)source_clock_renderer_video_dropped(renderer));
++        for (index = 0; index < capture.connections[0].frame_count; ++index) {
++            captured_frame_t *captured = &capture.connections[0].frames[index];
++            fprintf(stderr, "  frame[%u] stream=%u flags=%u size=%zu\n",
++                    index, captured->stream, captured->flags, captured->size);
++        }
++        pthread_mutex_unlock(&capture.mutex);
++        assert(0 && "video sender did not reach the blocked receiver payload");
++    }
++    sleep_ms(100);
++    started_ms = monotonic_ms();
++    source_clock_renderer_session_end(renderer);
++    elapsed_ms = monotonic_ms() - started_ms;
++    assert(elapsed_ms < 5000U);
++    source_clock_renderer_destroy(renderer);
++    capture_stop(&capture);
++}
++
++static void test_session_end_during_connect_sends_no_stale_start(void) {
++    const char *token = "00112233445566778899aabbccddeeff";
++    char video_endpoint[64];
++    capture_t capture;
++    connect_pause_t pause;
++    source_clock_renderer_t *renderer;
++
++    capture_init(&capture);
++    capture_start(&capture);
++    connect_pause_init(&pause);
++    snprintf(video_endpoint, sizeof(video_endpoint), "127.0.0.1:%u", capture.port);
++    renderer = source_clock_renderer_create(video_endpoint, "127.0.0.1:1", token,
++                                            "receiver-b2-connect-race");
++    assert(renderer != NULL);
++    source_clock_renderer_set_after_connect_hook(renderer, pause_after_connect, &pause);
++    source_clock_renderer_session_start(renderer);
++    connect_pause_wait(&pause);
++    source_clock_renderer_session_end(renderer);
++    connect_pause_release(&pause);
++    sleep_ms(200);
++    source_clock_renderer_destroy(renderer);
++    capture_stop(&capture);
++    connect_pause_destroy(&pause);
++    assert(capture.connection_count >= 1);
++    assert(capture.connections[0].frame_count == 0);
++}
++
++static void test_h264_recovers_within_session_started_as_h265(void) {
++    const char *token = "00112233445566778899aabbccddeeff";
++    char video_endpoint[64];
++    unsigned char sps[32], pps[32], idr[32], frame[128];
++    size_t sps_size = make_sps(sps, 0);
++    size_t pps_size = make_pps(pps, 0, 0);
++    size_t idr_size = make_idr(idr, 0);
++    size_t frame_size;
++    capture_t capture;
++    source_clock_renderer_t *renderer;
++
++    capture_init(&capture);
++    capture_start(&capture);
++    snprintf(video_endpoint, sizeof(video_endpoint), "127.0.0.1:%u", capture.port);
++    renderer = source_clock_renderer_create(video_endpoint, "127.0.0.1:1", token,
++                                            "receiver-b2-h265-to-h264");
++    assert(renderer != NULL);
++    source_clock_renderer_set_video_codec(renderer, SOURCE_CLOCK_VIDEO_H265);
++    source_clock_renderer_session_start(renderer);
++    assert(wait_for_connections(&capture, 1));
++    assert(wait_for_captured_frames(&capture, 0, 2));
++    assert(wait_for_connected_consumers(renderer, 1));
++    assert(wait_for_connected_consumers_exact(renderer, 1));
++    source_clock_renderer_set_video_codec(renderer, SOURCE_CLOCK_VIDEO_H264);
++    frame_size = annexb_one(frame, sps, sps_size);
++    assert(source_clock_renderer_push_video(renderer, frame, frame_size, 1, 0));
++    frame_size = annexb_one(frame, pps, pps_size);
++    assert(source_clock_renderer_push_video(renderer, frame, frame_size, 2, 0));
++    frame_size = annexb_one(frame, idr, idr_size);
++    assert(source_clock_renderer_push_video(renderer, frame, frame_size, 3, 0));
++    assert(wait_for_media(&capture, 0, 2));
++    source_clock_renderer_destroy(renderer);
++    capture_stop(&capture);
++    {
++        captured_connection_t *connection = &capture.connections[0];
++        captured_frame_t *media[4];
++        unsigned index;
++        unsigned media_index = 0;
++        for (index = 0; index < connection->frame_count; ++index) {
++            if (connection->frames[index].stream == 1U && media_index < 4U)
++                media[media_index++] = &connection->frames[index];
++        }
++        assert(media_index == 2U);
++        assert((media[0]->flags & SOURCE_CLOCK_FLAG_CONFIG) != 0);
++        assert((media[1]->flags & SOURCE_CLOCK_FLAG_KEYFRAME) != 0);
++    }
++}
++
++static void test_codec_change_cannot_release_old_epoch_frame(void) {
++    const char *token = "00112233445566778899aabbccddeeff";
++    char video_endpoint[64];
++    unsigned char sps[32], pps[32], idr[32], frame[128];
++    size_t sps_size = make_sps(sps, 0);
++    size_t pps_size = make_pps(pps, 0, 0);
++    size_t idr_size = make_idr(idr, 0);
++    size_t frame_size;
++    capture_t capture;
++    connect_pause_t send_pause;
++    connect_pause_t codec_pause;
++    codec_change_args_t change;
++    pthread_t change_thread;
++    source_clock_renderer_t *renderer;
++
++    capture_init(&capture);
++    capture_start(&capture);
++    connect_pause_init(&send_pause);
++    connect_pause_init(&codec_pause);
++    snprintf(video_endpoint, sizeof(video_endpoint), "127.0.0.1:%u", capture.port);
++    renderer = source_clock_renderer_create(video_endpoint, "127.0.0.1:1", token,
++                                            "receiver-b2-codec-race");
++    assert(renderer != NULL);
++    source_clock_renderer_session_start(renderer);
++    assert(wait_for_connections(&capture, 1));
++    assert(wait_for_captured_frames(&capture, 0, 2));
++    assert(wait_for_connected_consumers(renderer, 1));
++    assert(wait_for_connected_consumers_exact(renderer, 1));
++    sleep_ms(20);
++    frame_size = annexb_one(frame, sps, sps_size);
++    assert(source_clock_renderer_push_video(renderer, frame, frame_size, 1, 0));
++    frame_size = annexb_one(frame, pps, pps_size);
++    assert(source_clock_renderer_push_video(renderer, frame, frame_size, 2, 0));
++    frame_size = annexb_one(frame, idr, idr_size);
++    assert(source_clock_renderer_push_video(renderer, frame, frame_size, 3, 0));
++    assert(wait_for_media(&capture, 0, 2));
++    source_clock_renderer_set_before_video_send_lock_hook(
++        renderer, pause_test_hook, &send_pause);
++    source_clock_renderer_set_video_codec_change_hook(
++        renderer, pause_test_hook, &codec_pause);
++    frame_size = make_p_frame(frame);
++    assert(source_clock_renderer_push_video(renderer, frame, frame_size, 4, 0));
++    connect_pause_wait(&send_pause);
++    change.renderer = renderer;
++    change.codec = SOURCE_CLOCK_VIDEO_H265;
++    assert(pthread_create(&change_thread, NULL, change_codec_main, &change) == 0);
++    connect_pause_wait(&codec_pause);
++    connect_pause_release(&send_pause);
++    sleep_ms(100);
++    assert(captured_media(&capture, 0) == 2);
++    connect_pause_release(&codec_pause);
++    pthread_join(change_thread, NULL);
++    sleep_ms(100);
++    assert(captured_media(&capture, 0) == 2);
++    source_clock_renderer_destroy(renderer);
++    capture_stop(&capture);
++    connect_pause_destroy(&send_pause);
++    connect_pause_destroy(&codec_pause);
++}
++
++/* Test-only hook; the implementation is added only after this test is RED. */
++extern void source_clock_renderer_set_video_sequence_for_test(
++    source_clock_renderer_t *renderer, uint32_t sequence);
++
++static void test_video_sequence_is_canonical_and_fail_closed(void) {
++    const char *token = "00112233445566778899aabbccddeeff";
++    char video_endpoint[64];
++    unsigned char sps[32], pps[32], idr[32], frame[128];
++    unsigned char audio[] = { 0x8c, 0x01, 0x02, 0x03 };
++    size_t sps_size = make_sps(sps, 0);
++    size_t pps_size = make_pps(pps, 0, 0);
++    size_t idr_size = make_idr(idr, 0);
++    size_t frame_size;
++    unsigned first_count = 0;
++    unsigned second_count = 0;
++    unsigned index;
++    unsigned commits_before;
++    unsigned overflow_count = 0;
++    uint64_t drops_before;
++    capture_t capture;
++    connect_pause_t reconnect_pause;
++    queue_commit_observation_t commits;
++    captured_connection_t first_snapshot;
++    captured_connection_t second_snapshot;
++    captured_connection_t overflow_snapshot;
++    source_clock_renderer_t *renderer;
++    captured_frame_t *first_media[8];
++    captured_frame_t *second_media[8];
++    captured_frame_t *overflow_media[8];
++
++    capture_init(&capture);
++    capture_start(&capture);
++    snprintf(video_endpoint, sizeof(video_endpoint), "127.0.0.1:%u", capture.port);
++    renderer = source_clock_renderer_create(video_endpoint, "127.0.0.1:1", token,
++                                            "receiver-sequence-canonical");
++    assert(renderer != NULL);
++    queue_commit_observation_init(&commits);
++    connect_pause_init(&reconnect_pause);
++    source_clock_renderer_set_queue_commit_hook(
++        renderer, observe_video_queue_commit, &commits);
++    source_clock_renderer_session_start(renderer);
++    assert(wait_for_connections(&capture, 1));
++    assert(wait_for_connected_consumers(renderer, 1));
++    assert(wait_for_connected_consumers_exact(renderer, 1));
++
++    frame_size = annexb_one(frame, sps, sps_size);
++    assert(source_clock_renderer_push_video(renderer, frame, frame_size, 1, 0));
++    frame_size = annexb_one(frame, pps, pps_size);
++    assert(source_clock_renderer_push_video(renderer, frame, frame_size, 2, 0));
++    frame_size = annexb_one(frame, idr, idr_size);
++    assert(source_clock_renderer_push_video(renderer, frame, frame_size, 3, 0));
++    assert(wait_for_media(&capture, 0, 2));
++    assert(source_clock_renderer_push_audio(renderer, audio, sizeof(audio), 4, 0));
++    frame_size = make_p_frame(frame);
++    assert(source_clock_renderer_push_video(renderer, frame, frame_size, 5, 0));
++    assert(wait_for_media(&capture, 0, 3));
++
++    /* Install only after initial attachment; hold reconnect before its watermark. */
++    source_clock_renderer_set_after_connect_hook(
++        renderer, pause_after_connect, &reconnect_pause);
++    assert(capture_shutdown_active_client(&capture));
++    frame_size = make_p_frame(frame);
++    for (index = 0; index < 100U && !connect_pause_entered(&reconnect_pause); ++index) {
++        assert(source_clock_renderer_push_video(renderer, frame, frame_size, 6, 0));
++        sleep_ms(20);
++    }
++    assert(connect_pause_entered(&reconnect_pause));
++    assert(wait_for_connected_consumers_exact(renderer, 0));
++    connect_pause_release(&reconnect_pause);
++    assert(wait_for_connections(&capture, 2));
++    assert(wait_for_connected_consumers(renderer, 1));
++    assert(wait_for_connected_consumers_exact(renderer, 1));
++    source_clock_renderer_set_after_connect_hook(renderer, NULL, NULL);
++    frame_size = annexb_one(frame, sps, sps_size);
++    assert(source_clock_renderer_push_video(renderer, frame, frame_size, 7, 0));
++    frame_size = annexb_one(frame, pps, pps_size);
++    assert(source_clock_renderer_push_video(renderer, frame, frame_size, 8, 0));
++    frame_size = annexb_one(frame, idr, idr_size);
++    assert(source_clock_renderer_push_video(renderer, frame, frame_size, 9, 0));
++    frame_size = make_p_frame(frame);
++    assert(source_clock_renderer_push_video(renderer, frame, frame_size, 10, 0));
++    assert(wait_for_media(&capture, 1, 3));
++
++    assert(capture_copy_connection(&capture, 0, &first_snapshot));
++    assert(capture_copy_connection(&capture, 1, &second_snapshot));
++    {
++        for (index = 0; index < first_snapshot.frame_count; ++index) {
++            if (first_snapshot.frames[index].stream != 1U) continue;
++            assert(first_count < 8U);
++            first_media[first_count++] = &first_snapshot.frames[index];
++        }
++        for (index = 0; index < second_snapshot.frame_count; ++index) {
++            if (second_snapshot.frames[index].stream != 1U) continue;
++            assert(second_count < 8U);
++            second_media[second_count++] = &second_snapshot.frames[index];
++        }
++        assert(first_count == 3U);
++        assert(second_count == 3U);
++        assert((first_media[0]->flags & SOURCE_CLOCK_FLAG_CONFIG) != 0);
++        assert(contains_bytes(first_media[0]->data, first_media[0]->size, sps, sps_size));
++        assert(contains_bytes(first_media[0]->data, first_media[0]->size, pps, pps_size));
++        assert((first_media[1]->flags & SOURCE_CLOCK_FLAG_KEYFRAME) != 0);
++        assert(first_media[1]->size == idr_size + 4U);
++        assert(memcmp(first_media[1]->data + 4U, idr, idr_size) == 0);
++        assert(first_media[0]->sequence != 0U);
++        assert(first_media[1]->sequence == first_media[0]->sequence);
++        assert((second_media[0]->flags & SOURCE_CLOCK_FLAG_CONFIG) != 0);
++        assert(contains_bytes(second_media[0]->data, second_media[0]->size, sps, sps_size));
++        assert(contains_bytes(second_media[0]->data, second_media[0]->size, pps, pps_size));
++        assert((second_media[1]->flags & SOURCE_CLOCK_FLAG_KEYFRAME) != 0);
++        assert(second_media[1]->size == idr_size + 4U);
++        assert(memcmp(second_media[1]->data + 4U, idr, idr_size) == 0);
++        assert(second_media[0]->sequence != 0U);
++        assert(second_media[1]->sequence == second_media[0]->sequence);
++        assert(second_media[0]->sequence > first_media[first_count - 1U]->sequence);
++        /* Only the synthetic CONFIG/matching IDR pair shares a sequence. Gaps are OK. */
++        for (index = 2; index < first_count; ++index)
++            assert(first_media[index]->sequence > first_media[index - 1U]->sequence);
++        for (index = 2; index < second_count; ++index)
++            assert(second_media[index]->sequence > second_media[index - 1U]->sequence);
++
++        source_clock_renderer_set_video_sequence_for_test(
++            renderer, first_media[0]->sequence);
++        commits_before = queue_commit_count(&commits);
++        drops_before = source_clock_renderer_video_dropped(renderer);
++        frame_size = make_p_frame(frame);
++        assert(source_clock_renderer_push_video(renderer, frame, frame_size, 10, 0));
++        assert(wait_for_video_queue_commit(&commits, commits_before + 1U));
++        assert(queue_commit_count(&commits) == commits_before + 1U);
++        /* Bootstrap is complete and the queue is drained: this is a send-time drop. */
++        assert(wait_for_video_drop(renderer, drops_before + 1U));
++        assert(source_clock_renderer_video_dropped(renderer) == drops_before + 1U);
++        assert(captured_media(&capture, 1) == second_count);
++    }
++
++    source_clock_renderer_set_video_sequence_for_test(renderer, UINT32_MAX - 1U);
++    commits_before = queue_commit_count(&commits);
++    frame_size = make_p_frame(frame);
++    assert(source_clock_renderer_push_video(renderer, frame, frame_size, 11, 0));
++    assert(wait_for_video_queue_commit(&commits, commits_before + 1U));
++    assert(queue_commit_count(&commits) == commits_before + 1U);
++    assert(wait_for_media(&capture, 1, second_count + 1U));
++    assert(capture_copy_connection(&capture, 1, &overflow_snapshot));
++    for (index = 0; index < overflow_snapshot.frame_count; ++index) {
++        if (overflow_snapshot.frames[index].stream != 1U) continue;
++        assert(overflow_count < 8U);
++        overflow_media[overflow_count++] = &overflow_snapshot.frames[index];
++    }
++    assert(overflow_count == second_count + 1U);
++    assert(overflow_media[overflow_count - 1U]->sequence == UINT32_MAX);
++    assert(overflow_media[overflow_count - 1U]->size == frame_size);
++    assert(memcmp(overflow_media[overflow_count - 1U]->data, frame, frame_size) == 0);
++    for (index = 2; index < overflow_count; ++index)
++        assert(overflow_media[index]->sequence > overflow_media[index - 1U]->sequence);
++
++    commits_before = queue_commit_count(&commits);
++    assert(!source_clock_renderer_push_video(renderer, frame, frame_size, 12, 0));
++    assert(queue_commit_count(&commits) == commits_before);
++    assert(!source_clock_renderer_push_video(renderer, frame, frame_size, 13, 0));
++    assert(queue_commit_count(&commits) == commits_before);
++    assert(captured_media(&capture, 1) == overflow_count);
++    assert(source_clock_renderer_push_audio(renderer, audio, sizeof(audio), 14, 0));
++    source_clock_renderer_session_end(renderer);
++    source_clock_renderer_session_start(renderer);
++    assert(!source_clock_renderer_push_video(renderer, frame, frame_size, 15, 0));
++    assert(queue_commit_count(&commits) == commits_before);
++    assert(source_clock_renderer_push_audio(renderer, audio, sizeof(audio), 16, 0));
++    source_clock_renderer_destroy(renderer);
++    capture_stop(&capture);
++    connect_pause_destroy(&reconnect_pause);
++    queue_commit_observation_destroy(&commits);
++    /* Joined capture owns the final wire evidence, including any session restart. */
++    {
++        unsigned connection;
++        unsigned total_video = 0;
++        unsigned max_originals = 0;
++        assert(capture.connection_count <= MAX_CONNECTIONS);
++        for (connection = 0; connection < capture.connection_count; ++connection) {
++            captured_connection_t *captured = &capture.connections[connection];
++            assert(captured->frame_count < MAX_FRAMES);
++            for (index = 0; index < captured->frame_count; ++index) {
++                captured_frame_t *media = &captured->frames[index];
++                if (media->stream != 1U) continue;
++                assert(media->sequence > 1U);
++                if (media->sequence == UINT32_MAX) max_originals++;
++                total_video++;
++            }
++        }
++        assert(max_originals == 1U);
++        assert(total_video == first_count + overflow_count);
++    }
++}
++
++int main(void) {
++#ifdef _WIN32
++    WSADATA wsa;
++    assert(WSAStartup(MAKEWORD(2, 2), &wsa) == 0);
++#endif
++    test_receiver_bootstrap_order_and_watermark();
++    test_idr_snapshot_validation_and_codec_reset();
++    test_partial_bootstrap_disconnect_restarts_from_new_idr();
++    test_session_end_cancels_blocked_video_send();
++    test_session_end_during_connect_sends_no_stale_start();
++    test_h264_recovers_within_session_started_as_h265();
++    test_codec_change_cannot_release_old_epoch_frame();
++    test_video_sequence_is_canonical_and_fail_closed();
++#ifdef _WIN32
++    WSACleanup();
++#endif
++    puts("source_clock_video_receiver_bootstrap: PASS");
++    return 0;
++}

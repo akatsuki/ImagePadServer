@@ -28,17 +28,6 @@ func TestL16RTPRelayMaintainsClockAndForwardsAudio(t *testing.T) {
 	}
 	defer relay.Close()
 	relay.NotifyVideoActivity()
-	first := readL16Packet(t, output)
-	second := readL16Packet(t, output)
-	if got, want := binary.BigEndian.Uint16(second[2:4]), binary.BigEndian.Uint16(first[2:4])+1; got != want {
-		t.Fatalf("sequence = %d, want %d", got, want)
-	}
-	if got, want := binary.BigEndian.Uint32(second[4:8]), binary.BigEndian.Uint32(first[4:8])+l16FramesPerPacket; got != want {
-		t.Fatalf("timestamp = %d, want %d", got, want)
-	}
-	if !bytes.Equal(first[12:], make([]byte, len(first)-12)) {
-		t.Fatal("initial packet is not silence")
-	}
 
 	source, err := net.DialUDP("udp4", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: inputPort})
 	if err != nil {
@@ -49,23 +38,36 @@ func TestL16RTPRelayMaintainsClockAndForwardsAudio(t *testing.T) {
 	input := make([]byte, 12+len(payload))
 	input[0], input[1] = 0x80, l16PayloadType
 	copy(input[12:], payload)
-	if _, err := source.Write(input); err != nil {
-		t.Fatal(err)
+	for i := 0; i < l16StartupQueuePackets; i++ {
+		if _, err := source.Write(input); err != nil {
+			t.Fatal(err)
+		}
 	}
-	relay.NotifyVideoActivity()
 	forwarded := false
-	for i := 0; i < 8; i++ {
+	var first, second []byte
+	for i := 0; i < l16StartupQueuePackets; i++ {
 		packet := readL16Packet(t, output)
+		if i == 0 {
+			first = packet
+		}
+		if i == 1 {
+			second = packet
+		}
 		if bytes.Equal(packet[12:], payload) {
 			forwarded = true
-			break
 		}
 	}
 	if !forwarded {
 		t.Fatal("real L16 payload was not forwarded")
 	}
+	if got, want := binary.BigEndian.Uint16(second[2:4]), binary.BigEndian.Uint16(first[2:4])+1; got != want {
+		t.Fatalf("sequence = %d, want %d", got, want)
+	}
+	if got, want := binary.BigEndian.Uint32(second[4:8]), binary.BigEndian.Uint32(first[4:8])+l16FramesPerPacket; got != want {
+		t.Fatalf("timestamp = %d, want %d", got, want)
+	}
 	inputCount, outputCount, silenceCount := relay.Stats()
-	if inputCount != 1 || outputCount < 3 || silenceCount < 2 {
+	if inputCount != l16StartupQueuePackets || outputCount < l16StartupQueuePackets || silenceCount != 0 {
 		t.Fatalf("stats input=%d output=%d silence=%d", inputCount, outputCount, silenceCount)
 	}
 }
@@ -142,12 +144,49 @@ func TestL16RTPRelayLeavesOutputPairAvailable(t *testing.T) {
 	defer rtcp.Close()
 }
 
-func TestL16RTPRelayStateReclocksOutputToInputTimestamps(t *testing.T) {
+func TestL16RTPRelayStartsSilenceWhenVideoArrivesWithoutAudio(t *testing.T) {
+	input, err := reserveRTPPortPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputPort := input.port
+	input.close()
+	output, err := reserveRTPPortPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	outputPort := output.port
+	output.close()
+
+	relay, err := startL16RTPRelay(context.Background(), inputPort, outputPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer relay.Close()
+	rtp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: outputPort})
+	if err != nil {
+		t.Fatalf("bind output RTP: %v", err)
+	}
+	defer rtp.Close()
+
+	relay.NotifyVideoActivity()
+	packet := readL16Packet(t, rtp)
+	if len(packet) != 12+l16PacketBytes {
+		t.Fatalf("silence packet length = %d; want %d", len(packet), 12+l16PacketBytes)
+	}
+	if packet[1]&0x7f != l16PayloadType || packet[1]&0x80 != 0 {
+		t.Fatalf("silence packet payload type/marker = %#x; want PT %d without marker", packet[1], l16PayloadType)
+	}
+	if !bytes.Equal(packet[12:], make([]byte, l16PacketBytes)) {
+		t.Fatal("startup packet was not silence")
+	}
+}
+
+func TestL16RTPRelayStateKeepsOutputClockAtNominalRate(t *testing.T) {
 	state := newL16RTPRelayState()
-	// Two full packets whose RTP timestamps advance by 1000 (not 352). The
-	// relay must preserve the input delta instead of synthesizing a fixed
-	// per-packet step, so the output tracks the upstream audio clock and does
-	// not drift from the video relay over long sessions.
+	// The input RTP timestamps can jump when UxPlay delivers a burst or loses
+	// packets. They must not change playback speed: the repacketizer's output
+	// clock advances by exactly one L16 packet per emitted packet.
 	full := bytes.Repeat([]byte{0x12, 0x34, 0x56, 0x78}, l16FramesPerPacket)
 	state.ingest(1000, full, l16MaxQueueBytes)
 	first, firstSilence := state.emit()
@@ -159,9 +198,140 @@ func TestL16RTPRelayStateReclocksOutputToInputTimestamps(t *testing.T) {
 	if got := binary.BigEndian.Uint32(first[4:8]); got != 0 {
 		t.Fatalf("first timestamp = %d; want 0", got)
 	}
-	if got := binary.BigEndian.Uint32(second[4:8]); got != 1000 {
-		t.Fatalf("second timestamp = %d; want 1000 (input delta preserved)", got)
+	if got := binary.BigEndian.Uint32(second[4:8]); got != l16FramesPerPacket {
+		t.Fatalf("second timestamp = %d; want %d (nominal packet step)", got, l16FramesPerPacket)
 	}
+}
+
+func TestL16RTPRelayStateDoesNotRewindAfterSilence(t *testing.T) {
+	state := newL16RTPRelayState()
+	full := bytes.Repeat([]byte{0x12, 0x34, 0x56, 0x78}, l16FramesPerPacket)
+	state.ingest(1000, full, l16MaxQueueBytes)
+	first, firstSilence := state.emit()
+	if firstSilence {
+		t.Fatal("real packet emitted as silence")
+	}
+	state.emit()
+	state.emit()
+	state.ingest(1000, full, l16MaxQueueBytes)
+	resumed, resumedSilence := state.emit()
+	if resumedSilence {
+		t.Fatal("resumed real packet emitted as silence")
+	}
+	if got, want := binary.BigEndian.Uint32(resumed[4:8]), binary.BigEndian.Uint32(first[4:8])+3*l16FramesPerPacket; got != want {
+		t.Fatalf("resumed timestamp = %d; want %d after silence", got, want)
+	}
+}
+
+func TestL16RTPRelayPacesBurstAudio(t *testing.T) {
+	output, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer output.Close()
+	probe, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputPort := probe.LocalAddr().(*net.UDPAddr).Port
+	probe.Close()
+
+	relay, err := startL16RTPRelay(context.Background(), inputPort, output.LocalAddr().(*net.UDPAddr).Port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer relay.Close()
+	relay.NotifyVideoActivity()
+
+	source, err := net.DialUDP("udp4", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: inputPort})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	payload := bytes.Repeat([]byte{0x12, 0x34, 0x56, 0x78}, l16FramesPerPacket)
+	input := make([]byte, 12+len(payload))
+	input[0], input[1] = 0x80, l16PayloadType
+	copy(input[12:], payload)
+	for i := 0; i < 4; i++ {
+		if _, err := source.Write(input); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	arrival := make([]time.Time, 4)
+	for i := range arrival {
+		_ = readL16Packet(t, output)
+		arrival[i] = time.Now()
+	}
+	for i := 2; i < len(arrival); i++ {
+		if gap := arrival[i].Sub(arrival[i-1]); gap < l16PacketInterval/2 {
+			t.Fatalf("burst packet %d arrived after %s; want pacing near %s", i, gap, l16PacketInterval)
+		}
+	}
+}
+
+func TestL16RTPRelayDropsLeadInWhenVideoStarts(t *testing.T) {
+	output, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer output.Close()
+	probe, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputPort := probe.LocalAddr().(*net.UDPAddr).Port
+	probe.Close()
+
+	relay, err := startL16RTPRelay(context.Background(), inputPort, output.LocalAddr().(*net.UDPAddr).Port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer relay.Close()
+	source, err := net.DialUDP("udp4", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: inputPort})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	packet := func(fill byte) []byte {
+		payload := bytes.Repeat([]byte{fill}, l16PacketBytes)
+		input := make([]byte, 12+len(payload))
+		input[0], input[1] = 0x80, l16PayloadType
+		copy(input[12:], payload)
+		return input
+	}
+	for i := 0; i < 4; i++ {
+		if _, err := source.Write(packet(0x11)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		inputCount, _, _ := relay.Stats()
+		if inputCount >= 4 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	relay.NotifyVideoActivity()
+	for i := 0; i < 4; i++ {
+		if _, err := source.Write(packet(0x22)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	oldPayload := bytes.Repeat([]byte{0x11}, l16PacketBytes)
+	newPayload := bytes.Repeat([]byte{0x22}, l16PacketBytes)
+	for i := 0; i < 8; i++ {
+		got := readL16Packet(t, output)
+		if bytes.Equal(got[12:], oldPayload) {
+			t.Fatal("audio buffered before video start was replayed")
+		}
+		if bytes.Equal(got[12:], newPayload) {
+			return
+		}
+	}
+	t.Fatal("post-video audio was not emitted")
 }
 
 func TestAudioCodecLabel(t *testing.T) {

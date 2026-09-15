@@ -50,7 +50,7 @@ func TrackStartedFFmpeg(cmd *exec.Cmd) (func(), error) {
 	pid := cmd.Process.Pid
 	releaseJob, err := protectStartedFFmpegWithJob(cmd.Process)
 	if err != nil {
-		killErr := cmd.Process.Kill()
+		killErr := killStartedFFmpegTree(cmd.Process)
 		if killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
 			return noopFFmpegUntrack, fmt.Errorf("protect started FFmpeg pid %d with kill-on-close job: %w (kill failed: %v)", pid, err, killErr)
 		}
@@ -66,7 +66,7 @@ func TrackStartedFFmpeg(cmd *exec.Cmd) (func(), error) {
 		StartedAt: time.Now(),
 	}
 	if err := addTrackedProcess(entry); err != nil {
-		killErr := cmd.Process.Kill()
+		killErr := killStartedFFmpegTree(cmd.Process)
 		releaseJob()
 		if killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
 			return noopFFmpegUntrack, fmt.Errorf("record started FFmpeg pid %d: %w (kill failed: %v)", pid, err, killErr)
@@ -81,6 +81,33 @@ func TrackStartedFFmpeg(cmd *exec.Cmd) (func(), error) {
 			_ = removeTrackedProcess(entry.PID)
 		})
 	}, nil
+}
+
+// configureFFmpegContextCancellation replaces os/exec's Windows default
+// cancellation (which only terminates the directly started process) with a
+// process-tree termination. FFmpeg may be a .cmd/.bat wrapper; killing only
+// that wrapper can leave ping.exe, ffmpeg.exe, or another helper holding the
+// conversion directory open after the caller has already returned.
+func configureFFmpegContextCancellation(cmd *exec.Cmd) {
+	if cmd == nil || runtime.GOOS != "windows" {
+		return
+	}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return os.ErrProcessDone
+		}
+		return killStartedFFmpegTree(cmd.Process)
+	}
+}
+
+func killStartedFFmpegTree(process *os.Process) error {
+	if process == nil {
+		return errors.New("kill FFmpeg tree: nil process")
+	}
+	if runtime.GOOS == "windows" {
+		return killProcessTree(process.Pid)
+	}
+	return process.Kill()
 }
 
 func CleanupTrackedFFmpeg() (int, error) {
@@ -242,7 +269,12 @@ func processRegistryPath() string {
 
 func isFFmpegPath(path string) bool {
 	name := strings.ToLower(filepath.Base(path))
-	return name == "ffmpeg" || name == "ffmpeg.exe"
+	switch name {
+	case "ffmpeg", "ffmpeg.exe", "ffmpeg.cmd", "ffmpeg.bat":
+		return true
+	default:
+		return false
+	}
 }
 
 func trackedProcessMatches(entry trackedProcess) (bool, error) {

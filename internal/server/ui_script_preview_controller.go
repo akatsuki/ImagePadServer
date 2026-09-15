@@ -34,8 +34,19 @@ const dashboardScriptPreviewController = `
         destroyPreviewHLS();
         if (window.Hls && window.Hls.isSupported()) {
           previewHLS = new window.Hls({
+            // The dashboard preview is not the delivery path. Keep a few
+            // complete segments queued so a short AirPlay input pause during
+            // rotation or app switching does not immediately show the
+            // browser's buffering spinner.
             lowLatencyMode: true,
-            backBufferLength: 30
+            liveSyncDurationCount: 2,
+            // Never catch up by changing playback speed. A temporary live
+            // edge delay must remain a normal-speed delay; speeding up an
+            // HLS stream makes AAC audibly stutter and turns a small video
+            // stall into an obvious fast-forward burst.
+            maxLiveSyncPlaybackRate: 1.0,
+            maxBufferLength: 6,
+            backBufferLength: 6
           });
           previewHLS.loadSource(src);
           previewHLS.attachMedia(video);
@@ -115,6 +126,20 @@ const dashboardScriptPreviewController = `
         preview.appendChild(button);
       }
 
+      function requestPreviewPlayback(video) {
+        if (!video) return;
+        // Retry only playback. Initial muted/autoplay attributes are assigned
+        // when the AirPlay preview element is created; rewriting them here
+        // would undo a user's unmute or pause between readiness events.
+        try {
+          const playPromise = video.play();
+          if (playPromise && typeof playPromise.catch === 'function') {
+            playPromise.catch(() => {});
+          }
+        } catch (error) {
+        }
+      }
+
       function renderOBSPreview(data, context) {
         const preview = deps.preview;
         if (!preview) return;
@@ -128,10 +153,14 @@ const dashboardScriptPreviewController = `
           const video = document.createElement('video');
           video.controls = true;
           video.autoplay = true;
+          video.defaultMuted = true;
           video.muted = true;
           video.playsInline = true;
+          video.addEventListener('loadedmetadata', () => requestPreviewPlayback(video));
+          video.addEventListener('canplay', () => requestPreviewPlayback(video));
           if (attachPreviewHLS(video, obsPreviewURL)) {
             preview.appendChild(video);
+            requestPreviewPlayback(video);
           } else {
             const link = document.createElement('a');
             link.href = obsPreviewURL;

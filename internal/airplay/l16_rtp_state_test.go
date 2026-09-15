@@ -27,7 +27,7 @@ func TestL16RTPRelayStateFrameAlignedTrim(t *testing.T) {
 func TestL16RTPRelayStateTrimKeepsFrameBoundary(t *testing.T) {
 	s := newL16RTPRelayState()
 	packet := make([]byte, l16PacketBytes)
-	for i := 0; i < 20; i++ {
+	for i := 0; i < l16MaxQueueBytes/l16PacketBytes+4; i++ {
 		s.ingest(0, packet, l16MaxQueueBytes)
 	}
 	if got := len(s.queue); got != l16MaxQueueBytes {

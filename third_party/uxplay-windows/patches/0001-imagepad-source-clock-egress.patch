@@ -1,0 +1,1131 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 084b08a..78ec7d4 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -2,6 +2,8 @@ cmake_minimum_required( VERSION 3.13 )
+ 
+ project( uxplay )
+ 
++include(CTest)
++
+ message( STATUS "Project name: " ${PROJECT_NAME} )
+ 
+ include(GNUInstallDirs)
+@@ -65,6 +67,12 @@ if (DBUS_FOUND)
+       target_link_libraries( uxplay ${DBUS_LIBRARY})
+ endif()
+ 
++option(BUILD_SOURCE_CLOCK_CLI "Build the headless ImagePad source-clock receiver" OFF)
++if (BUILD_SOURCE_CLOCK_CLI)
++  add_executable(uxplay-source-clock source_clock_main.cpp)
++  target_link_libraries(uxplay-source-clock PRIVATE uxplay)
++endif()
++
+ install( TARGETS  uxplay RUNTIME DESTINATION bin )
+ install( FILES uxplay.1 DESTINATION ${CMAKE_INSTALL_MANDIR}/man1 )
+ install( FILES README.md README.txt README.html LICENSE DESTINATION ${CMAKE_INSTALL_DOCDIR} ) 
+diff --git a/renderers/CMakeLists.txt b/renderers/CMakeLists.txt
+index 8b09aff..4220937 100644
+--- a/renderers/CMakeLists.txt
++++ b/renderers/CMakeLists.txt
+@@ -42,7 +42,8 @@ add_library( renderers
+              STATIC
+              audio_renderer.c
+              video_renderer.c
+-             mux_renderer.c )
++             mux_renderer.c
++             source_clock_renderer.c )
+ 
+ target_link_libraries ( renderers PUBLIC airplay )
+ 
+@@ -68,6 +69,13 @@ endif()
+ 
+ target_include_directories ( renderers PUBLIC ${GST_INCLUDE_DIRS} )
+ 
++if (BUILD_TESTING)
++  enable_testing()
++  add_executable(uxplay_source_clock_renderer_test source_clock_renderer_test.c)
++  target_link_libraries(uxplay_source_clock_renderer_test PRIVATE renderers pthread ws2_32)
++  add_test(NAME uxplay_source_clock_renderer COMMAND uxplay_source_clock_renderer_test)
++endif()
++
+ if( GST_LIBRARY_DIRS MATCHES "/Library/FrameWorks/GStreamer.framework/lib" )
+   set( GST_LIBRARY_DIRS "/Library/FrameWorks/GStreamer.framework/Libraries")
+   message( STATUS  "GST_LIBRARY_DIRS" ${GST_LIBRARY_DIRS} )
+diff --git a/renderers/source_clock_renderer.c b/renderers/source_clock_renderer.c
+new file mode 100644
+index 0000000..8dfb47a
+--- /dev/null
++++ b/renderers/source_clock_renderer.c
+@@ -0,0 +1,637 @@
++#include "source_clock_renderer.h"
++
++#include <ctype.h>
++#include <errno.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/types.h>
++#include <time.h>
++
++#ifdef _WIN32
++#include <winsock2.h>
++#include <ws2tcpip.h>
++#include <windows.h>
++#define SOURCE_CLOCK_SOCKET SOCKET
++#define SOURCE_CLOCK_INVALID_SOCKET INVALID_SOCKET
++#define source_clock_close_socket closesocket
++#else
++#include <netdb.h>
++#include <arpa/inet.h>
++#include <netinet/in.h>
++#include <sys/socket.h>
++#include <unistd.h>
++#define SOURCE_CLOCK_SOCKET int
++#define SOURCE_CLOCK_INVALID_SOCKET (-1)
++#define source_clock_close_socket close
++#endif
++
++#include "../lib/threads.h"
++
++#define SOURCE_CLOCK_PROTOCOL_VERSION 1u
++#define SOURCE_CLOCK_HEADER_SIZE 40u
++#define SOURCE_CLOCK_MAX_VIDEO_PAYLOAD (64u * 1024u * 1024u)
++#define SOURCE_CLOCK_MAX_AUDIO_PAYLOAD (1u * 1024u * 1024u)
++#define SOURCE_CLOCK_TOKEN_BYTES 16u
++#define SOURCE_CLOCK_STREAM_VIDEO 1u
++#define SOURCE_CLOCK_STREAM_AUDIO 2u
++#define SOURCE_CLOCK_STREAM_CONTROL 0u
++#define SOURCE_CLOCK_CONTROL_HELLO 1u
++#define SOURCE_CLOCK_CONTROL_SESSION_START 2u
++#define SOURCE_CLOCK_CONTROL_SESSION_END 4u
++#define SOURCE_CLOCK_VIDEO_QUEUE_FRAMES 3u
++#define SOURCE_CLOCK_AUDIO_QUEUE_NS 500000000ULL
++#define SOURCE_CLOCK_RETRY_NS 250000000ULL
++
++typedef struct source_clock_frame_s {
++    struct source_clock_frame_s *next;
++    unsigned char *data;
++    size_t len;
++    uint64_t ntp_ns;
++    uint32_t sequence;
++    uint32_t sample_count;
++    uint32_t sample_rate;
++    uint16_t channels;
++    uint8_t codec;
++    uint16_t flags;
++    uint64_t duration_ns;
++} source_clock_frame_t;
++
++typedef struct source_clock_writer_s source_clock_writer_t;
++
++struct source_clock_writer_s {
++    source_clock_renderer_t *owner;
++    uint8_t stream_kind;
++    char *endpoint;
++    uint8_t token[SOURCE_CLOCK_TOKEN_BYTES];
++    pthread_t thread;
++    pthread_mutex_t mutex;
++    pthread_cond_t cond;
++    bool stopping;
++    bool session_active;
++    bool send_session_end;
++    bool discontinuity_pending;
++    uint32_t generation;
++    uint32_t sequence;
++    source_clock_frame_t *head;
++    source_clock_frame_t *tail;
++    size_t pending_count;
++    size_t pending_bytes;
++    uint64_t pending_ns;
++    uint64_t dropped;
++    bool thread_started;
++};
++
++struct source_clock_renderer_s {
++    source_clock_writer_t video;
++    source_clock_writer_t audio;
++    uint8_t video_codec;
++    uint8_t audio_codec;
++    uint32_t audio_sample_rate;
++    uint16_t audio_channels;
++    uint16_t audio_spf;
++    bool started;
++};
++
++static void sleep_retry(void) {
++#ifdef _WIN32
++    Sleep((DWORD)(SOURCE_CLOCK_RETRY_NS / 1000000ULL));
++#else
++    struct timespec ts = { 0, SOURCE_CLOCK_RETRY_NS };
++    nanosleep(&ts, NULL);
++#endif
++}
++
++static char *copy_string(const char *value) {
++    size_t length;
++    char *copy;
++    if (value == NULL) return NULL;
++    length = strlen(value);
++    copy = (char *)malloc(length + 1);
++    if (copy != NULL) memcpy(copy, value, length + 1);
++    return copy;
++}
++
++static int hex_value(char c) {
++    if (c >= '0' && c <= '9') return c - '0';
++    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
++    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
++    return -1;
++}
++
++static bool decode_token(const char *hex, uint8_t token[SOURCE_CLOCK_TOKEN_BYTES]) {
++    size_t i;
++    if (hex == NULL || strlen(hex) != SOURCE_CLOCK_TOKEN_BYTES * 2) return false;
++    for (i = 0; i < SOURCE_CLOCK_TOKEN_BYTES; ++i) {
++        int high = hex_value(hex[i * 2]);
++        int low = hex_value(hex[i * 2 + 1]);
++        if (high < 0 || low < 0) return false;
++        token[i] = (uint8_t)((high << 4) | low);
++    }
++    return true;
++}
++
++static void put_u16(uint8_t *out, uint16_t value) {
++    out[0] = (uint8_t)(value >> 8);
++    out[1] = (uint8_t)value;
++}
++
++static void put_u32(uint8_t *out, uint32_t value) {
++    out[0] = (uint8_t)(value >> 24);
++    out[1] = (uint8_t)(value >> 16);
++    out[2] = (uint8_t)(value >> 8);
++    out[3] = (uint8_t)value;
++}
++
++static void put_u64(uint8_t *out, uint64_t value) {
++    put_u32(out, (uint32_t)(value >> 32));
++    put_u32(out + 4, (uint32_t)value);
++}
++
++static void encode_header(uint8_t out[SOURCE_CLOCK_HEADER_SIZE], uint8_t stream_kind,
++                          uint8_t codec, uint16_t flags, uint32_t payload_bytes,
++                          uint32_t sequence, uint64_t ntp_ns, uint32_t sample_count,
++                          uint32_t sample_rate, uint16_t channels) {
++    memset(out, 0, SOURCE_CLOCK_HEADER_SIZE);
++    memcpy(out, "IPAF", 4);
++    put_u16(out + 4, SOURCE_CLOCK_PROTOCOL_VERSION);
++    put_u16(out + 6, SOURCE_CLOCK_HEADER_SIZE);
++    out[8] = stream_kind;
++    out[9] = codec;
++    put_u16(out + 10, flags);
++    put_u32(out + 12, payload_bytes);
++    put_u32(out + 16, sequence);
++    put_u64(out + 20, ntp_ns);
++    put_u32(out + 28, sample_count);
++    put_u32(out + 32, sample_rate);
++    put_u16(out + 36, channels);
++}
++
++static bool send_all(SOURCE_CLOCK_SOCKET socket_fd, const void *data, size_t length) {
++    const unsigned char *bytes = (const unsigned char *)data;
++    while (length > 0) {
++        int sent = send(socket_fd, (const char *)bytes,
++                        (int)(length > 1024 * 1024 ? 1024 * 1024 : length), 0);
++        if (sent <= 0) return false;
++        bytes += sent;
++        length -= (size_t)sent;
++    }
++    return true;
++}
++
++static bool send_control(source_clock_writer_t *writer, SOURCE_CLOCK_SOCKET socket_fd,
++                         uint8_t opcode, uint32_t generation) {
++    uint8_t header[SOURCE_CLOCK_HEADER_SIZE];
++    uint8_t payload[SOURCE_CLOCK_TOKEN_BYTES];
++    const uint8_t *body = NULL;
++    uint32_t body_len = 0;
++    if (opcode == SOURCE_CLOCK_CONTROL_HELLO) {
++        memcpy(payload, writer->token, sizeof(payload));
++        body = payload;
++        body_len = sizeof(payload);
++    }
++    encode_header(header, SOURCE_CLOCK_STREAM_CONTROL, opcode, 0, body_len,
++                  generation, 0, 0, 0, 0);
++    if (!send_all(socket_fd, header, sizeof(header))) return false;
++    return body_len == 0 || send_all(socket_fd, body, body_len);
++}
++
++static SOURCE_CLOCK_SOCKET connect_endpoint(const char *endpoint) {
++    char *separator;
++    char *host;
++    char *port;
++    struct addrinfo hints;
++    struct addrinfo *result = NULL;
++    struct addrinfo *entry;
++    SOURCE_CLOCK_SOCKET socket_fd = SOURCE_CLOCK_INVALID_SOCKET;
++    if (endpoint == NULL) return SOURCE_CLOCK_INVALID_SOCKET;
++    host = copy_string(endpoint);
++    if (host == NULL) return SOURCE_CLOCK_INVALID_SOCKET;
++    separator = strrchr(host, ':');
++    if (separator == NULL) {
++        free(host);
++        return SOURCE_CLOCK_INVALID_SOCKET;
++    }
++    *separator = '\0';
++    port = separator + 1;
++    memset(&hints, 0, sizeof(hints));
++    hints.ai_family = AF_INET;
++    hints.ai_socktype = SOCK_STREAM;
++    if (getaddrinfo(host, port, &hints, &result) != 0) {
++        free(host);
++        return SOURCE_CLOCK_INVALID_SOCKET;
++    }
++    for (entry = result; entry != NULL; entry = entry->ai_next) {
++        socket_fd = (SOURCE_CLOCK_SOCKET)socket(entry->ai_family, entry->ai_socktype,
++                                                entry->ai_protocol);
++        if (socket_fd == SOURCE_CLOCK_INVALID_SOCKET) continue;
++        if (connect(socket_fd, entry->ai_addr, (int)entry->ai_addrlen) == 0) break;
++        source_clock_close_socket(socket_fd);
++        socket_fd = SOURCE_CLOCK_INVALID_SOCKET;
++    }
++    freeaddrinfo(result);
++    free(host);
++    return socket_fd;
++}
++
++static void free_frame(source_clock_frame_t *frame) {
++    if (frame == NULL) return;
++    free(frame->data);
++    free(frame);
++}
++
++static source_clock_frame_t *pop_frame(source_clock_writer_t *writer) {
++    source_clock_frame_t *frame = writer->head;
++    if (frame == NULL) return NULL;
++    writer->head = frame->next;
++    if (writer->head == NULL) writer->tail = NULL;
++    writer->pending_count--;
++    writer->pending_bytes -= frame->len;
++    writer->pending_ns -= frame->duration_ns;
++    frame->next = NULL;
++    return frame;
++}
++
++static void drop_oldest(source_clock_writer_t *writer) {
++    source_clock_frame_t *frame = pop_frame(writer);
++    if (frame != NULL) {
++        writer->dropped++;
++        writer->discontinuity_pending = true;
++        free_frame(frame);
++    }
++}
++
++static void clear_pending(source_clock_writer_t *writer) {
++    source_clock_frame_t *frame;
++    while ((frame = pop_frame(writer)) != NULL) {
++        free_frame(frame);
++    }
++    writer->discontinuity_pending = false;
++}
++
++static bool send_frame(source_clock_writer_t *writer, SOURCE_CLOCK_SOCKET socket_fd,
++                       source_clock_frame_t *frame) {
++    uint8_t header[SOURCE_CLOCK_HEADER_SIZE];
++    uint16_t flags = frame->flags;
++    encode_header(header, writer->stream_kind, frame->codec, flags, (uint32_t)frame->len,
++                  frame->sequence, frame->ntp_ns, frame->sample_count,
++                  frame->sample_rate, frame->channels);
++    return send_all(socket_fd, header, sizeof(header)) && send_all(socket_fd, frame->data, frame->len);
++}
++
++static void close_socket_once(SOURCE_CLOCK_SOCKET *socket_fd) {
++    if (socket_fd == NULL || *socket_fd == SOURCE_CLOCK_INVALID_SOCKET) return;
++    source_clock_close_socket(*socket_fd);
++    *socket_fd = SOURCE_CLOCK_INVALID_SOCKET;
++}
++
++static void *writer_main(void *argument) {
++    source_clock_writer_t *writer = (source_clock_writer_t *)argument;
++    for (;;) {
++        SOURCE_CLOCK_SOCKET socket_fd;
++        source_clock_frame_t *frame;
++        bool active;
++        uint32_t generation;
++        bool send_end;
++        pthread_mutex_lock(&writer->mutex);
++        while (!writer->stopping && writer->head == NULL && !writer->send_session_end &&
++               !writer->session_active) {
++            pthread_cond_wait(&writer->cond, &writer->mutex);
++        }
++        if (writer->stopping) {
++            pthread_mutex_unlock(&writer->mutex);
++            break;
++        }
++        active = writer->session_active;
++        generation = writer->generation;
++        send_end = writer->send_session_end;
++        writer->send_session_end = false;
++        pthread_mutex_unlock(&writer->mutex);
++
++        socket_fd = connect_endpoint(writer->endpoint);
++        if (socket_fd == SOURCE_CLOCK_INVALID_SOCKET) {
++            sleep_retry();
++            continue;
++        }
++        if (!send_control(writer, socket_fd, SOURCE_CLOCK_CONTROL_HELLO, generation) ||
++            (active && !send_control(writer, socket_fd, SOURCE_CLOCK_CONTROL_SESSION_START, generation))) {
++            close_socket_once(&socket_fd);
++            sleep_retry();
++            continue;
++        }
++        if (send_end && !send_control(writer, socket_fd, SOURCE_CLOCK_CONTROL_SESSION_END, generation)) {
++            close_socket_once(&socket_fd);
++            sleep_retry();
++            continue;
++        }
++        for (;;) {
++            bool generation_changed;
++            bool end_requested;
++            pthread_mutex_lock(&writer->mutex);
++            if (writer->stopping) {
++                pthread_mutex_unlock(&writer->mutex);
++                close_socket_once(&socket_fd);
++                return NULL;
++            }
++            generation_changed = writer->generation != generation;
++            end_requested = writer->send_session_end || !writer->session_active;
++            if (writer->send_session_end) writer->send_session_end = false;
++            if (generation_changed || end_requested) {
++                pthread_mutex_unlock(&writer->mutex);
++                if (end_requested) {
++                    send_control(writer, socket_fd, SOURCE_CLOCK_CONTROL_SESSION_END, generation);
++                }
++                close_socket_once(&socket_fd);
++                break;
++            }
++            frame = pop_frame(writer);
++            if (frame != NULL && writer->discontinuity_pending) {
++                frame->flags |= SOURCE_CLOCK_FLAG_DISCONTINUITY;
++                writer->discontinuity_pending = false;
++            }
++            pthread_mutex_unlock(&writer->mutex);
++            if (frame == NULL) break;
++            if (!send_frame(writer, socket_fd, frame)) {
++                pthread_mutex_lock(&writer->mutex);
++                writer->discontinuity_pending = true;
++                pthread_mutex_unlock(&writer->mutex);
++                free_frame(frame);
++                close_socket_once(&socket_fd);
++                sleep_retry();
++                break;
++            }
++            free_frame(frame);
++        }
++        close_socket_once(&socket_fd);
++    }
++    return NULL;
++}
++
++static void writer_init(source_clock_writer_t *writer, source_clock_renderer_t *owner,
++                        uint8_t stream_kind, const char *endpoint, const uint8_t token[16]) {
++    memset(writer, 0, sizeof(*writer));
++    writer->owner = owner;
++    writer->stream_kind = stream_kind;
++    writer->endpoint = copy_string(endpoint);
++    memcpy(writer->token, token, SOURCE_CLOCK_TOKEN_BYTES);
++    pthread_mutex_init(&writer->mutex, NULL);
++    pthread_cond_init(&writer->cond, NULL);
++}
++
++static bool queue_frame(source_clock_writer_t *writer, const unsigned char *data, size_t data_len,
++                        uint64_t ntp_ns, uint8_t codec, uint16_t flags, uint32_t sample_count,
++                        uint32_t sample_rate, uint16_t channels, uint64_t duration_ns) {
++    source_clock_frame_t *frame;
++    if (writer == NULL || data == NULL || data_len == 0 ||
++        data_len > (writer->stream_kind == SOURCE_CLOCK_STREAM_VIDEO ?
++                    SOURCE_CLOCK_MAX_VIDEO_PAYLOAD : SOURCE_CLOCK_MAX_AUDIO_PAYLOAD)) {
++        return false;
++    }
++    frame = (source_clock_frame_t *)calloc(1, sizeof(*frame));
++    if (frame == NULL) return false;
++    frame->data = (unsigned char *)malloc(data_len);
++    if (frame->data == NULL) {
++        free(frame);
++        return false;
++    }
++    memcpy(frame->data, data, data_len);
++    frame->len = data_len;
++    frame->ntp_ns = ntp_ns;
++    frame->codec = codec;
++    frame->flags = flags;
++    frame->sample_count = sample_count;
++    frame->sample_rate = sample_rate;
++    frame->channels = channels;
++    frame->duration_ns = duration_ns;
++    pthread_mutex_lock(&writer->mutex);
++    if (writer->stopping) {
++        pthread_mutex_unlock(&writer->mutex);
++        free_frame(frame);
++        return false;
++    }
++    frame->sequence = ++writer->sequence;
++    if (writer->stream_kind == SOURCE_CLOCK_STREAM_VIDEO) {
++        while (writer->pending_count >= SOURCE_CLOCK_VIDEO_QUEUE_FRAMES ||
++               writer->pending_bytes + data_len > SOURCE_CLOCK_MAX_VIDEO_PAYLOAD) {
++            drop_oldest(writer);
++        }
++    } else {
++        while (writer->pending_ns + duration_ns > SOURCE_CLOCK_AUDIO_QUEUE_NS && writer->head != NULL) {
++            drop_oldest(writer);
++        }
++    }
++    if (writer->tail != NULL) writer->tail->next = frame;
++    else writer->head = frame;
++    writer->tail = frame;
++    writer->pending_count++;
++    writer->pending_bytes += data_len;
++    writer->pending_ns += duration_ns;
++    pthread_cond_signal(&writer->cond);
++    pthread_mutex_unlock(&writer->mutex);
++    return true;
++}
++
++source_clock_renderer_t *source_clock_renderer_create(const char *video_endpoint,
++                                                       const char *audio_endpoint,
++                                                       const char *token_hex) {
++    source_clock_renderer_t *renderer;
++    uint8_t token[SOURCE_CLOCK_TOKEN_BYTES];
++    if (!decode_token(token_hex, token) || video_endpoint == NULL || audio_endpoint == NULL) return NULL;
++    renderer = (source_clock_renderer_t *)calloc(1, sizeof(*renderer));
++    if (renderer == NULL) return NULL;
++    renderer->video_codec = SOURCE_CLOCK_VIDEO_H264;
++    renderer->audio_codec = SOURCE_CLOCK_AUDIO_AAC_ELD;
++    renderer->audio_sample_rate = 44100;
++    renderer->audio_channels = 2;
++    renderer->audio_spf = 480;
++    writer_init(&renderer->video, renderer, SOURCE_CLOCK_STREAM_VIDEO, video_endpoint, token);
++    writer_init(&renderer->audio, renderer, SOURCE_CLOCK_STREAM_AUDIO, audio_endpoint, token);
++    if (renderer->video.endpoint == NULL || renderer->audio.endpoint == NULL) {
++        source_clock_renderer_destroy(renderer);
++        return NULL;
++    }
++    if (pthread_create(&renderer->video.thread, NULL, writer_main, &renderer->video) != 0) {
++        source_clock_renderer_destroy(renderer);
++        return NULL;
++    }
++    renderer->video.thread_started = true;
++    if (pthread_create(&renderer->audio.thread, NULL, writer_main, &renderer->audio) != 0) {
++        source_clock_renderer_destroy(renderer);
++        return NULL;
++    }
++    renderer->audio.thread_started = true;
++    renderer->started = true;
++    return renderer;
++}
++
++void source_clock_renderer_destroy(source_clock_renderer_t *renderer) {
++    source_clock_writer_t *writers[2];
++    source_clock_frame_t *frame;
++    size_t i;
++    if (renderer == NULL) return;
++    writers[0] = &renderer->video;
++    writers[1] = &renderer->audio;
++    for (i = 0; i < 2; ++i) {
++        source_clock_writer_t *writer = writers[i];
++        pthread_mutex_lock(&writer->mutex);
++        writer->stopping = true;
++        pthread_cond_signal(&writer->cond);
++        pthread_mutex_unlock(&writer->mutex);
++    }
++    if (renderer->video.thread_started) {
++        pthread_join(renderer->video.thread, NULL);
++        renderer->video.thread_started = false;
++    }
++    if (renderer->audio.thread_started) {
++        pthread_join(renderer->audio.thread, NULL);
++        renderer->audio.thread_started = false;
++    }
++    for (i = 0; i < 2; ++i) {
++        source_clock_writer_t *writer = writers[i];
++        while ((frame = pop_frame(writer)) != NULL) free_frame(frame);
++        pthread_cond_destroy(&writer->cond);
++        pthread_mutex_destroy(&writer->mutex);
++        free(writer->endpoint);
++    }
++    free(renderer);
++}
++
++void source_clock_renderer_session_start(source_clock_renderer_t *renderer) {
++    source_clock_writer_t *writers[2];
++    size_t i;
++    if (renderer == NULL) return;
++    writers[0] = &renderer->video;
++    writers[1] = &renderer->audio;
++    for (i = 0; i < 2; ++i) {
++        pthread_mutex_lock(&writers[i]->mutex);
++        clear_pending(writers[i]);
++        writers[i]->generation++;
++        writers[i]->session_active = true;
++        writers[i]->send_session_end = false;
++        pthread_cond_signal(&writers[i]->cond);
++        pthread_mutex_unlock(&writers[i]->mutex);
++    }
++}
++
++void source_clock_renderer_session_end(source_clock_renderer_t *renderer) {
++    source_clock_writer_t *writers[2];
++    size_t i;
++    if (renderer == NULL) return;
++    writers[0] = &renderer->video;
++    writers[1] = &renderer->audio;
++    for (i = 0; i < 2; ++i) {
++        pthread_mutex_lock(&writers[i]->mutex);
++        clear_pending(writers[i]);
++        writers[i]->session_active = false;
++        writers[i]->send_session_end = true;
++        pthread_cond_signal(&writers[i]->cond);
++        pthread_mutex_unlock(&writers[i]->mutex);
++    }
++}
++
++void source_clock_renderer_set_video_codec(source_clock_renderer_t *renderer,
++                                           source_clock_video_codec_t codec) {
++    if (renderer != NULL) renderer->video_codec = (uint8_t)codec;
++}
++
++void source_clock_renderer_set_audio_format(source_clock_renderer_t *renderer,
++                                            unsigned char ct, unsigned short spf,
++                                            uint32_t sample_rate, uint16_t channels) {
++    if (renderer == NULL) return;
++    renderer->audio_codec = (ct == 2) ? SOURCE_CLOCK_AUDIO_ALAC :
++                            (ct == 8) ? SOURCE_CLOCK_AUDIO_AAC_ELD :
++                                        SOURCE_CLOCK_AUDIO_AAC_LC_ADTS;
++    renderer->audio_spf = spf != 0 ? spf : 480;
++    renderer->audio_sample_rate = sample_rate != 0 ? sample_rate : 44100;
++    renderer->audio_channels = channels != 0 ? channels : 2;
++}
++
++static unsigned scan_video_flags(const unsigned char *data, size_t len, uint8_t codec) {
++    size_t i;
++    unsigned flags = 0;
++    for (i = 0; i + 4 <= len; ++i) {
++        size_t start = i;
++        uint8_t type;
++        if (data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1) {
++            start = i + 3;
++        } else if (i + 4 <= len && data[i] == 0 && data[i + 1] == 0 &&
++                   data[i + 2] == 0 && data[i + 3] == 1) {
++            start = i + 4;
++        } else {
++            continue;
++        }
++        if (start >= len) continue;
++        type = codec == SOURCE_CLOCK_VIDEO_H265 ? ((data[start] >> 1) & 0x3f) : (data[start] & 0x1f);
++        if ((codec == SOURCE_CLOCK_VIDEO_H264 && type == 5) ||
++            (codec == SOURCE_CLOCK_VIDEO_H265 && (type == 19 || type == 20 || type == 21))) {
++            flags |= SOURCE_CLOCK_FLAG_KEYFRAME;
++        }
++        if ((codec == SOURCE_CLOCK_VIDEO_H264 && (type == 7 || type == 8)) ||
++            (codec == SOURCE_CLOCK_VIDEO_H265 && (type == 32 || type == 33 || type == 34))) {
++            flags |= SOURCE_CLOCK_FLAG_CONFIG;
++        }
++    }
++    return flags;
++}
++
++bool source_clock_renderer_push_video(source_clock_renderer_t *renderer,
++                                      const unsigned char *data, size_t data_len,
++                                      uint64_t remote_ntp_ns, unsigned flags) {
++    uint8_t codec;
++    if (renderer == NULL || data == NULL || data_len == 0 ||
++        data_len > SOURCE_CLOCK_MAX_VIDEO_PAYLOAD) return false;
++    codec = renderer->video_codec;
++    flags |= scan_video_flags(data, data_len, codec);
++    return queue_frame(&renderer->video, data, data_len, remote_ntp_ns, codec,
++                       (uint16_t)flags, 0, 0, 0, 0);
++}
++
++bool source_clock_renderer_push_audio(source_clock_renderer_t *renderer,
++                                      const unsigned char *data, size_t data_len,
++                                      uint64_t remote_ntp_ns, unsigned flags) {
++    uint64_t duration_ns;
++    if (renderer == NULL || data == NULL || data_len == 0 ||
++        data_len > SOURCE_CLOCK_MAX_AUDIO_PAYLOAD || renderer->audio_sample_rate == 0) return false;
++    duration_ns = ((uint64_t)renderer->audio_spf * 1000000000ULL) /
++                  renderer->audio_sample_rate;
++    return queue_frame(&renderer->audio, data, data_len, remote_ntp_ns,
++                       renderer->audio_codec, (uint16_t)flags,
++                       renderer->audio_spf, renderer->audio_sample_rate,
++                       renderer->audio_channels, duration_ns);
++}
++
++size_t source_clock_renderer_video_pending(const source_clock_renderer_t *renderer) {
++    size_t result = 0;
++    if (renderer == NULL) return 0;
++    pthread_mutex_lock((pthread_mutex_t *)&renderer->video.mutex);
++    result = renderer->video.pending_count;
++    pthread_mutex_unlock((pthread_mutex_t *)&renderer->video.mutex);
++    return result;
++}
++
++size_t source_clock_renderer_audio_pending(const source_clock_renderer_t *renderer) {
++    size_t result = 0;
++    if (renderer == NULL) return 0;
++    pthread_mutex_lock((pthread_mutex_t *)&renderer->audio.mutex);
++    result = renderer->audio.pending_count;
++    pthread_mutex_unlock((pthread_mutex_t *)&renderer->audio.mutex);
++    return result;
++}
++
++uint64_t source_clock_renderer_video_dropped(const source_clock_renderer_t *renderer) {
++    uint64_t result = 0;
++    if (renderer == NULL) return 0;
++    pthread_mutex_lock((pthread_mutex_t *)&renderer->video.mutex);
++    result = renderer->video.dropped;
++    pthread_mutex_unlock((pthread_mutex_t *)&renderer->video.mutex);
++    return result;
++}
++
++uint64_t source_clock_renderer_audio_dropped(const source_clock_renderer_t *renderer) {
++    uint64_t result = 0;
++    if (renderer == NULL) return 0;
++    pthread_mutex_lock((pthread_mutex_t *)&renderer->audio.mutex);
++    result = renderer->audio.dropped;
++    pthread_mutex_unlock((pthread_mutex_t *)&renderer->audio.mutex);
++    return result;
++}
+diff --git a/renderers/source_clock_renderer.h b/renderers/source_clock_renderer.h
+new file mode 100644
+index 0000000..a6ace68
+--- /dev/null
++++ b/renderers/source_clock_renderer.h
+@@ -0,0 +1,64 @@
++#ifndef UXPLAY_SOURCE_CLOCK_RENDERER_H
++#define UXPLAY_SOURCE_CLOCK_RENDERER_H
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++typedef enum source_clock_video_codec_e {
++    SOURCE_CLOCK_VIDEO_H264 = 1,
++    SOURCE_CLOCK_VIDEO_H265 = 2
++} source_clock_video_codec_t;
++
++typedef enum source_clock_audio_codec_e {
++    SOURCE_CLOCK_AUDIO_AAC_ELD = 16,
++    SOURCE_CLOCK_AUDIO_ALAC = 17,
++    SOURCE_CLOCK_AUDIO_AAC_LC_ADTS = 18
++} source_clock_audio_codec_t;
++
++enum {
++    SOURCE_CLOCK_FLAG_KEYFRAME = 1u << 0,
++    SOURCE_CLOCK_FLAG_CONFIG = 1u << 1,
++    SOURCE_CLOCK_FLAG_DISCONTINUITY = 1u << 2
++};
++
++typedef struct source_clock_renderer_s source_clock_renderer_t;
++
++source_clock_renderer_t *source_clock_renderer_create(const char *video_endpoint,
++                                                       const char *audio_endpoint,
++                                                       const char *token_hex);
++void source_clock_renderer_destroy(source_clock_renderer_t *renderer);
++
++void source_clock_renderer_session_start(source_clock_renderer_t *renderer);
++void source_clock_renderer_session_end(source_clock_renderer_t *renderer);
++void source_clock_renderer_set_video_codec(source_clock_renderer_t *renderer,
++                                           source_clock_video_codec_t codec);
++void source_clock_renderer_set_audio_format(source_clock_renderer_t *renderer,
++                                            unsigned char ct,
++                                            unsigned short spf,
++                                            uint32_t sample_rate,
++                                            uint16_t channels);
++
++/* These functions copy the complete frame and return immediately. */
++bool source_clock_renderer_push_video(source_clock_renderer_t *renderer,
++                                      const unsigned char *data, size_t data_len,
++                                      uint64_t remote_ntp_ns, unsigned flags);
++bool source_clock_renderer_push_audio(source_clock_renderer_t *renderer,
++                                      const unsigned char *data, size_t data_len,
++                                      uint64_t remote_ntp_ns, unsigned flags);
++
++/* Test/diagnostic counters. */
++size_t source_clock_renderer_video_pending(const source_clock_renderer_t *renderer);
++size_t source_clock_renderer_audio_pending(const source_clock_renderer_t *renderer);
++uint64_t source_clock_renderer_video_dropped(const source_clock_renderer_t *renderer);
++uint64_t source_clock_renderer_audio_dropped(const source_clock_renderer_t *renderer);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif
+diff --git a/renderers/source_clock_renderer_test.c b/renderers/source_clock_renderer_test.c
+new file mode 100644
+index 0000000..5c4094f
+--- /dev/null
++++ b/renderers/source_clock_renderer_test.c
+@@ -0,0 +1,140 @@
++#include "source_clock_renderer.h"
++
++#include <assert.h>
++#include <stdio.h>
++#include <string.h>
++
++#ifdef _WIN32
++#include <winsock2.h>
++#include <ws2tcpip.h>
++#include <windows.h>
++#include <pthread.h>
++#define TEST_SOCKET SOCKET
++#define TEST_INVALID_SOCKET INVALID_SOCKET
++#define test_close closesocket
++#else
++#include <arpa/inet.h>
++#include <netinet/in.h>
++#include <sys/socket.h>
++#include <unistd.h>
++#include <pthread.h>
++#define TEST_SOCKET int
++#define TEST_INVALID_SOCKET (-1)
++#define test_close close
++#endif
++
++typedef struct test_server_s {
++    TEST_SOCKET listener;
++    unsigned port;
++    unsigned stream_kind;
++    int hello;
++    int session_start;
++    int media;
++} test_server_t;
++
++static unsigned read_u32(const unsigned char *p) {
++    return ((unsigned)p[0] << 24) | ((unsigned)p[1] << 16) |
++           ((unsigned)p[2] << 8) | (unsigned)p[3];
++}
++
++static int read_full(TEST_SOCKET socket_fd, unsigned char *data, size_t length) {
++    while (length > 0) {
++        int received = recv(socket_fd, (char *)data, (int)length, 0);
++        if (received <= 0) return 0;
++        data += received;
++        length -= (size_t)received;
++    }
++    return 1;
++}
++
++static void *server_main(void *argument) {
++    test_server_t *server = (test_server_t *)argument;
++    TEST_SOCKET client = accept(server->listener, NULL, NULL);
++    unsigned char header[40];
++    if (client == TEST_INVALID_SOCKET) return NULL;
++    while (read_full(client, header, sizeof(header))) {
++        unsigned payload_bytes;
++        if (memcmp(header, "IPAF", 4) != 0 ||
++            (header[8] != 0 && header[8] != server->stream_kind)) break;
++        payload_bytes = read_u32(header + 12);
++        if (header[8] == 0 && header[9] == 1) server->hello = 1;
++        if (header[8] == 0 && header[9] == 2) server->session_start = 1;
++        if (header[8] == server->stream_kind && server->stream_kind != 0) server->media = 1;
++        while (payload_bytes > 0) {
++            unsigned char discard[1024];
++            size_t take = payload_bytes < sizeof(discard) ? payload_bytes : sizeof(discard);
++            if (!read_full(client, discard, take)) {
++                test_close(client);
++                return NULL;
++            }
++            payload_bytes -= (unsigned)take;
++        }
++        if (server->hello && server->session_start && server->media) break;
++    }
++    test_close(client);
++    return NULL;
++}
++
++static void init_server(test_server_t *server, unsigned stream_kind) {
++    struct sockaddr_in address;
++    int address_length = sizeof(address);
++    memset(server, 0, sizeof(*server));
++    server->stream_kind = stream_kind;
++    server->listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
++    assert(server->listener != TEST_INVALID_SOCKET);
++    memset(&address, 0, sizeof(address));
++    address.sin_family = AF_INET;
++    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
++    address.sin_port = htons(0);
++    assert(bind(server->listener, (struct sockaddr *)&address, sizeof(address)) == 0);
++    assert(listen(server->listener, 1) == 0);
++    assert(getsockname(server->listener, (struct sockaddr *)&address, &address_length) == 0);
++    server->port = ntohs(address.sin_port);
++}
++
++int main(void) {
++    const char *token = "00112233445566778899aabbccddeeff";
++    char video_endpoint[64];
++    char audio_endpoint[64];
++    unsigned char video[] = { 0, 0, 0, 1, 0x65, 0x88 };
++    unsigned char audio[] = { 0x8c, 0x01, 0x02, 0x03 };
++    test_server_t video_server;
++    test_server_t audio_server;
++    pthread_t video_thread;
++    pthread_t audio_thread;
++    source_clock_renderer_t *renderer;
++#ifdef _WIN32
++    WSADATA wsa;
++    assert(WSAStartup(MAKEWORD(2, 2), &wsa) == 0);
++#endif
++    init_server(&video_server, 1);
++    init_server(&audio_server, 2);
++    snprintf(video_endpoint, sizeof(video_endpoint), "127.0.0.1:%u", video_server.port);
++    snprintf(audio_endpoint, sizeof(audio_endpoint), "127.0.0.1:%u", audio_server.port);
++    assert(pthread_create(&video_thread, NULL, server_main, &video_server) == 0);
++    assert(pthread_create(&audio_thread, NULL, server_main, &audio_server) == 0);
++    renderer = source_clock_renderer_create(video_endpoint, audio_endpoint, token);
++    assert(renderer != NULL);
++    source_clock_renderer_session_start(renderer);
++    assert(!source_clock_renderer_push_video(renderer, NULL, 4, 0, 0));
++    assert(!source_clock_renderer_push_audio(renderer, NULL, 4, 0, 0));
++    assert(source_clock_renderer_push_video(renderer, video, sizeof(video), 1000000000ULL, 0));
++    assert(source_clock_renderer_push_audio(renderer, audio, sizeof(audio), 1000000000ULL, 0));
++#ifdef _WIN32
++    Sleep(300);
++#else
++    usleep(300000);
++#endif
++    source_clock_renderer_destroy(renderer);
++    test_close(video_server.listener);
++    test_close(audio_server.listener);
++    pthread_join(video_thread, NULL);
++    pthread_join(audio_thread, NULL);
++    assert(video_server.hello && video_server.session_start && video_server.media);
++    assert(audio_server.hello && audio_server.session_start && audio_server.media);
++#ifdef _WIN32
++    WSACleanup();
++#endif
++    puts("source_clock_renderer: PASS");
++    return 0;
++}
+diff --git a/source_clock_main.cpp b/source_clock_main.cpp
+new file mode 100644
+index 0000000..362a399
+--- /dev/null
++++ b/source_clock_main.cpp
+@@ -0,0 +1,5 @@
++#include "uxplay_api.h"
++
++int main(int argc, char **argv) {
++    return start_uxplay(argc, argv);
++}
+diff --git a/uxplay.cpp b/uxplay.cpp
+index d10edd4..4943328 100644
+--- a/uxplay.cpp
++++ b/uxplay.cpp
+@@ -70,6 +70,7 @@
+ #include "renderers/video_renderer.h"
+ #include "renderers/audio_renderer.h"
+ #include "renderers/mux_renderer.h"
++#include "renderers/source_clock_renderer.h"
+ #ifdef DBUS
+ #include <dbus/dbus.h>
+ #endif
+@@ -205,6 +206,10 @@ static std::string coverart_artist;
+ static std::string ble_filename = "";
+ static std::string rtp_pipeline = "";
+ static std::string audio_rtp_pipeline = "";
++static std::string source_clock_video_endpoint = "";
++static std::string source_clock_audio_endpoint = "";
++static std::string source_clock_token = "";
++static source_clock_renderer_t *source_clock_renderer = NULL;
+ static GMainLoop *gmainloop = NULL;
+ static bool mux_to_file = false;
+ static std::string mux_filename = "recording";
+@@ -979,6 +984,9 @@ static void print_info (char *name) {
+     printf("-artp pl  Use rtpL16pay to send decoded audio elsewhere: \"pl\"\n");
+     printf("          is the remaining pipeline, starting with rtpL16pay options:\n");
+     printf("          e.g. \"pt=96 ! udpsink host=127.0.0.1 port=5002\"\n");
++    printf("-ipscv ep Send complete video AUs with source NTP to endpoint ep\n");
++    printf("-ipsca ep Send compressed audio frames with source NTP to endpoint ep\n");
++    printf("-ipsct hx Authenticate source-clock endpoints with a 16-byte hex token\n");
+     printf("-al x     Audio latency in seconds (default 0.25) reported to client.\n");
+     printf("-ca [<fn>]In Audio (ALAC) mode, render cover-art [or write to file <fn>]\n");
+     printf("-md <fn>  In Airplay Audio (ALAC) mode, write metadata text to file <fn>\n");
+@@ -1472,6 +1480,15 @@ static void parse_arguments (int argc, char *argv[]) {
+           }
+ 	  audio_rtp_pipeline.erase();
+ 	  audio_rtp_pipeline.append(argv[++i]);
++	} else if (arg == "-ipscv") {
++	  if (!option_has_value(i, argc, arg, argv[i+1])) exit(1);
++	  source_clock_video_endpoint = argv[++i];
++	} else if (arg == "-ipsca") {
++	  if (!option_has_value(i, argc, arg, argv[i+1])) exit(1);
++	  source_clock_audio_endpoint = argv[++i];
++	} else if (arg == "-ipsct") {
++	  if (!option_has_value(i, argc, arg, argv[i+1])) exit(1);
++	  source_clock_token = argv[++i];
+ 	} else if (arg == "-vdmp") {
+             dump_video = true;
+             if (i < argc - 1 && *argv[i+1] != '-') {
+@@ -2183,6 +2200,10 @@ extern "C" void video_reset(void *cls, reset_type_t type) {
+ 
+ extern "C" int video_set_codec(void *cls, video_codec_t codec) {
+     bool video_is_h265 = (codec == VIDEO_CODEC_H265);
++    if (source_clock_renderer) {
++        source_clock_renderer_set_video_codec(source_clock_renderer,
++            video_is_h265 ? SOURCE_CLOCK_VIDEO_H265 : SOURCE_CLOCK_VIDEO_H264);
++    }
+     if (mux_to_file) {
+         mux_renderer_choose_video_codec(video_is_h265);
+     }
+@@ -2230,6 +2251,9 @@ extern "C" void export_dacp(void *cls, const char *active_remote, const char *da
+ 
+ extern "C" void conn_init (void *cls) {
+     open_connections++;
++    if (source_clock_renderer && open_connections == 1) {
++        source_clock_renderer_session_start(source_clock_renderer);
++    }
+     LOGD("Open connections: %i", open_connections);
+     //video_renderer_update_background(1);
+ }
+@@ -2237,6 +2261,11 @@ extern "C" void conn_init (void *cls) {
+ extern "C" void conn_destroy (void *cls) {
+     //video_renderer_update_background(-1);
+-    open_connections--;
++    if (open_connections > 0) {
++        open_connections--;
++    }
++    if (source_clock_renderer && open_connections == 0) {
++        source_clock_renderer_session_end(source_clock_renderer);
++    }
+     LOGD("Open connections: %i", open_connections);
+     if (open_connections == 0) {
+         remote_clock_offset = 0;
+@@ -2305,6 +2332,10 @@ extern "C" void audio_process (void *cls, raop_ntp_t *ntp, audio_decode_struct *
+     if (mux_to_file) {
+         mux_renderer_push_audio(data->data, data->data_len, data->ntp_time_remote);
+     }
++    if (source_clock_renderer && data != NULL && data->data != NULL && data->data_len > 0) {
++        source_clock_renderer_push_audio(source_clock_renderer, data->data, data->data_len,
++                                         data->ntp_time_remote, 0);
++    }
+     if (use_audio) {
+         if (!remote_clock_offset) {
+             uint64_t local_time = (data->ntp_time_local ? data->ntp_time_local : get_local_time());
+@@ -2340,6 +2371,10 @@ extern "C" void video_process (void *cls, raop_ntp_t *ntp, video_decode_struct *
+     if (mux_to_file) {
+         mux_renderer_push_video(data->data, data->data_len, data->ntp_time_remote);
+     }
++    if (source_clock_renderer && data != NULL && data->data != NULL && data->data_len > 0) {
++        source_clock_renderer_push_video(source_clock_renderer, data->data, data->data_len,
++                                         data->ntp_time_remote, 0);
++    }
+     if (use_video) {
+         if (!remote_clock_offset) {
+             uint64_t local_time = (data->ntp_time_local ? data->ntp_time_local : get_local_time());
+@@ -2461,6 +2496,9 @@ extern "C" void audio_get_format (void *cls, unsigned char *ct, unsigned short *
+         audio_dumpfile = NULL;
+     }
+     audio_type = type;
++    if (source_clock_renderer) {
++        source_clock_renderer_set_audio_format(source_clock_renderer, *ct, *spf, 44100, 2);
++    }
+     
+     if (use_audio) {
+       audio_renderer_start(ct);
+@@ -3136,6 +3174,24 @@ int start_uxplay (int argc, char *argv[]) {
+         exit (1);
+     }
+ 
++    if (!source_clock_video_endpoint.empty() || !source_clock_audio_endpoint.empty() ||
++        !source_clock_token.empty()) {
++        if (source_clock_video_endpoint.empty() || source_clock_audio_endpoint.empty() ||
++            source_clock_token.empty()) {
++            LOGE("source-clock requires -ipscv, -ipsca, and -ipsct");
++            exit(1);
++        }
++        source_clock_renderer = source_clock_renderer_create(source_clock_video_endpoint.c_str(),
++                                                              source_clock_audio_endpoint.c_str(),
++                                                              source_clock_token.c_str());
++        if (!source_clock_renderer) {
++            LOGE("source-clock renderer initialization failed");
++            exit(1);
++        }
++        LOGI("source-clock egress enabled: video=%s audio=%s", source_clock_video_endpoint.c_str(),
++             source_clock_audio_endpoint.c_str());
++    }
++
+     render_logger = logger_init();
+     logger_set_callback(render_logger, log_callback, NULL);
+     logger_set_level(render_logger, log_level);
+@@ -3293,6 +3349,10 @@ void stop_uxplay() {
+ }
+ 
+ static void cleanup() {
++    if (source_clock_renderer) {
++        source_clock_renderer_destroy(source_clock_renderer);
++        source_clock_renderer = NULL;
++    }
+     if (use_audio) {
+         audio_renderer_destroy();
+     }
+
+diff --git a/lib/raop_rtp_mirror.c b/lib/raop_rtp_mirror.c
+index 2bb4f5f..cb75396 100644
+--- a/lib/raop_rtp_mirror.c
++++ b/lib/raop_rtp_mirror.c
+@@ -460,8 +460,13 @@ raop_rtp_mirror_thread(void *arg)
+                 int nalu_size = 0;
+                 int nalus_count = 0;
+                 while (nalu_size < payload_size) {
+-                    int nc_len = byteutils_get_int_be(payload_decrypted, nalu_size);
+-                    if (nc_len < 0 || nalu_size + 4 > payload_size) {
++                    int nc_len;
++                    if (payload_size - nalu_size < 4) {
++                        valid_data = false;
++                        break;
++                    }
++                    nc_len = byteutils_get_int_be(payload_decrypted, nalu_size);
++                    if (nc_len <= 0 || nc_len > payload_size - nalu_size - 4) {
+                         valid_data = false;
+                         break;
+                     }
+@@ -723,8 +728,32 @@ raop_rtp_mirror_thread(void *arg)
+                         conn_reset = true;
+                         break;
+                     }
+-                    short sps_size = byteutils_get_short_be(payload,6);
++                    int sps_size;
++                    int pps_size;
++                    int pps_offset;
++                    if (payload_size < 8) {
++                        logger_log(raop_rtp_mirror->logger, LOGGER_ERR,
++                                   "raop_rtp_mirror: H264 codec packet is too short: %d", payload_size);
++                        unsupported_codec = true;
++                        break;
++                    }
++                    sps_size = byteutils_get_short_be(payload, 6);
++                    pps_offset = sps_size + 9;
++                    if (sps_size <= 0 || pps_offset < 0 || pps_offset + 2 > payload_size) {
++                        logger_log(raop_rtp_mirror->logger, LOGGER_ERR,
++                                   "raop_rtp_mirror: invalid H264 SPS size: %d (payload %d)",
++                                   sps_size, payload_size);
++                        unsupported_codec = true;
++                        break;
++                    }
+                     unsigned char *sequence_parameter_set = payload + 8;
+-                    short pps_size = byteutils_get_short_be(payload, sps_size + 9);
++                    pps_size = byteutils_get_short_be(payload, pps_offset);
+                     unsigned char *picture_parameter_set = payload + sps_size + 11;
++                    if (pps_size <= 0 || pps_size > payload_size - (sps_size + 11)) {
++                        logger_log(raop_rtp_mirror->logger, LOGGER_ERR,
++                                   "raop_rtp_mirror: invalid H264 PPS size: %d (payload %d)",
++                                   pps_size, payload_size);
++                        unsupported_codec = true;
++                        break;
++                    }
+                     int data_size = 6;

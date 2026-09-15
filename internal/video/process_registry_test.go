@@ -289,3 +289,16 @@ func readTrackedProcessesLockedForTest() ([]trackedProcess, error) {
 	defer processRegistryMu.Unlock()
 	return readTrackedProcessesLocked()
 }
+
+func TestIsFFmpegPathRecognizesWindowsWrappers(t *testing.T) {
+	for _, path := range []string{"ffmpeg", "ffmpeg.exe", "ffmpeg.cmd", "ffmpeg.bat", `C:\	ools\\FFMPEG.CMD`} {
+		if !isFFmpegPath(path) {
+			t.Errorf("isFFmpegPath(%q) = false, want true", path)
+		}
+	}
+	for _, path := range []string{"other.exe", "ffmpeg.ps1", "my-ffmpeg-wrapper.cmd"} {
+		if isFFmpegPath(path) {
+			t.Errorf("isFFmpegPath(%q) = true, want false", path)
+		}
+	}
+}

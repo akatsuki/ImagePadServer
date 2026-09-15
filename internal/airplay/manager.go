@@ -10,10 +10,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 
+	"imagepadserver/internal/airplaycontract"
 	"imagepadserver/internal/video"
 )
 
@@ -21,35 +23,58 @@ const (
 	envFeatureFlag       = "IMAGEPAD_AIRPLAY"
 	envUxPlayPath        = "IMAGEPAD_UXPLAY"
 	envReceiverPath      = "IMAGEPAD_AIRPLAY_RECEIVER"
+	envDiagnosticName    = "IMAGEPAD_AIRPLAY_DIAGNOSTIC_RECEIVER_NAME"
 	defaultReceiverTitle = "ImagePadServer-AirPlay"
 )
 
 var (
-	ErrDisabled       = errors.New("airplay feature is disabled")
-	ErrAlreadyRunning = errors.New("airplay is already running")
+	ErrDisabled                 = errors.New("airplay feature is disabled")
+	ErrAlreadyRunning           = errors.New("airplay is already running")
+	ErrDeliveryRetryUnavailable = errors.New("airplay delivery retry is unavailable")
+	ErrDeliveryRetryPending     = errors.New("airplay delivery retry is already pending")
 )
 
 type Status struct {
-	Enabled         bool   `json:"enabled"`
-	Available       bool   `json:"available"`
-	Running         bool   `json:"running"`
-	ReceiverRunning bool   `json:"receiverRunning"`
-	BridgeRunning   bool   `json:"bridgeRunning"`
-	ReceiverPath    string `json:"receiverPath,omitempty"`
-	AudioCodec      string `json:"audioCodec,omitempty"`
-	Message         string `json:"message,omitempty"`
+	Enabled           bool   `json:"enabled"`
+	Available         bool   `json:"available"`
+	Running           bool   `json:"running"`
+	ReceiverRunning   bool   `json:"receiverRunning"`
+	BridgeRunning     bool   `json:"bridgeRunning"`
+	MediaReady        bool   `json:"mediaReady"`
+	MediaReadyKnown   bool   `json:"-"`
+	Phase             string `json:"phase"`
+	DeliveryPhase     string `json:"deliveryPhase,omitempty"`
+	DeliveryRequestID string `json:"deliveryRequestID,omitempty"`
+	ReceiverPath      string `json:"receiverPath,omitempty"`
+	ReceiverName      string `json:"receiverName,omitempty"`
+	AudioCodec        string `json:"audioCodec,omitempty"`
+	RuntimeState      string `json:"runtimeState,omitempty"`
+	RuntimeMessage    string `json:"runtimeMessage,omitempty"`
+	RuntimeSetID      string `json:"runtimeSetID,omitempty"`
+	Message           string `json:"message,omitempty"`
 }
 
 type Manager struct {
 	// opMu serializes Start and Stop so a concurrent lifecycle request cannot leak a child process.
-	opMu       sync.Mutex
-	mu         sync.Mutex
-	running    bool
-	cancel     context.CancelFunc
-	done       chan struct{}
-	status     Status
-	audioRelay *l16RTPRelay
-	onChange   func()
+	opMu                         sync.Mutex
+	mu                           sync.Mutex
+	running                      bool
+	cancel                       context.CancelFunc
+	done                         chan struct{}
+	status                       Status
+	audioRelay                   *l16RTPRelay
+	deliveryRetry                chan struct{}
+	deliveryRetryPending         bool
+	deliveryReconfigure          chan sourceClockDeliveryCommand
+	deliveryReconfigurePending   bool
+	deliveryReconfigureRequestID string
+	deliveryReconfigureReply     chan error
+	deliverySessionID            string
+	deliveryActiveGeneration     uint64
+	deliveryActivePublishURL     string
+	deliveryActiveOutput         DirectOutputConfig
+	stopInitiator                string
+	onChange                     func()
 }
 
 func New(onChange func()) *Manager {
@@ -60,12 +85,56 @@ func New(onChange func()) *Manager {
 }
 
 func FeatureEnabled() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(envFeatureFlag))) {
+	value, _ := os.LookupEnv(envFeatureFlag)
+	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "1", "true", "yes", "on", "enabled":
 		return true
-	default:
+	case "0", "false", "no", "off", "disabled":
 		return false
+	default:
+		return runtime.GOOS == "windows" && runtime.GOARCH == "amd64"
 	}
+}
+
+func bundledAirPlayRoot() string {
+	executable, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	base, err := filepath.Abs(filepath.Dir(executable))
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(base, "airplay")
+}
+
+func bundledAirPlayRuntimeAvailable() bool {
+	_, err := ResolvePinnedAirPlayRuntime()
+	return err == nil
+}
+
+func resolveReceiverTitle(fallback string) (string, error) {
+	raw, explicit := os.LookupEnv(envDiagnosticName)
+	if !explicit {
+		return normalizeReceiverTitle(fallback), nil
+	}
+	title := strings.Join(strings.Fields(raw), "-")
+	if title == "" {
+		return "", fmt.Errorf("%s is invalid: receiver name is empty", envDiagnosticName)
+	}
+	if len(title) > 63 {
+		return "", fmt.Errorf("%s is invalid: receiver name exceeds 63 ASCII characters", envDiagnosticName)
+	}
+	for index := 0; index < len(title); index++ {
+		character := title[index]
+		alphanumeric := character >= 'a' && character <= 'z' ||
+			character >= 'A' && character <= 'Z' ||
+			character >= '0' && character <= '9'
+		if !alphanumeric && (character != '-' || index == 0) {
+			return "", fmt.Errorf("%s is invalid: receiver name must match [A-Za-z0-9][A-Za-z0-9-]*", envDiagnosticName)
+		}
+	}
+	return title, nil
 }
 
 func resolveReceiverOnPATH() (string, error) {
@@ -83,13 +152,10 @@ func ResolveReceiverPath() (string, error) {
 			return resolveExecutable(raw)
 		}
 	}
-	if path, err := resolveReceiverOnPATH(); err == nil {
-		return path, nil
+	if runtimeSet, err := ResolvePinnedAirPlayRuntime(); err == nil {
+		return runtimeSet.ReceiverPath, nil
 	}
-	if path, err := InstalledUxPlayPath(); err == nil {
-		return path, nil
-	}
-	return "", errors.New("UxPlay was not found; set IMAGEPAD_UXPLAY or enable IMAGEPAD_AIRPLAY=1 for automatic Windows setup")
+	return "", errors.New("verified AirPlay runtime was not found; install the pinned runtime or set IMAGEPAD_AIRPLAY_RECEIVER explicitly")
 }
 
 func resolveExecutable(raw string) (string, error) {
@@ -129,18 +195,41 @@ func audioCodecLabel(relay *l16RTPRelay) string {
 
 func (m *Manager) Status() Status {
 	enabled := FeatureEnabled()
+	preparation := RuntimePreparation()
 	m.mu.Lock()
 	status := m.status
 	running := m.running
 	audioRelay := m.audioRelay
 	m.mu.Unlock()
 	status.Enabled = enabled
+	status.RuntimeState = preparation.State
+	status.RuntimeMessage = preparation.Message
+	status.RuntimeSetID = preparation.RuntimeSetID
 	status.AudioCodec = audioCodecLabel(audioRelay)
 	if running {
 		status.Available = true
 		return status
 	}
 	if enabled {
+		if preparation.State == runtimePreparationPreparing {
+			status.Available = false
+			status.Message = "AirPlayランタイムを準備しています。完了後に受信を開始できます。"
+			return status
+		}
+		if preparation.State == runtimePreparationFailed && !hasExplicitReceiverPath() {
+			status.Available = false
+			if preparation.Message != "" {
+				status.Message = preparation.Message
+			}
+		}
+		receiverName, err := resolveReceiverTitle(defaultReceiverTitle)
+		if err != nil {
+			status.Available = false
+			status.ReceiverName = ""
+			status.Message = err.Error()
+			return status
+		}
+		status.ReceiverName = receiverName
 		if path, err := ResolveReceiverPath(); err == nil {
 			status.Available = true
 			status.ReceiverPath = path
@@ -166,15 +255,11 @@ func (m *Manager) Start(parent context.Context, ffmpegPath, publishURL string) e
 	if parent == nil {
 		parent = context.Background()
 	}
-	receiverPath, err := ResolveReceiverPath()
-	if err != nil && !hasExplicitReceiverPath() {
-		if preparedPath, setupErr := PrepareOnStartup(parent); setupErr == nil && preparedPath != "" {
-			receiverPath = preparedPath
-			err = nil
-		} else if setupErr != nil {
-			err = fmt.Errorf("%w; automatic AirPlay setup failed: %v", err, setupErr)
-		}
+	receiverName, err := resolveReceiverTitle(defaultReceiverTitle)
+	if err != nil {
+		return err
 	}
+	receiverPath, err := ResolveReceiverPath()
 	if err != nil {
 		return err
 	}
@@ -184,8 +269,19 @@ func (m *Manager) Start(parent context.Context, ffmpegPath, publishURL string) e
 			return fmt.Errorf("ffmpeg was not found: %w", err)
 		}
 	}
-	if err := validatePublishURL(publishURL); err != nil {
+	if err := validatePublishURL(publishURL, "rtmp"); err != nil {
 		return err
+	}
+	useGStreamer := gstreamerPipelineEnabled()
+	gstreamerBridgePath := ""
+	if useGStreamer {
+		gstreamerBridgePath, err = ResolveGStreamerBridgePath()
+		if err != nil {
+			return err
+		}
+		log.Printf("AirPlay pipeline=gstreamer-bridge bridge=%s", gstreamerBridgePath)
+	} else {
+		log.Printf("AirPlay pipeline=ffmpeg")
 	}
 
 	m.mu.Lock()
@@ -203,10 +299,13 @@ func (m *Manager) Start(parent context.Context, ffmpegPath, publishURL string) e
 	if err != nil {
 		return fmt.Errorf("create AirPlay session directory: %w", err)
 	}
-	sessionSDP := filepath.Join(tempDir, "session.sdp")
-	if err := os.WriteFile(sessionSDP, []byte(BuildSessionSDP(videoPort, audioPort)), 0600); err != nil {
-		os.RemoveAll(tempDir)
-		return fmt.Errorf("write AirPlay session SDP: %w", err)
+	sessionSDP := ""
+	if !useGStreamer {
+		sessionSDP = filepath.Join(tempDir, "session.sdp")
+		if err := os.WriteFile(sessionSDP, []byte(BuildSessionSDP(videoPort, audioPort)), 0600); err != nil {
+			os.RemoveAll(tempDir)
+			return fmt.Errorf("write AirPlay session SDP: %w", err)
+		}
 	}
 
 	ctx, cancel := context.WithCancel(parent)
@@ -222,6 +321,92 @@ func (m *Manager) Start(parent context.Context, ffmpegPath, publishURL string) e
 		os.RemoveAll(tempDir)
 		audioRelay.Close()
 		return fmt.Errorf("start AirPlay H.264 RTP relay: %w", err)
+	}
+	if useGStreamer {
+		receiverLog := &limitedBuffer{max: 8192}
+		encoder := video.SelectVideoEncoder(ctx, ffmpegPath, video.EncoderLowLatency)
+		bridge := BuildGStreamerBridgeArgs(videoPort, audioPort)
+		encoderArgs := BuildGStreamerFFmpegArgs(publishURL, encoder, video.ResolveQualityForUpload("1080", 20, 0))
+		pipeline, err := startGStreamerBridgeProcess(ctx, gstreamerBridgePath, bridge, ffmpegPath, encoderArgs)
+		if err != nil {
+			cancel()
+			relay.Close()
+			audioRelay.Close()
+			os.RemoveAll(tempDir)
+			return fmt.Errorf("start AirPlay GStreamer bridge: %w", err)
+		}
+		// The audio relay starts its paced output only after a complete video
+		// decoder refresh. Requesting the cached SPS/PPS+IDR here keeps the
+		// GStreamer branch's audio/video start boundary identical to the legacy
+		// FFmpeg path, including when the sender is already mid-session.
+		scheduleBridgeDecoderRefresh(ctx, relay)
+		receiver := exec.CommandContext(ctx, receiverPath, BuildReceiverArgs(videoInputPort, audioInputPort, receiverName)...)
+		restoreReceiverConfig, err := configureReceiverProcess(receiver, receiverLog, receiverPath, tempDir)
+		if err != nil {
+			cancel()
+			pipeline.stop()
+			_, _ = pipeline.wait()
+			if pipeline.untrack != nil {
+				pipeline.untrack()
+			}
+			relay.Close()
+			audioRelay.Close()
+			os.RemoveAll(tempDir)
+			return fmt.Errorf("configure AirPlay receiver: %w", err)
+		}
+		if err := receiver.Start(); err != nil {
+			var restoreErr error
+			if restoreReceiverConfig != nil {
+				restoreErr = restoreReceiverConfig()
+			}
+			cancel()
+			pipeline.stop()
+			_, _ = pipeline.wait()
+			if pipeline.untrack != nil {
+				pipeline.untrack()
+			}
+			relay.Close()
+			audioRelay.Close()
+			os.RemoveAll(tempDir)
+			if restoreErr != nil {
+				return fmt.Errorf("start AirPlay receiver: %w; restore receiver configuration: %v", err, restoreErr)
+			}
+			return fmt.Errorf("start AirPlay receiver: %w", err)
+		}
+		if err := restoreReceiverConfigurationAfterStartup(receiverLog, restoreReceiverConfig); err != nil {
+			cancel()
+			_, _ = receiver.Process, receiver.Wait()
+			pipeline.stop()
+			_, _ = pipeline.wait()
+			if pipeline.untrack != nil {
+				pipeline.untrack()
+			}
+			relay.Close()
+			audioRelay.Close()
+			os.RemoveAll(tempDir)
+			return fmt.Errorf("restore AirPlay receiver configuration: %w", err)
+		}
+
+		done := make(chan struct{})
+		m.mu.Lock()
+		m.running = true
+		m.cancel = cancel
+		m.done = done
+		m.audioRelay = audioRelay
+		m.status = Status{
+			Enabled:         true,
+			Available:       true,
+			Running:         true,
+			ReceiverRunning: true,
+			BridgeRunning:   true,
+			ReceiverPath:    receiverPath,
+			ReceiverName:    receiverName,
+			Message:         "AirPlay受信待ちです。同一LANのiOSから画面ミラーリングを開始してください。",
+		}
+		m.mu.Unlock()
+		m.notify()
+		go m.monitorGStreamer(ctx, cancel, done, relay, audioRelay, pipeline, receiver, receiverLog, tempDir)
+		return nil
 	}
 	receiverLog := &limitedBuffer{max: 8192}
 	// Select the GPU encoder once up front and re-encode the bridge video so a
@@ -239,7 +424,7 @@ func (m *Manager) Start(parent context.Context, ffmpegPath, publishURL string) e
 		return fmt.Errorf("start AirPlay FFmpeg bridge: %w", err)
 	}
 	scheduleBridgeDecoderRefresh(ctx, relay)
-	receiver := exec.CommandContext(ctx, receiverPath, BuildReceiverArgs(videoInputPort, audioInputPort, defaultReceiverTitle)...)
+	receiver := exec.CommandContext(ctx, receiverPath, BuildReceiverArgs(videoInputPort, audioInputPort, receiverName)...)
 	restoreReceiverConfig, err := configureReceiverProcess(receiver, receiverLog, receiverPath, tempDir)
 	if err != nil {
 		cancel()
@@ -284,11 +469,160 @@ func (m *Manager) Start(parent context.Context, ffmpegPath, publishURL string) e
 		ReceiverRunning: true,
 		BridgeRunning:   true,
 		ReceiverPath:    receiverPath,
+		ReceiverName:    receiverName,
 		Message:         "AirPlay受信待ちです。同一LANのiOSから画面ミラーリングを開始してください。",
 	}
 	m.mu.Unlock()
 	m.notify()
 	go m.monitor(ctx, cancel, done, relay, audioRelay, bridge, receiver, ffmpegPath, bridgeArgs, bridgeLog, receiverLog, untrack, tempDir)
+	return nil
+}
+
+// StartDirect starts UxPlay plus the native GStreamer publisher. Unlike Start,
+// this path does not resolve or launch FFmpeg; GStreamer owns decode, timing,
+// encode, RTSP/TCP publication, and MP4 recording.
+func (m *Manager) StartDirect(parent context.Context, sessionID, publishURL, recording string, output DirectOutputConfig, onStopped func()) error {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	if !FeatureEnabled() {
+		return ErrDisabled
+	}
+	if parent == nil {
+		parent = context.Background()
+	}
+	if SourceClockPipelineEnabled() {
+		if strings.TrimSpace(sessionID) == "" {
+			return errors.New("AirPlay source-clock session ID is empty")
+		}
+		return m.startSourceClock(parent, sessionID, publishURL, recording, output, onStopped)
+	}
+	receiverName, err := resolveReceiverTitle(defaultReceiverTitle)
+	if err != nil {
+		return err
+	}
+	receiverPath, err := ResolveReceiverPath()
+	if err != nil {
+		return err
+	}
+	if err := validatePublishURL(publishURL, "rtsp"); err != nil {
+		return err
+	}
+	if strings.TrimSpace(recording) == "" {
+		return errors.New("AirPlay direct recording path is empty")
+	}
+	bridgePath, err := ResolveGStreamerBridgePath()
+	if err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	if m.running {
+		m.mu.Unlock()
+		return ErrAlreadyRunning
+	}
+	m.mu.Unlock()
+	videoInputPort, videoPort, audioInputPort, audioPort, err := reserveRTPPorts()
+	if err != nil {
+		return fmt.Errorf("reserve AirPlay RTP ports: %w", err)
+	}
+	tempDir, err := os.MkdirTemp("", "imagepad-airplay-")
+	if err != nil {
+		return fmt.Errorf("create AirPlay session directory: %w", err)
+	}
+	ctx, cancel := context.WithCancel(parent)
+	audioRelay, err := startL16RTPRelay(ctx, audioInputPort, audioPort)
+	if err != nil {
+		cancel()
+		os.RemoveAll(tempDir)
+		return fmt.Errorf("start AirPlay L16 RTP relay: %w", err)
+	}
+	relay, err := startH264RTPRelay(ctx, videoInputPort, videoPort, audioRelay.NotifyVideoActivity)
+	if err != nil {
+		cancel()
+		audioRelay.Close()
+		os.RemoveAll(tempDir)
+		return fmt.Errorf("start AirPlay H.264 RTP relay: %w", err)
+	}
+	stopFile := filepath.Join(tempDir, "stop.request")
+	pipelineArgs := BuildGStreamerDirectArgs(videoPort, audioPort, publishURL, recording, stopFile, output)
+	pipeline, err := startGStreamerDirectProcess(ctx, bridgePath, pipelineArgs, stopFile)
+	if err != nil {
+		cancel()
+		relay.Close()
+		audioRelay.Close()
+		os.RemoveAll(tempDir)
+		return fmt.Errorf("start direct GStreamer publisher: %w", err)
+	}
+	receiverLog := &limitedBuffer{max: 8192}
+	receiver := exec.CommandContext(ctx, receiverPath, BuildReceiverArgs(videoInputPort, audioInputPort, receiverName)...)
+	restoreReceiverConfig, err := configureReceiverProcess(receiver, receiverLog, receiverPath, tempDir)
+	if err != nil {
+		cancel()
+		pipeline.stop()
+		_ = pipeline.wait()
+		relay.Close()
+		audioRelay.Close()
+		os.RemoveAll(tempDir)
+		return fmt.Errorf("configure AirPlay receiver: %w", err)
+	}
+	if err := receiver.Start(); err != nil {
+		if restoreReceiverConfig != nil {
+			_ = restoreReceiverConfig()
+		}
+		cancel()
+		pipeline.stop()
+		_ = pipeline.wait()
+		relay.Close()
+		audioRelay.Close()
+		os.RemoveAll(tempDir)
+		return fmt.Errorf("start AirPlay receiver: %w", err)
+	}
+	if err := restoreReceiverConfigurationAfterStartup(receiverLog, restoreReceiverConfig); err != nil {
+		cancel()
+		_ = receiver.Process.Kill()
+		_, _ = receiver.Process, receiver.Wait()
+		pipeline.stop()
+		_ = pipeline.wait()
+		relay.Close()
+		audioRelay.Close()
+		os.RemoveAll(tempDir)
+		return fmt.Errorf("restore AirPlay receiver configuration: %w", err)
+	}
+
+	done := make(chan struct{})
+	m.mu.Lock()
+	if m.running {
+		m.mu.Unlock()
+		cancel()
+		_ = receiver.Process.Kill()
+		_, _ = receiver.Process, receiver.Wait()
+		pipeline.stop()
+		_ = pipeline.wait()
+		relay.Close()
+		audioRelay.Close()
+		os.RemoveAll(tempDir)
+		return ErrAlreadyRunning
+	}
+	m.running = true
+	m.cancel = cancel
+	m.done = done
+	m.audioRelay = audioRelay
+	m.status = Status{
+		Enabled:         true,
+		Available:       true,
+		Running:         true,
+		ReceiverRunning: true,
+		BridgeRunning:   true,
+		ReceiverPath:    receiverPath,
+		ReceiverName:    receiverName,
+		Message:         "AirPlay受信待ちです。同一LANのiOSから画面ミラーリングを開始してください。",
+	}
+	m.mu.Unlock()
+	m.notify()
+	restartPipeline := func(runCtx context.Context) (*gstreamerDirectProcess, error) {
+		return startGStreamerDirectProcess(runCtx, bridgePath, pipelineArgs, stopFile)
+	}
+	go m.monitorDirect(ctx, cancel, done, relay, audioRelay, pipeline, restartPipeline, receiver, receiverLog, tempDir, onStopped)
 	return nil
 }
 
@@ -309,12 +643,20 @@ func restoreReceiverConfigurationAfterStartup(output *limitedBuffer, restore fun
 	return restore()
 }
 
-func validatePublishURL(raw string) error {
+func validatePublishURL(raw string, allowedSchemes ...string) error {
 	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme != "rtmp" || parsed.Host == "" {
+	if err != nil || parsed.Host == "" {
 		return fmt.Errorf("invalid AirPlay publish URL")
 	}
-	return nil
+	for _, scheme := range allowedSchemes {
+		if parsed.Scheme == scheme {
+			return nil
+		}
+	}
+	if len(allowedSchemes) == 0 {
+		return fmt.Errorf("invalid AirPlay publish URL")
+	}
+	return fmt.Errorf("invalid AirPlay publish URL")
 }
 
 type rtpPortPair struct {
@@ -381,12 +723,21 @@ func BuildReceiverArgs(videoPort, audioPort int, title string) []string {
 	title = normalizeReceiverTitle(title)
 	videoPipeline := fmt.Sprintf("config-interval=-1\t!\tudpsink\thost=127.0.0.1\tport=%d", videoPort)
 	audioPipeline := fmt.Sprintf("pt=96\t!\tudpsink\thost=127.0.0.1\tport=%d", audioPort)
-	return []string{
+	args := []string{
 		"-n", title,
+		// UxPlay's Windows bundle keeps the AirPlay RTP egress active with
+		// the established headless setting used by the raw-capture path.
 		"-vs", "0",
+		"-fps", "60",
 		"-vrtp", videoPipeline,
 		"-artp", audioPipeline,
 	}
+	if os.Getenv("IMAGEPAD_AIRPLAY_RTP_DEBUG") == "1" {
+		// Keep packet-level debug output bounded while exposing the receiver's
+		// negotiation and client FPS reports in the parent application log.
+		args = append(args, "-d", "1", "-FPSdata")
+	}
+	return args
 }
 
 func BuildBridgeArgs(sessionSDP, publishURL string, encoder video.VideoEncoderProfile, preset video.QualityPreset) []string {
@@ -396,7 +747,10 @@ func BuildBridgeArgs(sessionSDP, publishURL string, encoder video.VideoEncoderPr
 		"-protocol_whitelist", "file,udp,rtp",
 		"-thread_queue_size", "512",
 		"-buffer_size", "4194304",
-		"-reorder_queue_size", "4096",
+		// The Go relay already normalizes RTP sequence numbers and drops
+		// incomplete access units. Do not make FFmpeg wait on a large packet
+		// reorder cache when iPhone briefly pauses or changes applications.
+		"-reorder_queue_size", "0",
 		"-analyzeduration", "2000000",
 		"-probesize", "5000000",
 		"-fflags", "+genpts+discardcorrupt",
@@ -404,12 +758,11 @@ func BuildBridgeArgs(sessionSDP, publishURL string, encoder video.VideoEncoderPr
 		"-map", "0:v:0",
 		"-map", "0:a:0",
 	}
-	// Re-encode the video instead of -c:v copy. UxPlay emits fresh SPS/PPS when
-	// the source rotates between portrait and landscape; a raw copy forwards
-	// those parameter-set updates to the FLV muxer, which then references a
-	// stale PPS, emits "no frame!", and drops the RTMP connection (-10054).
-	// The encoder absorbs the parameter-set change and always writes a coherent
-	// sequence header, so the ingest survives the rotation.
+	// Normalize the output canvas before encoding. UxPlay emits fresh SPS/PPS
+	// when the source rotates between portrait and landscape; a fixed canvas
+	// lets the decoder accept that input change without forcing the FLV encoder
+	// and downstream ingest to change dimensions mid-stream.
+	args = append(args, "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=black")
 	args = append(args, encoder.FFmpegArgs(preset, "ultrafast")...)
 	args = append(args,
 		"-c:a", "aac",
@@ -444,12 +797,32 @@ func BuildSessionSDP(videoPort, audioPort int) string {
 }
 
 func (m *Manager) Stop(timeout time.Duration) bool {
+	return m.stop(timeout, "")
+}
+
+// StopForUser records only an explicit user stop as causal intent. It remains
+// separate from internal cleanup so a canceled context is not mislabelled.
+func (m *Manager) StopForUser(timeout time.Duration) bool {
+	return m.stop(timeout, airplaycontract.TerminationReasonUserStop)
+}
+
+// StopForServerShutdown records the application shutdown boundary without
+// treating ordinary receiver synchronization as a server shutdown.
+func (m *Manager) StopForServerShutdown(timeout time.Duration) bool {
+	return m.stop(timeout, airplaycontract.TerminationReasonServerShutdown)
+}
+
+func (m *Manager) stop(timeout time.Duration, initiator string) bool {
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
 	m.mu.Lock()
 	cancel := m.cancel
 	done := m.done
 	running := m.running
+	if running && (initiator == airplaycontract.TerminationReasonUserStop ||
+		initiator == airplaycontract.TerminationReasonServerShutdown) && m.stopInitiator == "" {
+		m.stopInitiator = initiator
+	}
 	m.mu.Unlock()
 	if !running || cancel == nil || done == nil {
 		return true
@@ -465,6 +838,19 @@ func (m *Manager) Stop(timeout time.Duration) bool {
 	case <-time.After(timeout):
 		return false
 	}
+}
+
+func (m *Manager) sourceClockStopInitiator() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.stopInitiator
+}
+
+func (m *Manager) sourceClockTerminationInitiator(fallback string) string {
+	if initiator := m.sourceClockStopInitiator(); initiator != "" {
+		return initiator
+	}
+	return fallback
 }
 
 func startBridgeProcess(ctx context.Context, ffmpegPath string, args []string) (*exec.Cmd, *limitedBuffer, func(), error) {
@@ -549,7 +935,6 @@ func (m *Manager) monitor(ctx context.Context, cancel context.CancelFunc, done c
 	backoff := newBridgeRespawnBackoff(bridgeRespawnInitialDelay, bridgeRespawnMaxDelay, bridgeRespawnMaxRetries)
 	lastBridgeStart := time.Now()
 	formatChanges := relay.FormatChanges()
-	restartForFormatChange := false
 	var debugTicker *time.Ticker
 	var debugTick <-chan time.Time
 	lastDebugLog := ""
@@ -583,14 +968,10 @@ func (m *Manager) monitor(ctx context.Context, cancel context.CancelFunc, done c
 			m.finishMonitor(done, tempDir, stoppedByRequest, firstName, firstErr, bridgeErr, receiverErr, currentBridgeLog, receiverLog)
 			return
 		case <-formatChanges:
-			// The video format changed (SPS/PPS or SSRC/sequence). Hardware
-			// encoders cannot change their output resolution mid-stream, so
-			// restart the bridge to re-open the encoder at the new size. The
-			// relay re-sends cached SPS/PPS/IDR once the new bridge is up.
-			if currentBridge != nil && currentBridge.Process != nil {
-				restartForFormatChange = true
-				_ = currentBridge.Process.Kill()
-			}
+			// SPS/PPS changes are expected during portrait/landscape rotation.
+			// The bridge uses a fixed output canvas, so keep the same FFmpeg
+			// process alive and let its decoder accept the new input format.
+			log.Printf("AirPlay H264 parameter-set change observed; keeping FFmpeg bridge alive")
 		case bridgeErr := <-bridgeDone:
 			if ctx.Err() != nil {
 				stoppedByRequest = true
@@ -617,12 +998,7 @@ func (m *Manager) monitor(ctx context.Context, cancel context.CancelFunc, done c
 			// flowing, a bridge exit is a real failure: back off and, after
 			// repeated failures, surface it instead of crash-looping forever.
 			respawnDelay := time.Duration(0)
-			if restartForFormatChange {
-				// An intentional restart after a format change is not a failure:
-				// reset the retry budget and respawn immediately.
-				backoff.reset()
-				restartForFormatChange = false
-			} else if relay.HasReceivedVideo() {
+			if relay.HasReceivedVideo() {
 				delay, exhausted := backoff.nextDelay()
 				if exhausted {
 					firstName = "FFmpeg bridge"
@@ -669,6 +1045,217 @@ func (m *Manager) monitor(ctx context.Context, cancel context.CancelFunc, done c
 	}
 }
 
+func (m *Manager) monitorGStreamer(ctx context.Context, cancel context.CancelFunc, done chan struct{}, relay *h264RTPRelay, audioRelay *l16RTPRelay, pipeline *gstreamerBridgeProcess, receiver *exec.Cmd, receiverLog *limitedBuffer, tempDir string) {
+	defer relay.Close()
+	defer audioRelay.Close()
+	receiverDone := make(chan error, 1)
+	go func() { receiverDone <- receiver.Wait() }()
+	pipelineDone := make(chan struct {
+		name string
+		err  error
+	}, 1)
+	go func() {
+		name, err := pipeline.wait()
+		pipelineDone <- struct {
+			name string
+			err  error
+		}{name: name, err: err}
+	}()
+
+	select {
+	case <-ctx.Done():
+		cancel()
+		pipeline.stop()
+		result := <-pipelineDone
+		receiverErr := <-receiverDone
+		if pipeline.untrack != nil {
+			pipeline.untrack()
+		}
+		m.finishMonitor(done, tempDir, true, "", nil, result.err, receiverErr, pipeline.encoderLog, receiverLog)
+	case receiverErr := <-receiverDone:
+		cancel()
+		pipeline.stop()
+		result := <-pipelineDone
+		if pipeline.untrack != nil {
+			pipeline.untrack()
+		}
+		m.finishMonitor(done, tempDir, false, "UxPlay receiver", receiverErr, result.err, receiverErr, pipeline.encoderLog, receiverLog)
+	case result := <-pipelineDone:
+		log.Printf("AirPlay GStreamer pipeline exited: component=%s err=%v decoder_output=%q encoder_output=%q", result.name, result.err, pipeline.decoderLog.String(), pipeline.encoderLog.String())
+		if ctx.Err() != nil {
+			cancel()
+			receiverErr := <-receiverDone
+			if pipeline.untrack != nil {
+				pipeline.untrack()
+			}
+			m.finishMonitor(done, tempDir, true, "", nil, result.err, receiverErr, pipeline.encoderLog, receiverLog)
+			return
+		}
+		cancel()
+		receiverErr := <-receiverDone
+		if pipeline.untrack != nil {
+			pipeline.untrack()
+		}
+		m.finishMonitor(done, tempDir, false, "FFmpeg bridge", result.err, result.err, receiverErr, pipeline.encoderLog, receiverLog)
+	}
+}
+
+const directPublisherMaxRetries = 5
+
+const directNoSignalTimeout = 3 * time.Minute
+
+func directNoSignalExpired(startedAt, videoAt, audioAt, now time.Time) bool {
+	latest := startedAt
+	if videoAt.After(latest) {
+		latest = videoAt
+	}
+	if audioAt.After(latest) {
+		latest = audioAt
+	}
+	return !now.Before(latest.Add(directNoSignalTimeout))
+}
+
+func shouldRetryDirectPublisher(attempt int) bool {
+	return attempt >= 1 && attempt <= directPublisherMaxRetries
+}
+
+func directPublisherRetryDelay(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	delay := 250 * time.Millisecond
+	for i := 1; i < attempt && delay < 4*time.Second; i++ {
+		delay *= 2
+	}
+	if delay > 4*time.Second {
+		return 4 * time.Second
+	}
+	return delay
+}
+
+func (m *Manager) monitorDirect(ctx context.Context, cancel context.CancelFunc, done chan struct{}, relay *h264RTPRelay, audioRelay *l16RTPRelay, pipeline *gstreamerDirectProcess, restartPipeline func(context.Context) (*gstreamerDirectProcess, error), receiver *exec.Cmd, receiverLog *limitedBuffer, tempDir string, onStopped func()) {
+	defer relay.Close()
+	defer audioRelay.Close()
+	receiverDone := make(chan error, 1)
+	go func() { receiverDone <- receiver.Wait() }()
+	pipelineDone := make(chan error, 1)
+	waitPipeline := func(current *gstreamerDirectProcess) {
+		go func() { pipelineDone <- current.wait() }()
+	}
+	waitPipeline(pipeline)
+	retryCount := 0
+	var debugTicker *time.Ticker
+	var debugTick <-chan time.Time
+	lastReceiverLog := ""
+	lastPipelineLog := ""
+	startedAt := time.Now()
+	noSignalTicker := time.NewTicker(time.Second)
+	defer noSignalTicker.Stop()
+	if os.Getenv("IMAGEPAD_AIRPLAY_RTP_DEBUG") == "1" {
+		debugTicker = time.NewTicker(time.Second)
+		debugTick = debugTicker.C
+		defer debugTicker.Stop()
+	}
+
+	for {
+		select {
+		case <-debugTick:
+			output := receiverLog.String()
+			if output != "" && output != lastReceiverLog {
+				log.Printf("AirPlay UxPlay receiver output:\n%s", output)
+				lastReceiverLog = output
+			}
+			if relay.HasReceivedVideo() {
+				input, output := relay.Stats()
+				log.Printf("AirPlay H264 RTP input detected packets_in=%d packets_out=%d", input, output)
+			}
+			pipelineOutput := pipeline.log.String()
+			if pipelineOutput != "" && pipelineOutput != lastPipelineLog {
+				log.Printf("AirPlay direct GStreamer output:\n%s", pipelineOutput)
+				lastPipelineLog = pipelineOutput
+			}
+		case now := <-noSignalTicker.C:
+			if directNoSignalExpired(startedAt, relay.LastActivity(), audioRelay.LastActivity(), now) {
+				log.Printf("AirPlay direct publisher: no valid RTP signal for %s; stopping session", directNoSignalTimeout)
+				cancel()
+				pipeline.stop()
+				pipelineErr := <-pipelineDone
+				receiverErr := <-receiverDone
+				m.finishMonitorWithCallback(done, tempDir, false, "AirPlay no signal timeout", nil, pipelineErr, receiverErr, pipeline.log, receiverLog, onStopped)
+				return
+			}
+		case <-ctx.Done():
+			cancel()
+			pipeline.stop()
+			pipelineErr := <-pipelineDone
+			receiverErr := <-receiverDone
+			m.finishMonitorWithCallback(done, tempDir, true, "", nil, pipelineErr, receiverErr, pipeline.log, receiverLog, onStopped)
+			return
+		case receiverErr := <-receiverDone:
+			cancel()
+			pipeline.stop()
+			pipelineErr := <-pipelineDone
+			m.finishMonitorWithCallback(done, tempDir, false, "UxPlay receiver", receiverErr, pipelineErr, receiverErr, pipeline.log, receiverLog, onStopped)
+			return
+		case pipelineErr := <-pipelineDone:
+			log.Printf("AirPlay direct GStreamer pipeline exited: err=%v output=%q", pipelineErr, pipeline.log.String())
+			if ctx.Err() != nil {
+				cancel()
+				receiverErr := <-receiverDone
+				m.finishMonitorWithCallback(done, tempDir, true, "", nil, pipelineErr, receiverErr, pipeline.log, receiverLog, onStopped)
+				return
+			}
+			restarted := false
+			for attempt := retryCount + 1; shouldRetryDirectPublisher(attempt); attempt++ {
+				m.setStatusMessage(fmt.Sprintf("AirPlay direct publisherを再接続しています (%d/%d)", attempt, directPublisherMaxRetries))
+				timer := time.NewTimer(directPublisherRetryDelay(attempt))
+				select {
+				case <-ctx.Done():
+					if !timer.Stop() {
+						<-timer.C
+					}
+					cancel()
+					receiverErr := <-receiverDone
+					m.finishMonitorWithCallback(done, tempDir, true, "", nil, pipelineErr, receiverErr, pipeline.log, receiverLog, onStopped)
+					return
+				case <-timer.C:
+				}
+				next, err := restartPipeline(ctx)
+				if err != nil {
+					log.Printf("AirPlay direct GStreamer publisher restart failed: attempt=%d err=%v", attempt, err)
+					retryCount = attempt
+					if ctx.Err() != nil {
+						break
+					}
+					continue
+				}
+				pipeline = next
+				retryCount = attempt
+				waitPipeline(pipeline)
+				// The replacement publisher has a fresh GStreamer decoder and
+				// must receive the latest complete SPS/PPS+IDR, not wait for an
+				// arbitrary future keyframe from the iPhone.
+				scheduleBridgeDecoderRefresh(ctx, relay)
+				restarted = true
+				break
+			}
+			if restarted {
+				continue
+			}
+			if ctx.Err() != nil {
+				cancel()
+				receiverErr := <-receiverDone
+				m.finishMonitorWithCallback(done, tempDir, true, "", nil, pipelineErr, receiverErr, pipeline.log, receiverLog, onStopped)
+				return
+			}
+			cancel()
+			receiverErr := <-receiverDone
+			m.finishMonitorWithCallback(done, tempDir, false, "GStreamer direct publisher", pipelineErr, pipelineErr, receiverErr, pipeline.log, receiverLog, onStopped)
+			return
+		}
+	}
+}
+
 func redactBridgeOutput(output string, args []string) string {
 	if len(args) == 0 {
 		return output
@@ -681,37 +1268,75 @@ func redactBridgeOutput(output string, args []string) string {
 }
 
 func (m *Manager) finishMonitor(done chan struct{}, tempDir string, stoppedByRequest bool, firstName string, firstErr, bridgeErr, receiverErr error, bridgeLog, receiverLog *limitedBuffer) {
+	m.finishMonitorWithCallback(done, tempDir, stoppedByRequest, firstName, firstErr, bridgeErr, receiverErr, bridgeLog, receiverLog, nil)
+}
+
+func (m *Manager) finishMonitorWithCallback(done chan struct{}, tempDir string, stoppedByRequest bool, firstName string, firstErr, bridgeErr, receiverErr error, bridgeLog, receiverLog *limitedBuffer, onStopped func()) {
 	os.RemoveAll(tempDir)
 	message := "AirPlay受信を停止しました。"
 	if !stoppedByRequest {
 		message = processExitMessage(firstName, firstErr, bridgeErr, receiverErr, bridgeLog, receiverLog)
 	}
 	m.mu.Lock()
+	plannedReply := m.deliveryReconfigureReply
 	m.running = false
 	m.cancel = nil
 	m.done = nil
 	m.audioRelay = nil
+	m.deliveryRetry = nil
+	m.deliveryRetryPending = false
+	m.deliveryReconfigure = nil
+	m.deliveryReconfigurePending = false
+	m.deliveryReconfigureRequestID = ""
+	m.deliveryReconfigureReply = nil
+	m.deliverySessionID = ""
+	m.deliveryActiveGeneration = 0
+	m.deliveryActivePublishURL = ""
+	m.deliveryActiveOutput = DirectOutputConfig{}
+	m.stopInitiator = ""
 	m.status.Running = false
 	m.status.ReceiverRunning = false
 	m.status.BridgeRunning = false
+	m.status.MediaReady = false
+	m.status.MediaReadyKnown = false
+	m.status.DeliveryPhase = ""
+	m.status.DeliveryRequestID = ""
 	m.status.Message = message
 	m.mu.Unlock()
-	close(done)
+	replySourceClockDelivery(plannedReply, ErrDeliveryReconfigureUnavailable)
 	m.notify()
+	if onStopped != nil {
+		onStopped()
+	}
+	close(done)
 }
 
 func processExitMessage(firstName string, firstErr, bridgeErr, receiverErr error, bridgeLog, receiverLog *limitedBuffer) string {
 	if firstName == "" {
 		return "AirPlay受信プロセスが終了しました。"
 	}
+	if firstName == "AirPlay no signal timeout" {
+		return "AirPlay受信を無信号3分で終了しました。"
+	}
+	terminationErr := firstErr
+	if terminationErr == nil {
+		terminationErr = bridgeErr
+	}
+	if terminationErr == nil {
+		terminationErr = receiverErr
+	}
+	detail := processExitDetail(terminationErr)
+	if firstName == "GStreamer source-clock publisher" {
+		return fmt.Sprintf("GStreamer source-clock publisherが終了しました%s: %s", exitDetailSuffix(detail), bridgeLog.String())
+	}
 	output := ""
-	if firstName == "FFmpeg bridge" {
+	if firstName == "FFmpeg bridge" || firstName == "GStreamer direct publisher" {
 		output = bridgeLog.String()
 	} else {
 		output = receiverLog.String()
 	}
 	if output != "" {
-		return fmt.Sprintf("%sが終了しました: %s", firstName, output)
+		return fmt.Sprintf("%sが終了しました%s: %s", firstName, exitDetailSuffix(detail), output)
 	}
 	if firstErr != nil {
 		return fmt.Sprintf("%sが終了しました: %v", firstName, firstErr)
@@ -723,6 +1348,24 @@ func processExitMessage(firstName string, firstErr, bridgeErr, receiverErr error
 		return fmt.Sprintf("UxPlay receiverが終了しました: %v", receiverErr)
 	}
 	return fmt.Sprintf("%sが終了しました。", firstName)
+}
+
+func processExitDetail(err error) string {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return ""
+	}
+	if code := exitErr.ExitCode(); code >= 0 {
+		return fmt.Sprintf("exit_code=%d", code)
+	}
+	return ""
+}
+
+func exitDetailSuffix(detail string) string {
+	if detail == "" {
+		return ""
+	}
+	return " (" + detail + ")"
 }
 
 func (m *Manager) notify() {

@@ -25,6 +25,7 @@ const dashboardScriptDomRefs = `
     const uploadHeading = document.getElementById('uploadHeading');
     const uploadKicker = document.getElementById('uploadKicker');
     const mediaKindSwitch = document.getElementById('mediaKindSwitch');
+    const mediaCapabilityStatus = document.getElementById('mediaCapabilityStatus');
     const imageIntentButton = document.getElementById('imageIntentButton');
     const videoIntentButton = document.getElementById('videoIntentButton');
     const musicIntentButton = document.getElementById('musicIntentButton');
@@ -37,7 +38,11 @@ const dashboardScriptDomRefs = `
     const airplayCard = document.getElementById('airplayCard');
     const airplayStatusText = document.getElementById('airplayStatusText');
     const airplayReceiverPath = document.getElementById('airplayReceiverPath');
+    const airplayQualityRow = document.getElementById('airplayQualityRow');
+    const airplayQualityMode = document.getElementById('airplayQualityMode');
+    const airplayQualityStatus = document.getElementById('airplayQualityStatus');
     const airplayStartButton = document.getElementById('airplayStartButton');
+    const airplayRetryButton = document.getElementById('airplayRetryButton');
     const airplayEndButton = document.getElementById('airplayEndButton');
     const uploadProgressPanel = document.getElementById('uploadProgressPanel');
     const uploadProgressTitle = document.getElementById('uploadProgressTitle');
@@ -131,12 +136,14 @@ const dashboardScriptDomRefs = `
     const pairingDetail = document.getElementById('pairingDetail');
     let uploadMode = 'file';
     let mediaIntent = 'image';
+    let videoActivationPending = false;
     let legacyMusicModeSyncPending = false;
     let legacyMusicModeDesired = null;
     let refreshTimer = 0;
     let refreshInFlight = false;
     let refreshPromise = null;
     let refreshAgain = false;
+	let airplayStartPending = false;
     let phoneConnectAutoShown = false;
     let phoneProtectionActive = false;
     let lastAppliedStateSeq = 0;
@@ -268,12 +275,22 @@ const dashboardScriptDomRefs = `
 
     function apiFetch(input, options = {}) {
       const init = { ...options };
+	  const timeoutMs = Number(init.timeoutMs || 0);
+	  delete init.timeoutMs;
+	  const timeoutController = timeoutMs > 0 && !init.signal ? new AbortController() : null;
+	  let timeoutID = null;
+	  if (timeoutController) {
+		init.signal = timeoutController.signal;
+		timeoutID = setTimeout(() => timeoutController.abort(), timeoutMs);
+	  }
       if (pageAdminToken) {
         const headers = new Headers(init.headers || {});
         if (!headers.has('X-ImagePad-Token')) headers.set('X-ImagePad-Token', pageAdminToken);
         init.headers = headers;
       }
-      return fetch(input, init);
+	  const request = fetch(input, init);
+	  if (timeoutID === null) return request;
+	  return request.finally(() => clearTimeout(timeoutID));
     }
 
     function apiUploadForm(input, formData, onProgress) {

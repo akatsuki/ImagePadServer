@@ -2,8 +2,8 @@ name: Release
 
 on:
   push:
-    tags:
-      - "v*"
+    tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -13,55 +13,77 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build-and-release:
-    name: Build and Release
+  build:
+    name: Build release assets
     runs-on: macos-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
       - uses: dtolnay/rust-toolchain@stable
-      - name: Verify tag matches version
+      - name: Require matching tag and draft release
+        shell: bash
         run: |
+          test "$GITHUB_REF_TYPE" = tag
           version="$(sed -n 's/.*Version[[:space:]]*=[[:space:]]*"\(v[^"]*\)".*/\1/p' internal/about/about.go | head -n 1)"
-          if [ "$version" != "$GITHUB_REF_NAME" ]; then
-            echo "tag $GITHUB_REF_NAME does not match internal/about version $version" >&2
-            exit 1
-          fi
-      - name: Install ffmpeg
+          test "$version" = "$GITHUB_REF_NAME"
+          test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" = true
+      - name: Install media test tools
         run: brew install ffmpeg webp
       - run: go test ./...
-      - run: sh ./scripts/build-release.sh
+      - name: Check archive gate regressions
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*airplay*archive.py'
+      - name: Fetch and validate exact runtime and corresponding sources
+        run: python3 scripts/prepare-airplay-release.py --inputs "$RUNNER_TEMP/airplay" --download --env-file "$GITHUB_ENV"
+      - run: sh scripts/build-release.sh
       - name: Build and verify GPU sidecar artifact
         run: |
-          sh ./scripts/build-gpu-sidecar.sh
-          sh ./scripts/verify-gpu-artifacts.sh
-      - name: Publish dev GitHub Release
-        if: contains(github.ref_name, '-dev')
+          sh scripts/build-gpu-sidecar.sh
+          sh scripts/verify-gpu-artifacts.sh
+      - name: Upload built assets to draft
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: dev-release ${{ github.ref_name }}
-          generate_release_notes: true
-          prerelease: true
+          draft: true
           fail_on_unmatched_files: true
           files: |
             dist/**/win/*.zip
             dist/**/linux/imagepadserver-*
             dist/**/mac/imagepadserver-*-macos-universal.zip
             dist/gpu/**
-      - name: Publish stable GitHub Release
-        if: ${{ !contains(github.ref_name, '-dev') }}
-        uses: softprops/action-gh-release@v2
+
+  windows-runtime:
+    name: Verify embedded Windows runtime
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
-          generate_release_notes: true
-          prerelease: false
-          fail_on_unmatched_files: true
-          files: |
-            dist/**/win/*.zip
-            dist/**/linux/imagepadserver-*
-            dist/**/mac/imagepadserver-*-macos-universal.zip
-            dist/gpu/**
+          go-version-file: go.mod
+      - name: Fetch and validate exact runtime and corresponding sources
+        run: python scripts/prepare-airplay-release.py --inputs "$env:RUNNER_TEMP/airplay" --download
+      - name: Verify fresh offline installation and source access
+        run: go test -tags airplay_runtime_embedded ./internal/airplay ./internal/server -run 'TestPreparePinnedAirPlayRuntimeFromEmbeddedArchive|TestRuntimeLicense|TestRuntimeSourceDistribution|TestAirPlayLicense' -count=1
+
+  publish:
+    name: Publish only after all release gates pass
+    needs: [build, windows-runtime]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Recheck source availability and publish
+        shell: bash
+        run: |
+          python3 scripts/prepare-airplay-release.py --inputs "$RUNNER_TEMP/airplay" --download
+          if [[ "$GITHUB_REF_NAME" == *-dev* ]]; then
+            gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease
+          else
+            gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease=false --latest
+          fi

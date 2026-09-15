@@ -12,7 +12,11 @@ import (
 	"time"
 )
 
-const h264RTPRelaySocketBufferSize = 4 * 1024 * 1024
+// UxPlay can emit a compressed-frame burst while an iPhone changes
+// orientation or switches apps. Keep the kernel UDP receive queue large
+// enough to absorb that burst before the relay gets scheduled. This is
+// separate from FFmpeg's -buffer_size, which applies after the relay.
+const airplayRTPRelaySocketBufferSize = 16 * 1024 * 1024
 
 // h264RTPRelay keeps H.264 parameter sets across FFmpeg bridge restarts and
 // repeats them immediately before each IDR access unit. UxPlay sends SPS/PPS
@@ -27,6 +31,9 @@ type h264RTPRelay struct {
 	onPacket         func()
 	videoStarted     atomic.Bool
 	formatChange     chan struct{}
+	inputPackets     atomic.Uint64
+	outputPackets    atomic.Uint64
+	lastActivity     atomic.Int64
 }
 
 func startH264RTPRelay(ctx context.Context, inputPort, outputPort int, onPacket ...func()) (*h264RTPRelay, error) {
@@ -34,11 +41,11 @@ func startH264RTPRelay(ctx context.Context, inputPort, outputPort int, onPacket 
 	if err != nil {
 		return nil, err
 	}
-	if err := conn.SetReadBuffer(h264RTPRelaySocketBufferSize); err != nil {
+	if err := conn.SetReadBuffer(airplayRTPRelaySocketBufferSize); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
-	if err := conn.SetWriteBuffer(h264RTPRelaySocketBufferSize); err != nil {
+	if err := conn.SetWriteBuffer(airplayRTPRelaySocketBufferSize); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
@@ -85,11 +92,26 @@ func (r *h264RTPRelay) HasReceivedVideo() bool {
 	return r.videoStarted.Load()
 }
 
+func (r *h264RTPRelay) Stats() (input, output uint64) {
+	return r.inputPackets.Load(), r.outputPackets.Load()
+}
+
+// LastActivity reports when a valid H.264 RTP packet was last received. It is
+// deliberately independent of videoStarted: a temporary input gap must keep
+// the output publisher alive while the no-signal timer observes the gap.
+func (r *h264RTPRelay) LastActivity() time.Time {
+	nanos := r.lastActivity.Load()
+	if nanos == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, nanos)
+}
+
 // FormatChanges returns a channel that receives a value whenever the relay
-// observes a video format change (SPS/PPS change) or an input discontinuity
-// (SSRC/sequence change). The manager restarts the FFmpeg bridge on this
-// signal because hardware encoders cannot change their output resolution
-// mid-stream.
+// observes a video format change (SPS/PPS change). Input discontinuities
+// (SSRC/sequence changes) are recovered inside the relay by dropping damaged
+// access units until a complete IDR arrives; they must not restart the FFmpeg
+// bridge because a brief iPhone pause is not an output-resolution change.
 func (r *h264RTPRelay) FormatChanges() <-chan struct{} {
 	return r.formatChange
 }
@@ -103,9 +125,18 @@ func (r *h264RTPRelay) run() {
 	var inputPackets uint64
 	var outputPackets uint64
 	var handledReplay uint64
+	videoActivityNotified := false
+	notifyVideoActivity := func() {
+		if videoActivityNotified || !state.videoReady || r.onPacket == nil {
+			return
+		}
+		videoActivityNotified = true
+		r.onPacket()
+	}
 	writePackets := func(packets [][]byte) {
 		for _, packet := range packets {
 			outputPackets++
+			r.outputPackets.Add(1)
 			if packetDebug {
 				logH264RTPMetadata("output", outputPackets, packet)
 			}
@@ -125,9 +156,7 @@ func (r *h264RTPRelay) run() {
 					log.Printf("AirPlay H264 RTP immediately supplied complete decoder refresh generation=%d", requestedReplay)
 				}
 				writePackets(packets)
-				if r.onPacket != nil {
-					r.onPacket()
-				}
+				notifyVideoActivity()
 				continue
 			}
 		}
@@ -139,7 +168,12 @@ func (r *h264RTPRelay) run() {
 			}
 			return
 		}
+		if _, _, ok := rtpPayload(buffer[:n]); !ok {
+			continue
+		}
+		r.lastActivity.Store(time.Now().UnixNano())
 		inputPackets++
+		r.inputPackets.Add(1)
 		r.videoStarted.Store(true)
 		if packetDebug {
 			logH264RTPMetadata("input", inputPackets, buffer[:n])
@@ -149,7 +183,7 @@ func (r *h264RTPRelay) run() {
 		previousDiscontinuities := state.inputDiscontinuities
 		previousFormatChanges := state.formatChanges
 		packets, replayed := state.forwardWithReplay(buffer[:n], replay)
-		if state.inputDiscontinuities != previousDiscontinuities || state.formatChanges != previousFormatChanges {
+		if state.formatChanges != previousFormatChanges {
 			select {
 			case r.formatChange <- struct{}{}:
 			default:
@@ -168,9 +202,7 @@ func (r *h264RTPRelay) run() {
 			}
 		}
 		writePackets(packets)
-		if replayed && r.onPacket != nil {
-			r.onPacket()
-		}
+		notifyVideoActivity()
 	}
 }
 
@@ -199,33 +231,36 @@ func logH264RTPMetadata(direction string, ordinal uint64, packet []byte) {
 }
 
 type h264RTPRelayState struct {
-	initialized           bool
-	nextSequence          uint16
-	timestampInitialized  bool
-	outputTimestamp       uint32
-	lastInputTimestamp    uint32
-	previousMarker        bool
-	fps                   fpsDetector
-	inputSequenceReady    bool
-	expectedInputSequence uint16
-	inputSSRCReady        bool
-	inputSSRC             uint32
-	inputDiscontinuities  uint64
-	lastExpectedSequence  uint16
-	lastReceivedSequence  uint16
-	formatChanges         uint64
-	accessUnitPackets     [][]byte
-	accessUnitHasIDR      bool
-	cachedIDRPackets      [][]byte
-	dropUntilMarker       bool
-	waitingForIDR         bool
-	sps                   []byte
-	pps                   []byte
-	spsTimestamp          uint32
-	ppsTimestamp          uint32
-	fuParameterSet        []byte
-	fuParameterType       byte
-	fuTimestamp           uint32
+	initialized            bool
+	nextSequence           uint16
+	timestampInitialized   bool
+	outputTimestamp        uint32
+	lastInputTimestamp     uint32
+	previousMarker         bool
+	fps                    fpsDetector
+	inputSequenceReady     bool
+	expectedInputSequence  uint16
+	inputSSRCReady         bool
+	inputSSRC              uint32
+	inputDiscontinuities   uint64
+	lastExpectedSequence   uint16
+	lastReceivedSequence   uint16
+	formatChanges          uint64
+	accessUnitPackets      [][]byte
+	accessUnitHasIDR       bool
+	accessUnitTimestamp    uint32
+	accessUnitTimestampSet bool
+	cachedIDRPackets       [][]byte
+	videoReady             bool
+	dropUntilMarker        bool
+	waitingForIDR          bool
+	sps                    []byte
+	pps                    []byte
+	spsTimestamp           uint32
+	ppsTimestamp           uint32
+	fuParameterSet         []byte
+	fuParameterType        byte
+	fuTimestamp            uint32
 }
 
 func (s *h264RTPRelayState) forward(packet []byte) [][]byte {
@@ -234,7 +269,7 @@ func (s *h264RTPRelayState) forward(packet []byte) [][]byte {
 }
 
 func (s *h264RTPRelayState) forwardWithReplay(packet []byte, replay bool) ([][]byte, bool) {
-	payload, headerSize, ok := rtpPayload(packet)
+	payload, _, ok := rtpPayload(packet)
 	if !ok {
 		return nil, false
 	}
@@ -293,23 +328,63 @@ func (s *h264RTPRelayState) forwardWithReplay(packet []byte, replay bool) ([][]b
 
 	forwarded := append([]byte(nil), packet...)
 	s.normalizeTimestamp(forwarded)
-	if !h264PayloadOnlyParameterSets(payload) {
-		s.cacheAccessUnit(packet, isIDR)
+	if h264PayloadOnlyParameterSets(payload) {
+		return [][]byte{s.emit(forwarded)}, false
 	}
 
-	out := make([][]byte, 0, 3+len(s.cachedIDRPackets))
+	// Do not expose a partial H.264 access unit to FFmpeg. If a fragmented
+	// P-frame loses one RTP packet, forwarding its earlier fragments can make
+	// the decoder render a green frame. Holding the complete AU until its
+	// marker arrives lets the downstream decoder keep displaying its last valid
+	// frame while the relay waits for a clean recovery IDR.
+	if s.accessUnitTimestampSet && s.accessUnitTimestamp != timestamp {
+		s.accessUnitPackets = nil
+		s.accessUnitHasIDR = false
+		s.accessUnitTimestampSet = false
+		s.waitingForIDR = true
+	}
+	if !s.accessUnitTimestampSet {
+		s.accessUnitTimestamp = timestamp
+		s.accessUnitTimestampSet = true
+	}
+	s.accessUnitPackets = append(s.accessUnitPackets, forwarded)
+	s.accessUnitHasIDR = s.accessUnitHasIDR || isIDR
+	if packet[1]&0x80 == 0 {
+		return nil, false
+	}
+
+	accessUnitPackets := s.accessUnitPackets
+	accessUnitHasIDR := s.accessUnitHasIDR
+	s.accessUnitPackets = nil
+	s.accessUnitHasIDR = false
+	s.accessUnitTimestampSet = false
+	if accessUnitHasIDR {
+		s.cachedIDRPackets = accessUnitPackets
+		// The first complete SPS/PPS+IDR is the usable video boundary. The
+		// bridge refresh timer may already have elapsed before an iPhone
+		// connects, so audio startup must not depend on replayed being true.
+		s.videoReady = true
+	}
+
+	out := make([][]byte, 0, 3+len(accessUnitPackets))
 	if replay {
 		if replayedPackets, replayed := s.replayCachedDecoderRefresh(); replayed {
-			s.dropUntilMarker = packet[1]&0x80 == 0
+			s.dropUntilMarker = false
 			return replayedPackets, true
 		}
 	}
-	replayed := replay && isIDR && parameterSetsAvailable
-	if isIDR && parameterSetsAvailable {
-		out = append(out, s.emit(injectedRTPPacket(forwarded, headerSize, s.sps)))
-		out = append(out, s.emit(injectedRTPPacket(forwarded, headerSize, s.pps)))
+	replayed := replay && accessUnitHasIDR && parameterSetsAvailable
+	if accessUnitHasIDR && parameterSetsAvailable {
+		template := accessUnitPackets[0]
+		_, templateHeaderSize, templateOK := rtpPayload(template)
+		if templateOK {
+			out = append(out, s.emit(injectedRTPPacket(template, templateHeaderSize, s.sps)))
+			out = append(out, s.emit(injectedRTPPacket(template, templateHeaderSize, s.pps)))
+		}
 	}
-	out = append(out, s.emit(forwarded))
+	for _, accessUnitPacket := range accessUnitPackets {
+		out = append(out, s.emit(accessUnitPacket))
+	}
 	return out, replayed
 }
 
@@ -345,6 +420,7 @@ func (s *h264RTPRelayState) observeInputStream(packet []byte, sequence uint16) {
 func (s *h264RTPRelayState) resetDecoderInput(clearParameterSets bool) {
 	s.accessUnitPackets = nil
 	s.accessUnitHasIDR = false
+	s.accessUnitTimestampSet = false
 	s.fuParameterSet = nil
 	s.fuParameterType = 0
 	s.cachedIDRPackets = nil
@@ -379,6 +455,7 @@ func (s *h264RTPRelayState) updateParameterSet(nalType byte, nal []byte, timesta
 		s.cachedIDRPackets = nil
 		s.accessUnitPackets = nil
 		s.accessUnitHasIDR = false
+		s.accessUnitTimestampSet = false
 		s.waitingForIDR = true
 	}
 	if nalType == 7 {
@@ -391,19 +468,6 @@ func (s *h264RTPRelayState) updateParameterSet(nalType byte, nal []byte, timesta
 		s.pps = append(s.pps[:0], nal...)
 		s.ppsTimestamp = timestamp
 	}
-}
-
-func (s *h264RTPRelayState) cacheAccessUnit(packet []byte, isIDR bool) {
-	s.accessUnitPackets = append(s.accessUnitPackets, append([]byte(nil), packet...))
-	s.accessUnitHasIDR = s.accessUnitHasIDR || isIDR
-	if packet[1]&0x80 == 0 {
-		return
-	}
-	if s.accessUnitHasIDR {
-		s.cachedIDRPackets = s.accessUnitPackets
-	}
-	s.accessUnitPackets = nil
-	s.accessUnitHasIDR = false
 }
 
 func (s *h264RTPRelayState) hasCachedIDR() bool {
@@ -430,6 +494,7 @@ func (s *h264RTPRelayState) replayCachedDecoderRefresh() ([][]byte, bool) {
 	}
 	s.accessUnitPackets = nil
 	s.accessUnitHasIDR = false
+	s.accessUnitTimestampSet = false
 	return out, true
 }
 
@@ -442,6 +507,7 @@ func (s *h264RTPRelayState) replayCachedDecoderRefresh() ([][]byte, bool) {
 // Windows can emit every mirrored frame with the same timestamp, which would
 // otherwise leave FFmpeg's output PTS frozen or pinned at 30 fps.
 func (s *h264RTPRelayState) normalizeTimestamp(packet []byte) {
+	now := time.Now()
 	inputTimestamp := binary.BigEndian.Uint32(packet[4:8])
 	if !s.timestampInitialized {
 		s.timestampInitialized = true
@@ -449,7 +515,7 @@ func (s *h264RTPRelayState) normalizeTimestamp(packet []byte) {
 	} else if s.previousMarker {
 		delta := inputTimestamp - s.lastInputTimestamp
 		if delta == 0 {
-			delta = s.fps.timestampStep()
+			delta = s.fps.timestampStepAt(now)
 		}
 		s.outputTimestamp += delta
 	}
@@ -457,7 +523,7 @@ func (s *h264RTPRelayState) normalizeTimestamp(packet []byte) {
 	marker := packet[1]&0x80 != 0
 	s.previousMarker = marker
 	if marker {
-		s.fps.observeFrame(time.Now())
+		s.fps.observeFrame(now)
 	}
 	binary.BigEndian.PutUint32(packet[4:8], s.outputTimestamp)
 }

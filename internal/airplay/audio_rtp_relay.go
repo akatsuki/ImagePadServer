@@ -26,10 +26,16 @@ const (
 	l16FrameBytes = l16Channels * l16BytesPerSample
 	// l16PacketBytes is the payload width of one output RTP packet.
 	l16PacketBytes = l16FramesPerPacket * l16FrameBytes
-	// l16MaxQueueBytes bounds the steady-state queue (~128 ms) so a source
-	// clock that runs faster than the consumer cannot grow memory without
-	// limit. Trimming always happens on a whole-frame boundary.
-	l16MaxQueueBytes = l16PacketBytes * 16
+	// l16MaxQueueBytes bounds the steady-state queue (~1 s) so short delivery
+	// bursts can be absorbed without dropping audio. The output is paced by
+	// l16PacketInterval, so this is a jitter cushion rather than a playback
+	// buffer. Trimming always happens on a whole-frame boundary.
+	l16MaxQueueBytes = l16PacketBytes * 128
+	// l16StartupQueuePackets avoids emitting silence while the first RTP
+	// packets are still arriving. UxPlay commonly splits one audio cadence over
+	// multiple UDP datagrams, so starting with an empty queue produces audible
+	// periodic clicks.
+	l16StartupQueuePackets = 4
 	// l16LeadInMaxBytes bounds the audio buffered before the video stream
 	// starts (~2 s). This preserves the leading audio (replayed from the head
 	// once video begins) without risking unbounded growth if video never
@@ -40,9 +46,9 @@ const (
 const (
 	// l16PacketInterval is the nominal wall-clock duration of one L16 packet.
 	l16PacketInterval = time.Second * l16FramesPerPacket / l16ClockRate
-	// l16StallTimeout is how long the relay waits for input after video has
-	// started before emitting silence to keep the downstream stream continuous.
-	l16StallTimeout = 4 * l16PacketInterval
+	// l16AudioStartupGrace gives a real audio sender time to fill the initial
+	// jitter queue before silence is emitted for a video-only AirPlay session.
+	l16AudioStartupGrace = 100 * time.Millisecond
 )
 
 // l16RTPRelayState encapsulates the L16 re-packetization logic: a frame-aligned
@@ -50,20 +56,17 @@ const (
 // and silence fill. It is decoupled from UDP I/O so the drift and alignment
 // behaviour can be unit-tested deterministically.
 //
-// The output timestamp is re-clocked to the input RTP timestamps (the same
-// zero-based domain as the normalized video timeline) rather than advancing by
-// a fixed per-packet step. This locks the audio output to the upstream RTP
-// clock, which AirPlay derives from the same wall clock as the video, instead
-// of UxPlay's delivery rate (which drifts ~0.7%/s and desynchronizes audio
-// from video over long sessions).
+// The output timestamp is generated from the nominal L16 playback clock. The
+// input RTP timestamp is deliberately not used as a playback-rate signal:
+// UxPlay can deliver packets in bursts or with timestamp gaps during rotation
+// and app switches, and copying those gaps into the output makes the AAC
+// encoder seek forward or run audibly fast.
 type l16RTPRelayState struct {
-	queue       []byte
-	queueTS     uint32
-	sequence    uint16
-	outputTS    uint32
-	baseTS      uint32
-	initialized bool
-	wasSilence  bool
+	queue      []byte
+	sequence   uint16
+	outputTS   uint32
+	emitted    bool
+	wasSilence bool
 }
 
 func newL16RTPRelayState() *l16RTPRelayState {
@@ -72,24 +75,20 @@ func newL16RTPRelayState() *l16RTPRelayState {
 	return &l16RTPRelayState{wasSilence: true}
 }
 
-// ingest appends an input L16 payload to the queue, tracking the input RTP
-// timestamp of the queue head so emit can re-clock the output to the upstream
-// clock. The payload is truncated to a whole-frame boundary and the queue is
-// trimmed to maxQueueBytes on a frame boundary, so a partial stereo sample can
-// never be split across output packets.
-func (s *l16RTPRelayState) ingest(timestamp uint32, payload []byte, maxQueueBytes int) {
+// ingest appends an input L16 payload to the queue. Input RTP timestamps are
+// intentionally ignored for output pacing; the payload is truncated to a
+// whole-frame boundary and the queue is trimmed to maxQueueBytes on a frame
+// boundary, so a partial stereo sample can never be split across output
+// packets.
+func (s *l16RTPRelayState) ingest(_ uint32, payload []byte, maxQueueBytes int) {
 	if rem := len(payload) % l16FrameBytes; rem != 0 {
 		payload = payload[:len(payload)-rem]
-	}
-	if len(s.queue) == 0 {
-		s.queueTS = timestamp
 	}
 	s.queue = append(s.queue, payload...)
 	if maxQueueBytes > 0 && len(s.queue) > maxQueueBytes {
 		drop := len(s.queue) - maxQueueBytes
 		drop -= drop % l16FrameBytes
 		s.queue = s.queue[drop:]
-		s.queueTS += uint32(drop / l16FrameBytes)
 	}
 }
 
@@ -98,26 +97,37 @@ func (s *l16RTPRelayState) hasFullPacket() bool {
 	return len(s.queue) >= l16PacketBytes
 }
 
+func (s *l16RTPRelayState) readyForOutput() bool {
+	return len(s.queue) >= l16PacketBytes*l16StartupQueuePackets
+}
+
+// resetForVideoStart discards audio received before the first usable video
+// frame. Replaying that lead-in as timestamp zero makes audio content start
+// seconds before the displayed video when UxPlay delivers audio first.
+func (s *l16RTPRelayState) resetForVideoStart() {
+	s.queue = nil
+	s.sequence = 0
+	s.outputTS = 0
+	s.emitted = false
+	s.wasSilence = true
+}
+
 // emit returns the next output RTP packet, consuming a full packet from the
-// queue or emitting silence when the queue has underflowed. For real audio it
-// re-clocks the output timestamp to the input RTP timestamp of the queue head;
-// silence advances the timestamp by one packet. It sets the marker bit at
+// queue or emitting silence when the queue has underflowed. Every emitted
+// packet advances the output timestamp by one nominal L16 packet, regardless
+// of input delivery bursts or timestamp gaps. It sets the marker bit at
 // talk-spurt boundaries (silence-to-audio transitions).
 func (s *l16RTPRelayState) emit() (packet []byte, isSilence bool) {
 	isSilence = len(s.queue) < l16PacketBytes
 	var payload []byte
+	if s.emitted {
+		s.outputTS += l16FramesPerPacket
+	}
 	if isSilence {
 		payload = make([]byte, l16PacketBytes)
-		s.outputTS += l16FramesPerPacket
 	} else {
 		payload = s.queue[:l16PacketBytes]
 		s.queue = s.queue[l16PacketBytes:]
-		if !s.initialized {
-			s.initialized = true
-			s.baseTS = s.queueTS
-		}
-		s.outputTS = s.queueTS - s.baseTS
-		s.queueTS += l16FramesPerPacket
 	}
 	packet = make([]byte, 12+len(payload))
 	packet[0] = 0x80
@@ -130,6 +140,7 @@ func (s *l16RTPRelayState) emit() (packet []byte, isSilence bool) {
 	binary.BigEndian.PutUint32(packet[8:12], l16SSRC)
 	copy(packet[12:], payload)
 	s.sequence++
+	s.emitted = true
 	s.wasSilence = isSilence
 	return packet, isSilence
 }
@@ -144,6 +155,8 @@ type l16RTPRelay struct {
 	inputPackets   atomic.Uint64
 	outputPackets  atomic.Uint64
 	silencePackets atomic.Uint64
+	lastActivity   atomic.Int64
+	videoStartedAt atomic.Int64
 
 	// unsupportedPayloadType records the first non-L16 payload type observed
 	// on the audio stream so the manager can surface it in status instead of
@@ -157,7 +170,7 @@ func startL16RTPRelay(parent context.Context, inputPort, outputPort int) (*l16RT
 	if err != nil {
 		return nil, fmt.Errorf("listen L16 RTP input: %w", err)
 	}
-	_ = inputConn.SetReadBuffer(4 << 20)
+	_ = inputConn.SetReadBuffer(airplayRTPRelaySocketBufferSize)
 	ctx, cancel := context.WithCancel(parent)
 	r := &l16RTPRelay{
 		inputConn:      inputConn,
@@ -178,6 +191,7 @@ func startL16RTPRelay(parent context.Context, inputPort, outputPort int) (*l16RT
 // it can immediately replay the audio buffered during the video lead-in.
 func (r *l16RTPRelay) NotifyVideoActivity() {
 	if r.videoStarted.CompareAndSwap(false, true) {
+		r.videoStartedAt.Store(time.Now().UnixNano())
 		select {
 		case r.videoStartedCh <- struct{}{}:
 		default:
@@ -196,6 +210,17 @@ func (r *l16RTPRelay) Close() {
 
 func (r *l16RTPRelay) Stats() (input, output, silence uint64) {
 	return r.inputPackets.Load(), r.outputPackets.Load(), r.silencePackets.Load()
+}
+
+// LastActivity reports when a valid L16 RTP packet was last received. Output
+// silence is not activity: it is the fallback used while the AirPlay input is
+// temporarily absent.
+func (r *l16RTPRelay) LastActivity() time.Time {
+	nanos := r.lastActivity.Load()
+	if nanos == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, nanos)
 }
 
 // noteUnsupportedCodec records a dropped non-L16 payload and logs a single
@@ -233,6 +258,7 @@ func (r *l16RTPRelay) logStats(ctx context.Context) {
 type l16AudioInput struct {
 	timestamp uint32
 	payload   []byte
+	arrival   time.Time
 }
 
 func (r *l16RTPRelay) readLoop(ctx context.Context, packets chan<- l16AudioInput) {
@@ -260,10 +286,11 @@ func (r *l16RTPRelay) readLoop(ctx context.Context, packets chan<- l16AudioInput
 		if offset >= n {
 			continue
 		}
+		r.lastActivity.Store(time.Now().UnixNano())
 		timestamp := binary.BigEndian.Uint32(buf[4:8])
 		payload := append([]byte(nil), buf[offset:n]...)
 		select {
-		case packets <- l16AudioInput{timestamp: timestamp, payload: payload}:
+		case packets <- l16AudioInput{timestamp: timestamp, payload: payload, arrival: time.Now()}:
 		case <-ctx.Done():
 			return
 		}
@@ -276,62 +303,72 @@ func (r *l16RTPRelay) run(ctx context.Context) {
 	go r.readLoop(ctx, packets)
 
 	state := newL16RTPRelayState()
-	stall := time.NewTimer(l16StallTimeout)
-	defer stall.Stop()
-	stall.Stop() // disarm until video starts
-
-	armStall := func(d time.Duration) {
-		if !stall.Stop() {
-			select {
-			case <-stall.C:
-			default:
-			}
+	var emitTimer *time.Timer
+	var emitC <-chan time.Time
+	var silenceTimer *time.Timer
+	var silenceC <-chan time.Time
+	startEmitter := func() {
+		if emitTimer != nil {
+			return
 		}
-		stall.Reset(d)
+		emitTimer = time.NewTimer(0)
+		emitC = emitTimer.C
 	}
+	defer func() {
+		if emitTimer != nil {
+			emitTimer.Stop()
+		}
+		if silenceTimer != nil {
+			silenceTimer.Stop()
+		}
+	}()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case p := <-packets:
+			videoStartedAt := r.videoStartedAt.Load()
+			if videoStartedAt != 0 && p.arrival.UnixNano() < videoStartedAt {
+				// The channel may still contain packets read before the first
+				// usable video frame. Do not let that lead-in become timestamp
+				// zero audio after the video boundary.
+				continue
+			}
 			r.inputPackets.Add(1)
 			maxQueue := l16LeadInMaxBytes
 			if r.videoStarted.Load() {
 				maxQueue = l16MaxQueueBytes
 			}
 			state.ingest(p.timestamp, p.payload, maxQueue)
-			if r.videoStarted.Load() {
-				// Input-driven emission: drain whatever full packets the
-				// source has produced. Timestamps are re-clocked in emit to
-				// the input RTP clock, not the arrival rate.
-				for state.hasFullPacket() {
-					packet, isSilence := state.emit()
-					if !r.writePacket(packet, isSilence) {
-						return
-					}
+			if r.videoStarted.Load() && emitTimer == nil && state.readyForOutput() {
+				startEmitter()
+				if silenceTimer != nil {
+					silenceTimer.Stop()
+					silenceTimer = nil
+					silenceC = nil
 				}
-				armStall(l16StallTimeout)
 			}
 		case <-r.videoStartedCh:
-			// Replay the audio buffered during the video lead-in from the head.
-			for state.hasFullPacket() {
-				packet, isSilence := state.emit()
-				if !r.writePacket(packet, isSilence) {
-					return
-				}
+			// Drop any audio that arrived before the first usable video frame.
+			// Give a real audio sender a short startup window. If no audio session
+			// exists, the timer starts silence so the video-only stream can still
+			// be published and expose its HLS URL.
+			state.resetForVideoStart()
+			if emitTimer == nil && silenceTimer == nil {
+				silenceTimer = time.NewTimer(l16AudioStartupGrace)
+				silenceC = silenceTimer.C
 			}
-			armStall(l16StallTimeout)
-		case <-stall.C:
-			if !r.videoStarted.Load() {
-				continue
-			}
-			// The source stalled: emit silence to keep the stream continuous.
+		case <-silenceC:
+			silenceTimer = nil
+			silenceC = nil
+			startEmitter()
+		case <-emitC:
 			packet, isSilence := state.emit()
 			if !r.writePacket(packet, isSilence) {
 				return
 			}
-			armStall(l16PacketInterval)
+			emitTimer.Reset(l16PacketInterval)
 		}
 	}
 }

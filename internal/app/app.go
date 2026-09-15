@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -114,8 +115,43 @@ func cleanupShutdownHelpers(logf func(string, ...any)) {
 	}
 }
 
+func isolatedLifecycleRun(cfg config.Config) bool {
+	if strings.TrimSpace(os.Getenv("IMAGEPAD_TEST_ISOLATED_LIFECYCLE")) != "1" ||
+		cfg.Port <= 0 || cfg.Port == 8080 {
+		return false
+	}
+	dataDir := strings.TrimSpace(os.Getenv("IMAGEPAD_DATA_DIR"))
+	return dataDir != "" && filepath.IsAbs(dataDir)
+}
+
+type lifecycleServices struct {
+	OpenBrowser    bool
+	StartTray      bool
+	StartDiscovery bool
+	StartTunnel    bool
+	MeasureNetwork bool
+	PrepareTools   bool
+	PrepareAirPlay bool
+	StartHTTP      bool
+}
+
+func lifecycleServicePlan(isolated bool) lifecycleServices {
+	return lifecycleServices{
+		OpenBrowser:    !isolated,
+		StartTray:      !isolated,
+		StartDiscovery: !isolated,
+		StartTunnel:    !isolated,
+		MeasureNetwork: !isolated,
+		PrepareTools:   !isolated,
+		PrepareAirPlay: true,
+		StartHTTP:      true,
+	}
+}
+
 func run(useNativeWindow bool) error {
 	cfg := config.FromEnv()
+	isolatedLifecycle := isolatedLifecycleRun(cfg)
+	services := lifecycleServicePlan(isolatedLifecycle)
 	localURL := cfg.URLForHost("127.0.0.1")
 	if serverIsHealthy(localURL + "healthz") {
 		if useNativeWindow {
@@ -125,25 +161,20 @@ func run(useNativeWindow bool) error {
 		return nil
 	}
 
-	cleanupStaleHelpers(log.Printf)
+	if isolatedLifecycle {
+		log.Printf("isolated lifecycle test mode: global stale-helper cleanup is disabled")
+	} else {
+		cleanupStaleHelpers(log.Printf)
+	}
 	startupSettings, settingsErr := settings.Load()
 	if settingsErr != nil {
 		log.Printf("startup settings load failed: %v", settingsErr)
 	}
 	settings.FreezeMusicPlaylistCanonicalHeight(startupSettings)
-	go updateYTDLPOnStartup()
-	go func() {
-		video.ValidateInstalledTools()
-		imageproc.ValidateImageTools()
-		if appSettings, err := settings.Load(); err == nil && appSettings.VideoPlayerEnabled {
-			if _, err := video.EnsureFFmpeg(); err != nil {
-				log.Printf("startup ffmpeg warm failed: %v", err)
-			}
-			if _, err := video.EnsureFFprobe(); err != nil {
-				log.Printf("startup ffprobe warm failed: %v", err)
-			}
-		}
-	}()
+	if services.PrepareTools {
+		go updateYTDLPOnStartup()
+		go imageproc.ValidateImageTools()
+	}
 
 	storeDir := filepath.Join(settings.Dir(), "media")
 	store, err := library.NewStore(storeDir)
@@ -170,30 +201,39 @@ func run(useNativeWindow bool) error {
 	mux := http.NewServeMux()
 	lifecycleCtx, cancelLifecycle := context.WithCancel(context.Background())
 	defer cancelLifecycle()
-	go func() {
-		setupCtx, cancelSetup := context.WithTimeout(lifecycleCtx, 15*time.Minute)
-		defer cancelSetup()
-		if receiverPath, err := airplay.PrepareOnStartup(setupCtx); err != nil {
-			log.Printf("startup AirPlay setup failed: %v", err)
-		} else if receiverPath != "" {
-			log.Printf("AirPlay receiver ready: %s", receiverPath)
-		}
-	}()
+	if services.PrepareAirPlay {
+		go func() {
+			setupCtx, cancelSetup := context.WithTimeout(lifecycleCtx, 15*time.Minute)
+			defer cancelSetup()
+			if receiverPath, err := airplay.PrepareOnStartup(setupCtx); err != nil {
+				log.Printf("startup AirPlay setup failed: %v", err)
+			} else if receiverPath != "" {
+				log.Printf("AirPlay receiver ready: %s", receiverPath)
+			}
+		}()
+	}
 	srv := server.New(cfg, store, "")
 	srv.SetLifecycleContext(lifecycleCtx)
 	srv.Register(mux)
 	srv.SyncOBSReceiver()
+	if services.PrepareTools {
+		srv.StartVideoToolInstall()
+	}
 	go srv.ReconcileHistoryThumbnails()
 	httpServer.Handler = mux
-	go measureNetworkOnce()
+	if services.MeasureNetwork {
+		go measureNetworkOnce()
+	}
 
 	publicURL := cfg.URLForHost(advertisedHost)
 
 	log.Printf("%s %s listening on %s", about.AppName, about.Version, publicURL)
 	discoveryCtx, stopDiscovery := context.WithCancel(context.Background())
 	defer stopDiscovery()
-	if err := discovery.StartResponder(discoveryCtx, discovery.DefaultInfo(about.AppName, about.Version, publicURL)); err != nil {
-		log.Printf("LAN discovery beacon unavailable: %v", err)
+	if services.StartDiscovery {
+		if err := discovery.StartResponder(discoveryCtx, discovery.DefaultInfo(about.AppName, about.Version, publicURL)); err != nil {
+			log.Printf("LAN discovery beacon unavailable: %v", err)
+		}
 	}
 
 	// SteamVR integration is intentionally frozen. Keep the implementation
@@ -246,14 +286,16 @@ func run(useNativeWindow bool) error {
 	srv.SetTunnelReconnect(reconnect)
 	srv.SetExitRequested(trayExitRequested)
 
-	go func() {
-		waitForServerHealthy(localURL+"healthz", 2*time.Second)
-		if useNativeWindow {
-			_ = appwindow.Show(localURL)
-			return
-		}
-		browser.Open(localURL)
-	}()
+	if services.OpenBrowser {
+		go func() {
+			waitForServerHealthy(localURL+"healthz", 2*time.Second)
+			if useNativeWindow {
+				_ = appwindow.Show(localURL)
+				return
+			}
+			browser.Open(localURL)
+		}()
+	}
 
 	go func() {
 		if err := httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
@@ -263,14 +305,18 @@ func run(useNativeWindow bool) error {
 
 	tunnelCtx, stopTunnelManager := context.WithCancel(context.Background())
 	var tunnelWG sync.WaitGroup
-	tunnelWG.Add(1)
-	go func() {
-		defer tunnelWG.Done()
-		originURL := cfg.URLForHost("127.0.0.1")
-		manageCloudflareTunnel(tunnelCtx, originURL, srv, &tunnelMu, &tunnelHandle, reconnect)
-	}()
+	if services.StartTunnel {
+		tunnelWG.Add(1)
+		go func() {
+			defer tunnelWG.Done()
+			originURL := cfg.URLForHost("127.0.0.1")
+			manageCloudflareTunnel(tunnelCtx, originURL, srv, &tunnelMu, &tunnelHandle, reconnect)
+		}()
+	}
 
-	if tray.MustRunOnMainThread() {
+	if !services.StartTray {
+		<-shutdownRequested
+	} else if tray.MustRunOnMainThread() {
 		go func() {
 			<-shutdownRequested
 			tray.StopCurrent()
@@ -292,9 +338,11 @@ func run(useNativeWindow bool) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	cancelLifecycle()
 	srv.StopOBSReceiver()
-	cleanupShutdownHelpers(log.Printf)
+	cancelLifecycle()
+	if !isolatedLifecycle {
+		cleanupShutdownHelpers(log.Printf)
+	}
 	stopTunnelManager()
 	tunnelMu.Lock()
 	if tunnelHandle != nil {

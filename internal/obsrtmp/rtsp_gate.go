@@ -16,11 +16,13 @@ import (
 )
 
 type rtspGateConfig struct {
-	PublicRTSPPort  int
-	PublicRTPPort   int
-	PublicRTCPPort  int
-	BackendRTSPPort int
-	Path            string
+	PublicRTSPPort     int
+	PublicRTPPort      int
+	PublicRTCPPort     int
+	BackendRTSPPort    int
+	Path               string
+	WaitInitialH264IDR bool
+	Diagnostics        *rtspDiagnostics
 }
 
 type rtspGate struct {
@@ -29,8 +31,57 @@ type rtspGate struct {
 	done     chan struct{}
 	cancel   context.CancelFunc
 
-	mu    sync.Mutex
-	pairs []*rtspUDPPair
+	backendRouter *directBackendRouter
+
+	// Lock order is gate.mu -> backendRouter.mu. Router methods never acquire
+	// gate.mu, so accept/drain/stop cannot form a lock cycle.
+	mu          sync.Mutex
+	connections map[*rtspGateConnection]struct{}
+	draining    *rtspGateDrainHandle
+	diagnostics *rtspDiagnostics
+}
+
+var (
+	errRTSPGateDrainTimeout    = errors.New("RTSP gate drain timed out")
+	errRTSPGateDrainIncomplete = errors.New("RTSP gate drain is not complete")
+	errRTSPGateNotDraining     = errors.New("RTSP gate is not draining")
+)
+
+type rtspGateConnection struct {
+	client       net.Conn
+	backend      net.Conn
+	route        directBackendRoute
+	pairs        []*rtspUDPPair
+	drain        *rtspGateDrainHandle
+	closed       bool
+	finished     bool
+	diagnosticID string
+}
+
+type rtspGateDrainHandle struct {
+	gate     *rtspGate
+	expected directBackendRoute
+	done     chan struct{}
+	pending  int
+}
+
+func (h *rtspGateDrainHandle) wait(timeout time.Duration) error {
+	if timeout <= 0 {
+		select {
+		case <-h.done:
+			return nil
+		default:
+			return errRTSPGateDrainTimeout
+		}
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-h.done:
+		return nil
+	case <-timer.C:
+		return errRTSPGateDrainTimeout
+	}
 }
 
 type rtspRequest struct {
@@ -39,7 +90,13 @@ type rtspRequest struct {
 }
 
 func newRTSPGate(cfg rtspGateConfig) *rtspGate {
-	return &rtspGate{cfg: cfg, done: make(chan struct{})}
+	return &rtspGate{
+		cfg:           cfg,
+		done:          make(chan struct{}),
+		backendRouter: newLegacyDirectBackendRouter(cfg.BackendRTSPPort),
+		connections:   make(map[*rtspGateConnection]struct{}),
+		diagnostics:   cfg.Diagnostics,
+	}
 }
 
 func (g *rtspGate) start(ctx context.Context) error {
@@ -65,14 +122,17 @@ func (g *rtspGate) stop() error {
 		_ = g.listener.Close()
 	}
 	g.mu.Lock()
-	for _, pair := range g.pairs {
-		pair.close()
+	g.backendRouter.markTerminal()
+	for connection := range g.connections {
+		g.closeConnectionLocked(connection)
 	}
-	g.pairs = nil
 	g.mu.Unlock()
 	select {
 	case <-g.done:
 	case <-time.After(2 * time.Second):
+	}
+	if g.diagnostics != nil {
+		_ = g.diagnostics.flush()
 	}
 	return nil
 }
@@ -89,17 +149,54 @@ func (g *rtspGate) serve(ctx context.Context) {
 				continue
 			}
 		}
-		go g.handleConn(ctx, conn)
+		connection, ok := g.registerConnection(conn)
+		if !ok {
+			_ = conn.Close()
+			continue
+		}
+		go g.handleConn(ctx, connection)
 	}
 }
 
-func (g *rtspGate) handleConn(ctx context.Context, client net.Conn) {
-	defer client.Close()
-	backend, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", g.cfg.BackendRTSPPort))
+func (g *rtspGate) registerConnection(client net.Conn) (*rtspGateConnection, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.backendRouter.canAccept() {
+		return nil, false
+	}
+	connection := &rtspGateConnection{
+		client: client,
+		route:  g.backendRouter.snapshot(),
+	}
+	if g.diagnostics != nil {
+		connection.diagnosticID = g.diagnostics.nextConnectionID()
+	}
+	if g.connections == nil {
+		g.connections = make(map[*rtspGateConnection]struct{})
+	}
+	g.connections[connection] = struct{}{}
+	return connection, true
+}
+
+func (g *rtspGate) handleConn(ctx context.Context, connection *rtspGateConnection) {
+	client := connection.client
+	defer func() {
+		g.closeConnection(connection)
+		g.finishConnection(connection)
+	}()
+	backendRoute := connection.route
+	backend, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", backendRoute.privateRTSPPort))
 	if err != nil {
 		return
 	}
 	defer backend.Close()
+	g.mu.Lock()
+	if connection.closed {
+		g.mu.Unlock()
+		return
+	}
+	connection.backend = backend
+	g.mu.Unlock()
 
 	clientReader := bufio.NewReader(client)
 	backendReader := bufio.NewReader(backend)
@@ -108,6 +205,9 @@ func (g *rtspGate) handleConn(ctx context.Context, client net.Conn) {
 		clientIP = tcpAddr.IP
 	}
 	var session rtspGateSessionState
+	var joinPayload byte
+	var joinSDPReady bool
+	joinChannels := make(map[byte]bool)
 
 	for {
 		select {
@@ -123,14 +223,21 @@ func (g *rtspGate) handleConn(ctx context.Context, client net.Conn) {
 			_, _ = client.Write(unsupportedTransportResponse(req))
 			continue
 		}
-		session.noteRequest(req)
+		if g.diagnostics != nil {
+			g.diagnostics.record(rtspDiagnosticEvent{ConnectionID: connection.diagnosticID, PublisherGeneration: backendRoute.generation, Backend: "mediamtx", Gate: "public", Request: req.Method, UserAgent: req.Headers["user-agent"], CSeq: req.Headers["cseq"], Transport: req.Headers["transport"]})
+		}
 		if isUDPSetup(req) {
 			rtpClient, rtcpClient, ok := parseRTSPClientPorts(req.Headers["transport"])
 			if ok && g.cfg.PublicRTPPort > 0 && g.cfg.PublicRTCPPort > 0 {
 				pair, err := newRTSPUDPPair(clientIP, rtpClient, rtcpClient, g.cfg.PublicRTPPort, g.cfg.PublicRTCPPort)
 				if err == nil {
 					g.mu.Lock()
-					g.pairs = append(g.pairs, pair)
+					if connection.closed {
+						g.mu.Unlock()
+						pair.close()
+						return
+					}
+					connection.pairs = append(connection.pairs, pair)
 					g.mu.Unlock()
 					packet, err = rewriteUDPSetupRequest(packet, pair.rtpPort(), pair.rtcpPort())
 					if err != nil {
@@ -149,29 +256,192 @@ func (g *rtspGate) handleConn(ctx context.Context, client net.Conn) {
 		if isUDPSetup(req) && g.cfg.PublicRTPPort > 0 && g.cfg.PublicRTCPPort > 0 {
 			resp = rewriteUDPSetupResponse(resp, g.cfg.PublicRTPPort, g.cfg.PublicRTCPPort)
 		}
+		session.noteResponse(req, resp)
+		if g.cfg.WaitInitialH264IDR && bytes.HasPrefix(resp, []byte("RTSP/1.0 200 ")) {
+			if req.Method == "DESCRIBE" {
+				_, body, ok := bytes.Cut(resp, []byte("\r\n\r\n"))
+				var parseErr error
+				joinPayload, parseErr = h264JoinPayload(body)
+				joinSDPReady = ok && parseErr == nil
+			}
+			if req.Method == "SETUP" {
+				if channel, ok := rtspJoinChannel(resp); ok {
+					joinChannels[channel] = true
+				}
+			}
+		}
 		if _, err := client.Write(resp); err != nil {
 			return
 		}
-		if session.shouldTunnelAfter(req) {
-			go io.Copy(backend, clientReader)
-			_, _ = io.Copy(client, backendReader)
+		if g.diagnostics != nil {
+			g.diagnostics.record(rtspDiagnosticEvent{ConnectionID: connection.diagnosticID, PublisherGeneration: backendRoute.generation, Backend: "mediamtx", Gate: "public", Response: rtspResponseStatus(resp), CSeq: req.Headers["cseq"], Transport: req.Headers["transport"]})
+		}
+		if session.shouldTunnelAfter(req, resp) {
+			go g.copyRTSP(backend, clientReader, connection.diagnosticID, backendRoute.generation, rtspDiagnosticDirectionClientToBackend)
+			if g.cfg.WaitInitialH264IDR {
+				if !joinSDPReady || len(joinChannels) == 0 || !bytes.HasPrefix(resp, []byte("RTSP/1.0 200 ")) {
+					return
+				}
+				deadline := time.Now().Add(10 * time.Second)
+				_ = backend.SetReadDeadline(deadline)
+				_ = client.SetWriteDeadline(deadline)
+				if err := copyUntilH264IDR(client, backendReader, joinPayload, joinChannels, rtspJoinMaxBytes); err != nil {
+					return
+				}
+				_ = backend.SetReadDeadline(time.Time{})
+				_ = client.SetWriteDeadline(time.Time{})
+			}
+			_ = g.copyRTSP(client, backendReader, connection.diagnosticID, backendRoute.generation, rtspDiagnosticDirectionBackendToClient)
 			return
 		}
 	}
+}
+
+func (g *rtspGate) copyRTSP(dst io.Writer, src io.Reader, connectionID string, generation uint64, direction rtspDiagnosticDirection) error {
+	start := time.Now()
+	n, err := io.Copy(dst, src)
+	if g.diagnostics != nil {
+		g.diagnostics.copyFinished(connectionID, generation, direction, n, time.Since(start).Milliseconds(), err)
+	}
+	return err
+}
+
+func (g *rtspGate) diagnosticsSnapshot() []rtspDiagnosticEvent {
+	if g == nil || g.diagnostics == nil {
+		return nil
+	}
+	return g.diagnostics.snapshot()
+}
+
+func rtspResponseStatus(packet []byte) string {
+	line, _, _ := strings.Cut(strings.ReplaceAll(string(packet), "\r\n", "\n"), "\n")
+	fields := strings.Fields(line)
+	if len(fields) >= 2 {
+		return fields[0] + " " + fields[1]
+	}
+	return ""
+}
+
+func (g *rtspGate) closeConnection(connection *rtspGateConnection) {
+	g.mu.Lock()
+	g.closeConnectionLocked(connection)
+	g.mu.Unlock()
+}
+
+func (g *rtspGate) closeConnectionLocked(connection *rtspGateConnection) {
+	if connection.closed {
+		return
+	}
+	connection.closed = true
+	_ = connection.client.Close()
+	if connection.backend != nil {
+		_ = connection.backend.Close()
+		connection.backend = nil
+	}
+	for _, pair := range connection.pairs {
+		pair.close()
+	}
+	connection.pairs = nil
+}
+
+func (g *rtspGate) finishConnection(connection *rtspGateConnection) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if connection.finished {
+		return
+	}
+	connection.finished = true
+	delete(g.connections, connection)
+	if connection.drain == nil {
+		return
+	}
+	connection.drain.pending--
+	if connection.drain.pending == 0 {
+		close(connection.drain.done)
+	}
+}
+
+func (g *rtspGate) beginDrain(expected directBackendRoute) (*rtspGateDrainHandle, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if err := g.backendRouter.beginDrain(expected); err != nil {
+		return nil, err
+	}
+	drain := &rtspGateDrainHandle{
+		gate:     g,
+		expected: expected,
+		done:     make(chan struct{}),
+	}
+	g.draining = drain
+	for connection := range g.connections {
+		if connection.route != expected {
+			continue
+		}
+		connection.drain = drain
+		drain.pending++
+		g.closeConnectionLocked(connection)
+	}
+	if drain.pending == 0 {
+		close(drain.done)
+	}
+	return drain, nil
+}
+
+func (g *rtspGate) commitDrained(expected, candidate directBackendRoute) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.draining == nil || g.draining.expected != expected {
+		return errRTSPGateNotDraining
+	}
+	select {
+	case <-g.draining.done:
+	default:
+		return errRTSPGateDrainIncomplete
+	}
+	if err := g.backendRouter.commitDrained(expected, candidate); err != nil {
+		return err
+	}
+	g.draining = nil
+	return nil
+}
+
+func (g *rtspGate) abortDrain(drain *rtspGateDrainHandle) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if drain == nil || g.draining != drain {
+		return errRTSPGateNotDraining
+	}
+	if err := g.backendRouter.abortDrain(drain.expected); err != nil {
+		return err
+	}
+	g.draining = nil
+	return nil
 }
 
 type rtspGateSessionState struct {
 	tcpInterleaved bool
 }
 
+
+func (s *rtspGateSessionState) noteResponse(req rtspRequest, resp []byte) {
+	if req.Method == "SETUP" && isTCPSetup(req) {
+		s.tcpInterleaved = bytes.HasPrefix(resp, []byte("RTSP/1.0 200 "))
+	}
+}
+
+// noteRequest remains a test/helper compatibility shim. The live gate records
+// TCP capability only from the corresponding successful SETUP response.
 func (s *rtspGateSessionState) noteRequest(req rtspRequest) {
 	if isTCPSetup(req) {
 		s.tcpInterleaved = true
 	}
 }
 
-func (s rtspGateSessionState) shouldTunnelAfter(req rtspRequest) bool {
-	return req.Method == "PLAY" && s.tcpInterleaved
+func (s rtspGateSessionState) shouldTunnelAfter(req rtspRequest, response ...[]byte) bool {
+	if req.Method != "PLAY" || !s.tcpInterleaved {
+		return false
+	}
+	return len(response) == 0 || bytes.HasPrefix(response[0], []byte("RTSP/1.0 200 "))
 }
 
 func readRTSPPacket(r *bufio.Reader) ([]byte, rtspRequest, error) {

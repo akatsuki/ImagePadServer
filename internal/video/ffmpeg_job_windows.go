@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime"
 	"sync"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -68,6 +69,14 @@ func assignStartedFFmpegToKillOnCloseJob(process *os.Process) (func(), error) {
 	var once sync.Once
 	return func() {
 		once.Do(func() {
+			// cmd.Wait only waits for the process directly started by os/exec.
+			// A .cmd/.bat wrapper can leave a real FFmpeg child (or a helper such
+			// as ping.exe) alive after that wait returns. Terminate the owned job
+			// and wait for the job to become signaled before releasing the handle;
+			// otherwise Windows may still hold the wrapper directory when a caller
+			// immediately removes its temporary working tree.
+			_ = windows.TerminateJobObject(job, 1)
+			_, _ = windows.WaitForSingleObject(job, uint32((10 * time.Second) / time.Millisecond))
 			_ = windows.CloseHandle(job)
 		})
 	}, nil

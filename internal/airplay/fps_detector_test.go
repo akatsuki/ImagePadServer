@@ -82,3 +82,24 @@ func TestH264RTPRelayStateSynthesizesConstantTimestampsFromMeasuredFPS(t *testin
 		}
 	}
 }
+
+func TestH264RTPRelayStateAccountsForConstantTimestampStall(t *testing.T) {
+	state := readyH264RTPRelayState()
+	if outputs := state.forward(testMarkedRTPPacket(1, 500, []byte{1, 1})); len(outputs) != 1 {
+		t.Fatalf("initial frame produced %d packets; want 1", len(outputs))
+	}
+
+	// UxPlay can leave the H.264 RTP timestamp constant while the phone is
+	// changing orientation or switching apps. The video timeline must still
+	// account for that wall-clock pause instead of letting audio run ahead.
+	state.fps.observations = 1
+	state.fps.emaInterval = time.Second / 30
+	state.fps.lastFrameAt = time.Now().Add(-2 * time.Second)
+	outputs := state.forward(testMarkedRTPPacket(2, 500, []byte{1, 2}))
+	if len(outputs) != 1 {
+		t.Fatalf("resumed frame produced %d packets; want 1", len(outputs))
+	}
+	if got := binary.BigEndian.Uint32(outputs[0][4:8]); got < h264RTPClockRate {
+		t.Fatalf("resumed frame timestamp = %d; want at least %d after a 2s stall", got, h264RTPClockRate)
+	}
+}

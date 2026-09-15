@@ -51,6 +51,12 @@ const dashboardScriptUploadEvents = `
 
     uploadForm.addEventListener('submit', async (event) => {
       event.preventDefault();
+      if (!mediaIntentCanUpload()) {
+        const capability = mediaCapabilityMessage();
+        updateMediaCapabilityStatus();
+        if (capability) showToast(capability.text, { error: capability.tone === 'error' });
+        return;
+      }
       if (mediaIntent === 'music') {
         MusicController.render({ active: true });
       }
@@ -131,7 +137,7 @@ const dashboardScriptUploadEvents = `
     }
 
     function setUploadMode(mode) {
-      if (isLiveInputMode(mode) && (!state.videoPlayerEnabled || mediaIntent !== 'video')) {
+      if (isLiveInputMode(mode) && (!videoPlayerReadyForMedia() || mediaIntent !== 'video')) {
         mode = 'file';
       }
       if (mode === 'airplay' && (!state.airplay || !state.airplay.enabled)) {
@@ -163,12 +169,13 @@ const dashboardScriptUploadEvents = `
       linkUploadPanel.hidden = !linkMode;
       obsUploadPanel.hidden = !obsMode;
       airplayUploadPanel.hidden = !airplayMode;
+      if (typeof applyAirPlayQuality === 'function') applyAirPlayQuality(state.airplayQuality);
       updateUploadControlsVisibility();
       imageInput.required = fileMode;
       imageURLInput.required = linkMode;
       uploadButton.hidden = false;
       if (!liveMode) {
-        uploadButton.disabled = false;
+        uploadButton.disabled = !mediaIntentCanUpload();
       }
       queueUploadButton.hidden = liveMode || !state.videoPlayerEnabled || mediaIntent !== 'video' || mediaIntent === 'music';
       if (videoInfoPanel) {
@@ -759,7 +766,9 @@ const dashboardScriptUploadEvents = `
       });
     }
     async function updateOBSLatency(mode) {
+      airplayLatencyPending = true;
       obsLatencyMode.disabled = true;
+      applyAirPlayQuality(state.airplayQuality);
       try {
         const res = await apiFetch('/api/obs/latency', {
           method: 'POST',
@@ -768,16 +777,28 @@ const dashboardScriptUploadEvents = `
         });
         if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
-        state.obs = data || null;
-        applyOBS(data);
-        resetOBSPreview();
+        const managed = !!(data && data.airplayQuality);
+        state.obs = (managed ? data.obs : data) || null;
+        applyOBS(state.obs);
+        if (managed) {
+          state.airplayQuality = data.airplayQuality;
+          applyAirPlayQuality(state.airplayQuality);
+        } else {
+          resetOBSPreview();
+        }
         refreshAgain = true;
         announceLocalChange();
-        toast.textContent = 'OBSレイテンシ設定を更新しました。プレビューを再起動しています...';
+        toast.textContent = managed
+          ? (data.airplayQuality.changePending ? 'AirPlay配信設定の切替を受け付けました。' : 'AirPlay配信設定を更新しました。')
+          : 'OBSレイテンシ設定を更新しました。プレビューを再起動しています...';
+        scheduleRefresh(250);
       } catch (error) {
+        await refreshState(true);
         toast.textContent = error.message || 'OBSレイテンシ設定の更新に失敗しました';
       } finally {
-        obsLatencyMode.disabled = false;
+        airplayLatencyPending = false;
+        obsLatencyMode.disabled = airplayDeliveryChangePending(state.airplayQuality);
+        applyAirPlayQuality(state.airplayQuality);
       }
     }
     function showRTSPRiskDialog() {

@@ -1,0 +1,224 @@
+diff --git a/renderers/CMakeLists.txt b/renderers/CMakeLists.txt
+index 4220937..6a1a0b6 100644
+--- a/renderers/CMakeLists.txt
++++ b/renderers/CMakeLists.txt
+@@ -74,6 +74,9 @@ if (BUILD_TESTING)
+   add_executable(uxplay_source_clock_renderer_test source_clock_renderer_test.c)
+   target_link_libraries(uxplay_source_clock_renderer_test PRIVATE renderers pthread ws2_32)
+   add_test(NAME uxplay_source_clock_renderer COMMAND uxplay_source_clock_renderer_test)
++  add_executable(uxplay_source_clock_video_backlog_test source_clock_video_backlog_test.c)
++  target_link_libraries(uxplay_source_clock_video_backlog_test PRIVATE renderers pthread ws2_32)
++  add_test(NAME uxplay_source_clock_video_backlog COMMAND uxplay_source_clock_video_backlog_test)
+ endif()
+ 
+ if( GST_LIBRARY_DIRS MATCHES "/Library/FrameWorks/GStreamer.framework/lib" )
+diff --git a/renderers/source_clock_renderer.c b/renderers/source_clock_renderer.c
+index e474034..d1ad3ab 100644
+--- a/renderers/source_clock_renderer.c
++++ b/renderers/source_clock_renderer.c
+@@ -39,7 +39,7 @@
+ #define SOURCE_CLOCK_CONTROL_HELLO 1u
+ #define SOURCE_CLOCK_CONTROL_SESSION_START 2u
+ #define SOURCE_CLOCK_CONTROL_SESSION_END 4u
+-#define SOURCE_CLOCK_VIDEO_QUEUE_FRAMES 3u
++#define SOURCE_CLOCK_VIDEO_QUEUE_FRAMES 64u
+ #define SOURCE_CLOCK_AUDIO_QUEUE_NS 500000000ULL
+ #define SOURCE_CLOCK_RETRY_NS 250000000ULL
+ 
+diff --git a/renderers/source_clock_video_backlog_test.c b/renderers/source_clock_video_backlog_test.c
+new file mode 100644
+index 0000000..e6449b9
+--- /dev/null
++++ b/renderers/source_clock_video_backlog_test.c
+@@ -0,0 +1,191 @@
++#include "source_clock_renderer.h"
++
++#include <stdio.h>
++#include <string.h>
++
++#ifdef _WIN32
++#include <winsock2.h>
++#include <ws2tcpip.h>
++#include <windows.h>
++#include <pthread.h>
++#define TEST_SOCKET SOCKET
++#define TEST_INVALID_SOCKET INVALID_SOCKET
++#define test_close closesocket
++#else
++#include <arpa/inet.h>
++#include <netinet/in.h>
++#include <sys/socket.h>
++#include <sys/time.h>
++#include <unistd.h>
++#include <pthread.h>
++#define TEST_SOCKET int
++#define TEST_INVALID_SOCKET (-1)
++#define test_close close
++#endif
++
++#define CHECK(condition) do { \
++    if (!(condition)) { \
++        fprintf(stderr, "CHECK failed at line %d: %s\n", __LINE__, #condition); \
++        return 1; \
++    } \
++} while (0)
++
++typedef struct video_server_s {
++    TEST_SOCKET listener;
++    unsigned media_count;
++    unsigned first_sequence;
++    unsigned last_sequence;
++    unsigned discontinuities;
++} video_server_t;
++
++static unsigned read_u16(const unsigned char *p) {
++    return ((unsigned)p[0] << 8) | (unsigned)p[1];
++}
++
++static unsigned read_u32(const unsigned char *p) {
++    return ((unsigned)p[0] << 24) | ((unsigned)p[1] << 16) |
++           ((unsigned)p[2] << 8) | (unsigned)p[3];
++}
++
++static int read_full(TEST_SOCKET socket_fd, unsigned char *data, size_t length) {
++    while (length > 0) {
++        int received = recv(socket_fd, (char *)data, (int)length, 0);
++        if (received <= 0) return 0;
++        data += received;
++        length -= (size_t)received;
++    }
++    return 1;
++}
++
++static void *video_server_main(void *argument) {
++    video_server_t *server = (video_server_t *)argument;
++    TEST_SOCKET client = accept(server->listener, NULL, NULL);
++    unsigned char header[40];
++    if (client == TEST_INVALID_SOCKET) return NULL;
++#ifdef _WIN32
++    {
++        DWORD timeout_ms = 1000;
++        setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout_ms, sizeof(timeout_ms));
++    }
++#else
++    {
++        struct timeval timeout = {1, 0};
++        setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
++    }
++#endif
++    while (server->media_count < 64 && read_full(client, header, sizeof(header))) {
++        unsigned payload_bytes = read_u32(header + 12);
++        if (memcmp(header, "IPAF", 4) != 0) break;
++        if (header[8] == 1) {
++            unsigned sequence = read_u32(header + 16);
++            unsigned flags = read_u16(header + 10);
++            if (server->media_count == 0) server->first_sequence = sequence;
++            server->last_sequence = sequence;
++            server->media_count++;
++            if ((flags & SOURCE_CLOCK_FLAG_DISCONTINUITY) != 0) server->discontinuities++;
++        }
++        while (payload_bytes > 0) {
++            unsigned char discard[256];
++            size_t take = payload_bytes < sizeof(discard) ? payload_bytes : sizeof(discard);
++            if (!read_full(client, discard, take)) break;
++            payload_bytes -= (unsigned)take;
++        }
++    }
++    test_close(client);
++    return NULL;
++}
++
++static unsigned reserve_port(void) {
++    TEST_SOCKET socket_fd;
++    struct sockaddr_in address;
++    int address_length = sizeof(address);
++    unsigned port;
++    socket_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
++    if (socket_fd == TEST_INVALID_SOCKET) return 0;
++    memset(&address, 0, sizeof(address));
++    address.sin_family = AF_INET;
++    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
++    address.sin_port = htons(0);
++    if (bind(socket_fd, (struct sockaddr *)&address, sizeof(address)) != 0 ||
++        getsockname(socket_fd, (struct sockaddr *)&address, &address_length) != 0) {
++        test_close(socket_fd);
++        return 0;
++    }
++    port = ntohs(address.sin_port);
++    test_close(socket_fd);
++    return port;
++}
++
++static TEST_SOCKET listen_on(unsigned port) {
++    TEST_SOCKET socket_fd;
++    struct sockaddr_in address;
++    int reuse = 1;
++    socket_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
++    if (socket_fd == TEST_INVALID_SOCKET) return TEST_INVALID_SOCKET;
++    setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, (const char *)&reuse, sizeof(reuse));
++    memset(&address, 0, sizeof(address));
++    address.sin_family = AF_INET;
++    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
++    address.sin_port = htons((unsigned short)port);
++    if (bind(socket_fd, (struct sockaddr *)&address, sizeof(address)) != 0 ||
++        listen(socket_fd, 1) != 0) {
++        test_close(socket_fd);
++        return TEST_INVALID_SOCKET;
++    }
++    return socket_fd;
++}
++
++int main(void) {
++    const char *token = "00112233445566778899aabbccddeeff";
++    unsigned char frame[] = {0, 0, 0, 1, 0x41, 0x88};
++    char video_endpoint[64];
++    char audio_endpoint[64];
++    unsigned video_port;
++    unsigned audio_port;
++    source_clock_renderer_t *renderer;
++    video_server_t server;
++    pthread_t server_thread;
++    unsigned i;
++#ifdef _WIN32
++    WSADATA wsa;
++    CHECK(WSAStartup(MAKEWORD(2, 2), &wsa) == 0);
++#endif
++    video_port = reserve_port();
++    audio_port = reserve_port();
++    CHECK(video_port != 0 && audio_port != 0 && video_port != audio_port);
++    snprintf(video_endpoint, sizeof(video_endpoint), "127.0.0.1:%u", video_port);
++    snprintf(audio_endpoint, sizeof(audio_endpoint), "127.0.0.1:%u", audio_port);
++    renderer = source_clock_renderer_create(video_endpoint, audio_endpoint, token);
++    CHECK(renderer != NULL);
++    source_clock_renderer_session_start(renderer);
++    for (i = 0; i < 64; ++i) {
++        CHECK(source_clock_renderer_push_video(renderer, frame, sizeof(frame),
++                                               1000000000ULL + i * 16666667ULL, 0));
++    }
++#ifdef _WIN32
++    Sleep(50);
++#else
++    usleep(50000);
++#endif
++    memset(&server, 0, sizeof(server));
++    server.listener = listen_on(video_port);
++    CHECK(server.listener != TEST_INVALID_SOCKET);
++    CHECK(pthread_create(&server_thread, NULL, video_server_main, &server) == 0);
++#ifdef _WIN32
++    Sleep(1500);
++#else
++    usleep(1500000);
++#endif
++    source_clock_renderer_destroy(renderer);
++    test_close(server.listener);
++    pthread_join(server_thread, NULL);
++    CHECK(server.media_count == 64);
++    CHECK(server.first_sequence == 1);
++    CHECK(server.last_sequence == 64);
++    CHECK(server.discontinuities == 0);
++#ifdef _WIN32
++    WSACleanup();
++#endif
++    puts("source_clock_video_backlog: PASS");
++    return 0;
++}

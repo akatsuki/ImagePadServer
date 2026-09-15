@@ -450,13 +450,26 @@ func TestOBSActiveSessionContractFreezesRunningTransportAndUsesDesiredSettingsFo
 	manager.current = &Session{ID: active.SessionID, ActiveContract: &active}
 	manager.status.Connected = true
 
+	hlsRequests := 0
 	hls := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got, want := r.URL.Path, "/obs_active/index.m3u8"; got != want {
 			t.Fatalf("proxied path = %q, want %q", got, want)
 		}
+		hlsRequests++
+		if hlsRequests > 1 {
+			http.Error(w, "blocking live playlist", http.StatusInternalServerError)
+			return
+		}
 		_, _ = w.Write([]byte("#EXTM3U\n"))
 	}))
 	t.Cleanup(hls.Close)
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.Path, "/v3/paths/get/obs_active"; got != want {
+			t.Fatalf("readiness path = %q, want %q", got, want)
+		}
+		_, _ = w.Write([]byte(`{"ready":true,"tracks":["H264","MPEG-4 Audio"]}`))
+	}))
+	t.Cleanup(api.Close)
 	_, portText, err := net.SplitHostPort(strings.TrimPrefix(hls.URL, "http://"))
 	if err != nil {
 		t.Fatalf("parse HLS test server: %v", err)
@@ -465,9 +478,17 @@ func TestOBSActiveSessionContractFreezesRunningTransportAndUsesDesiredSettingsFo
 	if err != nil {
 		t.Fatalf("parse HLS test port: %v", err)
 	}
+	_, apiPortText, err := net.SplitHostPort(strings.TrimPrefix(api.URL, "http://"))
+	if err != nil {
+		t.Fatalf("parse API test port: %v", err)
+	}
+	apiPort, err := strconv.Atoi(apiPortText)
+	if err != nil {
+		t.Fatalf("parse API test port: %v", err)
+	}
 	manager.mtx = newMediaMTXRuntime("test", mediaMTXSessionConfig{
 		Path:  "obs_active",
-		Ports: mediaMTXPorts{HLS: port},
+		Ports: mediaMTXPorts{API: apiPort, HLS: port},
 	})
 	manager.mtx.httpClient = hls.Client()
 

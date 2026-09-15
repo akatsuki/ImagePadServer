@@ -2,6 +2,11 @@
 
 この機能はLive配信への実験的な入力経路です。デフォルトでは無効で、明示的に有効化した場合だけLive画面に表示されます。
 
+> **現在の正規資料:** iPhone/UxPlayで確認された挙動は
+> `docs/AIRPLAY_IPHONE_UXPLAY_REFERENCE.md`、次に実装するlifecycle・遅延音声修正は
+> `docs/superpowers/specs/2026-09-03-airplay-lifecycle-late-audio-design.md`を参照してください。
+> 本文中の旧RTP/FFmpeg経路は比較・rollback用の記録を含みます。
+
 ## 経路
 
 ```text
@@ -14,6 +19,44 @@ iPhone/iPad AirPlay
 ```
 
 既存のOBS/Live配信経路を置き換えず、AirPlay開始時だけ同じRTMP ingestへ接続します。AirPlay専用プロセスは停止時とサーバー終了時に終了させます。
+
+## source-clock qualification経路（実験的）
+
+音声・映像の元AirPlay NTPを保持したまま、UxPlayのcomplete AU/frameをloopback
+TCPでnative GStreamer bridgeへ渡す経路です。既存のRTP relay/FFmpeg経路とは別の
+feature gateで、同一session内の自動fallbackは行いません。
+
+```text
+iPhone/iPad AirPlay
+  -> patched UxPlay source-clock egress
+  -> complete H.264 AU + compressed audio / source NTP
+  -> native GStreamer timeline/decode/hold/encode
+  -> MediaMTX RTSP/TCP
+  -> HLS/RTSP preview
+```
+
+ローカルqualification packageは、次のように作成します。
+
+```powershell
+rtk proxy pwsh -NoProfile -File scripts/package-airplay-source-clock.ps1 `
+  -ReceiverBuildDirectory "$env:TEMP\imagepad-uxplay-source-clock-build" `
+  -BridgeBuildDirectory ".\build\airplay-gstreamer-bridge\Release" `
+  -GStreamerRuntimeRoot "C:\path\to\gstreamer\msvc_x86_64" `
+  -MinGWRuntimeRoot "C:\msys64\mingw64\bin" `
+  -OutputDirectory "$env:TEMP\imagepad-airplay-source-clock-package"
+```
+
+起動時はqualification package内のpatched receiverを明示し、source-clockを有効にします。
+
+```text
+IMAGEPAD_AIRPLAY=1
+IMAGEPAD_AIRPLAY_PIPELINE=source-clock
+IMAGEPAD_AIRPLAY_RECEIVER=C:\path\to\package\uxplay-source-clock\uxplay-source-clock.exe
+```
+
+capability manifestがない、protocol versionが違う、binary hashが一致しない場合は、
+MediaMTXやUxPlayを起動する前に拒否します。現在の自動downloadされる旧UxPlayは
+source-clock receiverではないため、この経路では意図的に使用しません。
 
 ## Windows 10 セットアップ
 Windows amd64で `IMAGEPAD_AIRPLAY=1` を設定し、`IMAGEPAD_AIRPLAY_RECEIVER` を指定しない場合は、ImagePadServerが初回起動時にUxPlayのWindowsバンドルを自動準備します。
@@ -64,6 +107,8 @@ AirPlay入力は1セッション1クライアントです。既にOBSからの�
 - AirPlayミラーリングのDRMコンテンツは対象外
 - UxPlayのH.265経路は未実装
 - 実際のiPhone/iPad接続、Bonjour、GStreamer、ファイアウォールの組み合わせは環境依存
+- source-clockはGStreamer 1.28.6でローカルbuild/synthetic smokeを検証済みだが、
+  GStreamer runtimeの配布版差分と実iPhone/iPadの長時間qualificationは未確認
 
 ## 巻き戻し
 

@@ -1,0 +1,106 @@
+diff --git a/lib/raop.c b/lib/raop.c
+--- a/lib/raop.c
++++ b/lib/raop.c
+@@ -18,3 +18,5 @@
+ #include <stdio.h>
+ #include <string.h>
+ #include <assert.h>
++#include <limits.h>
++#include <plist/plist.h>
+@@ -42,2 +42,40 @@ static void plist_mem_free(void *ptr) {
+ }
+ #endif
++/*
++ * libplist 2.3 allocates plist_to_xml/plist_to_bin output with its own
++ * allocator. HTTP handlers hand response_data to conn_request, which owns
++ * it with plain free(). Copy the serialized plist into a normal malloc
++ * buffer at the boundary so every response_data path has one owner.
++ */
++static int
++plist_to_malloc_response(plist_t plist, char **response_data,
++                          int *response_datalen, int binary) {
++    char *plist_data = NULL;
++    uint32_t plist_datalen = 0;
++    plist_err_t err;
++
++    if (!response_data || !response_datalen) {
++        return 0;
++    }
++    *response_data = NULL;
++    *response_datalen = 0;
++
++    err = binary ? plist_to_bin(plist, &plist_data, &plist_datalen)
++                 : plist_to_xml(plist, &plist_data, &plist_datalen);
++    if (err != PLIST_ERR_SUCCESS || !plist_data || plist_datalen > INT_MAX) {
++        if (plist_data) {
++            plist_mem_free(plist_data);
++        }
++        return 0;
++    }
++    *response_data = malloc((size_t) plist_datalen + 1);
++    if (!*response_data) {
++        plist_mem_free(plist_data);
++        return 0;
++    }
++    memcpy(*response_data, plist_data, plist_datalen);
++    (*response_data)[plist_datalen] = '\0';
++    *response_datalen = (int) plist_datalen;
++    plist_mem_free(plist_data);
++    return 1;
++}
+diff --git a/lib/http_handlers.h b/lib/http_handlers.h
+--- a/lib/http_handlers.h
++++ b/lib/http_handlers.h
+@@ -91,1 +91,1 @@
+-    plist_to_xml(r_node, response_data, (uint32_t *) response_datalen);
++    plist_to_malloc_response(r_node, response_data, response_datalen, 0);
+@@ -268,1 +268,1 @@
+-        plist_to_xml(errResponse, response_data, (uint32_t *) response_datalen);
++        plist_to_malloc_response(errResponse, response_data, response_datalen, 0);
+diff --git a/lib/raop_handlers.h b/lib/raop_handlers.h
+--- a/lib/raop_handlers.h
++++ b/lib/raop_handlers.h
+@@ -246,1 +246,1 @@
+-    plist_to_bin(res_node, response_data, (uint32_t *) response_datalen);
++    plist_to_malloc_response(res_node, response_data, response_datalen, 1);
+@@ -347,1 +347,1 @@
+-        plist_to_bin(res_root_node, response_data, (uint32_t*) response_datalen);
++        plist_to_malloc_response(res_root_node, response_data, response_datalen, 1);
+@@ -384,1 +384,1 @@
+-        plist_to_bin(res_root_node, response_data, (uint32_t*) response_datalen);
++        plist_to_malloc_response(res_root_node, response_data, response_datalen, 1);
+@@ -426,1 +426,1 @@
+-        plist_to_bin(res_root_node, response_data, (uint32_t*) response_datalen);
++        plist_to_malloc_response(res_root_node, response_data, response_datalen, 1);
+@@ -1055,1 +1055,1 @@
+-    plist_to_bin(res_root_node, response_data, (uint32_t*) response_datalen);
++    plist_to_malloc_response(res_root_node, response_data, response_datalen, 1);
+diff --git a/lib/fcup_request.h b/lib/fcup_request.h
+--- a/lib/fcup_request.h
++++ b/lib/fcup_request.h
+@@ -88,1 +88,1 @@ int fcup_request(void *conn_opaque, const char *media_url, const char *client_session_id, int request_id) {
+-    free(plist_xml);
++    plist_mem_free(plist_xml);
+diff --git a/lib/http_handlers.h b/lib/http_handlers.h
+--- a/lib/http_handlers.h
++++ b/lib/http_handlers.h
+@@ -364,1 +364,4 @@ int create_playback_info_plist_xml(playback_info_t *playback_info, char **plist_xml) {
+-    plist_to_xml(res_root_node, plist_xml, (uint32_t *) &len);
++    if (!plist_to_malloc_response(res_root_node, plist_xml, &len, 0)) {
++        plist_free(res_root_node);
++        return 0;
++    }
+diff --git a/lib/raop_rtp_mirror.c b/lib/raop_rtp_mirror.c
+--- a/lib/raop_rtp_mirror.c
++++ b/lib/raop_rtp_mirror.c
+@@ -36,1 +36,7 @@
+ #include "plist/plist.h"
++
++#ifndef PLIST_230
++static void plist_mem_free(void *ptr) {
++    if (ptr) free(ptr);
++}
++#endif
+@@ -887,1 +887,1 @@
+-                            free(plist_xml);
++                            plist_mem_free(plist_xml);

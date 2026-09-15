@@ -71,6 +71,29 @@ func TestMusicModeCannotEnableWithoutVideoPlayer(t *testing.T) {
 	}
 }
 
+func TestMusicModeCannotEnableWithoutVideoTools(t *testing.T) {
+	_, mux := testServer(t, true)
+	previousReady := videoToolsReady
+	t.Cleanup(func() { videoToolsReady = previousReady })
+	videoToolsReady = func() bool { return false }
+
+	req := httptest.NewRequest(http.MethodPost, "/api/music-mode", strings.NewReader(`{"enabled":true}`))
+	rec := adminJSON(t, mux, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusServiceUnavailable, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "video_tools_unavailable") {
+		t.Fatalf("body = %q, want video_tools_unavailable", rec.Body.String())
+	}
+	got, err := settings.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.MusicModeEnabled {
+		t.Fatal("music mode was enabled without video tools")
+	}
+}
+
 func TestMusicModeRoutesPublishAndQueueURLsToAudioAcquirer(t *testing.T) {
 	for _, endpoint := range []string{"/api/upload-url", "/api/upload-url-queue"} {
 		t.Run(endpoint, func(t *testing.T) {

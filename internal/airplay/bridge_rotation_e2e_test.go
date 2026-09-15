@@ -13,16 +13,14 @@ import (
 	"imagepadserver/internal/video"
 )
 
-// TestAirPlayBridgeRotationTracksResolution reproduces a portrait->landscape
+// TestAirPlayBridgeRotationUsesFixedCanvas reproduces a portrait->landscape
 // mirror rotation by feeding the relay->bridge ingest two sequential H.264
-// senders at different resolutions (320x568 then 568x320). A single FFmpeg
-// bridge cannot change its output resolution mid-stream, so the manager must
-// detect the format change (fresh SSRC/SPS/PPS from the sender), kill the
-// bridge, and respawn it so the FLV sequence header and frames track the new
-// resolution. This test drives the real manager.monitor() loop end to end and
-// asserts the final FLV contains frames at the post-rotation resolution with
+// senders at different resolutions (320x568 then 568x320). The bridge stays
+// alive across the SPS/PPS change and the AirPlay output filter keeps the FLV
+// canvas fixed at 1920x1080. This test drives the real manager.monitor() loop
+// end to end and asserts the final FLV contains fixed-canvas frames with
 // square pixels (SAR 1:1).
-func TestAirPlayBridgeRotationTracksResolution(t *testing.T) {
+func TestAirPlayBridgeRotationUsesFixedCanvas(t *testing.T) {
 	ffmpeg := strings.TrimSpace(os.Getenv("IMAGEPAD_FFMPEG"))
 	ffprobe := strings.TrimSpace(os.Getenv("IMAGEPAD_FFPROBE"))
 	if ffmpeg == "" || ffprobe == "" {
@@ -118,7 +116,7 @@ func TestAirPlayBridgeRotationTracksResolution(t *testing.T) {
 	send("320x568", "2")
 	send("568x320", "3")
 
-	// Let the respawned bridge drain and encode the landscape frames.
+	// Let the long-lived bridge drain and encode both orientations.
 	time.Sleep(3 * time.Second)
 
 	cancel()
@@ -130,11 +128,9 @@ func TestAirPlayBridgeRotationTracksResolution(t *testing.T) {
 
 	frames := probeRotationFrames(t, ffprobe, flvPath)
 	t.Logf("FLV frame resolutions: %v", frames)
-	if frames["568,320"] == 0 {
-		t.Fatalf("no landscape (568x320) frames after rotation; got %v\nbridge log:\n%s", frames, bridgeLog.String())
+	if frames["1920,1080"] == 0 {
+		t.Fatalf("no fixed-canvas (1920x1080) frames after rotation; got %v\nbridge log:\n%s", frames, bridgeLog.String())
 	}
-	// Portrait frames are legitimately absent: the respawned bridge truncates
-	// the FLV (-y) and records only the post-rotation stream.
 	sars := probeRotationSAR(t, ffprobe, flvPath)
 	t.Logf("FLV frame SAR values: %v", sars)
 	for _, s := range sars {

@@ -39,6 +39,25 @@ const dashboardCSSUpload = `
       cursor: not-allowed;
       opacity: .45;
     }
+    .media-capability-status {
+      margin: -5px 14px 14px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-small);
+      background: var(--control-bg);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.4;
+    }
+    .media-capability-status[data-tone="error"] {
+      border-color: color-mix(in srgb, var(--danger) 45%, var(--line));
+      color: var(--danger);
+    }
+    .media-capability-status[data-tone="working"] {
+      border-color: color-mix(in srgb, var(--accent-blue) 45%, var(--line));
+      color: var(--accent-blue);
+    }
     .media-nav-icon {
       color: var(--accent-blue);
       font-size: 14px;
@@ -861,6 +880,9 @@ const dashboardCSSUpload = `
       align-items: center;
       gap: 6px;
       margin-bottom: 8px;
+    }
+    .mode-tabs.live-input {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
     }
     .playlist-input-tabs {
       display: grid;

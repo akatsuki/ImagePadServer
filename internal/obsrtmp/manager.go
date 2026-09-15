@@ -18,14 +18,18 @@ import (
 	"sync"
 	"time"
 
+	"imagepadserver/internal/airplaycontract"
 	"imagepadserver/internal/video"
 )
 
 const publishingDisconnectTimeout = 5 * time.Minute
 
 type Callbacks struct {
+	OnDeliveryChanged             func()
 	OnStart                       func(Session)
 	OnDone                        func(Session)
+	OnRecordingDone               func(airplaycontract.RecordingOutcome)
+	OnRecordingOutcomesDone       func(string)
 	OnRTSPReady                   func(RTSPEndpoint)
 	OnRTSPDone                    func(RTSPEndpoint)
 	OnContinuousPublishingTimeout func()
@@ -189,6 +193,7 @@ type LatencyCapability struct {
 }
 
 type Manager struct {
+	opMu    sync.Mutex
 	outDir  string
 	host    string
 	port    int
@@ -197,21 +202,29 @@ type Manager struct {
 	latency func() LatencyProfile
 	cb      Callbacks
 
-	mu                     sync.Mutex
-	running                bool
-	stop                   context.CancelFunc
-	done                   chan struct{}
-	status                 Status
-	current                *Session
-	sink                   *lhlsSink
-	mtx                    *mediaMTXRuntime
-	rtspGate               *rtspGate
-	rtspEndpoint           *RTSPEndpoint
-	listenerGeneration     uint64
-	mediaGeneration        uint64
-	latestMediaGeneration  uint64
-	continuousPublishing   bool
-	publishDisconnectTimer *time.Timer
+	mu                        sync.Mutex
+	running                   bool
+	stop                      context.CancelFunc
+	done                      chan struct{}
+	status                    Status
+	current                   *Session
+	sink                      *lhlsSink
+	mtx                       *mediaMTXRuntime
+	rtspGate                  *rtspGate
+	rtspEndpoint              *RTSPEndpoint
+	listenerGeneration        uint64
+	mediaGeneration           uint64
+	latestMediaGeneration     uint64
+	continuousPublishing      bool
+	publishDisconnectTimer    *time.Timer
+	directPublishing          bool
+	directHandle              DirectSessionHandle
+	directDelivery            *directDeliveryCoordinator
+	directRetiringBackends    []*mediaMTXRuntime
+	directBackendMonitorCount int
+	directBackendReservations map[*mediaMTXRuntime]*directBackendReservation
+	directRecordingOutcomes   map[string]map[uint64]airplaycontract.RecordingOutcome
+	directRecordingSessions   []string
 
 	// Test seams keep restart ownership deterministic without spawning tools.
 	loopRunner            func(context.Context, uint64)
@@ -219,16 +232,17 @@ type Manager struct {
 }
 
 type Session struct {
-	ID             string
-	Generation     uint64 `json:"-"`
-	Title          string
-	PlaylistName   string
-	Recording      string
-	HLSDirectory   string
-	Published      bool
-	StartedAt      time.Time
-	FinishedAt     time.Time
-	ActiveContract *OBSActiveSessionContract
+	ID                            string
+	Generation                    uint64 `json:"-"`
+	Title                         string
+	PlaylistName                  string
+	Recording                     string
+	RecordingVerificationRequired bool `json:"-"`
+	HLSDirectory                  string
+	Published                     bool
+	StartedAt                     time.Time
+	FinishedAt                    time.Time
+	ActiveContract                *OBSActiveSessionContract
 }
 
 // OBSActiveSessionContract freezes every desired setting consumed by one OBS
@@ -323,7 +337,15 @@ func New(outDir, host string, port int, key string, preset func() video.QualityP
 }
 
 func (m *Manager) Start() {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	m.reapDirectBackendCleanup()
 	m.mu.Lock()
+	if !m.running && (m.directBackendMonitorCount != 0 || len(m.directRetiringBackends) != 0 || len(m.directBackendReservations) != 0) {
+		m.status.Message = "AirPlayバックエンドの終了確認が未完了のため、新しい受信を開始できません。"
+		m.mu.Unlock()
+		return
+	}
 	if strings.TrimSpace(m.key) == "" {
 		m.status.Enabled = false
 		m.status.Listening = false
@@ -359,6 +381,8 @@ func (m *Manager) Start() {
 }
 
 func (m *Manager) Stop() {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
 	m.mu.Lock()
 	m.cancelPublishDisconnectTimerLocked()
 	cancel := m.stop
@@ -558,6 +582,8 @@ func (m *Manager) SetStreamKey(key string, timeout time.Duration) {
 }
 
 func (m *Manager) StopAndWait(timeout time.Duration) {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
 	m.mu.Lock()
 	m.cancelPublishDisconnectTimerLocked()
 	cancel := m.stop
@@ -621,7 +647,7 @@ func (m *Manager) ConnectionRows(timeout time.Duration) []ConnectionStatus {
 		timeout = 250 * time.Millisecond
 	}
 	m.mu.Lock()
-	runtime := m.mtx
+	runtime := m.activeMediaMTXRuntimeLocked()
 	connected := m.status.Connected
 	profile := NormalizeLatencyProfile("auto")
 	if contract, ok := m.currentSessionContractLocked(); ok {
@@ -808,6 +834,7 @@ func (m *Manager) runOneWithContract(parent context.Context, ffmpeg string, cont
 				PublicRTCPPort:  ports.RTCP,
 				BackendRTSPPort: ports.mediaMTXRTSPPort(),
 				Path:            mediaMTXPathName(id),
+				Diagnostics:     newRTSPDiagnosticsFromEnvironment(),
 			})
 			if err := gate.start(ctx); err != nil {
 				_ = runtime.stop(5 * time.Second)
@@ -869,7 +896,11 @@ func (m *Manager) runOneWithContract(parent context.Context, ffmpeg string, cont
 				return runtime.pathReady(rc)
 			}
 		}
-		args = m.ffmpegRTSPArgsForContract(contract, recording, runtime.publishURL())
+		args, err = m.ffmpegRTSPArgsForActiveContract(contract, recording, runtime.publishURL())
+		if err != nil {
+			cancel()
+			return err
+		}
 	default:
 		args = m.ffmpegArgsForContract(contract, recording)
 	}
@@ -1231,6 +1262,20 @@ func (m *Manager) ffmpegLHLSArgsForContract(contract OBSActiveSessionContract, r
 	return args
 }
 
+// rtspFastPresetArgs changes only the software preset for the RTSP publisher.
+// The shared encoder contract keeps ultrafast for HLS and AirPlay bridge paths;
+// hardware encoder presets are left untouched.
+func rtspFastPresetArgs(args []string) []string {
+	result := append([]string(nil), args...)
+	for i := 0; i+1 < len(result); i++ {
+		if result[i] == "-preset" && result[i+1] == "ultrafast" {
+			result[i+1] = "fast"
+			break
+		}
+	}
+	return result
+}
+
 // ffmpegRTSPArgs encodes the RTMP input to H.264/AAC and publishes it to the
 // app-owned MediaMTX path over RTSP/TCP at rtspURL. MediaMTX repackages the
 // stream into LL-HLS and serves the RTSP/TCP read path. A separate copy output
@@ -1265,7 +1310,10 @@ func (m *Manager) ffmpegRTSPArgsForContract(contract OBSActiveSessionContract, r
 	)
 	encoderPreset := preset
 	encoderPreset.BufferSize = preset.VideoBitrate
-	args = append(args, encoder.FFmpegArgs(encoderPreset, "ultrafast")...)
+	args = append(args, rtspFastPresetArgs(encoder.FFmpegArgs(encoderPreset, "ultrafast"))...)
+	if !encoder.Hardware {
+		args = append(args, "-x264-params", rtspX264SingleSliceOptions)
+	}
 	args = append(args,
 		"-g", latency.GOPFrames,
 		"-keyint_min", latency.GOPFrames,
@@ -1325,18 +1373,26 @@ func (m *Manager) LHLSPublicFile(id, name string) (string, bool) {
 // generated-file path.
 func (m *Manager) ProxyLLHLS(w http.ResponseWriter, r *http.Request, id, name string) bool {
 	m.mu.Lock()
-	runtime := m.mtx
+	runtime := m.activeMediaMTXRuntimeLocked()
 	active := m.current != nil && m.current.ID == id
+	direct := m.directPublishing
 	contract, hasContract := m.currentSessionContractLocked()
 	m.mu.Unlock()
 	transport := contract.LatencyProfile.Transport
 	if !hasContract {
 		transport = m.currentLatency().Transport
 	}
-	if transport != LatencyModeLLHLS && transport != LatencyModeRTSPT {
+	if !direct && transport != LatencyModeLLHLS && transport != LatencyModeRTSPT {
 		return false
 	}
-	if !active || runtime == nil {
+	if !active {
+		return false
+	}
+	if runtime == nil {
+		if direct {
+			http.Error(w, "AirPlay delivery is switching or unavailable", http.StatusServiceUnavailable)
+			return true
+		}
 		return false
 	}
 	runtime.proxyHLS(w, r, mediaMTXHLSName(id, name))
@@ -1345,20 +1401,30 @@ func (m *Manager) ProxyLLHLS(w http.ResponseWriter, r *http.Request, id, name st
 
 func (m *Manager) HLSPreviewReady(id, name string) bool {
 	m.mu.Lock()
-	runtime := m.mtx
+	runtime := m.activeMediaMTXRuntimeLocked()
 	active := m.current != nil && m.current.ID == id
+	direct := m.directPublishing
 	contract, hasContract := m.currentSessionContractLocked()
 	m.mu.Unlock()
 	transport := contract.LatencyProfile.Transport
 	if !hasContract {
 		transport = m.currentLatency().Transport
 	}
-	if transport == LatencyModeLLHLS || transport == LatencyModeRTSPT {
+	if direct || transport == LatencyModeLLHLS || transport == LatencyModeRTSPT {
 		if !active || runtime == nil {
 			return false
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 		defer cancel()
+		// RTSP sessions use MediaMTX's standard MPEG-TS HLS muxer. A live
+		// playlist request may block until the next segment is available, so
+		// probing the HLS URL here can keep the UI in "preparing" forever and
+		// creates throwaway HLS sessions on every state poll. The MediaMTX path
+		// readiness already proves that the H264/AAC tracks are established;
+		// let the preview player wait for the first segment instead.
+		if direct || transport == LatencyModeRTSPT {
+			return runtime.pathReady(ctx)
+		}
 		return runtime.hlsArtifactReady(ctx, mediaMTXHLSName(id, name))
 	}
 	path := filepath.Join(m.outDir, video.PlaylistName(id))
@@ -1620,6 +1686,18 @@ func (m *Manager) acceptSession(session *Session, generation uint64) (bool, bool
 		m.mu.Unlock()
 		return false, false
 	}
+	armed, callbackSession := m.acceptSessionLocked(session)
+	callback := m.cb.OnStart
+	m.mu.Unlock()
+	if armed && callback != nil {
+		callback(callbackSession)
+	}
+	return armed, true
+}
+
+// Caller has validated listener/backend identity while holding Manager.mu.
+// Notification is left to the caller and must happen after unlocking.
+func (m *Manager) acceptSessionLocked(session *Session) (bool, Session) {
 	m.cancelPublishDisconnectTimerLocked()
 	armed := m.status.Publishing
 	m.mediaGeneration++
@@ -1638,13 +1716,7 @@ func (m *Manager) acceptSession(session *Session, generation uint64) (bool, bool
 	} else {
 		m.status.Message = "OBS stream is connected. Press publish to share it."
 	}
-	callback := m.cb.OnStart
-	callbackSession := cloneSession(*session)
-	m.mu.Unlock()
-	if armed && callback != nil {
-		callback(callbackSession)
-	}
-	return armed, true
+	return armed, cloneSession(*session)
 }
 
 func (m *Manager) finalizeAcceptedSession(session *Session, generation uint64) bool {

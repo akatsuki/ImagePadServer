@@ -551,6 +551,39 @@ const dashboardCSSComponents = `
       font-size: 11px;
       font-weight: 700;
     }
+	.history-recordings {
+	  margin-top: 2px;
+	  color: var(--muted);
+	  font-size: 11px;
+	}
+	.history-recordings summary {
+	  width: max-content;
+	  cursor: pointer;
+	  font-weight: 800;
+	}
+	.history-recording-list {
+	  display: grid;
+	  gap: 3px;
+	  margin-top: 4px;
+	}
+	.history-recording-item {
+	  display: flex;
+	  align-items: center;
+	  justify-content: space-between;
+	  gap: 8px;
+	}
+	.history-recording-link {
+	  color: var(--accent);
+	  font-weight: 800;
+	  text-decoration: none;
+	}
+	.history-recording-link:hover {
+	  text-decoration: underline;
+	}
+	.history-recording-failure {
+	  color: var(--danger);
+	  text-align: right;
+	}
     .history-actions {
       display: flex;
       align-items: center;
@@ -743,6 +776,14 @@ const dashboardCSSComponents = `
       padding-top: 10px;
     }
     .video-quality-options[hidden] {
+      display: none;
+    }
+    .airplay-quality-options {
+      grid-template-columns: minmax(0, 1fr);
+      margin-top: 10px;
+      padding-top: 10px;
+    }
+    .airplay-quality-options[hidden] {
       display: none;
     }
     .local-panel {

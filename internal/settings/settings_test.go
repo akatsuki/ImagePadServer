@@ -3,6 +3,7 @@ package settings
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -12,6 +13,21 @@ func TestNormalizeMusicPlaylistCanonicalHeight(t *testing.T) {
 	for input, want := range map[int]int{0: 720, -1: 720, 359: 720, 360: 360, 720: 720, 1080: 1080, 2160: 720} {
 		if got := NormalizeMusicPlaylistCanonicalHeight(input); got != want {
 			t.Fatalf("NormalizeMusicPlaylistCanonicalHeight(%d) = %d, want %d", input, got, want)
+		}
+	}
+}
+
+func TestAirPlayQualityNormalizerCanonicalValues(t *testing.T) {
+	for input, want := range map[string]string{
+		"auto":    "auto",
+		" AUTO ":  "auto",
+		"360":     "360",
+		" 720 ":   "720",
+		"1080":    "1080",
+		"invalid": "auto",
+	} {
+		if got := NormalizeAirPlayQualityMode(input); got != want {
+			t.Fatalf("NormalizeAirPlayQualityMode(%q) = %q, want %q", input, got, want)
 		}
 	}
 }
@@ -44,6 +60,125 @@ func TestLoadNormalizesMusicPlaylistCanonicalHeight(t *testing.T) {
 	}
 	if loaded.MusicPlaylistCanonicalHeight != 720 {
 		t.Fatalf("invalid persisted height = %d, want 720", loaded.MusicPlaylistCanonicalHeight)
+	}
+}
+
+func TestAirPlayQualityDefaultsToAutoOnNewInstall(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+
+	loaded, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.AirPlayQualityMode != "auto" {
+		t.Fatalf("new settings AirPlay quality = %q, want auto", loaded.AirPlayQualityMode)
+	}
+}
+
+func TestAirPlayQualityInvalidValueRoundTripsAsAuto(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+
+	if err := Save(Settings{AirPlayQualityMode: "  unsupported "}); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.AirPlayQualityMode != "auto" {
+		t.Fatalf("invalid AirPlay quality = %q, want auto", loaded.AirPlayQualityMode)
+	}
+
+	data, err := os.ReadFile(filepath.Join(Dir(), "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"airplayQualityMode": "auto"`) {
+		t.Fatalf("saved settings did not persist normalized AirPlay quality: %s", data)
+	}
+}
+
+func TestAirPlayQualityCanonicalValuesRoundTrip(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+
+	for _, want := range []string{"auto", "360", "720", "1080"} {
+		if err := Save(Settings{AirPlayQualityMode: want}); err != nil {
+			t.Fatalf("Save(%q): %v", want, err)
+		}
+		loaded, err := Load()
+		if err != nil {
+			t.Fatalf("Load(%q): %v", want, err)
+		}
+		if loaded.AirPlayQualityMode != want {
+			t.Fatalf("AirPlay quality = %q, want %q", loaded.AirPlayQualityMode, want)
+		}
+	}
+}
+
+func TestAirPlayQualitySavePreservesUnrelatedSettings(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	want := Settings{
+		VideoQualityMode:             "video-mode",
+		MusicPlaylistLatencyMode:     "latency-mode",
+		MusicPlaylistDeliveryProfile: "delivery-profile",
+		MusicPlaylistCanonicalHeight: 1080,
+		AirPlayQualityMode:           "720",
+	}
+
+	if err := Save(want); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.AirPlayQualityMode != want.AirPlayQualityMode {
+		t.Fatalf("AirPlay quality = %q, want %q", loaded.AirPlayQualityMode, want.AirPlayQualityMode)
+	}
+	if loaded.VideoQualityMode != want.VideoQualityMode {
+		t.Fatalf("video quality changed to %q", loaded.VideoQualityMode)
+	}
+	if loaded.MusicPlaylistLatencyMode != want.MusicPlaylistLatencyMode {
+		t.Fatalf("playlist latency changed to %q", loaded.MusicPlaylistLatencyMode)
+	}
+	if loaded.MusicPlaylistDeliveryProfile != want.MusicPlaylistDeliveryProfile {
+		t.Fatalf("playlist delivery changed to %q", loaded.MusicPlaylistDeliveryProfile)
+	}
+	if loaded.MusicPlaylistCanonicalHeight != want.MusicPlaylistCanonicalHeight {
+		t.Fatalf("playlist height changed to %d", loaded.MusicPlaylistCanonicalHeight)
+	}
+}
+
+func TestLoadDefaultsVideoPlayerEnabledForNewInstall(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+
+	loaded, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.VideoPlayerEnabled {
+		t.Fatal("new settings should enable the video player")
+	}
+	if loaded.MusicModeEnabled {
+		t.Fatal("new settings should keep music mode disabled")
+	}
+}
+
+func TestLoadPreservesExplicitlyDisabledVideoPlayer(t *testing.T) {
+	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())
+	if err := Save(Settings{MusicModeEnabled: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.VideoPlayerEnabled {
+		t.Fatal("an existing explicit video-player disable should be preserved")
+	}
+	if !loaded.MusicModeEnabled {
+		t.Fatal("existing music mode setting was not preserved")
 	}
 }
 

@@ -159,3 +159,74 @@ func TestConfigureReceiverProcessUsesAdjacentRTPSupplement(t *testing.T) {
 		t.Fatalf("PATH = %q, want prefix %q", got, pathPrefix)
 	}
 }
+
+func TestConfigureReceiverProcessUsesAdjacentGStreamerRuntime(t *testing.T) {
+	packageRoot := t.TempDir()
+	root := filepath.Join(packageRoot, "uxplay-source-clock")
+	gstreamerRoot := filepath.Join(packageRoot, "gstreamer")
+	if err := os.MkdirAll(filepath.Join(gstreamerRoot, "bin"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(gstreamerRoot, "lib", "gstreamer-1.0"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"gstreamer-1.0-0.dll", "gstapp-1.0-0.dll"} {
+		if err := os.WriteFile(filepath.Join(gstreamerRoot, "bin", name), []byte("test"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	receiverPath := filepath.Join(root, "uxplay-source-clock.exe")
+	if err := os.MkdirAll(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(receiverPath, []byte("test"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(receiverPath)
+	runtimeRoots, pluginDirs, rtpDir := uxPlayRuntimeDirectories(root)
+	if rtpDir != "" {
+		t.Fatalf("unexpected RTP supplement: %q", rtpDir)
+	}
+	wantBin := filepath.Join(gstreamerRoot, "bin")
+	wantPlugins := filepath.Join(gstreamerRoot, "lib", "gstreamer-1.0")
+	if len(runtimeRoots) == 0 || runtimeRoots[0] != wantBin {
+		t.Fatalf("runtime roots = %#v, want first %q", runtimeRoots, wantBin)
+	}
+	if len(pluginDirs) == 0 || pluginDirs[0] != wantPlugins {
+		t.Fatalf("plugin dirs = %#v, want first %q", pluginDirs, wantPlugins)
+	}
+	_ = cmd
+}
+
+func TestConfigureReceiverProcessPinsScannerAndSessionRegistry(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "uxplay-source-clock")
+	scanner := filepath.Join(root, "libexec", "gstreamer-1.0", "gst-plugin-scanner.exe")
+	if err := os.MkdirAll(filepath.Dir(scanner), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(scanner, []byte("scanner"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	receiverPath := filepath.Join(root, "uxplay-source-clock.exe")
+	if err := os.WriteFile(receiverPath, []byte("receiver"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	sessionDir := t.TempDir()
+	cmd := exec.Command(receiverPath)
+	if _, err := configureReceiverProcess(cmd, &limitedBuffer{}, receiverPath, sessionDir); err != nil {
+		t.Fatal(err)
+	}
+	environment := make(map[string]string)
+	for _, entry := range cmd.Env {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok {
+			environment[strings.ToUpper(key)] = value
+		}
+	}
+	if got := environment["GST_PLUGIN_SCANNER"]; got != scanner {
+		t.Fatalf("GST_PLUGIN_SCANNER = %q, want %q", got, scanner)
+	}
+	if got, want := environment["GST_REGISTRY"], filepath.Join(sessionDir, "gstreamer-registry.bin"); got != want {
+		t.Fatalf("GST_REGISTRY = %q, want %q", got, want)
+	}
+}

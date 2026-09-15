@@ -1,0 +1,9 @@
+{
+  "schema": 2,
+  "sessionId": "obs_example",
+  "publisherGeneration": 1,
+  "event": "recording-finalized",
+  "at": "2026-09-05T00:00:25Z",
+  "recordingPath": "media/airplay/obs_example/publisher-0001.mp4",
+  "recordingClosed": true
+}

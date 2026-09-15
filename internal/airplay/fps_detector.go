@@ -85,3 +85,24 @@ func (d *fpsDetector) timestampStep() uint32 {
 	}
 	return step
 }
+
+// timestampStepAt keeps the smoothed cadence for normal frames but accounts
+// for a real wall-clock pause before a resumed frame. This is separate from
+// timestampStep because a long pause should not permanently slow the moving
+// average, while omitting the pause from the output timeline makes audio run
+// ahead of video after repeated app switches.
+func (d *fpsDetector) timestampStepAt(now time.Time) uint32 {
+	step := d.timestampStep()
+	if !d.initialized {
+		return step
+	}
+	interval := now.Sub(d.lastFrameAt)
+	if interval <= 0 {
+		return step
+	}
+	wallStep := uint32(float64(h264RTPClockRate)*interval.Seconds() + 0.5)
+	if wallStep > step {
+		return wallStep
+	}
+	return step
+}

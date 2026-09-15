@@ -58,6 +58,7 @@ type activeJob struct {
 	TotalSeconds int
 	QueueJob     *queueJob
 	MediaID      string
+	ExternalHLS  bool
 }
 
 type queueState struct {
@@ -426,6 +427,14 @@ func CurrentStatusForID(outDir, id string) Result {
 	hls := hlsPlaylistExistsForID(outDir, id) && hlsSegmentExistsForID(outDir, id)
 	active := isActiveForID(outDir, id)
 	pending := isPendingForID(outDir, id)
+	if active && isExternalHLSForID(outDir, id) {
+		return Result{
+			OK:      true,
+			MP4:     mp4,
+			HLS:     true,
+			Message: "HLSストリームを利用できます。",
+		}
+	}
 	result := Result{
 		OK:     mp4 || hls,
 		MP4:    mp4,
@@ -1185,10 +1194,11 @@ func FinalizeHLSPlaylist(outDir, id string) error {
 
 func BeginExternalHLS(outDir, id string, preset QualityPreset, cancel context.CancelFunc, done chan struct{}) {
 	activeHLS.Store(outDir, &activeJob{
-		Preset:  preset,
-		Cancel:  cancel,
-		Done:    done,
-		MediaID: id,
+		Preset:      preset,
+		Cancel:      cancel,
+		Done:        done,
+		MediaID:     id,
+		ExternalHLS: true,
 	})
 }
 
@@ -1213,6 +1223,18 @@ func isActiveForID(outDir, id string) bool {
 		return false
 	}
 	return id == "" || (job.QueueJob != nil && job.QueueJob.MediaID == id) || (job.MediaID != "" && job.MediaID == id)
+}
+
+func isExternalHLSForID(outDir, id string) bool {
+	active, ok := activeHLS.Load(outDir)
+	if !ok {
+		return false
+	}
+	job, ok := active.(*activeJob)
+	if !ok || job == nil || !job.ExternalHLS {
+		return false
+	}
+	return id == "" || (job.MediaID != "" && job.MediaID == id)
 }
 
 func isPendingForID(outDir, id string) bool {

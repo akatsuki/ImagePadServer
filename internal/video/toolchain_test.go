@@ -64,6 +64,36 @@ func TestEnsureFFprobeRepairsStaleConfiguredPath(t *testing.T) {
 	}
 }
 
+func TestExistingFFprobePathDoesNotInstallOrValidate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), executableName("ffprobe"))
+	if err := os.WriteFile(path, []byte("not executed"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("IMAGEPAD_FFPROBE", path)
+	oldInstaller := ffprobeBundleInstaller
+	oldValidator := ffprobeExecutableValidator
+	ffprobeBundleInstaller = func() (string, error) {
+		t.Fatal("ExistingFFprobePath invoked the installer")
+		return "", nil
+	}
+	ffprobeExecutableValidator = func(string) error {
+		t.Fatal("ExistingFFprobePath executed ffprobe validation")
+		return nil
+	}
+	t.Cleanup(func() {
+		ffprobeBundleInstaller = oldInstaller
+		ffprobeExecutableValidator = oldValidator
+	})
+
+	got, err := ExistingFFprobePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != path {
+		t.Fatalf("ExistingFFprobePath=%q, want %q", got, path)
+	}
+}
+
 func TestConfiguredExecutableNamesResolveViaPATH(t *testing.T) {
 	toolDir := t.TempDir()
 	t.Setenv("IMAGEPAD_DATA_DIR", t.TempDir())

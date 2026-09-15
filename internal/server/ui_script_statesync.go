@@ -1,10 +1,15 @@
 package server
 
 const dashboardScriptStateSync = `
-    async function refreshState() {
+    async function refreshState(requireFresh = false) {
       if (refreshInFlight) {
-        refreshAgain = true;
-        return refreshPromise;
+        const inFlight = refreshPromise;
+        if (!requireFresh) {
+          refreshAgain = true;
+          return inFlight;
+        }
+        await inFlight;
+        return refreshState();
       }
       refreshInFlight = true;
       refreshPromise = runRefreshState();
@@ -18,7 +23,7 @@ const dashboardScriptStateSync = `
     async function runRefreshState() {
       const seq = ++lastAppliedStateSeq;
       try {
-        const res = await apiFetch('/api/state', { cache: 'no-store' });
+        const res = await apiFetch('/api/state', { cache: 'no-store', timeoutMs: 8000 });
         const body = await res.text();
         if (!res.ok) throw new Error(body || ('HTTP ' + res.status));
         const data = JSON.parse(body);
@@ -27,11 +32,14 @@ const dashboardScriptStateSync = `
           if (toast && toast.dataset.error === '1' && toast.dataset.errorSource === 'sync') {
             hideToast();
           }
+		  return true;
         }
+		return false;
       } catch (error) {
         if (toast && !document.hidden) {
           showToast(syncFailureMessage(error), { error: true, source: 'sync' });
         }
+		return false;
       } finally {
         refreshInFlight = false;
         if (refreshAgain) {
@@ -61,11 +69,16 @@ const dashboardScriptStateSync = `
       state.video = data.video || null;
       state.obs = data.obs || null;
       state.airplay = data.airplay || null;
+      state.airplayQuality = data.airplayQuality || null;
       state.pairing = data.pairing || null;
       state.ytdlpAuth = data.ytdlpAuth || null;
       state.ytdlpChannel = data.ytdlpChannel || null;
       state.toolInstall = data.toolInstall || null;
       state.videoPlayerEnabled = !!(data.videoPlayer && data.videoPlayer.enabled);
+      state.videoPlayerToolsReady = !!(data.videoPlayer && data.videoPlayer.toolsReady);
+      state.videoPlayerInstalling = !!(data.videoPlayer && data.videoPlayer.installing);
+      state.videoPlayerError = String((data.videoPlayer && data.videoPlayer.error) || '');
+      state.musicRenderer = (data.videoPlayer && data.videoPlayer.musicRenderer) || null;
       state.musicModeEnabled = !!(data.videoPlayer && data.videoPlayer.musicModeEnabled);
       document.getElementById('phoneURL').textContent = data.phoneURL;
       document.getElementById('phoneURLMobile').textContent = data.phoneURL;
@@ -78,7 +91,7 @@ const dashboardScriptStateSync = `
       applyQuality(data.videoQuality);
       applyVideoPlayer(data.videoPlayer);
       applyOBS(data.obs);
-      applyAirPlay(data.airplay);
+      applyAirPlay(data.airplay, data.airplayQuality);
       applyPairing(data.pairing);
       updateYTDLPAuthState();
       updateYTDLPChannelState();

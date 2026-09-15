@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "wrapperRepository": "https://github.com/leapbtw/uxplay-windows.git",
+  "wrapperCommit": "43cf903e8177a7db37df6bc9cd8a9d1a60dabaaa",
+  "libuxplayRepository": "https://github.com/leapbtw/libuxplay.git",
+  "libuxplayCommit": "437f37514257d9cb513ac7fbdee743b4da85852e",
+  "referenceUpstreamRepository": "https://github.com/FDH2/UxPlay.git",
+  "referenceUpstreamCommit": "fd5192b06f0c2ab2f664b8ab778ac6f772e4d741",
+  "protocolVersion": 1,
+  "license": "GPL-3.0-or-later"
+}

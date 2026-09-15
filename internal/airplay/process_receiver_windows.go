@@ -17,9 +17,6 @@ func configureReceiverProcess(cmd *exec.Cmd, output *limitedBuffer, receiverPath
 	runtimeRoots, pluginDirs, rtpDir := uxPlayRuntimeDirectories(root)
 	pathEntries := append([]string{}, runtimeRoots...)
 	pathEntries = append(pathEntries, filepath.Join(root, "lib"))
-	if inheritedPath := os.Getenv("PATH"); inheritedPath != "" {
-		pathEntries = append(pathEntries, inheritedPath)
-	}
 	environment := map[string]string{
 		"PATH":                       strings.Join(pathEntries, string(os.PathListSeparator)),
 		"GST_PLUGIN_PATH":            strings.Join(pluginDirs, string(os.PathListSeparator)),
@@ -27,6 +24,12 @@ func configureReceiverProcess(cmd *exec.Cmd, output *limitedBuffer, receiverPath
 		"GST_PLUGIN_SYSTEM_PATH":     "",
 		"GST_PLUGIN_SYSTEM_PATH_1_0": "",
 		"QT_PLUGIN_PATH":             root,
+	}
+	if scanner := gstreamerScannerPath(root, runtimeRoots); scanner != "" {
+		environment["GST_PLUGIN_SCANNER"] = scanner
+	}
+	if registry := filepath.Join(sessionDir, "gstreamer-registry.bin"); sessionDir != "" {
+		environment["GST_REGISTRY"] = registry
 	}
 	if rtpDir != "" {
 		// The fixed UxPlay executable lives in the base bundle. The RTP
@@ -44,6 +47,15 @@ func configureReceiverProcess(cmd *exec.Cmd, output *limitedBuffer, receiverPath
 func uxPlayRuntimeDirectories(root string) (runtimeRoots, pluginDirs []string, rtpDir string) {
 	runtimeRoots = []string{root}
 	pluginDirs = []string{filepath.Join(root, "lib", "gstreamer-1.0")}
+	// The source-clock qualification package keeps the patched receiver and
+	// the shared GStreamer runtime in sibling directories. Include that
+	// runtime in the child environment so UxPlay does not depend on the
+	// developer machine's global PATH or plugin registry.
+	gstreamerRoot := filepath.Clean(filepath.Join(root, "..", "gstreamer"))
+	if hasGStreamerRuntime(gstreamerRoot) {
+		runtimeRoots = append([]string{filepath.Join(gstreamerRoot, "bin")}, runtimeRoots...)
+		pluginDirs = append([]string{filepath.Join(gstreamerRoot, "lib", "gstreamer-1.0")}, pluginDirs...)
+	}
 	supplement := root + "-rtp"
 	if !hasUxPlayRTPSupplement(supplement) {
 		return runtimeRoots, pluginDirs, ""
@@ -52,6 +64,20 @@ func uxPlayRuntimeDirectories(root string) (runtimeRoots, pluginDirs []string, r
 	runtimeRoots = append([]string{supplement}, runtimeRoots...)
 	pluginDirs = append([]string{filepath.Join(supplement, "lib", "gstreamer-1.0")}, pluginDirs...)
 	return runtimeRoots, pluginDirs, rtpDir
+}
+
+func hasGStreamerRuntime(root string) bool {
+	for _, relative := range []string{
+		filepath.Join("bin", "gstreamer-1.0-0.dll"),
+		filepath.Join("bin", "gstapp-1.0-0.dll"),
+		filepath.Join("lib", "gstreamer-1.0"),
+	} {
+		info, err := os.Stat(filepath.Join(root, relative))
+		if err != nil || (relative == filepath.Join("lib", "gstreamer-1.0") && !info.IsDir()) {
+			return false
+		}
+	}
+	return true
 }
 
 func hasUxPlayRTPSupplement(root string) bool {
