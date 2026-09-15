@@ -343,7 +343,7 @@ func TestBuildBridgeArgsMapsVideoAndAudioToRTMP(t *testing.T) {
 		"-i session.sdp",
 		"-map 0:v:0",
 		"-map 0:a:0",
-		"-vf scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=black",
+		"-vf scale=1920:1080:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1",
 		"-c:v libx264",
 		"-preset ultrafast",
 		"-tune zerolatency",
