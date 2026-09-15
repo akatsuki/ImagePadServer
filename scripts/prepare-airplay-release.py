@@ -24,7 +24,7 @@ def prepare(manifest_path, inputs, download=False, env_file=None):
     repository, tag = m['repository'], m['releaseTag']
     if m['schema'] != 1 or not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository) or not re.fullmatch(r'v[A-Za-z0-9_.-]+', tag):
         raise ValueError('invalid release manifest identity')
-    version = re.search(r'Version\s*=\s*"([^"]+)"', (root/'internal/about/about.go').read_text()).group(1)
+    version = re.search(r'Version\s*=\s*"([^"]+)"', (root/'internal/about/about.go').read_text(encoding='utf-8')).group(1)
     if version != tag or (os.getenv('GITHUB_REF_TYPE') == 'tag' and os.environ['GITHUB_REF_NAME'] != tag):
         raise ValueError('release input tag differs from application/workflow tag')
     if os.getenv('GITHUB_REPOSITORY') and os.environ['GITHUB_REPOSITORY'] != repository:

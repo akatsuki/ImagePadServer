@@ -136,7 +136,7 @@ write_airplay_runtime_bootstrap() {
     exit 1
   fi
   archive_size="$(wc -c < "$AIRPLAY_RUNTIME_ARCHIVE_PATH" | tr -d '[:space:]')"
-  archive_hash="$(sha256sum "$AIRPLAY_RUNTIME_ARCHIVE_PATH" | awk '{print $1}')"
+  archive_hash="$(python3 -c 'import hashlib,sys; print(hashlib.file_digest(open(sys.argv[1], "rb"), "sha256").hexdigest())' "$AIRPLAY_RUNTIME_ARCHIVE_PATH")"
   if [ "$archive_size" != "$AIRPLAY_RUNTIME_ARCHIVE_SIZE" ] ||
      ! printf '%s\n' "$archive_hash" | grep -Eiq "^$AIRPLAY_RUNTIME_ARCHIVE_SHA256$"; then
     echo "AIRPLAY_RUNTIME_ARCHIVE_PATH does not match the pinned archive size/hash" >&2
