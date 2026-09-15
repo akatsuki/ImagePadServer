@@ -15,7 +15,7 @@ UxPlayはGPL-3.0-or-later、x264はGPL-2.0-or-later。GStreamerと依存ライ�
 
 ## 2026-09-16 の対応範囲
 
-- 配布ランタイムID: `single-slice-release-v1.7.0`（元: `single-slice-licenses-20260916`）
+- 配布ランタイムID: `single-slice-release-v1.7.1`（元: `single-slice-licenses-20260916`）
 - 102コンポーネント、616本の実行ファイル/DLL、337件のソース・ライセンス関連ファイルを照合。
 - GStreamer 1.28.6と依存ライブラリ92件のソースを公式CerberoレシピのSHA-256で検証。
 - RustのCargo.lockに対応する1,516件のregistryクレートと5つのgit依存リポジトリを収録。ビルド・テスト用依存を含む。
@@ -48,7 +48,7 @@ python scripts/verify-airplay-license-archive.py <出力runtime.zip>
 
 # 完全版から実行用と対応ソースを分離する（既存ファイルは上書きしない）
 python scripts/split-airplay-release.py --runtime <完全版runtime.zip> `
-  --output <新しい出力ディレクトリ> --tag v1.7.0 --repository akatsuki/ImagePadServer
+  --output <新しい出力ディレクトリ> --tag v1.7.1 --repository akatsuki/ImagePadServer
 python scripts/verify-airplay-license-archive.py <実行用ZIP> <対応ソースZIP>
 ```
 

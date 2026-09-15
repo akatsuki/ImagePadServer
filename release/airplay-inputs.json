@@ -1,21 +1,21 @@
 {
   "schema": 1,
   "repository": "akatsuki/ImagePadServer",
-  "releaseTag": "v1.7.0",
+  "releaseTag": "v1.7.1",
   "runtimeAssetName": "ImagePadServer-AirPlay-Runtime.zip",
   "bootstrap": {
     "schema": 1,
-    "runtimeSetID": "single-slice-release-v1.7.0",
-    "archiveUrl": "https://github.com/akatsuki/ImagePadServer/releases/download/v1.7.0/ImagePadServer-AirPlay-Runtime.zip",
-    "archiveSize": 127583783,
-    "archiveSha256": "eb23b1a154d55ebfe95339096a1b720690a32273b01d1e633dbe6844dfa5470e",
-    "licenseManifestSha256": "5b4fd958f5d95219eabf4664e91d950724e577d5533c6cc61a2bdad9c4d57b29",
-    "sourceOfferSha256": "7d68cdf78ef93d43bb63bbd740ba14e42eabcf55e9453c41a335bed284038fa3"
+    "runtimeSetID": "single-slice-release-v1.7.1",
+    "archiveUrl": "https://github.com/akatsuki/ImagePadServer/releases/download/v1.7.1/ImagePadServer-AirPlay-Runtime.zip",
+    "archiveSize": 127583789,
+    "archiveSha256": "4d7c18e2082f9f8fae04af2036059d52c8cc62025326cc033c25682cc44ce66a",
+    "licenseManifestSha256": "606dfc74fa2d526612bd457d632832230261b37f192821d9cc848a1aee471e00",
+    "sourceOfferSha256": "0c77d6724da47b135f2c53f0f95dd9d4ad6beddd535bbaec45e596c9e732f794"
   },
   "sourceArchive": {
     "assetName": "ImagePadServer-AirPlay-Sources.zip",
-    "url": "https://github.com/akatsuki/ImagePadServer/releases/download/v1.7.0/ImagePadServer-AirPlay-Sources.zip",
-    "sha256": "62ba27aa91b1e2ee8ff1b6e14ab08ede3777d0eb64d9cbd54fa664a746edec30",
-    "size": 882969134
+    "url": "https://github.com/akatsuki/ImagePadServer/releases/download/v1.7.1/ImagePadServer-AirPlay-Sources.zip",
+    "sha256": "9d816003755d960ec77498a0a09633c658ceb6711c487bc4b6670ef031b4d3a1",
+    "size": 882969140
   }
 }
