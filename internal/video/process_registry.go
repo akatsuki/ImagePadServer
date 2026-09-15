@@ -268,7 +268,7 @@ func processRegistryPath() string {
 }
 
 func isFFmpegPath(path string) bool {
-	name := strings.ToLower(filepath.Base(path))
+	name := strings.ToLower(commandLineExecutableBase(path))
 	switch name {
 	case "ffmpeg", "ffmpeg.exe", "ffmpeg.cmd", "ffmpeg.bat":
 		return true

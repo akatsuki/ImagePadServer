@@ -106,12 +106,16 @@ func TestDirectBackendGenerationFailedStartKeepsRetiringOwner(t *testing.T) {
 	}
 	proc := newFakeProcess()
 	proc.exitOnKill = false
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
 	candidate.runtime.stopGrace = 20 * time.Millisecond
-	candidate.runtime.startProcess = func(context.Context, string, string) (managedProcess, error) { return proc, nil }
+	candidate.runtime.startProcess = func(context.Context, string, string) (managedProcess, error) {
+		// Cancel only after startup owns a process, independent of filesystem speed.
+		cancel()
+		return proc, nil
+	}
 	candidate.runtime.checkHealth = func(context.Context, string) error { return errors.New("unhealthy") }
 	t.Cleanup(func() { proc.finish(nil); _ = candidate.runtime.stop(time.Second) })
-	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
-	defer cancel()
 	if err := candidate.start(ctx); !errors.Is(err, errMediaMTXProcessExitUnconfirmed) {
 		t.Fatalf("lost ownership error: %v", err)
 	}

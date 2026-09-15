@@ -49,9 +49,9 @@ func TestRTSPGatePreservesPLAYResponseAndFirstInterleavedRTP(t *testing.T) {
 	if !strings.HasPrefix(string(got), "RTSP/1.0 200") {
 		t.Fatalf("PLAY response = %q", got)
 	}
-	time.Sleep(25 * time.Millisecond)
 	packet := make([]byte, 8)
-	if _, err := io.ReadFull(client, packet); err != nil {
+	// The response reader may already hold RTP bytes from the same TCP read.
+	if _, err := io.ReadFull(reader, packet); err != nil {
 		t.Fatalf("first interleaved packet missing after PLAY response: %v", err)
 	}
 	if string(packet) != string([]byte{'$', 0, 0, 4, 0x80, 96, 0, 1}) {
@@ -94,7 +94,7 @@ func TestRTSPGateDoesNotTunnelAfterFailedSETUP(t *testing.T) {
 		t.Fatal(err)
 	}
 	one := make([]byte, 1)
-	if n, err := client.Read(one); err == nil || n != 0 {
+	if n, err := reader.Read(one); err == nil || n != 0 {
 		t.Fatalf("failed SETUP was tunneled: n=%d err=%v", n, err)
 	}
 }
@@ -136,7 +136,7 @@ func TestRTSPGateDoesNotTunnelAfterNon200PLAY(t *testing.T) {
 	if err := client.SetReadDeadline(time.Now().Add(150 * time.Millisecond)); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := client.Read(make([]byte, 1)); err == nil || n != 0 {
+	if n, err := reader.Read(make([]byte, 1)); err == nil || n != 0 {
 		t.Fatalf("non-200 PLAY was tunneled: n=%d err=%v", n, err)
 	}
 }

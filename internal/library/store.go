@@ -228,8 +228,8 @@ func (s *Store) SetCurrentInfoWithIDInMemory(info CurrentImage) error {
 // recordings use this until an independent close/probe result verifies them.
 func (s *Store) SetPendingCurrentInfoWithIDInMemory(info CurrentImage) error {
 	if s == nil || !validHistoryItemID(info.ID) ||
-		(info.FileName != "" && filepath.Base(info.FileName) != info.FileName) ||
-		(info.Thumbnail != "" && filepath.Base(info.Thumbnail) != info.Thumbnail) {
+		(info.FileName != "" && !validHistoryFileName(info.FileName)) ||
+		(info.Thumbnail != "" && !validHistoryFileName(info.Thumbnail)) {
 		return os.ErrInvalid
 	}
 	info.UpdatedAt = time.Now()
@@ -292,13 +292,19 @@ func (s *Store) CommitHistoryFromPathWithIDInMemory(sourcePath string, info Curr
 }
 
 func validateHistoryCommitInfo(info CurrentImage) error {
-	if !validHistoryItemID(info.ID) || info.FileName == "" || filepath.Base(info.FileName) != info.FileName {
+	if !validHistoryItemID(info.ID) || !validHistoryFileName(info.FileName) {
 		return os.ErrInvalid
 	}
-	if info.Thumbnail != "" && filepath.Base(info.Thumbnail) != info.Thumbnail {
+	if info.Thumbnail != "" && !validHistoryFileName(info.Thumbnail) {
 		return os.ErrInvalid
 	}
 	return nil
+}
+
+func validHistoryFileName(name string) bool {
+	// History metadata may cross operating systems. Reject both separators
+	// and Windows volume/stream names regardless of the host platform.
+	return name != "" && name != "." && name != ".." && !strings.ContainsAny(name, "/\\:\x00")
 }
 
 func (s *Store) commitHistoryFromPathWithIDInMemory(srcPath, thumbnailSourcePath string, info CurrentImage, useHistoryAsCurrent bool) error {
