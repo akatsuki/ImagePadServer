@@ -31,9 +31,8 @@ func TestPlaylistGPUArtifactProbeFFmpegE2E(t *testing.T) {
 	generate := exec.CommandContext(ctx, ffmpeg,
 		"-hide_banner", "-loglevel", "error", "-y",
 		"-f", "lavfi", "-t", "0.933333", "-i", "testsrc=size=64x36:rate=30",
-		"-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
-		"-shortest",
-		"-c:v", "libx264", "-pix_fmt", "yuv420p",
+		"-f", "lavfi", "-t", "0.933333", "-i", "sine=frequency=440:sample_rate=48000",
+		"-c:v", "libx264", "-bf", "0", "-pix_fmt", "yuv420p",
 		"-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv",
 		"-c:a", "aac", "-f", "mpegts", path,
 	)

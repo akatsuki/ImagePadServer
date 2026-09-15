@@ -6,18 +6,28 @@ on:
 
 jobs:
   test:
-    name: Test
-    runs-on: ubuntu-latest
-    env:
-      IMAGEPAD_FFMPEG: /usr/bin/ffmpeg
-      IMAGEPAD_YTDLP: /usr/bin/yt-dlp
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
       - name: Install ffmpeg and yt-dlp
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ffmpeg yt-dlp
+      - name: Install macOS media tools
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg webp yt-dlp
+      - name: Activate real FFmpeg and ffprobe tests
+        run: |
+          echo "IMAGEPAD_FFMPEG=$(command -v ffmpeg)" >> "$GITHUB_ENV"
+          echo "IMAGEPAD_FFPROBE=$(command -v ffprobe)" >> "$GITHUB_ENV"
+          echo "IMAGEPAD_YTDLP=$(command -v yt-dlp)" >> "$GITHUB_ENV"
       - run: go test ./...
       - name: Verify AirPlay runtime archive contract tests
         run: python3 -m unittest discover -s scripts/tests -p test_verify_airplay_h264_archive.py

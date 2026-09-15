@@ -2,6 +2,7 @@ package airplay
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -62,7 +63,7 @@ func TestAirPlayBridgeRotationUsesFixedCanvas(t *testing.T) {
 	outDir := t.TempDir()
 	flvPath := filepath.Join(outDir, "rotation.flv")
 
-	encoder := video.SelectVideoEncoder(ctx, ffmpeg, video.EncoderLowLatency)
+	encoder := video.CPUVideoEncoder(video.EncoderLowLatency)
 	preset := video.ResolveQualityForUpload("1080", 20, 0)
 	bridgeArgs := BuildBridgeArgs(sdpPath, flvPath, encoder, preset)
 	// -y lets the respawned bridge truncate the FLV its killed predecessor
@@ -131,6 +132,11 @@ func TestAirPlayBridgeRotationUsesFixedCanvas(t *testing.T) {
 	if frames["1920,1080"] == 0 {
 		t.Fatalf("no fixed-canvas (1920x1080) frames after rotation; got %v\nbridge log:\n%s", frames, bridgeLog.String())
 	}
+	for dimensions := range frames {
+		if dimensions != "1920,1080" {
+			t.Fatalf("canvas changed after rotation: %v", frames)
+		}
+	}
 	sars := probeRotationSAR(t, ffprobe, flvPath)
 	t.Logf("FLV frame SAR values: %v", sars)
 	for _, s := range sars {
@@ -143,21 +149,23 @@ func TestAirPlayBridgeRotationUsesFixedCanvas(t *testing.T) {
 func probeRotationFrames(t *testing.T, ffprobe, flvPath string) map[string]int {
 	t.Helper()
 	cmd := exec.Command(ffprobe, "-v", "error", "-select_streams", "v:0",
-		"-show_entries", "frame=width,height", "-of", "csv=p=0", flvPath)
+		"-show_entries", "frame=width,height", "-of", "json", flvPath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("ffprobe frame=width,height: %v\n%s", err, out)
 	}
+	var result struct {
+		Frames []struct {
+			Width  int `json:"width"`
+			Height int `json:"height"`
+		} `json:"frames"`
+	}
+	if err := json.Unmarshal(out, &result); err != nil {
+		t.Fatal(err)
+	}
 	frames := map[string]int{}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		parts := strings.SplitN(line, ",", 2)
-		if len(parts) == 2 {
-			frames[parts[0]+","+parts[1]]++
-		}
+	for _, frame := range result.Frames {
+		frames[fmt.Sprintf("%d,%d", frame.Width, frame.Height)]++
 	}
 	return frames
 }
@@ -165,10 +173,25 @@ func probeRotationFrames(t *testing.T, ffprobe, flvPath string) map[string]int {
 func probeRotationSAR(t *testing.T, ffprobe, flvPath string) []string {
 	t.Helper()
 	cmd := exec.Command(ffprobe, "-v", "error", "-select_streams", "v:0",
-		"-show_entries", "frame=sample_aspect_ratio", "-of", "csv=p=0", flvPath)
+		"-show_entries", "frame=sample_aspect_ratio", "-of", "json", flvPath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("ffprobe frame=sample_aspect_ratio: %v\n%s", err, out)
 	}
-	return strings.Fields(strings.TrimSpace(string(out)))
+	var result struct {
+		Frames []struct {
+			SAR string `json:"sample_aspect_ratio"`
+		} `json:"frames"`
+	}
+	if err := json.Unmarshal(out, &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Frames) == 0 {
+		t.Fatal("no decoded frames for SAR check")
+	}
+	sars := make([]string, 0, len(result.Frames))
+	for _, frame := range result.Frames {
+		sars = append(sars, frame.SAR)
+	}
+	return sars
 }

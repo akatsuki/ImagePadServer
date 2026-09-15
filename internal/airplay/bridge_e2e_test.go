@@ -18,8 +18,8 @@ import (
 // mirroring session uses, with UxPlay's RTP output replaced by an FFmpeg
 // sender. The H.264 and L16 relays re-packetize and re-clock the incoming
 // streams; the FFmpeg bridge then decodes the SDP session, re-encodes through
-// SelectVideoEncoder, and writes FLV. Probing the FLV confirms the relay to
-// bridge hand-off produced h264 720x1280 + AAC 48 kHz.
+// the CPU encoder, and writes FLV. The portrait content must retain its aspect
+// ratio inside the fixed 1920x1080 canvas, with AAC 48 kHz.
 func TestAirPlayRelayBridgeEndToEnd(t *testing.T) {
 	ffmpeg := strings.TrimSpace(os.Getenv("IMAGEPAD_FFMPEG"))
 	ffprobe := strings.TrimSpace(os.Getenv("IMAGEPAD_FFPROBE"))
@@ -58,7 +58,7 @@ func TestAirPlayRelayBridgeEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	encoder := video.SelectVideoEncoder(ctx, ffmpeg, video.EncoderLowLatency)
+	encoder := video.CPUVideoEncoder(video.EncoderLowLatency)
 	preset := video.ResolveQualityForUpload("1080", 20, 0)
 	flvPath := filepath.Join(dir, "out.flv")
 
@@ -123,11 +123,35 @@ func TestAirPlayRelayBridgeEndToEnd(t *testing.T) {
 	audioInfo := probe("a:0", "stream=codec_name,sample_rate,channels")
 	t.Logf("relay->bridge FLV video=%q audio=%q", videoInfo, audioInfo)
 
-	if !strings.Contains(videoInfo, "h264") || !strings.Contains(videoInfo, "720") || !strings.Contains(videoInfo, "1280") {
-		t.Fatalf("video stream = %q, want h264 720x1280", videoInfo)
+	if videoInfo != "h264,1920,1080,yuv420p" {
+		t.Fatalf("video stream = %q, want fixed h264 1920x1080 yuv420p canvas", videoInfo)
 	}
 	if !strings.Contains(audioInfo, "aac") || !strings.Contains(audioInfo, "48000") {
 		t.Fatalf("audio stream = %q, want aac 48000 Hz", audioInfo)
+	}
+	// Decode actual pixels to verify the portrait was fitted, not stretched.
+	frame, err := exec.CommandContext(ctx, ffmpeg, "-v", "error", "-ss", "2", "-i", flvPath,
+		"-frames:v", "1", "-vf", "scale=160:90", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1").Output()
+	if err != nil || len(frame) != 160*90*3 {
+		t.Fatalf("decode portrait sample: %v, bytes=%d", err, len(frame))
+	}
+	left, right := 160, -1
+	for x := 0; x < 160; x++ {
+		sum := 0
+		for y := 0; y < 90; y++ {
+			for c := 0; c < 3; c++ {
+				sum += int(frame[(y*160+x)*3+c])
+			}
+		}
+		if sum/(90*3) > 10 {
+			if left == 160 {
+				left = x
+			}
+			right = x
+		}
+	}
+	if left < 52 || left > 57 || right-left+1 < 48 || right-left+1 > 54 {
+		t.Fatalf("portrait content bounds %d..%d do not preserve 720:1280 aspect on fixed canvas", left, right)
 	}
 
 	// Close the relays so their input sockets are released for the next run.

@@ -762,7 +762,7 @@ func BuildBridgeArgs(sessionSDP, publishURL string, encoder video.VideoEncoderPr
 	// when the source rotates between portrait and landscape; a fixed canvas
 	// lets the decoder accept that input change without forcing the FLV encoder
 	// and downstream ingest to change dimensions mid-stream.
-	args = append(args, "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=black")
+	args = append(args, "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1")
 	args = append(args, encoder.FFmpegArgs(preset, "ultrafast")...)
 	args = append(args,
 		"-c:a", "aac",
