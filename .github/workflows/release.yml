@@ -40,7 +40,8 @@ jobs:
           brew install ffmpeg webp
           echo "IMAGEPAD_FFMPEG=$(command -v ffmpeg)" >> "$GITHUB_ENV"
           echo "IMAGEPAD_FFPROBE=$(command -v ffprobe)" >> "$GITHUB_ENV"
-      - run: go test ./...
+      # Media tests launch and clean up FFmpeg processes; isolate packages.
+      - run: go test -p 1 ./...
       - name: Check archive gate regressions
         run: python3 -m unittest discover -s scripts/tests -p 'test_*airplay*archive.py'
       - name: Fetch and validate exact runtime and corresponding sources
