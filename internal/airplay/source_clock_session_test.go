@@ -552,9 +552,6 @@ func TestSourceClockPublisherProcess(t *testing.T) {
 		count, _ = strconv.Atoi(strings.TrimSpace(string(data)))
 	}
 	count++
-	if err := os.WriteFile(counterPath, []byte(strconv.Itoa(count)), 0600); err != nil {
-		os.Exit(91)
-	}
 	if argsPath := os.Getenv("IMAGEPAD_TEST_SOURCE_CLOCK_PUBLISHER_ARGS"); argsPath != "" {
 		file, err := os.OpenFile(argsPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 		if err != nil {
@@ -565,6 +562,11 @@ func TestSourceClockPublisherProcess(t *testing.T) {
 		if writeErr != nil || closeErr != nil {
 			os.Exit(93)
 		}
+	}
+	// Tests use the counter as the child-started signal. Publish it only after
+	// the argument record is complete, so observers cannot see a partial start.
+	if err := os.WriteFile(counterPath, []byte(strconv.Itoa(count)), 0600); err != nil {
+		os.Exit(91)
 	}
 	if rawExitCode := os.Getenv("IMAGEPAD_TEST_SOURCE_CLOCK_PUBLISHER_EXIT_CODE"); rawExitCode != "" {
 		if generation := os.Getenv("IMAGEPAD_TEST_SOURCE_CLOCK_PUBLISHER_EXIT_GENERATION"); generation != "" && generation != commandArgValue(os.Args[1:], "--publisher-generation") {

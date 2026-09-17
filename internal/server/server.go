@@ -924,12 +924,15 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 	defer s.broadcastStateChanged()
 
 	var req struct {
-		URL          string `json:"url"`
-		Format       string `json:"format"`
-		Quality      string `json:"quality"`
-		MaxDimension string `json:"maxDimension"`
-		MaxMB        string `json:"maxMB"`
-		ShareMode    string `json:"shareMode"`
+		URL              string `json:"url"`
+		Format           string `json:"format"`
+		Quality          string `json:"quality"`
+		MaxDimension     string `json:"maxDimension"`
+		MaxMB            string `json:"maxMB"`
+		ShareMode        string `json:"shareMode"`
+		NiconicoComments struct {
+			Enabled bool `json:"enabled"`
+		} `json:"niconicoComments"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid URL upload request", http.StatusBadRequest)
@@ -944,9 +947,27 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 		"maxMB":        req.MaxMB,
 	}
 	opts := optionsFromValues(func(key string) string { return values[key] })
+	if req.NiconicoComments.Enabled && !s.videoPlayerEnabled() {
+		http.Error(w, "ニコニココメント付き動画は動画プレイヤー有効時のみ利用できます", http.StatusBadRequest)
+		return
+	}
 	if s.videoPlayerEnabled() {
 		if err := validateHTTPURL(req.URL); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.NiconicoComments.Enabled {
+			if !s.tryBeginIngest(ingestDownloading, req.URL) {
+				http.Error(w, "別の取り込み処理が進行中です", http.StatusConflict)
+				return
+			}
+			defer s.clearIngest()
+			state, err := s.processNiconicoCommentedURL(r, req.URL, false)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, state)
 			return
 		}
 		s.clearPublication()
@@ -1129,12 +1150,15 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 	defer s.broadcastStateChanged()
 
 	var req struct {
-		URL          string `json:"url"`
-		Format       string `json:"format"`
-		Quality      string `json:"quality"`
-		MaxDimension string `json:"maxDimension"`
-		MaxMB        string `json:"maxMB"`
-		ShareMode    string `json:"shareMode"`
+		URL              string `json:"url"`
+		Format           string `json:"format"`
+		Quality          string `json:"quality"`
+		MaxDimension     string `json:"maxDimension"`
+		MaxMB            string `json:"maxMB"`
+		ShareMode        string `json:"shareMode"`
+		NiconicoComments struct {
+			Enabled bool `json:"enabled"`
+		} `json:"niconicoComments"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid URL upload request", http.StatusBadRequest)
@@ -1148,9 +1172,27 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 		"maxMB":        req.MaxMB,
 	}
 	opts := optionsFromValues(func(key string) string { return values[key] })
+	if req.NiconicoComments.Enabled && !s.videoPlayerEnabled() {
+		http.Error(w, "ニコニココメント付き動画は動画プレイヤー有効時のみ利用できます", http.StatusBadRequest)
+		return
+	}
 	if s.videoPlayerEnabled() {
 		if err := validateHTTPURL(req.URL); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.NiconicoComments.Enabled {
+			if !s.tryBeginIngest(ingestDownloading, req.URL) {
+				http.Error(w, "別の取り込み処理が進行中です", http.StatusConflict)
+				return
+			}
+			defer s.clearIngest()
+			state, err := s.processNiconicoCommentedURL(r, req.URL, true)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, state)
 			return
 		}
 

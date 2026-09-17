@@ -13,8 +13,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  nico-compositor:
+    uses: ./.github/workflows/nico-compositor.yml
+
   build:
     name: Build release assets
+    needs: nico-compositor
     runs-on: macos-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -36,11 +40,16 @@ jobs:
           brew install ffmpeg webp
           echo "IMAGEPAD_FFMPEG=$(command -v ffmpeg)" >> "$GITHUB_ENV"
           echo "IMAGEPAD_FFPROBE=$(command -v ffprobe)" >> "$GITHUB_ENV"
-      - run: go test ./...
+      # Media tests launch and clean up FFmpeg processes; isolate packages.
+      - run: go test -p 1 ./...
       - name: Check archive gate regressions
         run: python3 -m unittest discover -s scripts/tests -p 'test_*airplay*archive.py'
       - name: Fetch and validate exact runtime and corresponding sources
         run: python3 scripts/prepare-airplay-release.py --inputs "$RUNNER_TEMP/airplay" --download --env-file "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with:
+          name: nico-compositor-payload
+          path: internal/nicorender/payload
       - run: sh scripts/build-release.sh
       - name: Build and verify GPU sidecar artifact
         run: |

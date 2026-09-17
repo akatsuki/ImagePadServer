@@ -2,8 +2,8 @@ package about
 
 const (
 	AppName        = "ImagePadServer"
-	Version        = "v1.7.1"
-	FileVersion    = "1.7.1.0"
+	Version        = "v1.8.0"
+	FileVersion    = "1.8.0.0"
 	Author         = "Akat / 赤月さん"
 	License        = "MIT License"
 	Copyright      = "Copyright (c) 2026 Akat / 赤月さん"
@@ -22,6 +22,14 @@ type OpenSourceNotice struct {
 }
 
 var OpenSourceNotices = []OpenSourceNotice{
+	{
+		Name:      "@xpadev-net/niconicomments",
+		Version:   "0.4.1",
+		License:   "MIT License",
+		Copyright: "Copyright (c) 2022 xpadev-net",
+		URL:       "https://github.com/xpadev-net/niconicomments",
+		Note:      niconicoCommentsLicense,
+	},
 	{
 		Name:      "github.com/skip2/go-qrcode",
 		Version:   "v0.0.0-20200617195104-da1b6568686e",

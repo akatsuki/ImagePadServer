@@ -28,21 +28,30 @@ jobs:
           echo "IMAGEPAD_FFMPEG=$(command -v ffmpeg)" >> "$GITHUB_ENV"
           echo "IMAGEPAD_FFPROBE=$(command -v ffprobe)" >> "$GITHUB_ENV"
           echo "IMAGEPAD_YTDLP=$(command -v yt-dlp)" >> "$GITHUB_ENV"
-      - run: go test ./...
+      # Media tests launch and clean up FFmpeg processes; isolate packages.
+      - run: go test -p 1 ./...
       - name: Verify AirPlay runtime archive contract tests
         run: python3 -m unittest discover -s scripts/tests -p test_verify_airplay_h264_archive.py
       - name: Verify AirPlay same-release source and license gate tests
         run: python3 -m unittest discover -s scripts/tests -p test_airplay_license_archive.py
       - run: go build -o imagepadserver ./cmd/imagepadserver
 
+  nico-compositor:
+    uses: ./.github/workflows/nico-compositor.yml
+
   cross-build:
     name: Cross Build
+    needs: nico-compositor
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - uses: actions/download-artifact@v4
+        with:
+          name: nico-compositor-payload
+          path: internal/nicorender/payload
       - run: sh ./scripts/build-release.sh
 
   gpu-sidecar:

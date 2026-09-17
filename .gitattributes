@@ -1,0 +1,2 @@
+# The compositor manifest verifies exact source bytes across Windows and Unix.
+/native/nico-compositor/main.cpp text eol=lf
