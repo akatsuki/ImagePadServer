@@ -1,0 +1,34 @@
+name: Nico compositor payload
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build static WARP helper and stage verified payload
+        shell: pwsh
+        run: ./scripts/build-nico-compositor.ps1 -Stage
+      - name: Check protocol, lifetimes, pixels and embedded extraction
+        shell: pwsh
+        run: |
+          python scripts/test-nico-compositor.py build/nico-compositor/nico-compositor.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/verify-nico-payload.py .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go test -tags nico_native_embedded ./internal/nicorender -count=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go test -tags nico_native_embedded ./internal/video -run 'TestNicoNative|TestNicoProductionSelection' -count=1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nico-compositor-payload
+          path: internal/nicorender/payload/*
+          if-no-files-found: error

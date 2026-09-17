@@ -48,6 +48,8 @@ const dashboardScriptUploadEvents = `
     window.addEventListener('blur', hideGlobalDropOverlay);
     imageInput.addEventListener('change', updateSelectedFileName);
     updateSelectedFileName();
+    if (imageURLInput) imageURLInput.addEventListener('input', updateNiconicoCommentsOption);
+    updateNiconicoCommentsOption();
 
     uploadForm.addEventListener('submit', async (event) => {
       event.preventDefault();
@@ -189,6 +191,34 @@ const dashboardScriptUploadEvents = `
         imageURLInput.focus();
       }
       if (typeof updateMediaNavigation === 'function') updateMediaNavigation();
+      updateNiconicoCommentsOption();
+    }
+
+    function isNiconicoWatchURL(raw) {
+      try {
+        const u = new URL(String(raw || '').trim());
+        if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+        const host = u.hostname.toLowerCase();
+        if (!['nicovideo.jp', 'www.nicovideo.jp', 'sp.nicovideo.jp', 'embed.nicovideo.jp', 'nico.ms'].includes(host)) return false;
+        const parts = u.pathname.split('/').filter(Boolean);
+        if (host === 'nico.ms' && parts.length === 1) return /^(?:(?:[a-z]{2})?\d+)$/.test(parts[0]);
+        if (parts.length !== 2) return false;
+        if (parts[0] === 'shorts') return /^ss\d+$/.test(parts[1]);
+        return parts[0] === 'watch' && /^(?:(?:[a-z]{2})?\d+)$/.test(parts[1]);
+      } catch (_) {
+        return false;
+      }
+    }
+
+    function updateNiconicoCommentsOption() {
+      if (!niconicoCommentsOption || !niconicoCommentsEnabled) return;
+      const nicoURL = isNiconicoWatchURL(imageURLInput && imageURLInput.value);
+      if (nicoURL && mediaIntent === 'image' && state.videoPlayerEnabled) {
+        setMediaIntent('video', false, false);
+      }
+      const supported = mediaIntent === 'video' && uploadMode === 'link' && nicoURL;
+      niconicoCommentsOption.hidden = !supported;
+      if (niconicoCommentsHint) niconicoCommentsHint.textContent = supported ? '取得時点のコメントを動画へ焼き込みます' : '';
     }
 
     function uploadFromFile(action) {
@@ -299,6 +329,7 @@ const dashboardScriptUploadEvents = `
           quality: formData.get('quality'),
           maxDimension: formData.get('maxDimension'),
           maxMB: formData.get('maxMB'),
+          niconicoComments: { enabled: !!(niconicoCommentsEnabled && niconicoCommentsEnabled.checked && mediaIntent === 'video' && uploadMode === 'link' && isNiconicoWatchURL(targetURL)) },
           shareMode: shareModeForUpload(state)
         })
       });

@@ -78,11 +78,34 @@ build_one() {
   if [ -n "$AIRPLAY_RUNTIME_BOOTSTRAP_B64" ]; then
     ldflags="$ldflags -X imagepadserver/internal/airplay.embeddedRuntimeBootstrapBase64=$AIRPLAY_RUNTIME_BOOTSTRAP_B64"
   fi
-  if [ "$goos" = "windows" ] && [ -n "$AIRPLAY_RUNTIME_BUILD_TAG" ]; then
-    CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -tags "$AIRPLAY_RUNTIME_BUILD_TAG" -trimpath -ldflags "$ldflags" -o "$out" "$ROOT_DIR/cmd/imagepadserver"
+  build_tags=""
+  if [ "$goos" = "windows" ]; then
+    build_tags="$AIRPLAY_RUNTIME_BUILD_TAG"
+    if [ "$goarch" = "amd64" ]; then
+      prepare_nico_compositor
+      if [ -n "$build_tags" ]; then
+        build_tags="$build_tags,nico_native_embedded"
+      else
+        build_tags="nico_native_embedded"
+      fi
+    fi
+  fi
+  if [ -n "$build_tags" ]; then
+    CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -tags "$build_tags" -trimpath -ldflags "$ldflags" -o "$out" "$ROOT_DIR/cmd/imagepadserver"
   else
     CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath -ldflags "$ldflags" -o "$out" "$ROOT_DIR/cmd/imagepadserver"
   fi
+}
+
+prepare_nico_compositor() {
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      pwsh -NoProfile -File "$ROOT_DIR/scripts/build-nico-compositor.ps1" -Stage
+      ;;
+  esac
+  # Cross builds must stage a Windows-tested helper first. Source and payload
+  # hashes prevent silently shipping a stale helper with a new protocol.
+  python3 "$ROOT_DIR/scripts/verify-nico-payload.py" "$ROOT_DIR"
 }
 
 pack_windows_zip() {

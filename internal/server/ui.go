@@ -100,6 +100,13 @@ const indexHTML = `<!doctype html>
                       <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M8 4h8m-6 0a2 2 0 0 1 4 0m-6 0H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-2m-9 5h6m-6 4h8m-8 4h5"/></svg>
                     </button>
                   </div>
+                  <div class="niconico-comments-option" id="niconicoCommentsOption" hidden>
+                    <label class="niconico-comments-toggle" for="niconicoCommentsEnabled">
+                      <span>ニコニココメントを焼き込む</span>
+                      <input type="checkbox" id="niconicoCommentsEnabled" role="switch" checked aria-describedby="niconicoCommentsHint">
+                    </label>
+                    <span class="niconico-comments-hint" id="niconicoCommentsHint"></span>
+                  </div>
                 </div>
                 <div class="upload-panel" id="obsUploadPanel" role="tabpanel" aria-labelledby="obsModeButton" hidden>
                   <div class="obs-grid">

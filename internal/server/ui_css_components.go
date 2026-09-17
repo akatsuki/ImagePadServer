@@ -457,6 +457,57 @@ const dashboardCSSComponents = `
       font-weight: 800;
       color: var(--ink);
     }
+    .niconico-comments-option {
+      margin-top: 12px;
+    }
+    .niconico-comments-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      min-height: 44px;
+      cursor: pointer;
+    }
+    .niconico-comments-toggle input {
+      appearance: none;
+      position: relative;
+      flex: 0 0 44px;
+      width: 44px;
+      height: 26px;
+      min-height: 26px;
+      margin: 0;
+      padding: 0;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--line);
+      cursor: pointer;
+    }
+    .niconico-comments-toggle input::before {
+      content: '';
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      left: 3px;
+      top: 3px;
+      border-radius: 50%;
+      background: #fff;
+    }
+    .niconico-comments-toggle input:checked {
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+    .niconico-comments-toggle input:checked::before {
+      transform: translateX(18px);
+    }
+    .niconico-comments-toggle input:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 3px;
+    }
+    .niconico-comments-hint {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+    }
     .link-input-row {
       display: flex;
       gap: 8px;

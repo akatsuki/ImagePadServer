@@ -548,6 +548,26 @@ func EnqueueUploadedVideoForID(sourcePath, outDir, id, title string, preset Qual
 	})
 }
 
+// EnqueueNicoCommentedVideoForID queues the copy-remux HLS step for an
+// already-commented MP4. The queue must never encode this MP4 a second time.
+func EnqueueNicoCommentedVideoForID(sourcePath, outDir, id, title string, totalSeconds int) string {
+	return enqueueConversion(&queueJob{
+		QueueItem: QueueItem{
+			ID:        queueID(),
+			MediaID:   id,
+			Title:     fallbackTitle(title, "動画（コメント付き）"),
+			Kind:      "video",
+			Status:    "pending",
+			Message:   "変換待ち",
+			CreatedAt: time.Now(),
+		},
+		OutDir:       outDir,
+		SourcePath:   sourcePath,
+		Mode:         "niconico-commented",
+		TotalSeconds: totalSeconds,
+	})
+}
+
 func EnqueueSoundCloudForID(audioPath, artworkPath, outDir, id, title string, preset QualityPreset, totalSeconds int) string {
 	return enqueueConversion(&queueJob{
 		QueueItem: QueueItem{
@@ -603,6 +623,10 @@ func GeneratedFiles(outDir, id string) []string {
 	mp4 := filepath.Join(outDir, MP4File)
 	if fileExists(mp4) {
 		files = append(files, mp4)
+	}
+	snapshot := filepath.Join(outDir, "niconico-snapshot-"+safeID(id)+".json")
+	if id != "" && fileExists(snapshot) {
+		files = append(files, snapshot)
 	}
 	return files
 }
@@ -750,6 +774,8 @@ func runQueueJob(job *queueJob) {
 		err = runSoundCloudHLS(ctx, job.OutDir, ffmpeg, job.SourcePath, job.ArtworkPath, job.MediaID, job.Preset)
 	case "audio":
 		err = RunAudioVisualizerHLS(ctx, job.OutDir, ffmpeg, *job.Audio, job.MediaID, job.Preset)
+	case "niconico-commented":
+		err = runNicoHLSCopy(ctx, job.OutDir, ffmpeg, job.SourcePath, job.MediaID)
 	default:
 		err = runUploadedHLS(ctx, job.OutDir, ffmpeg, job.SourcePath, job.MediaID, job.Preset)
 	}
@@ -804,6 +830,17 @@ func runUploadedHLS(ctx context.Context, outDir, ffmpeg, sourcePath, id string, 
 		}
 		return runInDirContext(ctx, outDir, ffmpeg, uploadedHLSArgsWithEncoder(sourcePath, id, vod, encoder)...)
 	})
+}
+
+func runNicoHLSCopy(ctx context.Context, outDir, ffmpeg, sourcePath, id string) error {
+	args := []string{
+		"-y", "-i", sourcePath,
+		"-map", "0:v:0", "-map", "0:a:0?", "-c:v", "copy", "-c:a", "copy",
+		"-f", "hls", "-hls_time", "4", "-hls_list_size", "0",
+		"-hls_playlist_type", "vod", "-hls_flags", "independent_segments",
+		"-hls_segment_filename", segmentPattern(id), playlistName(id),
+	}
+	return runInDirContext(ctx, outDir, ffmpeg, args...)
 }
 
 func uploadedHLSArgsWithEncoder(sourcePath, id string, preset QualityPreset, encoder VideoEncoderProfile) []string {

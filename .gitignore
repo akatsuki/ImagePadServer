@@ -2,6 +2,7 @@
 /dist/
 /build/
 /internal/airplay/payload/
+/internal/nicorender/payload/
 /.DS_Store
 /.idea/
 /.vscode/

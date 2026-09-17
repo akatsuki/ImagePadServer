@@ -13,8 +13,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  nico-compositor:
+    uses: ./.github/workflows/nico-compositor.yml
+
   build:
     name: Build release assets
+    needs: nico-compositor
     runs-on: macos-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -41,6 +45,10 @@ jobs:
         run: python3 -m unittest discover -s scripts/tests -p 'test_*airplay*archive.py'
       - name: Fetch and validate exact runtime and corresponding sources
         run: python3 scripts/prepare-airplay-release.py --inputs "$RUNNER_TEMP/airplay" --download --env-file "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with:
+          name: nico-compositor-payload
+          path: internal/nicorender/payload
       - run: sh scripts/build-release.sh
       - name: Build and verify GPU sidecar artifact
         run: |
