@@ -11,6 +11,7 @@ typedef enum {
   SOURCE_CLOCK_REJECT_ACTION_UNRECOVERABLE = 2,  /* exit 21, no restart */
 } SourceClockRejectAction;
 
+/* Per-publisher shared state; not internally synchronized: the caller must guard it with a mutex. Re-init per publisher, not per connection. */
 typedef struct {
   uint32_t consecutive;
   int64_t first_us;
