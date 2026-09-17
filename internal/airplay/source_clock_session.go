@@ -471,6 +471,20 @@ func (m *Manager) startSourceClockChildren(parent context.Context, sessionID, pu
 		os.RemoveAll(tempDir)
 		return fmt.Errorf("wait source-clock publisher readiness: %w", err)
 	}
+	videoViewPaths, pathErr := airplaycontract.VideoViewPathsForReady(paths.Ready)
+	var videoViewErr error
+	if pathErr == nil {
+		videoViewErr = m.initializeVideoView(videoViewPaths, sessionID, publisherGeneration)
+	}
+	if pathErr != nil || videoViewErr != nil {
+		cancel()
+		_ = pipeline.stopAndWaitDone(pipelineDone, directPublisherStopNormal, 2*time.Second)
+		os.RemoveAll(tempDir)
+		if pathErr != nil {
+			return fmt.Errorf("initialize video view paths: %w", pathErr)
+		}
+		return fmt.Errorf("initialize video view state: %w", videoViewErr)
+	}
 	videoEndpoint := fmt.Sprintf("127.0.0.1:%d", ready.VideoListenPort)
 	audioEndpoint := fmt.Sprintf("127.0.0.1:%d", ready.AudioListenPort)
 	if observer != nil {

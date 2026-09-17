@@ -182,6 +182,8 @@ const indexHTML = `<!doctype html>
                     <div class="quality-row airplay-quality-options" id="airplayQualityRow" hidden>
                       <label for="airplayQualityMode"><span>AirPlay画質</span><select id="airplayQualityMode"><option value="auto">Auto</option><option value="360">360p</option><option value="720">720p</option><option value="1080">1080p</option></select></label>
                       <p class="airplay-quality-status" id="airplayQualityStatus" role="status" aria-live="polite"></p>
+                      <label class="switch" for="airplayVideoViewCover" title="映像を画面いっぱいに表示し、余白をクロップします"><input id="airplayVideoViewCover" type="checkbox" role="switch"><span class="switch-slider" aria-hidden="true"></span><span>画面を埋める（クロップ）</span></label>
+                      <p class="airplay-video-view-status" id="airplayVideoViewStatus" role="status" aria-live="polite"></p>
                     </div>
                     <label class="obs-latency-option" id="obsLatencyOption" hidden>
                       <span>OBSレイテンシ</span>

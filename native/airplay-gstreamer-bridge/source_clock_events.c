@@ -345,6 +345,7 @@ bool source_clock_event_write_publisher_ready(SourceClockEventWriter *writer,
   }
   if (!append_common_event(&event, writer, "publisher-ready", timestamp) ||
       !json_buffer_append_literal(&event, ",\"protocolVersion\":1") ||
+      !json_buffer_append_literal(&event, ",\"videoViewProtocol\":1") ||
       !json_buffer_append_literal(&event, ",\"videoListenPort\":") ||
       !json_buffer_append_int(&event, video_listen_port) ||
       !json_buffer_append_literal(&event, ",\"audioListenPort\":") ||

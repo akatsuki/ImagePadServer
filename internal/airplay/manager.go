@@ -73,6 +73,7 @@ type Manager struct {
 	deliveryActiveGeneration     uint64
 	deliveryActivePublishURL     string
 	deliveryActiveOutput         DirectOutputConfig
+	videoView                    *VideoViewController
 	stopInitiator                string
 	onChange                     func()
 }
@@ -1293,6 +1294,7 @@ func (m *Manager) finishMonitorWithCallback(done chan struct{}, tempDir string, 
 	m.deliveryActiveGeneration = 0
 	m.deliveryActivePublishURL = ""
 	m.deliveryActiveOutput = DirectOutputConfig{}
+	m.videoView = nil
 	m.stopInitiator = ""
 	m.status.Running = false
 	m.status.ReceiverRunning = false

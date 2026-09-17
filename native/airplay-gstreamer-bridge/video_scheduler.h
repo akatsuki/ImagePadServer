@@ -14,6 +14,9 @@ typedef struct SourceClockVideoFrame {
   uint64_t id;
   uint64_t pts_ns;
   void *opaque;
+  /* Display geometry revision/mode used to produce opaque. */
+  uint64_t view_revision;
+  uint32_t view_mode;
 } SourceClockVideoFrame;
 
 typedef enum SourceClockVideoTickKind {

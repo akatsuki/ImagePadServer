@@ -323,6 +323,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/airplay/end", s.admin(s.handleAirPlayEnd))
 	mux.HandleFunc("/api/airplay/retry", s.admin(s.handleAirPlayRetry))
 	mux.HandleFunc("/api/airplay/quality", s.admin(s.handleAirPlayQuality))
+	mux.HandleFunc("/api/airplay/video-view", s.admin(s.handleAirPlayVideoView))
 	mux.HandleFunc("/api/obs/key", s.admin(s.handleOBSKey))
 	mux.HandleFunc("/api/obs/latency", s.admin(s.handleOBSLatency))
 	mux.HandleFunc("/api/history", s.admin(s.handleHistory))
@@ -3480,6 +3481,7 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 		state := s.stateWithMedia(r, current, upnpResult, tunnelStatus, videoPlayer, obsStatus, imageURL, videoURL, hlsURL, shareURL, shareURLLabel, publicImageURL, publicVideoURL, publicHLSURL, localImageURL, previewImageURL)
 		state["airplay"] = airplayStatus
 		state["airplayQuality"] = s.airplayQualityState()
+		state["airplayVideoView"] = s.airplayVideoViewState()
 		return withResolvedShareURLs(state)
 	}
 	if imageURL == "" {
@@ -3527,6 +3529,7 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 		"obs":               obsStatus,
 		"airplay":           airplayStatus,
 		"airplayQuality":    s.airplayQualityState(),
+		"airplayVideoView":  s.airplayVideoViewState(),
 		"pairing":           s.pairingState(),
 		"videoQueue":        s.videoQueueState(),
 		"ytdlpAuth":         ytdlpauth.Status(),
@@ -3567,6 +3570,7 @@ func (s *Server) stateWithMedia(r *http.Request, current *library.CurrentImage, 
 		"videoPlayer":       videoPlayer,
 		"videoQuality":      s.videoQualityState(),
 		"obs":               obsStatus,
+		"airplayVideoView":  s.airplayVideoViewState(),
 		"pairing":           s.pairingState(),
 		"videoQueue":        s.videoQueueState(),
 		"ytdlpAuth":         ytdlpauth.Status(),

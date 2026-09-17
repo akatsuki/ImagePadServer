@@ -48,6 +48,7 @@ const dashboardScriptAirPlay = `
     function applyAirPlay(data) {
       const quality = arguments.length > 1 ? arguments[1] : null;
       if (quality) state.airplayQuality = quality;
+      applyAirPlayVideoView(state.airplayVideoView);
       applyAirPlayQuality(state.airplayQuality);
       if (!airplayCard) return;
       if (!data || !data.enabled) {

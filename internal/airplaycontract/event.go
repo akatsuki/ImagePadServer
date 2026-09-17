@@ -10,6 +10,7 @@ type Event struct {
 	Event                   string    `json:"event"`
 	At                      time.Time `json:"at"`
 	ProtocolVersion         int       `json:"protocolVersion,omitempty"`
+	VideoViewProtocol       int       `json:"videoViewProtocol,omitempty"`
 	VideoListenPort         int       `json:"videoListenPort,omitempty"`
 	AudioListenPort         int       `json:"audioListenPort,omitempty"`
 	PipelineStartAccepted   bool      `json:"pipelineStartAccepted,omitempty"`

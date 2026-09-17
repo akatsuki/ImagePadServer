@@ -172,6 +172,7 @@ const dashboardScriptUploadEvents = `
       obsUploadPanel.hidden = !obsMode;
       airplayUploadPanel.hidden = !airplayMode;
       if (typeof applyAirPlayQuality === 'function') applyAirPlayQuality(state.airplayQuality);
+      if (typeof applyAirPlayVideoView === 'function') applyAirPlayVideoView(state.airplayVideoView);
       updateUploadControlsVisibility();
       imageInput.required = fileMode;
       imageURLInput.required = linkMode;
