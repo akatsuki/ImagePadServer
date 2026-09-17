@@ -74,6 +74,7 @@ add_library(airplay_bridge_core STATIC
   source_clock_video_watermark.c
   source_clock_video_proof.c
   source_clock_timeline.c
+  source_clock_reject_policy.c
   source_clock_reader.c
   source_clock_audio_bin.c
   source_clock_fixed_pcm_audio.c
@@ -272,6 +273,11 @@ if(BUILD_TESTING)
   target_include_directories(test_source_clock_reader PRIVATE ${GST_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR})
   target_link_libraries(test_source_clock_reader PRIVATE airplay_bridge_core ${GST_LIBRARIES})
   add_test(NAME airplay_source_clock_reader COMMAND $<TARGET_FILE:test_source_clock_reader>)
+
+  add_executable(test_source_clock_reject_policy tests/test_source_clock_reject_policy.c)
+  target_include_directories(test_source_clock_reject_policy PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  target_link_libraries(test_source_clock_reject_policy PRIVATE airplay_bridge_core)
+  add_test(NAME airplay_source_clock_reject_policy COMMAND $<TARGET_FILE:test_source_clock_reject_policy>)
 
   add_executable(test_source_clock_audio_frame_clock tests/test_source_clock_audio_frame_clock.c)
   target_include_directories(test_source_clock_audio_frame_clock PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
