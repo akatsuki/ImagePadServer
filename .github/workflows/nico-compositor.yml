@@ -14,6 +14,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
       - name: Build static WARP helper and stage verified payload
         shell: pwsh
         run: ./scripts/build-nico-compositor.ps1 -Stage
