@@ -230,6 +230,11 @@ func TestUIAirPlayPreviewRetriesMutedAutoplay(t *testing.T) {
 		`video.addEventListener('loadedmetadata', () => requestPreviewPlayback(video))`,
 		`video.addEventListener('canplay', () => requestPreviewPlayback(video))`,
 		`requestPreviewPlayback(video);`,
+		`function scheduleOBSPreviewRetry(video, src)`,
+		`window.Hls.Events.MANIFEST_PARSED`,
+		`window.Hls.Events.ERROR`,
+		`data.fatal`,
+		`scheduleOBSPreviewRetry(video, obsPreviewURL)`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("AirPlay preview autoplay retry missing %q", want)
@@ -824,7 +829,7 @@ func TestOBSConnectionDetailsUIAndUnifiedRTSPURL(t *testing.T) {
 		`推定ラグ</th>`,
 		`renderOBSConnections`,
 		`https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js`,
-		`function attachPreviewHLS(video, src)`,
+		`function attachPreviewHLS(video, src, options)`,
 		`window.Hls && window.Hls.isSupported()`,
 		`obsPreviewURL !== obsMediaURL`,
 		`最高画質HLS（10s+）`,

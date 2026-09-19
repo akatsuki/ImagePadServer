@@ -452,15 +452,16 @@ func TestOBSActiveSessionContractFreezesRunningTransportAndUsesDesiredSettingsFo
 
 	hlsRequests := 0
 	hls := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got, want := r.URL.Path, "/obs_active/index.m3u8"; got != want {
-			t.Fatalf("proxied path = %q, want %q", got, want)
-		}
-		hlsRequests++
-		if hlsRequests > 1 {
-			http.Error(w, "blocking live playlist", http.StatusInternalServerError)
+		if r.URL.Path == "/obs_active/index.m3u8" {
+			hlsRequests++
+			_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES\n#EXT-X-PART-INF:PART-TARGET=0.333\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXT-X-PART:DURATION=0.333,URI=\"part.m4s\"\n#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"preload.m4s\"\n"))
 			return
 		}
-		_, _ = w.Write([]byte("#EXTM3U\n"))
+		if strings.HasSuffix(r.URL.Path, "/init.mp4") || strings.HasSuffix(r.URL.Path, "/part.m4s") || strings.HasSuffix(r.URL.Path, "/preload.m4s") {
+			_, _ = w.Write([]byte("fragment"))
+			return
+		}
+		http.NotFound(w, r)
 	}))
 	t.Cleanup(hls.Close)
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -518,8 +519,8 @@ func TestOBSActiveSessionContractFreezesRunningTransportAndUsesDesiredSettingsFo
 	if !manager.ProxyLLHLS(recorder, request, "active", "current.m3u8") {
 		t.Fatal("active RTSP contract must proxy its MediaMTX HLS artifact")
 	}
-	if got := recorder.Body.String(); got != "#EXTM3U\n" {
-		t.Fatalf("proxied body = %q", got)
+	if got := recorder.Body.String(); !strings.Contains(got, "#EXT-X-MAP:URI=\"init.mp4\"") {
+		t.Fatalf("proxied body is not a playable HLS playlist: %q", got)
 	}
 	if !manager.HLSPreviewReady("active", "current.m3u8") {
 		t.Fatal("active RTSP contract must use its MediaMTX HLS readiness")

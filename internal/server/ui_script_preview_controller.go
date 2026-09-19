@@ -9,6 +9,7 @@ const dashboardScriptPreviewController = `
       let obsMediaID = '';
       let obsMediaURL = '';
       let previewHLS = null;
+      let previewRetryTimer = null;
       let previewVisible = true;
 
       function initPreviewController(nextDeps) {
@@ -21,6 +22,13 @@ const dashboardScriptPreviewController = `
         if (previewPanel) previewPanel.hidden = !previewVisible;
       }
 
+      function cancelOBSPreviewRetry() {
+        if (previewRetryTimer) {
+          clearTimeout(previewRetryTimer);
+          previewRetryTimer = null;
+        }
+      }
+
       function destroyPreviewHLS() {
         if (!previewHLS) return;
         try {
@@ -30,7 +38,8 @@ const dashboardScriptPreviewController = `
         previewHLS = null;
       }
 
-      function attachPreviewHLS(video, src) {
+      function attachPreviewHLS(video, src, options) {
+        options = options || {};
         destroyPreviewHLS();
         if (window.Hls && window.Hls.isSupported()) {
           previewHLS = new window.Hls({
@@ -48,6 +57,14 @@ const dashboardScriptPreviewController = `
             maxBufferLength: 6,
             backBufferLength: 6
           });
+          if (options.playOnManifest) {
+            previewHLS.on(window.Hls.Events.MANIFEST_PARSED, () => requestPreviewPlayback(video));
+          }
+          if (options.onFatal) {
+            previewHLS.on(window.Hls.Events.ERROR, (event, data) => {
+              if (data && data.fatal) options.onFatal();
+            });
+          }
           previewHLS.loadSource(src);
           previewHLS.attachMedia(video);
           return true;
@@ -61,6 +78,7 @@ const dashboardScriptPreviewController = `
 
       function releaseIfLeavingVideo(nextMode) {
         if (nextMode !== mode) {
+          cancelOBSPreviewRetry();
           destroyPreviewHLS();
         }
       }
@@ -140,6 +158,21 @@ const dashboardScriptPreviewController = `
         }
       }
 
+      function scheduleOBSPreviewRetry(video, src) {
+        const preview = deps.preview;
+        if (previewRetryTimer || mode !== 'obs' || obsMediaURL !== src || !preview || !preview.contains(video)) return;
+        previewRetryTimer = setTimeout(() => {
+          previewRetryTimer = null;
+          if (mode !== 'obs' || obsMediaURL !== src || !preview.contains(video)) return;
+          if (attachPreviewHLS(video, src, {
+            playOnManifest: true,
+            onFatal: () => scheduleOBSPreviewRetry(video, src)
+          })) {
+            requestPreviewPlayback(video);
+          }
+        }, 500);
+      }
+
       function renderOBSPreview(data, context) {
         const preview = deps.preview;
         if (!preview) return;
@@ -148,6 +181,7 @@ const dashboardScriptPreviewController = `
         const obsID = obs.mediaID || nextCurrentID;
         const obsPreviewURL = sameOriginPreviewURL(obs.previewURL || '');
         if (obsPreviewURL && (mode !== 'obs' || obsID !== obsMediaID || obsPreviewURL !== obsMediaURL || !preview.querySelector('video'))) {
+          cancelOBSPreviewRetry();
           preview.classList.add('obs-preview');
           preview.innerHTML = '';
           const video = document.createElement('video');
@@ -158,7 +192,10 @@ const dashboardScriptPreviewController = `
           video.playsInline = true;
           video.addEventListener('loadedmetadata', () => requestPreviewPlayback(video));
           video.addEventListener('canplay', () => requestPreviewPlayback(video));
-          if (attachPreviewHLS(video, obsPreviewURL)) {
+          if (attachPreviewHLS(video, obsPreviewURL, {
+            playOnManifest: true,
+            onFatal: () => scheduleOBSPreviewRetry(video, obsPreviewURL)
+          })) {
             preview.appendChild(video);
             requestPreviewPlayback(video);
           } else {
@@ -178,6 +215,7 @@ const dashboardScriptPreviewController = `
           state.obsPreviewURL = obsPreviewURL;
         }
         if (!obsPreviewURL && mode !== 'obs-waiting') {
+          cancelOBSPreviewRetry();
           destroyPreviewHLS();
           preview.classList.add('obs-preview');
           preview.innerHTML = '<div class="empty">HLSプレビューを準備中です</div>';
@@ -360,6 +398,7 @@ const dashboardScriptPreviewController = `
       }
 
       function resetOBSPreviewController() {
+        cancelOBSPreviewRetry();
         destroyPreviewHLS();
         const preview = deps.preview;
         if (preview && mode === 'obs') {
@@ -380,6 +419,7 @@ const dashboardScriptPreviewController = `
       }
 
       function resetPreviewController() {
+        cancelOBSPreviewRetry();
         destroyPreviewHLS();
         mode = '';
         mediaID = '';

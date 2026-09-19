@@ -29,6 +29,10 @@ func TestDirectBackendHLSUsesCommittedRouterNotOldRuntime(t *testing.T) {
 				fmt.Fprint(w, `{"items":[]}`)
 				return
 			}
+			if strings.HasSuffix(req.URL.Path, "/index.m3u8") {
+				fmt.Fprintf(w, "#EXTM3U\n# %s\n#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES\n#EXT-X-PART-INF:PART-TARGET=0.333\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXT-X-PART:DURATION=0.333,URI=\"part.m4s\"\n#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"preload.m4s\"\n", marker)
+				return
+			}
 			fmt.Fprint(w, marker)
 		}))
 		t.Cleanup(server.Close)
@@ -43,7 +47,9 @@ func TestDirectBackendHLSUsesCommittedRouterNotOldRuntime(t *testing.T) {
 	gate := newRTSPGate(rtspGateConfig{BackendRTSPPort: 49200})
 	gate.backendRouter = router
 	m := &Manager{directPublishing: true, directHandle: DirectSessionHandle{ID: "session", Generation: 4}, listenerGeneration: 4,
-		current: &Session{ID: "session"}, mtx: oldRuntime, rtspGate: gate}
+		current: &Session{ID: "session", ActiveContract: &OBSActiveSessionContract{
+			SessionID: "session", LatencyProfile: NormalizeLatencyProfile(LatencyModeRTSPUltra),
+		}}, mtx: oldRuntime, rtspGate: gate}
 	m.status.Connected = true
 	candidate := active
 	candidate.generation = 2
@@ -55,7 +61,7 @@ func TestDirectBackendHLSUsesCommittedRouterNotOldRuntime(t *testing.T) {
 	}
 	read := func(want, ip string) {
 		rec := httptest.NewRecorder()
-		if !m.ProxyLLHLS(rec, httptest.NewRequest(http.MethodGet, "/public/session.m3u8", nil), "session", "index.m3u8") || rec.Body.String() != want {
+		if !m.ProxyLLHLS(rec, httptest.NewRequest(http.MethodGet, "/public/session.m3u8", nil), "session", "index.m3u8") || !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("public HLS route = %q want %q", rec.Body.String(), want)
 		}
 		if !m.HLSPreviewReady("session", "index.m3u8") {
@@ -104,4 +110,42 @@ func TestDirectBackendHLSUsesCommittedRouterNotOldRuntime(t *testing.T) {
 	m.directHandle.Generation--
 	router.markTerminal()
 	assertUnavailable()
+}
+
+func TestDirectHLSPreviewWaitsForPlayableHLS(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if strings.HasPrefix(req.URL.Path, "/v3/paths/get/") {
+			fmt.Fprint(w, `{"ready":true}`)
+			return
+		}
+		http.NotFound(w, req)
+	}))
+	t.Cleanup(server.Close)
+	u, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := newMediaMTXRuntime("unused", mediaMTXSessionConfig{
+		Path:  "obs_session",
+		Ports: mediaMTXPorts{API: port, HLS: port},
+	})
+	manager := &Manager{
+		directPublishing:   true,
+		directHandle:       DirectSessionHandle{ID: "session", Generation: 4},
+		listenerGeneration: 4,
+		current: &Session{ID: "session", ActiveContract: &OBSActiveSessionContract{
+			SessionID:      "session",
+			LatencyProfile: NormalizeLatencyProfile(LatencyModeRTSPUltra),
+		}},
+		mtx: runtime,
+	}
+	manager.status.Connected = true
+
+	if manager.HLSPreviewReady("session", "index.m3u8") {
+		t.Fatal("preview became ready from RTSP path readiness without a playable HLS artifact")
+	}
 }

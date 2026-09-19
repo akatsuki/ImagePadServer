@@ -151,6 +151,61 @@ func TestDirectCandidateDeliveryValidationCannotPromoteWithoutFinalCommit(t *tes
 	}
 }
 
+func TestDirectCandidateDeliveryHLSWaitsForPlayableHLS(t *testing.T) {
+	c, plan, cancel := directReconfigureFixture(t)
+	defer cancel()
+	plan.Profile = NormalizeLatencyProfile(LatencyModeHLS)
+	plan.RequestID = "change-hls"
+	a, err := c.PrepareDirectReconfigure(1, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proc := newFakeProcess()
+	proc.exitOnStop = true
+	a.backend.runtime.startProcess = func(context.Context, string, string) (managedProcess, error) { return proc, nil }
+	a.backend.runtime.checkHealth = func(context.Context, string) error { return nil }
+	t.Cleanup(func() {
+		proc.finish(nil)
+		_ = c.manager.stopOwnedDirectBackend(a.backend.runtime, time.Second)
+	})
+	if _, err := c.StartDirectReconfigureBackend(a); err != nil {
+		t.Fatal(err)
+	}
+	a.backend.runtime.httpClient = &http.Client{Transport: directRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.String() == a.backend.runtime.apiBaseURL()+"/v3/paths/get/"+a.backend.runtime.cfg.Path {
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"ready":true}`)), Header: make(http.Header)}, nil
+		}
+		return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
+	})}
+
+	now := time.Now().UTC()
+	event := func(name string, generation, sequence uint64) airplaycontract.Event {
+		running := uint64(1)
+		return airplaycontract.Event{Schema: 2, SessionID: c.active.SessionID, PublisherGeneration: generation, Event: name, At: now,
+			SourceSessionGeneration: 4, SourceVideoSequence: &sequence, RunningTimeNS: &running, VideoDecoded: name == "video-decoded",
+			ProtocolVersion: 1, VideoListenPort: 5000, AudioListenPort: 5001, PipelineStartAccepted: true}
+	}
+	watermark := uint64(100)
+	old := []airplaycontract.Event{{Schema: 2, SessionID: c.active.SessionID, PublisherGeneration: 1, Event: "video-watermark-final", At: now,
+		SourceSessionGeneration: 4, SourceVideoSequence: &watermark}}
+	candidate := []airplaycontract.Event{event("publisher-ready", 2, 0), event("video-input-idr", 2, 101), event("video-decoded", 2, 101), event("video-encoded-idr", 2, 101)}
+	for _, event := range candidate {
+		c.observer.ObservePublisher(event)
+	}
+	c.observer.CompletePublisher(airplaycontract.PublisherCompletion{Artifacts: c.active.ArtifactPaths, Started: true, ExitConfirmed: true, CompletedAt: now})
+
+	d := &directCandidateDelivery{owner: c, attempt: a, ffprobe: "probe", command: func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestDirectBackendOutputHelperProcess$")
+		cmd.Env = append(os.Environ(), "IMAGEPAD_TEST_BACKEND_OUTPUT=good")
+		return cmd
+	}}
+	ctx, stop := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer stop()
+	if err := d.Validate(ctx, old, candidate); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("HLS candidate validation err=%v, want deadline while HLS is unavailable", err)
+	}
+}
+
 func TestDirectCandidateDeliveryRevocationAfterValidationNeverPromotes(t *testing.T) {
 	for _, cause := range []string{"abort", "deadline", "session-stop"} {
 		t.Run(cause, func(t *testing.T) {

@@ -1406,24 +1406,22 @@ func (m *Manager) HLSPreviewReady(id, name string) bool {
 	direct := m.directPublishing
 	contract, hasContract := m.currentSessionContractLocked()
 	m.mu.Unlock()
-	transport := contract.LatencyProfile.Transport
+	profile := contract.LatencyProfile
 	if !hasContract {
-		transport = m.currentLatency().Transport
+		profile = m.currentLatency()
 	}
+	transport := profile.Transport
 	if direct || transport == LatencyModeLLHLS || transport == LatencyModeRTSPT {
 		if !active || runtime == nil {
 			return false
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+		ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
 		defer cancel()
-		// RTSP sessions use MediaMTX's standard MPEG-TS HLS muxer. A live
-		// playlist request may block until the next segment is available, so
-		// probing the HLS URL here can keep the UI in "preparing" forever and
-		// creates throwaway HLS sessions on every state poll. The MediaMTX path
-		// readiness already proves that the H264/AAC tracks are established;
-		// let the preview player wait for the first segment instead.
+		// A MediaMTX path can be publisher-ready before its HLS playlist and
+		// first media artifacts exist. Expose the browser preview only after the
+		// exact HLS artifacts required by the active profile are playable.
 		if direct || transport == LatencyModeRTSPT {
-			return runtime.pathReady(ctx)
+			return runtime.hlsReady(ctx, profile)
 		}
 		return runtime.hlsArtifactReady(ctx, mediaMTXHLSName(id, name))
 	}
