@@ -2,7 +2,6 @@ package airplay
 
 import (
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 
@@ -21,9 +20,5 @@ func WriteVideoViewControl(path string, request VideoViewRequest, sessionID stri
 	if len(content) > 4096 || strings.ContainsAny(sessionID, "\r\n") {
 		return fmt.Errorf("invalid video view control")
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(content), 0600); err != nil {
-		return err
-	}
-	return atomicReplaceVideoViewFile(tmp, path)
+	return atomicWriteVideoViewFile(path, []byte(content))
 }

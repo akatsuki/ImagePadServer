@@ -70,6 +70,14 @@ func (s *Server) handleAirPlayVideoView(w http.ResponseWriter, r *http.Request) 
 				http.Error(w, "AirPlay video view state is stale", http.StatusConflict)
 			case errors.Is(err, airplay.ErrVideoViewInvalid):
 				http.Error(w, "invalid AirPlay video view request", http.StatusBadRequest)
+			case errors.Is(err, airplay.ErrVideoViewPersistence):
+				w.Header().Set("Content-Type", "application/json; charset=utf-8")
+				w.WriteHeader(http.StatusInternalServerError)
+				writeJSON(w, map[string]interface{}{
+					"ok":               false,
+					"error":            "AirPlay video view was applied live but could not be persisted",
+					"airplayVideoView": state,
+				})
 			default:
 				http.Error(w, "failed to save AirPlay video view", http.StatusInternalServerError)
 			}

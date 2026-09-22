@@ -46,6 +46,56 @@ const dashboardCSSAirPlay = `
       color: var(--muted);
       font-size: .72rem;
     }
+    .airplay-video-view-option {
+      margin-top: .8rem;
+    }
+    .airplay-video-view-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      min-height: 44px;
+      cursor: pointer;
+    }
+    .airplay-video-view-toggle input {
+      appearance: none;
+      position: relative;
+      flex: 0 0 44px;
+      width: 44px;
+      height: 26px;
+      min-height: 26px;
+      margin: 0;
+      padding: 0;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--line);
+      cursor: pointer;
+    }
+    .airplay-video-view-toggle input::before {
+      content: '';
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      left: 3px;
+      top: 3px;
+      border-radius: 50%;
+      background: #fff;
+      transition: transform .16s ease;
+    }
+    .airplay-video-view-toggle input:checked {
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+    .airplay-video-view-toggle input:checked::before {
+      transform: translateX(18px);
+    }
+    .airplay-video-view-toggle input:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 3px;
+    }
+    .airplay-video-view-status {
+      margin: .1rem 0 0 !important;
+    }
     .airplay-actions {
       display: flex;
       flex-wrap: wrap;

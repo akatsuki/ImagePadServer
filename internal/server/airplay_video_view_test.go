@@ -95,6 +95,8 @@ func TestAirPlayVideoViewStateIsIncludedInStatePayloadAndUI(t *testing.T) {
 		`/api/airplay/video-view`,
 		`airplayVideoViewPending`,
 		`airplayVideoViewCover.disabled = pending`,
+		`data.persistenceState === 'failed'`,
+		`保存に失敗しました。もう一度切り替えて再試行してください。`,
 		`resetOBSPreview`,
 	} {
 		if !strings.Contains(indexHTML, want) {

@@ -19,12 +19,15 @@ const dashboardScriptAirPlayVideoView = `
       const configuredRevision = String(data.configuredRevision || '0');
       const appliedRevision = String(data.appliedRevision || '0');
       const phase = String(data.phase || 'idle');
+      const persistenceFailed = data.persistenceState === 'failed';
       const deliveryPending = typeof airplayDeliveryChangePending === 'function' && airplayDeliveryChangePending(state.airplayQuality);
-      const pending = airplayVideoViewPending || deliveryPending || phase === 'pending' || phase === 'waiting-input' || phase === 'waiting_input' || configuredRevision !== appliedRevision;
+      const pending = airplayVideoViewPending || (!persistenceFailed && (deliveryPending || phase === 'pending' || phase === 'waiting-input' || phase === 'waiting_input' || configuredRevision !== appliedRevision));
       airplayVideoViewCover.checked = configuredMode === 'cover';
       airplayVideoViewCover.disabled = pending;
       if (airplayVideoViewStatus) {
-        airplayVideoViewStatus.textContent = pending
+        airplayVideoViewStatus.textContent = persistenceFailed
+          ? '保存に失敗しました。もう一度切り替えて再試行してください。'
+          : pending
           ? '画面表示を切り替えています…'
           : (configuredMode === 'cover' ? '画面いっぱいに表示（余白をクロップ）' : '映像全体を表示（余白あり）');
       }

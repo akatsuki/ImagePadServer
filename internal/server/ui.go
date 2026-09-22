@@ -146,6 +146,13 @@ const indexHTML = `<!doctype html>
                     </div>
                     <p class="airplay-status" id="airplayStatusText" role="status" aria-live="polite">AirPlay受信は無効です</p>
                     <code class="airplay-receiver-path" id="airplayReceiverPath"></code>
+                    <div class="airplay-video-view-option" id="airplayVideoViewOption">
+                      <label class="airplay-video-view-toggle" for="airplayVideoViewCover" title="映像を画面いっぱいに表示し、余白をクロップします">
+                        <span>画面を埋める（クロップ）</span>
+                        <input id="airplayVideoViewCover" type="checkbox" role="switch" aria-describedby="airplayVideoViewStatus">
+                      </label>
+                      <p class="airplay-video-view-status" id="airplayVideoViewStatus" role="status" aria-live="polite"></p>
+                    </div>
                     <div class="airplay-actions">
                       <button type="button" id="airplayStartButton">AirPlay受信を開始</button>
                       <button type="button" class="secondary" id="airplayRetryButton" hidden>配信を再接続</button>
@@ -182,8 +189,6 @@ const indexHTML = `<!doctype html>
                     <div class="quality-row airplay-quality-options" id="airplayQualityRow" hidden>
                       <label for="airplayQualityMode"><span>AirPlay画質</span><select id="airplayQualityMode"><option value="auto">Auto</option><option value="360">360p</option><option value="720">720p</option><option value="1080">1080p</option></select></label>
                       <p class="airplay-quality-status" id="airplayQualityStatus" role="status" aria-live="polite"></p>
-                      <label class="switch" for="airplayVideoViewCover" title="映像を画面いっぱいに表示し、余白をクロップします"><input id="airplayVideoViewCover" type="checkbox" role="switch"><span class="switch-slider" aria-hidden="true"></span><span>画面を埋める（クロップ）</span></label>
-                      <p class="airplay-video-view-status" id="airplayVideoViewStatus" role="status" aria-live="polite"></p>
                     </div>
                     <label class="obs-latency-option" id="obsLatencyOption" hidden>
                       <span>OBSレイテンシ</span>

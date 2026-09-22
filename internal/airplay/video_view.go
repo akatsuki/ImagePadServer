@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"imagepadserver/internal/airplaycontract"
@@ -30,16 +31,25 @@ type VideoViewState struct {
 	AppliedMode         airplaycontract.VideoViewMode `json:"appliedMode"`
 	Phase               string                        `json:"phase"`
 	OutputPtsNs         uint64                        `json:"outputPtsNs,string"`
+	PersistenceState    string                        `json:"persistenceState,omitempty"`
+	PersistenceError    string                        `json:"persistenceError,omitempty"`
 	Error               string                        `json:"error,omitempty"`
 }
 
 var (
-	ErrVideoViewStale   = errors.New("airplay video view state is stale")
-	ErrVideoViewInvalid = errors.New("invalid airplay video view request")
+	ErrVideoViewStale       = errors.New("airplay video view state is stale")
+	ErrVideoViewInvalid     = errors.New("invalid airplay video view request")
+	ErrVideoViewPersistence = errors.New("airplay video view persistence failed")
 )
 
 func defaultVideoViewState() VideoViewState {
-	return VideoViewState{Schema: 1, ConfiguredMode: airplaycontract.VideoViewContain, AppliedMode: airplaycontract.VideoViewContain, Phase: "idle"}
+	return VideoViewState{
+		Schema:           1,
+		ConfiguredMode:   airplaycontract.VideoViewContain,
+		AppliedMode:      airplaycontract.VideoViewContain,
+		Phase:            "idle",
+		PersistenceState: "saved",
+	}
 }
 
 func writeVideoViewState(path string, state VideoViewState) error {
@@ -47,11 +57,28 @@ func writeVideoViewState(path string, state VideoViewState) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err = os.WriteFile(tmp, append(data, '\n'), 0600); err != nil {
+	return atomicWriteVideoViewFile(path, append(data, '\n'))
+}
+
+func atomicWriteVideoViewFile(path string, data []byte) error {
+	temporary, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
 		return err
 	}
-	return atomicReplaceVideoViewFile(tmp, path)
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if _, err := temporary.Write(data); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return atomicReplaceVideoViewFile(temporaryPath, path)
 }
 
 func readVideoViewState(path string) (VideoViewState, error) {
@@ -104,6 +131,13 @@ func (c *VideoViewController) Refresh() VideoViewState {
 		persisted.PublisherGeneration == c.state.PublisherGeneration &&
 		persisted.ConfiguredRevision >= c.state.ConfiguredRevision &&
 		persisted.AppliedRevision >= c.state.AppliedRevision {
+		// The native writer owns only applied/clock fields and older native
+		// binaries do not know the Go-owned persistence fields. Preserve a
+		// pending/failed settings intent when such an ACK arrives.
+		if persisted.PersistenceState == "" {
+			persisted.PersistenceState = c.state.PersistenceState
+			persisted.PersistenceError = c.state.PersistenceError
+		}
 		c.state = persisted
 	}
 	return c.state
@@ -116,19 +150,28 @@ func (c *VideoViewController) Set(ctxRequest VideoViewRequest) (VideoViewState, 
 	if err != nil {
 		return c.state, ErrVideoViewInvalid
 	}
-	if ctxRequest.ExpectedSessionID != "" && ctxRequest.ExpectedSessionID != c.state.SessionID || ctxRequest.ExpectedPublisherGeneration != 0 && ctxRequest.ExpectedPublisherGeneration != c.state.PublisherGeneration || ctxRequest.ExpectedRevision != c.state.ConfiguredRevision {
+	if ctxRequest.ExpectedSessionID == "" || ctxRequest.ExpectedPublisherGeneration == 0 {
+		return c.state, ErrVideoViewInvalid
+	}
+	if ctxRequest.ExpectedSessionID != c.state.SessionID ||
+		ctxRequest.ExpectedPublisherGeneration != c.state.PublisherGeneration ||
+		ctxRequest.ExpectedRevision != c.state.ConfiguredRevision {
 		return c.state, ErrVideoViewStale
 	}
-	c.state.ConfiguredRevision++
-	c.state.ConfiguredMode = mode
-	c.state.Phase = "pending"
-	c.state.Error = ""
+	next := c.state
+	next.ConfiguredRevision++
+	next.ConfiguredMode = mode
+	next.Phase = "pending"
+	next.PersistenceState = "pending"
+	next.PersistenceError = ""
+	next.Error = ""
 	if err := os.MkdirAll(filepath.Dir(c.paths.State), 0755); err != nil {
 		return c.state, err
 	}
-	if err := writeVideoViewState(c.paths.State, c.state); err != nil {
+	if err := writeVideoViewState(c.paths.State, next); err != nil {
 		return c.state, err
 	}
+	c.state = next
 	return c.state, nil
 }
 
@@ -138,9 +181,51 @@ func (c *VideoViewController) Apply(revision uint64, ptsNs uint64) error {
 	if revision != c.state.ConfiguredRevision || revision == 0 {
 		return ErrVideoViewStale
 	}
-	c.state.AppliedRevision, c.state.AppliedMode, c.state.OutputPtsNs = revision, c.state.ConfiguredMode, ptsNs
-	c.state.Phase, c.state.Error = "active", ""
-	return writeVideoViewState(c.paths.State, c.state)
+	next := c.state
+	next.AppliedRevision, next.AppliedMode, next.OutputPtsNs = revision, next.ConfiguredMode, ptsNs
+	next.Phase, next.Error = "active", ""
+	if err := writeVideoViewState(c.paths.State, next); err != nil {
+		return err
+	}
+	c.state = next
+	return nil
+}
+
+func (c *VideoViewController) markPersistence(state, persistenceErr string) (VideoViewState, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	next := c.state
+	next.PersistenceState = state
+	next.PersistenceError = persistenceErr
+	if err := writeVideoViewState(c.paths.State, next); err != nil {
+		c.state = next
+		return c.state, err
+	}
+	c.state = next
+	return c.state, nil
+}
+
+func (c *VideoViewController) markPersistenceSaved() (VideoViewState, error) {
+	return c.markPersistence("saved", "")
+}
+
+func (c *VideoViewController) markPersistenceFailed(err error) (VideoViewState, error) {
+	message := "video view persistence failed"
+	if err != nil {
+		message = err.Error()
+	}
+	return c.markPersistence("failed", message)
+}
+
+func videoViewRetryMatches(state VideoViewState, request VideoViewRequest) bool {
+	return state.PersistenceState != "saved" &&
+		request.ExpectedSessionID != "" &&
+		request.ExpectedSessionID == state.SessionID &&
+		request.ExpectedPublisherGeneration != 0 &&
+		request.ExpectedPublisherGeneration == state.PublisherGeneration &&
+		request.ExpectedRevision != 0 &&
+		request.ExpectedRevision == state.ConfiguredRevision &&
+		request.Mode == state.ConfiguredMode
 }
 
 func (m *Manager) VideoViewStatus() VideoViewState {
@@ -182,18 +267,41 @@ func (m *Manager) SetVideoView(ctx context.Context, request VideoViewRequest) (V
 		state.ConfiguredMode, state.AppliedMode = mode, mode
 		return state, nil
 	}
+	current := controller.Refresh()
+	if videoViewRetryMatches(current, request) {
+		if err := WriteVideoViewControl(controller.paths.Control, VideoViewRequest{
+			Mode:             current.ConfiguredMode,
+			ExpectedRevision: current.ConfiguredRevision,
+		}, current.SessionID, current.PublisherGeneration); err != nil {
+			state, markErr := controller.markPersistenceFailed(err)
+			return state, errors.Join(ErrVideoViewPersistence, err, markErr)
+		}
+		if err := settings.Update(func(s *settings.Settings) error {
+			s.AirPlayVideoViewMode = string(current.ConfiguredMode)
+			return nil
+		}); err != nil {
+			state, markErr := controller.markPersistenceFailed(err)
+			return state, errors.Join(ErrVideoViewPersistence, err, markErr)
+		}
+		return controller.markPersistenceSaved()
+	}
 	state, err := controller.Set(request)
 	if err != nil {
 		return state, err
 	}
-	if err := settings.Update(func(s *settings.Settings) error { s.AirPlayVideoViewMode = string(state.ConfiguredMode); return nil }); err != nil {
-		return state, err
-	}
 	request.ExpectedRevision = state.ConfiguredRevision
 	if err := WriteVideoViewControl(controller.paths.Control, request, state.SessionID, state.PublisherGeneration); err != nil {
-		return state, err
+		failed, markErr := controller.markPersistenceFailed(err)
+		return failed, errors.Join(ErrVideoViewPersistence, err, markErr)
 	}
-	return state, nil
+	if err := settings.Update(func(s *settings.Settings) error {
+		s.AirPlayVideoViewMode = string(state.ConfiguredMode)
+		return nil
+	}); err != nil {
+		failed, markErr := controller.markPersistenceFailed(err)
+		return failed, errors.Join(ErrVideoViewPersistence, err, markErr)
+	}
+	return controller.markPersistenceSaved()
 }
 
 func (m *Manager) initializeVideoView(paths airplaycontract.VideoViewPaths, sessionID string, generation uint64) error {
@@ -217,4 +325,64 @@ func (m *Manager) initializeVideoView(paths airplaycontract.VideoViewPaths, sess
 	m.videoView = c
 	m.mu.Unlock()
 	return nil
+}
+
+// prepareVideoViewGeneration writes the current display intent to a new
+// publisher generation without publishing the controller pointer yet. This
+// keeps a failed candidate isolated: its native process can consume the
+// generation-scoped control file, while status requests continue to observe
+// the committed publisher until the delivery transaction succeeds.
+func (m *Manager) prepareVideoViewGeneration(paths airplaycontract.VideoViewPaths, sessionID string, generation uint64) (*VideoViewController, error) {
+	if strings.TrimSpace(sessionID) == "" || generation == 0 {
+		return nil, errors.New("video view generation identity is incomplete")
+	}
+	m.mu.Lock()
+	current := m.videoView
+	m.mu.Unlock()
+	state := defaultVideoViewState()
+	if current != nil {
+		state = current.Refresh()
+	}
+	if state.ConfiguredRevision == 0 {
+		s, err := settings.Load()
+		if err != nil {
+			return nil, err
+		}
+		mode, err := airplaycontract.ParseVideoViewMode(settings.NormalizeAirPlayVideoViewMode(s.AirPlayVideoViewMode))
+		if err != nil {
+			return nil, err
+		}
+		state.ConfiguredRevision = 1
+		state.ConfiguredMode = mode
+	}
+	state.SessionID = sessionID
+	state.PublisherGeneration = generation
+	state.AppliedRevision = 0
+	state.AppliedMode = state.ConfiguredMode
+	state.Phase = "pending"
+	state.Error = ""
+	c := NewVideoViewController(paths, sessionID, generation)
+	c.state = state
+	if err := os.MkdirAll(filepath.Dir(paths.State), 0755); err != nil {
+		return nil, err
+	}
+	if err := writeVideoViewState(paths.State, state); err != nil {
+		return nil, err
+	}
+	if err := WriteVideoViewControl(paths.Control, VideoViewRequest{
+		Mode:             state.ConfiguredMode,
+		ExpectedRevision: state.ConfiguredRevision,
+	}, sessionID, generation); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+func (m *Manager) adoptVideoViewGeneration(controller *VideoViewController) {
+	if controller == nil {
+		return
+	}
+	m.mu.Lock()
+	m.videoView = controller
+	m.mu.Unlock()
 }
