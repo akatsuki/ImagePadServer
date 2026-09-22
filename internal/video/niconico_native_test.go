@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,7 +14,11 @@ import (
 )
 
 func TestNicoNativeChild(t *testing.T) {
-	role := os.Args[len(os.Args)-1]
+	roleArg := os.Args[len(os.Args)-1]
+	if !strings.HasPrefix(roleArg, "nico-native-child-") && len(os.Args) > 1 {
+		roleArg = os.Args[len(os.Args)-2]
+	}
+	role := roleArg
 	if !strings.HasPrefix(role, "nico-native-child-") {
 		return
 	}
@@ -21,6 +26,12 @@ func TestNicoNativeChild(t *testing.T) {
 	case "fail":
 		os.Exit(17)
 	case "encoder":
+		_, _ = io.Copy(io.Discard, os.Stdin)
+	case "encoder-cwd":
+		if len(os.Args) < 2 {
+			os.Exit(18)
+		}
+		_ = os.WriteFile(os.Args[len(os.Args)-1], []byte(mustTestWorkingDirectory()), 0600)
 		_, _ = io.Copy(io.Discard, os.Stdin)
 	case "blocked":
 		for {
@@ -39,6 +50,14 @@ func TestNicoNativeChild(t *testing.T) {
 		}
 	}
 	os.Exit(0)
+}
+
+func mustTestWorkingDirectory() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	return wd
 }
 
 func TestNicoNativePipeLifecycle(t *testing.T) {
@@ -102,5 +121,68 @@ func TestNicoNativePipeLifecycle(t *testing.T) {
 				t.Fatalf("cleanup stalled: %v", err)
 			}
 		})
+	}
+}
+
+func TestNicoNativePipeTimedReportsConcurrentStages(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := func(role string) []string {
+		return []string{"-test.run=^TestNicoNativeChild$", "--", "nico-native-child-" + role}
+	}
+	result, err := runNicoNativePipeTimed(
+		context.Background(),
+		exe, args("ok"), exe, args("encoder"), 10,
+		func(int64, int64) {},
+		func(context.Context, io.Writer) (nicorender.RenderReport, error) {
+			return nicorender.RenderReport{FrameCount: 10}, nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.report.FrameCount != 10 {
+		t.Fatalf("report=%+v, want ten frames", result.report)
+	}
+	want := []string{"native_sprite_stream", "native_compositor", "native_ffmpeg"}
+	if len(result.stageTimings) != len(want) {
+		t.Fatalf("stage timings=%v, want %v", result.stageTimings, want)
+	}
+	for i, name := range want {
+		if result.stageTimings[i].Name != name || result.stageTimings[i].Elapsed < 0 {
+			t.Fatalf("stage[%d]=%+v, want %q with non-negative elapsed", i, result.stageTimings[i], name)
+		}
+	}
+}
+
+func TestNicoNativePipeTimedUsesEncoderWorkingDirectory(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	workDir := t.TempDir()
+	marker := filepath.Join(workDir, "encoder-cwd.txt")
+	args := func(role string, extra ...string) []string {
+		return append([]string{"-test.run=^TestNicoNativeChild$", "--", "nico-native-child-" + role}, extra...)
+	}
+	_, err = runNicoNativePipeTimedInDir(
+		context.Background(),
+		exe, args("ok"), exe, args("encoder-cwd", marker), 10,
+		func(int64, int64) {},
+		func(context.Context, io.Writer) (nicorender.RenderReport, error) {
+			return nicorender.RenderReport{FrameCount: 10}, nil
+		}, workDir,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := filepath.Clean(string(data)); got != filepath.Clean(workDir) {
+		t.Fatalf("encoder working directory=%q, want %q", got, workDir)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -14,6 +15,58 @@ import (
 
 type collectingSink struct {
 	frames [][]byte
+}
+
+func TestBrowserLaunchArgsKeepSafeDefaultAndAllowDiagnosticModes(t *testing.T) {
+	defaultArgs := browserLaunchArgs(1234, "profile", "new", "disabled")
+	if !containsArg(defaultArgs, "--headless=new") || !containsArg(defaultArgs, "--disable-gpu") {
+		t.Fatalf("default browser args = %#v", defaultArgs)
+	}
+	enabledArgs := browserLaunchArgs(1234, "profile", "old", "enabled")
+	if !containsArg(enabledArgs, "--headless=old") || containsArg(enabledArgs, "--disable-gpu") {
+		t.Fatalf("enabled diagnostic browser args = %#v", enabledArgs)
+	}
+	swiftShaderArgs := browserLaunchArgs(1234, "profile", "new", "swiftshader")
+	if !containsArg(swiftShaderArgs, "--use-angle=swiftshader") || !containsArg(swiftShaderArgs, "--use-gl=angle") {
+		t.Fatalf("swiftshader diagnostic browser args = %#v", swiftShaderArgs)
+	}
+	swiftShaderInProcessArgs := browserLaunchArgs(1234, "profile", "new", "swiftshader-inprocess")
+	if !containsArg(swiftShaderInProcessArgs, "--use-angle=swiftshader") || !containsArg(swiftShaderInProcessArgs, "--in-process-gpu") {
+		t.Fatalf("swiftshader-inprocess diagnostic browser args = %#v", swiftShaderInProcessArgs)
+	}
+	inProcessArgs := browserLaunchArgs(1234, "profile", "new", "inprocess")
+	if !containsArg(inProcessArgs, "--in-process-gpu") || containsArg(inProcessArgs, "--disable-gpu") {
+		t.Fatalf("in-process diagnostic browser args = %#v", inProcessArgs)
+	}
+	softwareArgs := browserLaunchArgs(1234, "profile", "new", "software")
+	if !containsArg(softwareArgs, "--disable-gpu") || !containsArg(softwareArgs, "--disable-gpu-compositing") || !containsArg(softwareArgs, "--disable-features=UseSkiaRenderer") {
+		t.Fatalf("software diagnostic browser args = %#v", softwareArgs)
+	}
+	softwareInProcessArgs := browserLaunchArgs(1234, "profile", "new", "software-inprocess")
+	if !containsArg(softwareInProcessArgs, "--in-process-gpu") || !containsArg(softwareInProcessArgs, "--disable-gpu-compositing") || !containsArg(softwareInProcessArgs, "--disable-features=UseSkiaRenderer,VizDisplayCompositor") {
+		t.Fatalf("software-inprocess diagnostic browser args = %#v", softwareInProcessArgs)
+	}
+	singleProcessArgs := browserLaunchArgs(1234, "profile", "new", "single-process")
+	if !containsArg(singleProcessArgs, "--single-process") || !containsArg(singleProcessArgs, "--disable-gpu") {
+		t.Fatalf("single-process diagnostic browser args = %#v", singleProcessArgs)
+	}
+	noDawnCacheArgs := browserLaunchArgs(1234, "profile", "new", "disabled-no-dawn-cache")
+	if !containsArg(noDawnCacheArgs, "--disable-gpu") || !containsArg(noDawnCacheArgs, "--disable-features=SkiaGraphiteUsePersistentCache") {
+		t.Fatalf("no-dawn-cache diagnostic browser args = %#v", noDawnCacheArgs)
+	}
+	noGpuSandboxArgs := browserLaunchArgs(1234, "profile", "new", "disabled-no-gpu-sandbox")
+	if !containsArg(noGpuSandboxArgs, "--disable-gpu") || !containsArg(noGpuSandboxArgs, "--disable-gpu-sandbox") {
+		t.Fatalf("no-gpu-sandbox diagnostic browser args = %#v", noGpuSandboxArgs)
+	}
+}
+
+func containsArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *collectingSink) WriteRGBA(_ context.Context, _ uint64, pixels []byte) error {
@@ -44,6 +97,32 @@ func TestRenderRejectsUnknownTransport(t *testing.T) {
 	}, &collectingSink{})
 	if err == nil || !strings.Contains(err.Error(), "unsupported render transport") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestWriteRendererPageUsesOutputAspectForCommentCoordinates(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		width, height int
+	}{
+		{name: "4:3", width: 960, height: 720},
+		{name: "1:1", width: 720, height: 720},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			page, err := writeRendererPage(tc.width, tc.height, "file:///tmp/niconicomments.js", nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer os.Remove(page)
+			data, err := os.ReadFile(page)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := fmt.Sprintf("config:{canvasWidth:%d,canvasHeight:%d}", tc.width, tc.height)
+			if !strings.Contains(string(data), want) {
+				t.Fatalf("renderer page does not set aspect-specific comment config: want %q", want)
+			}
+		})
 	}
 }
 

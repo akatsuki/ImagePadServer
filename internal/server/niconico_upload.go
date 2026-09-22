@@ -8,11 +8,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"imagepadserver/internal/library"
+	"imagepadserver/internal/nicoexportworker"
 	"imagepadserver/internal/niconico"
-	"imagepadserver/internal/nicorender"
 	"imagepadserver/internal/video"
 )
 
@@ -23,6 +24,33 @@ var fetchNiconicoSnapshot = func(ctx context.Context, videoID string) (niconico.
 // Kept behind a seam so the publish path can be tested without starting a
 // background FFmpeg worker.
 var enqueueNiconicoCommentedVideo = video.EnqueueNicoCommentedVideoForID
+
+// These seams keep the HTTP/publication tests deterministic. Production uses
+// the real ffprobe and the CPU-budgeted worker below.
+var niconicoProbeMedia = video.ProbeMedia
+var niconicoWorkerRunner = runNicoWorkerWithBudget
+var niconicoEnsureFFprobe = video.EnsureFFprobe
+
+// waitForNiconicoIngest makes Nico requests a bounded-by-request-context
+// queue. Other ingest types keep the existing reject-on-busy behavior.
+func (s *Server) waitForNiconicoIngest(ctx context.Context, title string) (time.Duration, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	started := time.Now()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if s.tryBeginIngest(ingestDownloading, title) {
+			return time.Since(started), nil
+		}
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
 
 // processNiconicoCommentedURL is the synchronous first integration of the
 // offline comment pipeline. It deliberately keeps the existing publication
@@ -55,11 +83,11 @@ func (s *Server) processNiconicoCommentedURL(r *http.Request, rawURL string, que
 	if err != nil {
 		return nil, err
 	}
-	ffprobe, err := video.EnsureFFprobe()
+	ffprobe, err := niconicoEnsureFFprobe()
 	if err != nil {
 		return nil, err
 	}
-	probe, err := video.ProbeMedia(r.Context(), ffprobe, media.SourcePath)
+	probe, err := niconicoProbeMedia(r.Context(), ffprobe, media.SourcePath)
 	if err != nil {
 		return nil, fmt.Errorf("ニコニコ動画のメタデータ取得に失敗しました: %w", err)
 	}
@@ -75,36 +103,67 @@ func (s *Server) processNiconicoCommentedURL(r *http.Request, rawURL string, que
 	}
 	s.setIngest(ingestProcessing, "コメントを描画して動画へ合成中…")
 	s.setIngestProgress(30, fmt.Sprintf("コメント%d件を描画中", snapshot.CommentCount))
-	progress := newNicoProgressReporter(time.Now, s.setIngestProgress)
-	outputPath := filepath.Join(s.store.Dir(), "niconico-commented-"+randomSuffix()+".mp4")
-	renderOptions := nicorender.RenderOptions{
-		Width: width, Height: height, DurationMs: durationMs, FPSNum: 30, FPSDen: 1,
-		RendererLabel: "niconicomments@0.4.1",
-		Transport:     "binary", ReuseUnchanged: true,
-		BatchFrames: 30, SparseFrames: true,
-		Progress: progress,
+	runID := "run-" + randomSuffix()
+	mediaID := "nico-" + randomSuffix()
+	stagingDir := filepath.Join(s.store.Dir(), ".niconico-export-"+runID)
+	if err := os.MkdirAll(stagingDir, 0700); err != nil {
+		return nil, fmt.Errorf("ニコニコ書き出しstagingの作成に失敗しました: %w", err)
 	}
-	_, _, err = video.EncodeNicoCommentedWithRenderer(r.Context(), ffmpeg, media.SourcePath, outputPath, snapshot, renderOptions, video.NicoEncodeOptions{
-		Width: width, Height: height, DurationMs: durationMs, FPSNum: 30, FPSDen: 1, CRF: preset.CRF, AudioBitrate: preset.AudioBitrate,
+	defer os.RemoveAll(stagingDir)
+	snapshotPath := filepath.Join(stagingDir, "snapshot.json")
+	if err := writeNicoSnapshotPath(snapshotPath, snapshot); err != nil {
+		return nil, fmt.Errorf("ニコニコsnapshotの準備に失敗しました: %w", err)
+	}
+	outputPath := filepath.Join(stagingDir, "rendered.mp4")
+	hlsDir := filepath.Join(stagingDir, "hls")
+	nicoExportMu.Lock()
+	defer nicoExportMu.Unlock()
+	expectedRevision := s.store.PublishedRevision()
+	_, budgetReport, err := niconicoWorkerRunner(r.Context(), nicoexportworker.Request{
+		Version: nicoexportworker.ProtocolVersion,
+		RunID:   runID, MediaID: mediaID,
+		SourcePath: media.SourcePath, SnapshotPath: snapshotPath, OutputPath: outputPath, HLSStagingDir: hlsDir,
+		FFmpeg: ffmpeg, Width: width, Height: height, DurationMs: durationMs, FPSNum: 30, FPSDen: 1,
+		CRF: preset.CRF, AudioBitrate: preset.AudioBitrate,
+		// NVENC is opt-in so the long-standing CPU20/x264 path remains the
+		// default until a real VRChat-concurrent run qualifies the GPU path.
+		Encoder: strings.TrimSpace(os.Getenv("IMAGEPAD_NICO_ENCODER")),
+		// Tee is also opt-in until the combined MP4/HLS path has completed the
+		// VRChat-concurrent acceptance gate. Empty keeps the legacy separate
+		// HLS pass for rollback compatibility.
+		OutputMode: strings.TrimSpace(os.Getenv("IMAGEPAD_NICO_OUTPUT_MODE")),
 	})
 	if err != nil {
-		_ = os.Remove(outputPath)
-		return nil, fmt.Errorf("ニコニココメント合成に失敗しました: %w", err)
+		return nil, fmt.Errorf("ニコニココメント合成に失敗しました（CPU20%% worker）: %w", err)
 	}
+	if !budgetReport.Verified {
+		return nil, fmt.Errorf("ニコニココメント合成のCPU予算を検証できませんでした: %s", budgetReport.Reason)
+	}
+	// Thumbnail generation is deliberately not run in the parent: it would
+	// launch an unbudgeted FFmpeg process after the worker exits. A downloaded
+	// thumbnail is already available; when it is absent, commit without one and
+	// let a later explicitly budgeted thumbnail job fill it.
+	thumbnail := media.ThumbnailPath
+	publicName := "current-video" + filepath.Ext(outputPath)
 	if queue {
-		state, err := s.processPreparedNicoVideo(r, outputPath, media.Name, media.ThumbnailPath, snapshot, true)
-		if err != nil {
-			_ = os.Remove(outputPath)
-			return nil, err
-		}
-		return state, nil
+		publicName = "queued-video" + filepath.Ext(outputPath)
 	}
-	state, err := s.processPreparedNicoVideo(r, outputPath, media.Name, media.ThumbnailPath, snapshot, false)
+	committed, err := s.store.CommitPreparedNicoMedia(library.PreparedNicoMedia{
+		Info: library.CurrentImage{
+			ID: mediaID, Kind: "video", FileName: "niconico-commented-" + runID + ".mp4", PublicName: publicName,
+			ContentType: videoContentType(outputPath), OriginalName: media.Name, Width: width, Height: height,
+		},
+		SourcePath: outputPath, ThumbnailPath: thumbnail, SnapshotPath: snapshotPath, HLSDir: hlsDir,
+		RunID: runID, SelectCurrent: !queue, ExpectedRevision: expectedRevision,
+	})
 	if err != nil {
-		_ = os.Remove(outputPath)
-		return nil, err
+		return nil, fmt.Errorf("ニコニコ完成物の公開確定に失敗しました: %w", err)
 	}
-	return state, nil
+	s.setIngestProgress(100, fmt.Sprintf("コメント付き動画を公開しました (%s)", committed.ID))
+	if queue {
+		return s.state(r), nil
+	}
+	return s.withClipboardResult(r, s.state(r)), nil
 }
 
 func (s *Server) processPreparedNicoVideo(r *http.Request, sourcePath, name, providedThumbnail string, snapshot niconico.Snapshot, queue bool) (map[string]interface{}, error) {
@@ -158,12 +217,15 @@ func (s *Server) processPreparedNicoVideo(r *http.Request, sourcePath, name, pro
 }
 
 func writeNicoSnapshot(dir, mediaID string, snapshot niconico.Snapshot) error {
+	return writeNicoSnapshotPath(filepath.Join(dir, "niconico-snapshot-"+mediaID+".json"), snapshot)
+}
+
+func writeNicoSnapshotPath(path string, snapshot niconico.Snapshot) error {
 	data, err := json.MarshalIndent(snapshot, "", "  ")
 	if err != nil {
 		return err
 	}
 	data = append(data, '\n')
-	path := filepath.Join(dir, "niconico-snapshot-"+mediaID+".json")
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0600); err != nil {
 		return err

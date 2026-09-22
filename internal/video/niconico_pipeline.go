@@ -5,11 +5,18 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"imagepadserver/internal/niconico"
 	"imagepadserver/internal/nicorender"
 )
+
+var prepareNicoNativeCompositor = nicorender.PrepareNativeCompositor
+var encodeNicoNativeForPipeline = encodeNicoNative
+var encodeNicoBrowserForPipeline = encodeNicoBrowser
+var removeNicoFallbackBackup = os.Remove
+var reportNicoFallbackCleanup = log.Printf
 
 // EncodeNicoCommentedWithRenderer selects the embedded WARP compositor when
 // available, otherwise the browser RGBA pipeline. Both use the same encoder.
@@ -37,30 +44,122 @@ func EncodeNicoCommentedWithRenderer(ctx context.Context, ffmpeg, sourcePath, ou
 		return NicoEncodeReport{}, nicorender.RenderReport{}, fmt.Errorf("niconico: unknown backend %q", backend)
 	}
 	fallback := ""
+	outputExisted := false
+	if _, statErr := os.Stat(outputPath); statErr == nil {
+		outputExisted = true
+	} else if !os.IsNotExist(statErr) {
+		return NicoEncodeReport{}, nicorender.RenderReport{}, statErr
+	}
 	if backend != "browser" {
 		configured := renderOptions.CompositorPath
 		if configured == "" {
 			configured = os.Getenv("IMAGEPAD_NICO_COMPOSITOR")
 		}
-		path, cleanup, err := nicorender.PrepareNativeCompositor(ctx, configured)
+		path, cleanup, err := prepareNicoNativeCompositor(ctx, configured)
 		if err == nil {
 			defer cleanup()
 			log.Printf("niconico: renderer backend=native-warp")
-			return encodeNicoNative(ctx, path, ffmpeg, sourcePath, outputPath, snapshot, renderOptions, encodeOptions)
+			er, rr, nativeErr := encodeNicoNativeForPipeline(ctx, path, ffmpeg, sourcePath, outputPath, snapshot, renderOptions, encodeOptions)
+			if nativeErr == nil {
+				return er, rr, nil
+			}
+			if ctx.Err() != nil {
+				return NicoEncodeReport{}, nicorender.RenderReport{}, ctx.Err()
+			}
+			if backend == "native" {
+				return NicoEncodeReport{}, nicorender.RenderReport{}, nativeErr
+			}
+			if !outputExisted {
+				if removeErr := os.Remove(outputPath); removeErr != nil && !os.IsNotExist(removeErr) {
+					return NicoEncodeReport{}, nicorender.RenderReport{}, fmt.Errorf("niconico: native fallback cleanup: %w", removeErr)
+				}
+			}
+			fallback = nativeErr.Error()
+			log.Printf("niconico: native runtime failed; regenerating with browser (%s)", fallback)
 		}
-		if ctx.Err() != nil {
+		if err != nil && ctx.Err() != nil {
 			return NicoEncodeReport{}, nicorender.RenderReport{}, ctx.Err()
 		}
-		if backend == "native" {
+		if err != nil && backend == "native" {
 			return NicoEncodeReport{}, nicorender.RenderReport{}, err
 		}
-		fallback = err.Error()
-		log.Printf("niconico: renderer backend=browser (%s)", fallback)
+		if err != nil {
+			fallback = err.Error()
+			log.Printf("niconico: renderer backend=browser (%s)", fallback)
+		}
 	}
-	er, rr, err := encodeNicoBrowser(ctx, ffmpeg, sourcePath, outputPath, snapshot, renderOptions, encodeOptions)
+	fallbackOutputPath, cleanupFallback, err := createNicoFallbackOutput(outputPath)
+	if err != nil {
+		return NicoEncodeReport{}, nicorender.RenderReport{}, err
+	}
+	defer cleanupFallback()
+	er, rr, err := encodeNicoBrowserForPipeline(ctx, ffmpeg, sourcePath, fallbackOutputPath, snapshot, renderOptions, encodeOptions)
 	rr.Backend = "browser"
 	rr.FallbackReason = fallback
-	return er, rr, err
+	if err != nil {
+		return NicoEncodeReport{}, rr, err
+	}
+	if err := promoteNicoFallbackOutput(fallbackOutputPath, outputPath); err != nil {
+		return NicoEncodeReport{}, rr, err
+	}
+	er.OutputPath = outputPath
+	return er, rr, nil
+}
+
+func createNicoFallbackOutput(outputPath string) (string, func(), error) {
+	dir := filepath.Dir(outputPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", func() {}, err
+	}
+	f, err := os.CreateTemp(dir, ".niconico-fallback-*.mp4")
+	if err != nil {
+		return "", func() {}, err
+	}
+	path := f.Name()
+	if err := f.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", func() {}, err
+	}
+	if err := os.Remove(path); err != nil {
+		return "", func() {}, err
+	}
+	return path, func() { _ = os.Remove(path) }, nil
+}
+
+func promoteNicoFallbackOutput(sourcePath, outputPath string) error {
+	if filepath.Clean(sourcePath) == filepath.Clean(outputPath) {
+		return nil
+	}
+	backupPath := ""
+	if _, err := os.Stat(outputPath); err == nil {
+		backup, createErr := os.CreateTemp(filepath.Dir(outputPath), ".niconico-previous-*.mp4")
+		if createErr != nil {
+			return createErr
+		}
+		backupPath = backup.Name()
+		if closeErr := backup.Close(); closeErr != nil {
+			_ = os.Remove(backupPath)
+			return closeErr
+		}
+		if removeErr := removeNicoFallbackBackup(backupPath); removeErr != nil {
+			return removeErr
+		}
+		if err := os.Rename(outputPath, backupPath); err != nil {
+			return err
+		}
+	}
+	if err := os.Rename(sourcePath, outputPath); err != nil {
+		if backupPath != "" {
+			_ = os.Rename(backupPath, outputPath)
+		}
+		return err
+	}
+	if backupPath != "" {
+		if err := removeNicoFallbackBackup(backupPath); err != nil {
+			reportNicoFallbackCleanup("niconico: fallback backup cleanup failed path=%q: %v", backupPath, err)
+		}
+	}
+	return nil
 }
 
 func encodeNicoBrowser(ctx context.Context, ffmpeg, sourcePath, outputPath string, snapshot niconico.Snapshot, renderOptions nicorender.RenderOptions, encodeOptions NicoEncodeOptions) (NicoEncodeReport, nicorender.RenderReport, error) {

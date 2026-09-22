@@ -280,6 +280,7 @@ func New(cfg config.Config, store *library.Store, imageURLBase string) *Server {
 		return mapping, result
 	}
 	srv.setRTSPURL = srv.obs.SetRTSPEndpointURL
+	cleanupAbandonedNicoStaging(store.Dir(), time.Now())
 	srv.initMusicPlaylist(advertisedHost)
 	return srv
 }
@@ -958,11 +959,15 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if req.NiconicoComments.Enabled {
-			if !s.tryBeginIngest(ingestDownloading, req.URL) {
-				http.Error(w, "別の取り込み処理が進行中です", http.StatusConflict)
+			waited, waitErr := s.waitForNiconicoIngest(r.Context(), req.URL)
+			if waitErr != nil {
+				http.Error(w, "ニコニコ書き出し待機がキャンセルされました: "+waitErr.Error(), http.StatusRequestTimeout)
 				return
 			}
 			defer s.clearIngest()
+			if waited >= 20*time.Millisecond {
+				s.setIngestProgress(0, fmt.Sprintf("ニコニコ書き出し待機 %.1f秒", waited.Seconds()))
+			}
 			state, err := s.processNiconicoCommentedURL(r, req.URL, false)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
@@ -1183,11 +1188,15 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if req.NiconicoComments.Enabled {
-			if !s.tryBeginIngest(ingestDownloading, req.URL) {
-				http.Error(w, "別の取り込み処理が進行中です", http.StatusConflict)
+			waited, waitErr := s.waitForNiconicoIngest(r.Context(), req.URL)
+			if waitErr != nil {
+				http.Error(w, "ニコニコ書き出し待機がキャンセルされました: "+waitErr.Error(), http.StatusRequestTimeout)
 				return
 			}
 			defer s.clearIngest()
+			if waited >= 20*time.Millisecond {
+				s.setIngestProgress(0, fmt.Sprintf("ニコニコ書き出し待機 %.1f秒", waited.Seconds()))
+			}
 			state, err := s.processNiconicoCommentedURL(r, req.URL, true)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)

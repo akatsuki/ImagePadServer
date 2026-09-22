@@ -254,14 +254,14 @@ func writeRendererPage(width, height int, bundlePath string, threads []niconico.
   try {
     const data = JSON.parse(document.getElementById('comment-data').textContent);
     const canvas = document.getElementById('canvas');
-    window.__niconi = new NiconiComments(canvas, data, {format:'v1', mode:'html5', keepCA:false, lazy:false});
+    window.__niconi = new NiconiComments(canvas, data, {format:'v1', mode:'html5', keepCA:false, lazy:false, config:{canvasWidth:%d,canvasHeight:%d}});
     window.__niconiReady = true;
     window.__draw = async (vpos) => { window.__niconi.drawCanvas(vpos, true); await new Promise(requestAnimationFrame); return canvas.toDataURL('image/png'); };
   } catch (e) {
     window.__niconiError = String(e && (e.stack || e.message) || e);
   }
 })();
-</script>%s`, width, height, data, bundleURL, transportScript)
+</script>%s`, width, height, data, bundleURL, width, height, transportScript)
 	f, err := os.CreateTemp("", "imagepad-niconi-page-*.html")
 	if err != nil {
 		return "", fmt.Errorf("niconico: create renderer page: %w", err)
@@ -308,34 +308,51 @@ func startBrowser(ctx context.Context, configured, pagePath string) (*browserSes
 	if err != nil {
 		return nil, err
 	}
-	args := []string{"--headless=new", "--allow-file-access-from-files", "--disable-background-networking", "--disable-component-update", "--disable-extensions", "--disable-sync", "--no-proxy-server", "--remote-debugging-address=127.0.0.1", fmt.Sprintf("--remote-debugging-port=%d", port), "--remote-allow-origins=*", "--user-data-dir=" + profile, "--no-first-run", "--no-default-browser-check"}
-	args = append(args, "--disable-gpu", "about:blank")
+	headless := strings.TrimSpace(os.Getenv("IMAGEPAD_NICONICO_RENDER_HEADLESS"))
+	if headless == "" {
+		headless = "new"
+	}
+	if headless != "new" && headless != "old" {
+		removeBrowserProfile(profile)
+		return nil, fmt.Errorf("niconico: unsupported headless mode %q", headless)
+	}
+	gpuMode := strings.TrimSpace(os.Getenv("IMAGEPAD_NICONICO_RENDER_GPU"))
+	if gpuMode == "" {
+		gpuMode = "disabled"
+	}
+	if gpuMode != "disabled" && gpuMode != "enabled" && gpuMode != "swiftshader" && gpuMode != "swiftshader-inprocess" && gpuMode != "inprocess" && gpuMode != "software" && gpuMode != "software-inprocess" && gpuMode != "single-process" && gpuMode != "disabled-no-dawn-cache" && gpuMode != "disabled-no-gpu-sandbox" {
+		removeBrowserProfile(profile)
+		return nil, fmt.Errorf("niconico: unsupported GPU mode %q", gpuMode)
+	}
+	args := browserLaunchArgs(port, profile, headless, gpuMode)
 	cmd := exec.CommandContext(ctx, browserPath, args...)
 	// Nil uses the OS null device directly. io.Discard would create output
 	// copy goroutines, making Wait wait for inherited pipes in descendants.
+	if os.Getenv("IMAGEPAD_NICONICO_RENDER_DEBUG") == "1" {
+		cmd.Stderr = os.Stderr
+	}
 	if err := cmd.Start(); err != nil {
-		os.RemoveAll(profile)
+		removeBrowserProfile(profile)
 		return nil, fmt.Errorf("%w: start browser: %v", ErrUnavailable, err)
 	}
 	wsURL, err := waitWebSocket(ctx, port)
 	if err != nil {
-		_ = cmd.Process.Kill()
+		terminateBrowserProcessTree(cmd)
 		_ = cmd.Wait()
-		os.RemoveAll(profile)
+		removeBrowserProfile(profile)
 		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	ws, err := websocket.Dial(wsURL, "", "http://127.0.0.1")
 	if err != nil {
-		_ = cmd.Process.Kill()
+		terminateBrowserProcessTree(cmd)
 		_ = cmd.Wait()
-		os.RemoveAll(profile)
+		removeBrowserProfile(profile)
 		return nil, fmt.Errorf("%w: DevTools接続: %v", ErrUnavailable, err)
 	}
 	s := &browserSession{cmd: cmd, ws: ws, next: 1}
-	if _, err := s.call(ctx, "Page.enable", nil); err != nil {
-		s.close()
-		return nil, err
-	}
+	// Page.enable is not required for the CDP commands used by the renderer.
+	// On the supported Windows Chromium path it can terminate the GPU helper
+	// before navigation, so keep startup to Runtime.enable and Page.navigate.
 	if _, err := s.call(ctx, "Runtime.enable", nil); err != nil {
 		s.close()
 		return nil, err
@@ -347,6 +364,34 @@ func startBrowser(ctx context.Context, configured, pagePath string) (*browserSes
 	return s, nil
 }
 
+func browserLaunchArgs(port int, profile, headless, gpuMode string) []string {
+	args := []string{"--headless=" + headless, "--allow-file-access-from-files", "--disable-background-networking", "--disable-component-update", "--disable-extensions", "--disable-sync", "--no-proxy-server", "--remote-debugging-address=127.0.0.1", fmt.Sprintf("--remote-debugging-port=%d", port), "--remote-allow-origins=*", "--user-data-dir=" + profile, "--no-first-run", "--no-default-browser-check"}
+	switch gpuMode {
+	case "disabled":
+		args = append(args, "--disable-gpu")
+	case "swiftshader":
+		args = append(args, "--use-angle=swiftshader", "--use-gl=angle")
+	case "swiftshader-inprocess":
+		args = append(args, "--use-angle=swiftshader", "--use-gl=angle", "--in-process-gpu")
+	case "inprocess":
+		args = append(args, "--in-process-gpu")
+	case "software":
+		args = append(args, "--disable-gpu", "--disable-gpu-compositing", "--disable-features=UseSkiaRenderer")
+	case "software-inprocess":
+		args = append(args, "--in-process-gpu", "--disable-gpu", "--disable-gpu-compositing", "--disable-features=UseSkiaRenderer,VizDisplayCompositor")
+	case "single-process":
+		args = append(args, "--single-process", "--disable-gpu", "--disable-gpu-compositing", "--disable-features=UseSkiaRenderer,VizDisplayCompositor")
+	case "disabled-no-dawn-cache":
+		// Chrome 153 enables Skia Graphite's persistent Dawn cache on Windows;
+		// this diagnostic mode isolates cache initialization from GPU startup.
+		args = append(args, "--disable-gpu", "--disable-features=SkiaGraphiteUsePersistentCache")
+	case "disabled-no-gpu-sandbox":
+		// Diagnostic only: do not weaken the sandbox in the default renderer.
+		args = append(args, "--disable-gpu", "--disable-gpu-sandbox")
+	}
+	return append(args, "about:blank")
+}
+
 func (s *browserSession) close() {
 	if s == nil {
 		return
@@ -355,19 +400,68 @@ func (s *browserSession) close() {
 		_ = s.ws.Close()
 	}
 	if s.cmd != nil && s.cmd.Process != nil {
-		_ = s.cmd.Process.Kill()
+		terminateBrowserProcessTree(s.cmd)
 		_ = s.cmd.Wait()
 		if len(s.cmd.Args) > 0 {
 			for _, arg := range s.cmd.Args {
 				if strings.HasPrefix(arg, "--user-data-dir=") {
-					_ = os.RemoveAll(strings.TrimPrefix(arg, "--user-data-dir="))
+					removeBrowserProfile(strings.TrimPrefix(arg, "--user-data-dir="))
 				}
 			}
 		}
 	}
 }
 
-func (s *browserSession) call(ctx context.Context, method string, params map[string]any) (json.RawMessage, error) {
+// terminateBrowserProcessTree closes the browser we started and its renderer/
+// GPU descendants. Process.Kill only targets the Chromium parent on Windows;
+// leaving descendants alive keeps the private profile locked and can make the
+// next isolated render fail before CDP navigation. The PID is the process we
+// just spawned, so taskkill's /T scope cannot reach the user's existing browser.
+func terminateBrowserProcessTree(cmd *exec.Cmd) {
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	if runtime.GOOS == "windows" {
+		_ = exec.Command("taskkill", "/PID", fmt.Sprint(cmd.Process.Pid), "/T", "/F").Run()
+	}
+	_ = cmd.Process.Kill()
+}
+
+// removeBrowserProfile retries briefly because Chromium's child processes can
+// release profile files just after taskkill returns. A single RemoveAll call
+// otherwise leaves a private profile behind after a GPU/CDP startup failure.
+func removeBrowserProfile(path string) {
+	if path == "" {
+		return
+	}
+	var lastErr error
+	for attempt := 0; attempt < 20; attempt++ {
+		if err := os.RemoveAll(path); err != nil {
+			lastErr = err
+		} else if _, err := os.Stat(path); os.IsNotExist(err) {
+			return
+		} else if err != nil {
+			lastErr = err
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if lastErr != nil && os.Getenv("IMAGEPAD_NICONICO_RENDER_DEBUG") == "1" {
+		_, _ = fmt.Fprintf(os.Stderr, "niconico: remove browser profile %q: %v\n", path, lastErr)
+	}
+}
+
+func (s *browserSession) call(ctx context.Context, method string, params map[string]any) (result json.RawMessage, err error) {
+	started := time.Now()
+	defer func() {
+		if os.Getenv("IMAGEPAD_NICONICO_RENDER_CDP_TRACE") != "1" {
+			return
+		}
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "niconico cdp method=%s elapsed_ms=%.1f error=%q\n", method, float64(time.Since(started).Microseconds())/1000, err.Error())
+			return
+		}
+		_, _ = fmt.Fprintf(os.Stderr, "niconico cdp method=%s elapsed_ms=%.1f ok\n", method, float64(time.Since(started).Microseconds())/1000)
+	}()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

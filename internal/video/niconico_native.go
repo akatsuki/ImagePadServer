@@ -107,22 +107,47 @@ func (b *nicoErrorTail) Write(p []byte) (int, error) {
 	return n, nil
 }
 
+type nicoNativePipeResult struct {
+	report       nicorender.RenderReport
+	stageTimings []NicoStageTiming
+}
+
+func nicoProcessError(stage string, err error) error {
+	if err == nil {
+		return nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return fmt.Errorf("%s exit_code=%d: %w", stage, exitErr.ExitCode(), err)
+	}
+	return fmt.Errorf("%s: %w", stage, err)
+}
+
 func runNicoNativePipe(ctx context.Context, nativePath string, nativeArgs []string, encoderPath string, encoderArgs []string, expected int64, progress func(int64, int64), produce func(context.Context, io.Writer) (nicorender.RenderReport, error)) (nicorender.RenderReport, error) {
+	result, err := runNicoNativePipeTimed(ctx, nativePath, nativeArgs, encoderPath, encoderArgs, expected, progress, produce)
+	return result.report, err
+}
+
+func runNicoNativePipeTimed(ctx context.Context, nativePath string, nativeArgs []string, encoderPath string, encoderArgs []string, expected int64, progress func(int64, int64), produce func(context.Context, io.Writer) (nicorender.RenderReport, error)) (nicoNativePipeResult, error) {
+	return runNicoNativePipeTimedInDir(ctx, nativePath, nativeArgs, encoderPath, encoderArgs, expected, progress, produce, "")
+}
+
+func runNicoNativePipeTimedInDir(ctx context.Context, nativePath string, nativeArgs []string, encoderPath string, encoderArgs []string, expected int64, progress func(int64, int64), produce func(context.Context, io.Writer) (nicorender.RenderReport, error), encoderDir string) (nicoNativePipeResult, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var report nicorender.RenderReport
 	if expected <= 0 || produce == nil {
-		return report, fmt.Errorf("invalid native job")
+		return nicoNativePipeResult{}, fmt.Errorf("invalid native job")
 	}
 	frameR, frameW, err := os.Pipe()
 	if err != nil {
-		return report, err
+		return nicoNativePipeResult{}, err
 	}
 	defer frameR.Close()
 	defer frameW.Close()
 	feedR, feedW, err := os.Pipe()
 	if err != nil {
-		return report, err
+		return nicoNativePipeResult{}, err
 	}
 	defer feedR.Close()
 	defer feedW.Close()
@@ -132,6 +157,9 @@ func runNicoNativePipe(ctx context.Context, nativePath string, nativeArgs []stri
 	encoder := exec.CommandContext(ctx, encoderPath, encoderArgs...)
 	hideWindow(native)
 	hideWindow(encoder)
+	if encoderDir != "" {
+		encoder.Dir = encoderDir
+	}
 	native.WaitDelay = 2 * time.Second
 	encoder.WaitDelay = 2 * time.Second
 	native.Stdin = feedR
@@ -141,13 +169,15 @@ func runNicoNativePipe(ctx context.Context, nativePath string, nativeArgs []stri
 	var nativeTail, encoderTail nicoErrorTail
 	native.Stderr = io.MultiWriter(&nativeTail, &status)
 	encoder.Stderr = &encoderTail
+	encoderStartedAt := time.Now()
 	if err = encoder.Start(); err != nil {
-		return report, fmt.Errorf("niconico: start ffmpeg: %w", err)
+		return nicoNativePipeResult{}, fmt.Errorf("niconico: start ffmpeg: %w", err)
 	}
+	nativeStartedAt := time.Now()
 	if err = native.Start(); err != nil {
 		cancel()
 		_ = encoder.Wait()
-		return report, fmt.Errorf("niconico: start compositor: %w", err)
+		return nicoNativePipeResult{}, fmt.Errorf("niconico: start compositor: %w", err)
 	}
 	// Parent copies must close immediately, or child EOF cannot propagate.
 	_ = frameR.Close()
@@ -157,16 +187,32 @@ func runNicoNativePipe(ctx context.Context, nativePath string, nativeArgs []stri
 		stage  string
 		report nicorender.RenderReport
 		err    error
+		timing NicoStageTiming
 	}
 	done := make(chan result, 3)
 	go func() {
 		e := native.Wait()
 		if e == nil {
 			e = status.complete()
+		} else {
+			e = nicoProcessError("compositor", e)
 		}
-		done <- result{stage: "compositor", err: e}
+		finishedAt := time.Now()
+		done <- result{stage: "compositor", err: e, timing: NicoStageTiming{
+			Name: "native_compositor", StartedAt: nativeStartedAt, FinishedAt: finishedAt, Elapsed: finishedAt.Sub(nativeStartedAt),
+		}}
 	}()
-	go func() { done <- result{stage: "ffmpeg", err: encoder.Wait()} }()
+	go func() {
+		e := encoder.Wait()
+		if e != nil {
+			e = nicoProcessError("ffmpeg", e)
+		}
+		finishedAt := time.Now()
+		done <- result{stage: "ffmpeg", err: e, timing: NicoStageTiming{
+			Name: "native_ffmpeg", StartedAt: encoderStartedAt, FinishedAt: finishedAt, Elapsed: finishedAt.Sub(encoderStartedAt),
+		}}
+	}()
+	producerStartedAt := time.Now()
 	go func() {
 		r, e := produce(ctx, feedW)
 		closeErr := feedW.Close()
@@ -176,28 +222,48 @@ func runNicoNativePipe(ctx context.Context, nativePath string, nativeArgs []stri
 		if e == nil && r.FrameCount != expected {
 			e = fmt.Errorf("generated %d frames, want %d", r.FrameCount, expected)
 		}
-		done <- result{stage: "renderer", report: r, err: e}
+		finishedAt := time.Now()
+		done <- result{stage: "renderer", report: r, err: e, timing: NicoStageTiming{
+			Name: "native_sprite_stream", StartedAt: producerStartedAt, FinishedAt: finishedAt, Elapsed: finishedAt.Sub(producerStartedAt),
+		}}
 	}()
 	var failures []error
+	var compositorTiming, ffmpegTiming, spriteTiming NicoStageTiming
 	for i := 0; i < 3; i++ {
 		r := <-done
 		if r.stage == "renderer" {
 			report = r.report
+			spriteTiming = r.timing
+		} else if r.stage == "compositor" {
+			compositorTiming = r.timing
+		} else if r.stage == "ffmpeg" {
+			ffmpegTiming = r.timing
 		}
 		if r.err != nil {
 			failures = append(failures, fmt.Errorf("%s: %w", r.stage, r.err))
 			cancel()
 		}
 	}
-	if len(failures) > 0 {
-		return report, fmt.Errorf("niconico: %w; compositor: %s; ffmpeg: %s", errors.Join(failures...), strings.TrimSpace(nativeTail.String()), strings.TrimSpace(encoderTail.String()))
+	pipeResult := nicoNativePipeResult{report: report, stageTimings: []NicoStageTiming{spriteTiming, compositorTiming, ffmpegTiming}}
+	filtered := pipeResult.stageTimings[:0]
+	for _, timing := range pipeResult.stageTimings {
+		if timing.Name != "" {
+			filtered = append(filtered, timing)
+		}
 	}
-	return report, nil
+	pipeResult.stageTimings = filtered
+	if len(failures) > 0 {
+		return pipeResult, fmt.Errorf("niconico: %w; compositor: %s; ffmpeg: %s", errors.Join(failures...), strings.TrimSpace(nativeTail.String()), strings.TrimSpace(encoderTail.String()))
+	}
+	return pipeResult, nil
 }
 
 func encodeNicoNative(ctx context.Context, compositor, ffmpeg, source, output string, snapshot niconico.Snapshot, render nicorender.RenderOptions, enc NicoEncodeOptions) (NicoEncodeReport, nicorender.RenderReport, error) {
+	timer := newNicoStageTimer(enc.StageObserver)
 	var rr nicorender.RenderReport
+	validateStart := time.Now()
 	clock, err := enc.validate()
+	timer.mark("validate", validateStart)
 	if err != nil {
 		return NicoEncodeReport{}, rr, err
 	}
@@ -215,33 +281,75 @@ func encodeNicoNative(ctx context.Context, compositor, ffmpeg, source, output st
 	_ = pending.Close()
 	defer os.Remove(pendingPath)
 	count := clock.FrameCountForDurationMs(enc.DurationMs)
+	mode, err := NormalizeNicoOutputMode(enc.OutputMode)
+	if err != nil {
+		return NicoEncodeReport{}, rr, err
+	}
+	teeWorkDir := ""
+	if mode == NicoOutputTee {
+		teeWorkDir, err = createNicoTeeWorkspace(output)
+		if err != nil {
+			return NicoEncodeReport{}, rr, err
+		}
+		defer os.RemoveAll(teeWorkDir)
+	}
 	args := []string{"--stdin"}
 	if render.NativeCopyOutput {
 		args = append(args, "--copy-output")
 	}
-	rr, err = runNicoNativePipe(ctx, compositor, args, ffmpeg, nicoEncodeArgs(source, pendingPath, enc), count, render.Progress, func(ctx context.Context, w io.Writer) (nicorender.RenderReport, error) {
+	argsStart := time.Now()
+	ffmpegArgs := nicoEncodeArgs(source, pendingPath, enc)
+	timer.mark("build_ffmpeg_args", argsStart)
+	nativeStart := time.Now()
+	pipeResult, err := runNicoNativePipeTimedInDir(ctx, compositor, args, ffmpeg, ffmpegArgs, count, render.Progress, func(ctx context.Context, w io.Writer) (nicorender.RenderReport, error) {
 		r, e := nicorender.WriteSpriteStream(ctx, snapshot, render, w)
 		r.RenderReport.SpriteTextureBytes = r.TextureBytes
 		r.RenderReport.SpritePayloadBytes = r.PackedTextureBytes
 		r.RenderReport.SpriteTextures = r.Textures
 		return r.RenderReport, e
-	})
+	}, teeWorkDir)
+	rr = pipeResult.report
+	for _, stage := range pipeResult.stageTimings {
+		timer.record(stage)
+	}
+	rawFrameBytes := int64(enc.Width) * int64(enc.Height) * 4 * count
+	timer.markBytes("native_render_encode", nativeStart, rawFrameBytes)
 	rr.Backend = "native-warp"
 	if err != nil {
-		return NicoEncodeReport{}, rr, err
+		// Preserve the completed stage timing on runtime failure so T11
+		// diagnostics can account for failed native attempts as well.
+		return NicoEncodeReport{StageTimings: timer.snapshot()}, rr, err
 	}
 	if err = ctx.Err(); err != nil {
 		return NicoEncodeReport{}, rr, err
 	}
-	stat, err := os.Stat(pendingPath)
-	if err != nil {
-		return NicoEncodeReport{}, rr, err
+	outputValidateStart := time.Now()
+	var outputSize int64
+	if mode == NicoOutputTee {
+		if err := promoteNicoTeeArtifacts(teeWorkDir, output, enc.HLSOutputDir); err != nil {
+			return NicoEncodeReport{}, rr, err
+		}
+		stat, err := os.Stat(output)
+		if err != nil {
+			return NicoEncodeReport{}, rr, err
+		}
+		outputSize = stat.Size()
+	} else {
+		stat, err := os.Stat(pendingPath)
+		if err != nil {
+			return NicoEncodeReport{}, rr, err
+		}
+		if stat.Size() == 0 {
+			return NicoEncodeReport{}, rr, fmt.Errorf("niconico: empty native output")
+		}
+		if err = os.Rename(pendingPath, output); err != nil {
+			return NicoEncodeReport{}, rr, err
+		}
+		outputSize = stat.Size()
 	}
-	if stat.Size() == 0 {
+	if outputSize == 0 {
 		return NicoEncodeReport{}, rr, fmt.Errorf("niconico: empty native output")
 	}
-	if err = os.Rename(pendingPath, output); err != nil {
-		return NicoEncodeReport{}, rr, err
-	}
-	return NicoEncodeReport{OutputPath: output, FrameCount: count, Width: enc.Width, Height: enc.Height, FPSNum: enc.FPSNum, FPSDen: enc.FPSDen}, rr, nil
+	timer.markBytes("output_validate", outputValidateStart, outputSize)
+	return NicoEncodeReport{OutputPath: output, FrameCount: count, Width: enc.Width, Height: enc.Height, FPSNum: enc.FPSNum, FPSDen: enc.FPSDen, StageTimings: timer.snapshot()}, rr, nil
 }

@@ -3,6 +3,7 @@ package video
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -80,9 +81,12 @@ func TestNicoNativeFailurePreservesOutput(t *testing.T) {
 	}
 	r := nicorender.RenderOptions{Width: 64, Height: 36, DurationMs: 100, FPSNum: 30, FPSDen: 1}
 	e := NicoEncodeOptions{Width: 64, Height: 36, DurationMs: 100, FPSNum: 30, FPSDen: 1, CRF: 26}
-	_, _, err := encodeNicoNative(context.Background(), "missing-native", "missing-ffmpeg", source, output, niconico.Snapshot{}, r, e)
+	report, _, err := encodeNicoNative(context.Background(), "missing-native", "missing-ffmpeg", source, output, niconico.Snapshot{}, r, e)
 	if err == nil {
 		t.Fatal("expected process failure")
+	}
+	if len(report.StageTimings) == 0 || report.StageTimings[len(report.StageTimings)-1].Name != "native_render_encode" {
+		t.Fatalf("failure timing was not preserved: %+v", report.StageTimings)
 	}
 	data, err := os.ReadFile(output)
 	if err != nil || string(data) != sentinel {
@@ -92,6 +96,176 @@ func TestNicoNativeFailurePreservesOutput(t *testing.T) {
 	if err != nil || len(pending) != 0 {
 		t.Fatalf("partial outputs retained: %v %v", pending, err)
 	}
+}
+
+func TestNicoAutoFallbackAfterNativeRuntimeFailureRegeneratesBrowser(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source.mp4")
+	output := filepath.Join(dir, "out.mp4")
+	if err := os.WriteFile(source, []byte("source"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	oldPrepare := prepareNicoNativeCompositor
+	oldNative := encodeNicoNativeForPipeline
+	oldBrowser := encodeNicoBrowserForPipeline
+	t.Cleanup(func() {
+		prepareNicoNativeCompositor = oldPrepare
+		encodeNicoNativeForPipeline = oldNative
+		encodeNicoBrowserForPipeline = oldBrowser
+	})
+	prepareNicoNativeCompositor = func(context.Context, string) (string, func(), error) {
+		return "native-compositor", func() {}, nil
+	}
+	encodeNicoNativeForPipeline = func(_ context.Context, _, _, _, outputPath string, _ niconico.Snapshot, _ nicorender.RenderOptions, _ NicoEncodeOptions) (NicoEncodeReport, nicorender.RenderReport, error) {
+		if err := os.WriteFile(outputPath, []byte("partial-native"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		return NicoEncodeReport{}, nicorender.RenderReport{}, errors.New("native runtime failure")
+	}
+	encodeNicoBrowserForPipeline = func(_ context.Context, _, _, outputPath string, _ niconico.Snapshot, _ nicorender.RenderOptions, _ NicoEncodeOptions) (NicoEncodeReport, nicorender.RenderReport, error) {
+		if _, err := os.Stat(outputPath); !os.IsNotExist(err) {
+			t.Fatalf("browser fallback saw native partial output: %v", err)
+		}
+		if err := os.WriteFile(outputPath, []byte("browser-complete"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		return NicoEncodeReport{OutputPath: outputPath}, nicorender.RenderReport{Backend: "browser"}, nil
+	}
+
+	_, report, err := EncodeNicoCommentedWithRenderer(context.Background(), "ffmpeg", source, output, niconico.Snapshot{}, nicorender.RenderOptions{
+		Backend: "auto", Width: 64, Height: 36, DurationMs: 100, FPSNum: 30, FPSDen: 1,
+	}, NicoEncodeOptions{Width: 64, Height: 36, DurationMs: 100, FPSNum: 30, FPSDen: 1, CRF: 26})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Backend != "browser" || !strings.Contains(report.FallbackReason, "native runtime failure") {
+		t.Fatalf("fallback report = %+v", report)
+	}
+	data, err := os.ReadFile(output)
+	if err != nil || string(data) != "browser-complete" {
+		t.Fatalf("fallback output = %v %q", err, data)
+	}
+}
+
+func TestNicoAutoFallbackFailurePreservesExistingOutput(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source.mp4")
+	output := filepath.Join(dir, "out.mp4")
+	if err := os.WriteFile(source, []byte("source"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	const previous = "previous-completed-output"
+	if err := os.WriteFile(output, []byte(previous), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	oldPrepare := prepareNicoNativeCompositor
+	oldNative := encodeNicoNativeForPipeline
+	oldBrowser := encodeNicoBrowserForPipeline
+	t.Cleanup(func() {
+		prepareNicoNativeCompositor = oldPrepare
+		encodeNicoNativeForPipeline = oldNative
+		encodeNicoBrowserForPipeline = oldBrowser
+	})
+	prepareNicoNativeCompositor = func(context.Context, string) (string, func(), error) {
+		return "native-compositor", func() {}, nil
+	}
+	encodeNicoNativeForPipeline = func(_ context.Context, _, _, _, _ string, _ niconico.Snapshot, _ nicorender.RenderOptions, _ NicoEncodeOptions) (NicoEncodeReport, nicorender.RenderReport, error) {
+		return NicoEncodeReport{}, nicorender.RenderReport{}, errors.New("native runtime failure")
+	}
+	encodeNicoBrowserForPipeline = func(_ context.Context, _, _, outputPath string, _ niconico.Snapshot, _ nicorender.RenderOptions, _ NicoEncodeOptions) (NicoEncodeReport, nicorender.RenderReport, error) {
+		if err := os.WriteFile(outputPath, []byte("partial-browser"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		return NicoEncodeReport{}, nicorender.RenderReport{}, errors.New("browser regeneration failure")
+	}
+
+	_, _, err := EncodeNicoCommentedWithRenderer(context.Background(), "ffmpeg", source, output, niconico.Snapshot{}, nicorender.RenderOptions{
+		Backend: "auto", Width: 64, Height: 36, DurationMs: 100, FPSNum: 30, FPSDen: 1,
+	}, NicoEncodeOptions{Width: 64, Height: 36, DurationMs: 100, FPSNum: 30, FPSDen: 1, CRF: 26})
+	if err == nil || !strings.Contains(err.Error(), "browser regeneration failure") {
+		t.Fatalf("error = %v", err)
+	}
+	data, readErr := os.ReadFile(output)
+	if readErr != nil || string(data) != previous {
+		t.Fatalf("previous output was not preserved: %v %q", readErr, data)
+	}
+}
+
+func TestPromoteNicoFallbackOutputDiagnosesBackupCleanupFailure(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, ".niconico-fallback.mp4")
+	output := filepath.Join(dir, "out.mp4")
+	if err := os.WriteFile(source, []byte("new-output"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(output, []byte("previous-output"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	oldRemove := removeNicoFallbackBackup
+	oldDiagnostic := reportNicoFallbackCleanup
+	t.Cleanup(func() {
+		removeNicoFallbackBackup = oldRemove
+		reportNicoFallbackCleanup = oldDiagnostic
+	})
+	removeCalls := 0
+	removeNicoFallbackBackup = func(path string) error {
+		removeCalls++
+		if removeCalls == 2 {
+			return errors.New("simulated backup cleanup failure")
+		}
+		return os.Remove(path)
+	}
+	diagnosed := false
+	reportNicoFallbackCleanup = func(string, ...any) { diagnosed = true }
+
+	if err := promoteNicoFallbackOutput(source, output); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(output)
+	if err != nil || string(data) != "new-output" {
+		t.Fatalf("promoted output = %v %q", err, data)
+	}
+	if !diagnosed {
+		t.Fatal("backup cleanup failure was not diagnosed")
+	}
+	if removeCalls != 2 {
+		t.Fatalf("backup remove calls = %d, want 2", removeCalls)
+	}
+}
+
+func TestNicoProductionBackendAcceptanceAllowsExplicitAutoFallbackOnly(t *testing.T) {
+	cases := []struct {
+		name          string
+		requested     string
+		actual        string
+		allowFallback bool
+		want          bool
+	}{
+		{name: "native success", requested: "auto", actual: "native-warp", want: true},
+		{name: "diagnostic auto fallback", requested: "auto", actual: "browser", allowFallback: true, want: true},
+		{name: "fallback disabled", requested: "auto", actual: "browser", want: false},
+		{name: "native never falls back", requested: "native", actual: "browser", allowFallback: true, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := acceptsNicoProductionBackend(tc.requested, tc.actual, tc.allowFallback); got != tc.want {
+				t.Fatalf("acceptsNicoProductionBackend(%q, %q, %v) = %v, want %v", tc.requested, tc.actual, tc.allowFallback, got, tc.want)
+			}
+		})
+	}
+}
+
+func acceptsNicoProductionBackend(requested, actual string, allowFallback bool) bool {
+	if requested != "auto" && requested != "native" {
+		return true
+	}
+	if actual == "native-warp" {
+		return true
+	}
+	return requested == "auto" && allowFallback && actual == "browser"
 }
 
 // Opt-in: exercises the public API, real Chrome, embedded helper, unchanged
@@ -124,7 +298,10 @@ func TestNicoProductionPipeline(t *testing.T) {
 	o := nicorender.RenderOptions{Backend: backend, Width: 1920, Height: 1080, DurationMs: duration, FPSNum: 30, FPSDen: 1, Transport: "binary", BatchFrames: 30, ReuseUnchanged: true, SparseFrames: true}
 	o.SpriteCompression = os.Getenv("IMAGEPAD_NICO_TEST_COMPRESSION")
 	o.NativeCopyOutput = os.Getenv("IMAGEPAD_NICO_TEST_COPY_OUTPUT") == "1"
-	enc := NicoEncodeOptions{Width: o.Width, Height: o.Height, DurationMs: duration, FPSNum: 30, FPSDen: 1, CRF: 26, AudioBitrate: "160k"}
+	var stageTimings []NicoStageTiming
+	enc := NicoEncodeOptions{Width: o.Width, Height: o.Height, DurationMs: duration, FPSNum: 30, FPSDen: 1, CRF: 26, AudioBitrate: "160k", StageObserver: func(stage NicoStageTiming) {
+		stageTimings = append(stageTimings, stage)
+	}}
 	clock, _ := niconico.NewFrameClock(30, 1)
 	expected := clock.FrameCountForDurationMs(duration)
 	last := int64(0)
@@ -154,8 +331,12 @@ func TestNicoProductionPipeline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if (backend == "auto" || backend == "native") && rr.Backend != "native-warp" {
+	allowFallback := os.Getenv("IMAGEPAD_NICO_ALLOW_NATIVE_FALLBACK") == "1"
+	if !acceptsNicoProductionBackend(backend, rr.Backend, allowFallback) {
 		t.Fatalf("native not selected: %+v", rr)
+	}
+	if allowFallback && backend == "auto" && rr.Backend == "browser" && rr.FallbackReason == "" {
+		t.Fatalf("diagnostic fallback was accepted without a fallback reason: %+v", rr)
 	}
 	if last != expected || progressError != "" || rr.FrameCount != expected || er.FrameCount != expected {
 		t.Fatalf("progress=%d expected=%d error=%s reports=%+v %+v", last, expected, progressError, rr, er)
@@ -215,7 +396,7 @@ func TestNicoProductionPipeline(t *testing.T) {
 	if err = os.WriteFile(filepath.Join(dir, "frames.md5"), md5, 0600); err != nil {
 		t.Fatal(err)
 	}
-	record := map[string]any{"backend": rr.Backend, "compression": o.SpriteCompression, "copy_output": o.NativeCopyOutput, "duration_ms": duration, "encode_seconds": elapsed.Seconds(), "generated_frames": expected, "decoded_frames": decoded, "single_slice_aus": au, "last_progress": last, "report": rr}
+	record := map[string]any{"backend": rr.Backend, "compression": o.SpriteCompression, "copy_output": o.NativeCopyOutput, "duration_ms": duration, "encode_seconds": elapsed.Seconds(), "generated_frames": expected, "decoded_frames": decoded, "single_slice_aus": au, "last_progress": last, "stage_timings": stageTimings, "encoder_report": er, "report": rr}
 	summary, _ := json.MarshalIndent(record, "", "  ")
 	if err = os.WriteFile(filepath.Join(dir, "result.json"), summary, 0600); err != nil {
 		t.Fatal(err)
