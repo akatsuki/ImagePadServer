@@ -119,7 +119,20 @@ func (s *Server) processNiconicoCommentedURL(r *http.Request, rawURL string, que
 	nicoExportMu.Lock()
 	defer nicoExportMu.Unlock()
 	expectedRevision := s.store.PublishedRevision()
-	_, budgetReport, err := niconicoWorkerRunner(r.Context(), nicoexportworker.Request{
+	frameProgress := newNicoProgressReporter(time.Now, s.setIngestProgress)
+	workerContext := withNicoWorkerProgress(r.Context(), func(event nicoexportworker.Event) {
+		switch event.Stage {
+		case "render":
+			if event.Total > 0 {
+				frameProgress(event.Completed, event.Total)
+			}
+		case "hls":
+			s.setIngestProgress(90, "HLSを生成中…")
+		case "validate":
+			s.setIngestProgress(99, "完成物を検証中…")
+		}
+	})
+	_, budgetReport, err := niconicoWorkerRunner(workerContext, nicoexportworker.Request{
 		Version: nicoexportworker.ProtocolVersion,
 		RunID:   runID, MediaID: mediaID,
 		SourcePath: media.SourcePath, SnapshotPath: snapshotPath, OutputPath: outputPath, HLSStagingDir: hlsDir,

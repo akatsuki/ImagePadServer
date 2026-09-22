@@ -290,6 +290,41 @@ func readTrackedProcessesLockedForTest() ([]trackedProcess, error) {
 	return readTrackedProcessesLocked()
 }
 
+func TestReadTrackedProcessesQuarantinesCorruptRegistry(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("IMAGEPAD_DATA_DIR", dataDir)
+	path := processRegistryPath()
+	corrupt := []byte("[]  {\"pid\": 48140}\n")
+	if err := os.WriteFile(path, corrupt, 0600); err != nil {
+		t.Fatalf("write corrupt registry: %v", err)
+	}
+
+	entries, err := readTrackedProcessesLockedForTest()
+	if err != nil {
+		t.Fatalf("read corrupt registry: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("entries = %+v, want empty after quarantine", entries)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("corrupt registry still exists: %v", err)
+	}
+	matches, err := filepath.Glob(path + ".corrupt-*")
+	if err != nil {
+		t.Fatalf("find quarantined registry: %v", err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("quarantined registries = %v, want exactly one", matches)
+	}
+	got, err := os.ReadFile(matches[0])
+	if err != nil {
+		t.Fatalf("read quarantined registry: %v", err)
+	}
+	if !reflect.DeepEqual(got, corrupt) {
+		t.Fatalf("quarantined bytes = %q, want %q", got, corrupt)
+	}
+}
+
 func TestIsFFmpegPathRecognizesWindowsWrappers(t *testing.T) {
 	for _, path := range []string{"ffmpeg", "ffmpeg.exe", "ffmpeg.cmd", "ffmpeg.bat", `C:\	ools\\FFMPEG.CMD`} {
 		if !isFFmpegPath(path) {

@@ -32,6 +32,42 @@ type nicoWorkerEventCollector struct {
 	result     *nicoexportworker.Event
 	resultSeen bool
 	err        error
+	onProgress func(nicoexportworker.Event)
+}
+
+type nicoWorkerProgressContextKey struct{}
+
+func withNicoWorkerProgress(ctx context.Context, onProgress func(nicoexportworker.Event)) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if onProgress == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, nicoWorkerProgressContextKey{}, onProgress)
+}
+
+func nicoWorkerProgressFromContext(ctx context.Context) func(nicoexportworker.Event) {
+	if ctx == nil {
+		return nil
+	}
+	onProgress, _ := ctx.Value(nicoWorkerProgressContextKey{}).(func(nicoexportworker.Event))
+	return onProgress
+}
+
+func newNicoWorkerEventCollector(ctx context.Context, request nicoexportworker.Request) *nicoWorkerEventCollector {
+	onProgress := nicoWorkerProgressFromContext(ctx)
+	collector := &nicoWorkerEventCollector{}
+	if onProgress == nil {
+		return collector
+	}
+	collector.onProgress = func(event nicoexportworker.Event) {
+		if event.RunID != request.RunID || event.MediaID != request.MediaID {
+			return
+		}
+		onProgress(event)
+	}
+	return collector
 }
 
 func (c *nicoWorkerEventCollector) Write(p []byte) (int, error) {
@@ -72,6 +108,12 @@ func (c *nicoWorkerEventCollector) consumeLineLocked() error {
 	}
 	if event.Type != "progress" && event.Type != "result" {
 		return fmt.Errorf("niconico worker stdout: unsupported event type %q", event.Type)
+	}
+	if event.Type == "progress" {
+		if c.onProgress != nil {
+			c.onProgress(event)
+		}
+		return nil
 	}
 	if event.Type == "result" {
 		if c.resultSeen {
@@ -143,7 +185,7 @@ func runNicoWorkerWithBudget(ctx context.Context, request nicoexportworker.Reque
 	if err != nil {
 		return nicoexportworker.Event{}, nicoexportbudget.Report{}, err
 	}
-	collector := &nicoWorkerEventCollector{}
+	collector := newNicoWorkerEventCollector(ctx, request)
 	stderr := &nicoWorkerStderrTail{}
 	report, runErr := nicoexportbudget.Run(ctx, nicoexportbudget.ProcessSpec{
 		Exe:    executable,

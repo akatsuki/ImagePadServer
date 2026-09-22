@@ -3,11 +3,36 @@ package server
 import (
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 
 	"imagepadserver/internal/nicoexportworker"
 )
+
+func TestNicoWorkerEventCollectorReportsProgress(t *testing.T) {
+	var progress []nicoexportworker.Event
+	request := nicoexportworker.Request{RunID: "run-1", MediaID: "media-1"}
+	ctx := withNicoWorkerProgress(context.Background(), func(event nicoexportworker.Event) {
+		progress = append(progress, event)
+	})
+	collector := newNicoWorkerEventCollector(ctx, request)
+	output := `{"version":1,"type":"progress","run_id":"run-1","media_id":"media-1","stage":"render","completed":12,"total":30}
+{"version":1,"type":"result","run_id":"run-1","media_id":"media-1","output":"out.mp4","playlist":"playlist.m3u8","ok":true}
+`
+	if _, err := io.Copy(collector, strings.NewReader(output)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := collector.event(); err != nil {
+		t.Fatal(err)
+	}
+	if len(progress) != 1 {
+		t.Fatalf("progress events = %d, want 1", len(progress))
+	}
+	if progress[0].Stage != "render" || progress[0].Completed != 12 || progress[0].Total != 30 {
+		t.Fatalf("progress = %#v", progress[0])
+	}
+}
 
 func TestParseNicoWorkerEventsRequiresOneSuccessfulResult(t *testing.T) {
 	result, err := parseNicoWorkerEvents(`{"version":1,"type":"progress","stage":"render"}
