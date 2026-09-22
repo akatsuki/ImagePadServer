@@ -22,6 +22,11 @@ GstBuffer *airplay_video_view_render(AirPlayVideoViewRenderer *r,GstSample *s,Ai
       !airplay_video_view_layout(&in,NULL,GST_VIDEO_INFO_WIDTH(&r->output),GST_VIDEO_INFO_HEIGHT(&r->output),mode,&l)) {
     g_set_error(e,GST_CORE_ERROR,GST_CORE_ERROR_NEGOTIATION,"unsupported video view sample"); g_mutex_unlock(&r->mutex); return NULL;
   }
+  /* This converter only changes the spatial layout.  The source-clock
+   * scheduler owns cadence and the buffer PTS is copied below, but
+   * GstVideoConverter requires matching frame rates in its format infos. */
+  in.fps_n = r->output.fps_n;
+  in.fps_d = r->output.fps_d;
   GstStructure *cfg=gst_structure_new("video-view",
     GST_VIDEO_CONVERTER_OPT_SRC_X,G_TYPE_INT,l.src.x,GST_VIDEO_CONVERTER_OPT_SRC_Y,G_TYPE_INT,l.src.y,
     GST_VIDEO_CONVERTER_OPT_SRC_WIDTH,G_TYPE_INT,l.src.width,GST_VIDEO_CONVERTER_OPT_SRC_HEIGHT,G_TYPE_INT,l.src.height,

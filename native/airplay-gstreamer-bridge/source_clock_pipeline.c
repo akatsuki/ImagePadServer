@@ -4,6 +4,7 @@
 #include "source_clock_pipeline_internal.h"
 #include "source_clock_encoder_policy.h"
 #include "source_clock_protocol.h"
+#include "source_clock_reject_policy.h"
 #include "source_clock_reader.h"
 #include "source_clock_video_watermark.h"
 #include "source_clock_timeline.h"
@@ -215,6 +216,7 @@ struct SourceClockPipeline {
   uint64_t candidate_stage_time[4];
   SourceClockVideoSchedulerRuntime video_scheduler;
   uint8_t token[SOURCE_CLOCK_SESSION_TOKEN_BYTES];
+  SourceClockRejectState reject_state;
   gint64 started_monotonic_us;
   gint64 last_signal_monotonic_us;
   gint no_signal_seconds;
@@ -961,7 +963,10 @@ static gboolean start_video_scheduler(SourceClockVideoSchedulerRuntime *runtime,
   }
   runtime->clock = gst_element_get_clock(pipeline);
   runtime->base_time = gst_element_get_base_time(pipeline);
-  if (runtime->clock == NULL) return FALSE;
+  if (runtime->clock == NULL) {
+    g_printerr("AirPlay source-clock video scheduler could not get pipeline clock\n");
+    return FALSE;
+  }
   source_clock_video_scheduler_init(&runtime->policy, (uint64_t)cadence);
   runtime->next_tick_absolute = runtime->base_time + cadence;
   runtime->report_monotonic_us = g_get_monotonic_time();
@@ -982,6 +987,50 @@ static gboolean start_video_scheduler(SourceClockVideoSchedulerRuntime *runtime,
     }
   }
   return runtime->thread != NULL;
+}
+
+static gboolean source_clock_wait_for_playing(GstElement *pipeline,
+                                               GstState *current_state) {
+  GstState current = GST_STATE_NULL;
+  GstState pending = GST_STATE_VOID_PENDING;
+  GstStateChangeReturn result;
+  GstClock *clock = NULL;
+  if (pipeline == NULL) return FALSE;
+  result = gst_element_get_state(pipeline, &current, &pending, 100 * GST_MSECOND);
+  if (result != GST_STATE_CHANGE_FAILURE && current != GST_STATE_PLAYING &&
+      !(current == GST_STATE_PAUSED && pending == GST_STATE_PLAYING &&
+        result == GST_STATE_CHANGE_ASYNC)) {
+    result = gst_element_get_state(pipeline, &current, &pending,
+                                    1900 * GST_MSECOND);
+  }
+  if (current_state != NULL) *current_state = current;
+  if (result == GST_STATE_CHANGE_FAILURE) {
+    g_printerr("AirPlay source-clock pipeline did not reach PLAYING "
+               "result=%d current=%d pending=%d\n",
+               result, current, pending);
+    return FALSE;
+  }
+  if (current == GST_STATE_PLAYING) return TRUE;
+  /* Live RTSP sinks can remain PAUSED while their first ANNOUNCE/RECORD
+   * handshake is still pending. The pipeline clock is already selected at
+   * this boundary, so let the source-clock scheduler and receiver start;
+   * the first source AU completes the live transition. Reject every other
+   * incomplete state so a real construction failure remains fail-closed. */
+  if (current == GST_STATE_PAUSED && pending == GST_STATE_PLAYING &&
+      result == GST_STATE_CHANGE_ASYNC && GST_IS_PIPELINE(pipeline)) {
+    clock = gst_pipeline_get_clock(GST_PIPELINE(pipeline));
+    if (clock != NULL) {
+      gst_object_unref(clock);
+      g_printerr("AirPlay source-clock pipeline is PAUSED pending PLAYING; "
+                 "clock selected, continuing live startup\n");
+      return TRUE;
+    }
+  }
+  if (clock != NULL) gst_object_unref(clock);
+  g_printerr("AirPlay source-clock pipeline did not reach PLAYING "
+             "result=%d current=%d pending=%d\n",
+             result, current, pending);
+  return FALSE;
 }
 
 static gboolean source_clock_accept_start_allowed(gboolean publisher_ready,
@@ -1934,9 +1983,30 @@ static gpointer source_clock_accept_thread(gpointer user_data) {
       if (!source_clock_socket_readable(client, 250)) continue;
       int received = recv(client, (char *)buffer, sizeof(buffer), 0);
       if (received <= 0) break;
-      if (source_clock_reader_feed(&reader, buffer, (size_t)received) != SOURCE_CLOCK_READER_OK) {
-        signal_pipeline_error(pipeline, TRUE);
+      SourceClockReaderStatus reader_status = source_clock_reader_feed(
+          &reader, buffer, (size_t)received);
+      if (reader_status != SOURCE_CLOCK_READER_OK) {
+        SourceClockRejectAction action;
+        const gboolean authenticated = source_clock_reader_authenticated(&reader);
+        g_mutex_lock(&pipeline->mutex);
+        if (authenticated) source_clock_reject_state_note_auth(&pipeline->reject_state);
+        action = source_clock_reject_state_note_failure(
+            &pipeline->reject_state, reader_status, g_get_monotonic_time());
+        g_mutex_unlock(&pipeline->mutex);
+        g_printerr("AirPlay source-clock reader rejected connection stream=%u "
+                   "status=%d authenticated=%d action=%d\n",
+                   accept_context->stream_kind, reader_status, authenticated, action);
+        if (action == SOURCE_CLOCK_REJECT_ACTION_FATAL_PIPELINE) {
+          signal_pipeline_error(pipeline, FALSE);
+        } else if (action == SOURCE_CLOCK_REJECT_ACTION_UNRECOVERABLE) {
+          signal_pipeline_error(pipeline, TRUE);
+        }
         break;
+      }
+      if (source_clock_reader_authenticated(&reader)) {
+        g_mutex_lock(&pipeline->mutex);
+        source_clock_reject_state_note_auth(&pipeline->reject_state);
+        g_mutex_unlock(&pipeline->mutex);
       }
     }
     source_clock_reader_destroy(&reader);
@@ -2202,6 +2272,21 @@ static gboolean source_clock_bus_watch(GstBus *bus, GstMessage *message, gpointe
     }
   }
   if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR) {
+    /* A user stop (including the startup handoff cleanup) owns the exit
+     * reason. An RTSP sink may report its pending connection error while the
+     * stop request is already on disk; do not turn that normal shutdown into
+     * a publisher failure. */
+    if (pipeline->stop_file != NULL &&
+        g_file_test(pipeline->stop_file, G_FILE_TEST_EXISTS)) {
+      g_mutex_lock(&pipeline->mutex);
+      pipeline->no_signal = source_clock_stop_request_is_no_signal(
+          pipeline->stop_file);
+      pipeline->exit_code = pipeline->no_signal ? 20 : 0;
+      pipeline->stopping = TRUE;
+      g_mutex_unlock(&pipeline->mutex);
+      g_main_loop_quit(pipeline->loop);
+      return G_SOURCE_CONTINUE;
+    }
     GError *error = NULL;
     gchar *debug = NULL;
     gst_message_parse_error(message, &error, &debug);
@@ -2254,25 +2339,47 @@ int airplay_source_clock_pipeline_run(const char *publish_url, const char *recor
   if (publish_url == NULL || session_token == NULL || session_id == NULL ||
       ((proof_source_generation == 0) != (proof_video_watermark == 0)) ||
       publisher_generation == 0 || ready_file == NULL ||
-      media_ready_file == NULL || event_log == NULL) return 2;
+      media_ready_file == NULL || event_log == NULL) {
+    g_printerr("AirPlay source-clock startup failed at argument validation\n");
+    return 2;
+  }
 #ifdef _WIN32
   WSADATA wsa;
-  if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return 2;
+  if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+    g_printerr("AirPlay source-clock startup failed at winsock initialization\n");
+    return 2;
+  }
 #endif
   memset(&context, 0, sizeof(context));
+  context.video_listener = SOURCE_CLOCK_INVALID_SOCKET;
+  context.audio_listener = SOURCE_CLOCK_INVALID_SOCKET;
   if (proof_source_generation != 0) {
     if (!source_clock_video_proof_init(&context.candidate_proof,
-          proof_source_generation, proof_video_watermark)) return 2;
+          proof_source_generation, proof_video_watermark)) {
+      g_printerr("AirPlay source-clock startup failed at candidate proof initialization\n");
+      return 2;
+    }
     context.candidate_proof_enabled = TRUE;
   }
   if (!source_clock_event_writer_init(&context.event_writer, session_id,
                                       publisher_generation, ready_file,
-                                      media_ready_file, event_log) ||
-      !decode_token(session_token, context.token) ||
-      !bind_listener(&context.video_listener, (unsigned)video_listen_port, &video_port) ||
-      !bind_listener(&context.audio_listener, (unsigned)audio_listen_port, &audio_port)) {
-    if (context.video_listener != SOURCE_CLOCK_INVALID_SOCKET) source_clock_socket_close(context.video_listener);
-    if (context.audio_listener != SOURCE_CLOCK_INVALID_SOCKET) source_clock_socket_close(context.audio_listener);
+                                      media_ready_file, event_log)) {
+    g_printerr("AirPlay source-clock startup failed at event writer initialization\n");
+    return 2;
+  }
+  if (!decode_token(session_token, context.token)) {
+    g_printerr("AirPlay source-clock startup failed at session token decoding\n");
+    return 2;
+  }
+  if (!bind_listener(&context.video_listener, (unsigned)video_listen_port, &video_port)) {
+    g_printerr("AirPlay source-clock startup failed at video listener bind requested_port=%d\n",
+               video_listen_port);
+    return 2;
+  }
+  if (!bind_listener(&context.audio_listener, (unsigned)audio_listen_port, &audio_port)) {
+    g_printerr("AirPlay source-clock startup failed at audio listener bind requested_port=%d\n",
+               audio_listen_port);
+    source_clock_socket_close(context.video_listener);
     return 2;
   }
   gst_init(NULL, NULL);
@@ -2371,6 +2478,7 @@ int airplay_source_clock_pipeline_run(const char *publish_url, const char *recor
   context.stop_file = stop_file;
   context.exit_code = 0;
   g_mutex_init(&context.mutex);
+  source_clock_reject_state_init(&context.reject_state);
   g_mutex_init(&context.event_mutex);
   g_mutex_init(&context.video_feed_mutex);
   context.video_feed_mutex_initialized = TRUE;
@@ -2413,6 +2521,8 @@ int airplay_source_clock_pipeline_run(const char *publish_url, const char *recor
                state_name, video_port, audio_port);
   }
   if (state == GST_STATE_CHANGE_FAILURE) {
+    signal_pipeline_error(&context, FALSE);
+  } else if (!source_clock_wait_for_playing(context.pipeline, NULL)) {
     signal_pipeline_error(&context, FALSE);
   } else {
     gboolean ready_written;

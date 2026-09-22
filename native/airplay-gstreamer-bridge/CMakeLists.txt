@@ -411,6 +411,18 @@ if(BUILD_TESTING)
     "GST_PLUGIN_PATH_1_0=${GSTREAMER_RUNTIME_ROOT}/lib/gstreamer-1.0"
     "GST_PLUGIN_SYSTEM_PATH_1_0="
     $<TARGET_FILE:test_video_input>)
+  add_test(NAME airplay_source_clock_accept_reject COMMAND ${CMAKE_COMMAND} -E env
+    "PATH=${GSTREAMER_RUNTIME_ROOT}/bin"
+    "GST_PLUGIN_PATH_1_0=${GSTREAMER_RUNTIME_ROOT}/lib/gstreamer-1.0"
+    "GST_PLUGIN_SYSTEM_PATH_1_0="
+    $<TARGET_FILE:test_video_input> --accept-reject)
+  set_tests_properties(airplay_source_clock_accept_reject PROPERTIES TIMEOUT 10)
+  add_test(NAME airplay_source_clock_playing_wait COMMAND ${CMAKE_COMMAND} -E env
+    "PATH=${GSTREAMER_RUNTIME_ROOT}/bin"
+    "GST_PLUGIN_PATH_1_0=${GSTREAMER_RUNTIME_ROOT}/lib/gstreamer-1.0"
+    "GST_PLUGIN_SYSTEM_PATH_1_0="
+    $<TARGET_FILE:test_video_input> --playing-wait)
+  set_tests_properties(airplay_source_clock_playing_wait PROPERTIES TIMEOUT 10)
 
   add_test(NAME airplay_source_clock_fixed_ports_cli
     COMMAND ${CMAKE_COMMAND}

@@ -15,6 +15,10 @@ int main(int argc, char **argv) {
   gst_init(&argc, &argv);
   gst_video_info_set_format(&o, GST_VIDEO_FORMAT_I420, 6, 4);
   gst_video_info_set_format(&i, GST_VIDEO_FORMAT_I420, 2, 4);
+  o.fps_n = 30;
+  o.fps_d = 1;
+  i.fps_n = 60;
+  i.fps_d = 1;
   input = gst_buffer_new_allocate(NULL, GST_VIDEO_INFO_SIZE(&i), NULL);
   g_assert_true(gst_video_frame_map(&frame, &i, input, GST_MAP_WRITE));
   for (guint y = 0; y < 4; ++y) {

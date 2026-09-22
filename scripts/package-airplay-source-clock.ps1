@@ -216,7 +216,7 @@ if ($capabilities.binarySha256.ToLowerInvariant() -ne $expectedHash) {
     throw "source-clock receiver capability hash does not match the binary"
 }
 $features = @($capabilities.features)
-foreach ($feature in @("video-au", "audio-frame", "remote-ntp", "bounded-writer", "idle-wait", "headless-fps", "video-backlog-64", "audio-format-lock", "egress-metrics-v2", "plist-owned-free", "fragment-safe-rtsp")) {
+foreach ($feature in @("video-au", "audio-frame", "remote-ntp", "bounded-writer", "idle-wait", "headless-fps", "video-backlog-64", "audio-format-lock", "egress-metrics-v2", "plist-owned-free", "fragment-safe-rtsp", "video-bootstrap-reconnect")) {
     if ($features -notcontains $feature) {
         throw "source-clock receiver capability is missing: $feature"
     }
