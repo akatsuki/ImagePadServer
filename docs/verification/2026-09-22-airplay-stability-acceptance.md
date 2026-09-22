@@ -4,7 +4,7 @@
 
 ## 対象
 
-共有作業ツリーの既存未コミット変更を保持したまま、AirPlay の source-clock、VideoView、LL-HLS readiness、runtime compatibility 表示を修正した。commit、push、release、稼働中サービスの停止は行っていない。
+共有作業ツリーの既存未コミット変更を保持したまま、AirPlay の source-clock、VideoView、LL-HLS readiness、runtime compatibility 表示、native bridge復旧処理を修正した。関連コミットは `6fb9a748`、`7e00a83`、`ad2dfd3`。push、release、稼働中サービスの停止は行っていない。
 
 ## 実装確認
 
@@ -26,6 +26,7 @@
 | `go test ./internal/airplay ./internal/server -count=1` | AirPlay PASS / Server FAIL | Server 全体は 305 秒後に FFmpeg 不在、AppData ACL、既存 temp/process cleanup、非AirPlay media tests で失敗。総合 PASS とは扱わない |
 | `Invoke-Pester -Path scripts/tests/test-package-airplay-source-clock.Tests.ps1` | PASS 9/9 | package provenance/feature checks |
 | `Invoke-Pester -Path scripts/tests/test-build-uxplay-source-clock.Tests.ps1` | PASS 11/11 | patch order/build guard checks |
+| `build-airplay-gstreamer-bridge.ps1` + `ctest -C Release` | PASS 40/40 | GStreamer 1.28.6、検証用 build directory、native bridge/diagnostic tests |
 | 初回 `go test ./internal/airplay ./internal/obsrtmp` baseline | AirPlay PASS / obsrtmp環境依存FAIL | FFmpeg download ACL と GPU readiness fixture timeout。今回修正対象の AirPlay package には該当しない |
 
 Go 実行時には既定の `C:\Users\masah\AppData\Roaming\go\telemetry\local\upload.token` への Access Denied が毎回表示された。ユーザー領域の ACL や telemetry 設定は変更していない。テストは専用 repo-local cache を使って完走した。
@@ -34,7 +35,7 @@ Go 実行時には既定の `C:\Users\masah\AppData\Roaming\go\telemetry\local\u
 
 - 8080/8082 の待受は実施時点で `NOT_RUNNING`。現用サービスへの停止・入替えは行っていない。
 - 現在インストールされている `single-slice-release-v1.8.0` の capability manifest は `video-bootstrap-reconnect` を含まないため、修正後の source-clock preflight は意図どおり incompatible と判定する。既存 release input の hash/URL は変更していない。
-- GStreamer MSVC x64 development root が `C:\gstreamer\1.0\msvc_x86_64` に存在しないため、native bridge の再ビルドと実 runtime ZIP 候補の生成は未実施。旧 runtime を候補として扱っていない。
+- GStreamer MSVC x64 development root は `C:\Users\masah\AppData\Local\Programs\gstreamer\1.0\msvc_x86_64` に存在し、GStreamer 1.28.6 を確認した。検証用 `build/airplay-gstreamer-bridge-v182-verify` で native bridge を再ビルドし、CTest 40/40 を完走した。実 runtime ZIP 候補の生成と release metadata 更新は未実施で、旧 runtime を候補として扱っていない。
 - 実 iPhone、ブラウザ実描画、VRChat、長時間連続試験は未実施。実機テストはユーザー側で新しい一致 runtime candidate を用いて行う。
 
 この記録の PASS は fixture/unit/API/script 層の証拠であり、実機・配布候補の production-ready 判定ではない。
