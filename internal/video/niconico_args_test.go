@@ -70,7 +70,7 @@ func TestNicoTimelineFFmpegOverlayHonorsPremultipliedPixels(t *testing.T) {
 		t.Fatal("timeline FFmpeg filter graph was not generated")
 	}
 	filter := args[filterIndex]
-	if !strings.Contains(filter, "[comment_premultiplied][comment_alpha]unpremultiply=planes=7[overlay]") || strings.Contains(filter, "setparams=alpha_mode=") || strings.Contains(filter, "alpha=premultiplied") {
+	if !strings.Contains(filter, "geq=r='r(X,Y)*255/max(alpha(X,Y),1)'") || strings.Contains(filter, "setparams=alpha_mode=") || strings.Contains(filter, "alpha=premultiplied") {
 		t.Fatalf("portable timeline graph must unpremultiply before straight-alpha overlay: %s", filter)
 	}
 
@@ -91,6 +91,10 @@ func TestNicoTimelineFFmpegOverlayHonorsPremultipliedPixels(t *testing.T) {
 	outputPath := filepath.Join(dir, "composite.yuv")
 	pixels := make([]byte, width*height*4)
 	for i := 0; i < len(pixels); i += 4 {
+		if (i/4)%7 == 0 {
+			pixels[i], pixels[i+1], pixels[i+2], pixels[i+3] = 255, 255, 255, 0
+			continue
+		}
 		pixels[i], pixels[i+1], pixels[i+2], pixels[i+3] = 128, 128, 128, 128
 	}
 	if err := os.WriteFile(overlayPath, pixels, 0600); err != nil {
