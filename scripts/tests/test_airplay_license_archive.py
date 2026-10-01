@@ -15,20 +15,28 @@ class LicenseArchiveTests(unittest.TestCase):
     def fixture(self, change=None, extra=None):
         files = {'licenses/COPYING': b'Full license text', 'sources/source.tar.gz': b'full source',
                  'sources/BUILD.md': b'build instructions', 'gstreamer/test.dll': b'binary',
+                 'uxplay-source-clock/uxplay-source-clock.exe': b'fixture receiver',
                  'SOURCE-OFFER.md': b'source access instructions'}
+        receiver_path = 'uxplay-source-clock/uxplay-source-clock.exe'
+        receiver_capabilities = {'schema': 1, 'protocolVersion': 1, 'binary': 'uxplay-source-clock.exe',
+                                 'features': ['video-bootstrap-reconnect'],
+                                 'binarySha256': hashlib.sha256(files[receiver_path]).hexdigest()}
+        files['uxplay-source-clock/imagepad-source-clock-capabilities.json'] = json.dumps(receiver_capabilities).encode()
         manifest = {'schema': 1, 'runtimeSetID': 'test', 'components': [{
             'id': 'example', 'version': '1', 'licenseFiles': ['licenses/COPYING'],
             'sourceFiles': ['sources/source.tar.gz'], 'buildFiles': ['sources/BUILD.md']}],
             'componentSets': {'runtime': ['example']},
             'binaries': [{'path': 'gstreamer/test.dll', 'componentSet': 'runtime',
-                          'sha256': hashlib.sha256(files['gstreamer/test.dll']).hexdigest()}],
+                          'sha256': hashlib.sha256(files['gstreamer/test.dll']).hexdigest()},
+                         {'path': receiver_path, 'componentSet': 'runtime',
+                          'sha256': hashlib.sha256(files[receiver_path]).hexdigest()}],
             'files': [{'path': name, 'size': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
                       for name, data in files.items() if name.startswith(('sources/', 'licenses/'))]}
         if change: change(manifest, files)
         if extra: files.update(extra)
         files['source-manifest.json'] = json.dumps(manifest).encode()
         files['license-manifest.json'] = json.dumps({'schema':1, 'runtimeSetID':'test'}).encode()
-        files['imagepad-airplay-runtime.json'] = json.dumps({'runtimeSetID':'test'}).encode()
+        files['imagepad-airplay-runtime.json'] = json.dumps({'runtimeSetID':'test', 'receiver':receiver_path}).encode()
         temp = tempfile.NamedTemporaryFile(suffix='.zip', delete=False); temp.close()
         self.addCleanup(pathlib.Path(temp.name).unlink)
         with zipfile.ZipFile(temp.name, 'w') as z:
