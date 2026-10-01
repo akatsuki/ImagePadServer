@@ -92,6 +92,27 @@ def verify(path, sources_path=None):
         runtime = read_json('imagepad-airplay-runtime.json')
         if distribution and distribution.get('runtimeSetID') != runtime.get('runtimeSetID'):
             raise ValueError('source distribution runtime version mismatch')
+        receiver_path = runtime.get('receiver')
+        capabilities_path = 'uxplay-source-clock/imagepad-source-clock-capabilities.json'
+        capabilities = read_json(capabilities_path)
+        if (not isinstance(receiver_path, str)
+                or PurePosixPath(receiver_path).parent != PurePosixPath(capabilities_path).parent
+                or capabilities.get('schema') != 1
+                or capabilities.get('protocolVersion') != 1
+                or capabilities.get('binary') != PurePosixPath(receiver_path).name
+                or not isinstance(capabilities.get('features'), list)):
+            raise ValueError('source-clock receiver capability manifest is incompatible')
+        if 'video-bootstrap-reconnect' not in capabilities.get('features', []):
+            raise ValueError('source-clock receiver capability "video-bootstrap-reconnect" is missing')
+        receiver_hash = capabilities.get('binarySha256')
+        if not isinstance(receiver_hash, str) or not re.fullmatch(r'[0-9a-fA-F]{64}', receiver_hash):
+            raise ValueError('source-clock receiver capability binary hash is invalid')
+        receiver_digest = hashlib.sha256()
+        with archive.open(receiver_path) as receiver:
+            for block in iter(lambda: receiver.read(1024 * 1024), b''):
+                receiver_digest.update(block)
+        if receiver_digest.hexdigest() != receiver_hash.lower():
+            raise ValueError('source-clock receiver capability hash does not match the binary')
         licenses = read_json('license-manifest.json')
         if not record.get('runtimeSetID') or record['runtimeSetID'] != runtime.get('runtimeSetID') or record['runtimeSetID'] != licenses.get('runtimeSetID'):
             raise ValueError('source/license/runtime version mismatch')
