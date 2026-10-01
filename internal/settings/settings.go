@@ -59,9 +59,7 @@ func NormalizeEncoderMode(mode string) string {
 	case "gpu":
 		return "gpu"
 	case "cpu":
-		// CPU rendering is intentionally not a production mode. Keep legacy
-		// settings readable, but normalize them to the GPU path.
-		return "gpu"
+		return "cpu"
 	default:
 		return "gpu"
 	}

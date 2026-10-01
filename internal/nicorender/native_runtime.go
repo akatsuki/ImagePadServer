@@ -17,13 +17,25 @@ import (
 )
 
 const nativeCompositorABI = "NICO_COMPOSITOR 1 NPS3 WARP"
+const nativeCompositorHardwareABI = "NICO_COMPOSITOR 1 NPS3 HARDWARE"
 
 // PrepareNativeCompositor returns a job-owned executable and cleanup function.
 // Failure before encoding is safe to fall back from; explicit native callers
 // must still surface the error. No download or compiler runs on the user's PC.
 func PrepareNativeCompositor(ctx context.Context, configured string) (string, func(), error) {
+	return PrepareNativeCompositorWithMode(ctx, configured, "warp")
+}
+
+// PrepareNativeCompositorWithMode validates the requested D3D11 device path
+// before the encoder starts. Empty and "warp" retain the production WARP path;
+// "hardware" is available for measured GPU runs and fails closed if unavailable.
+func PrepareNativeCompositorWithMode(ctx context.Context, configured, mode string) (string, func(), error) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	modeArg, err := nativeCompositorModeArgument(mode)
+	if err != nil {
+		return "", nil, err
 	}
 	if err := ctx.Err(); err != nil {
 		return "", nil, err
@@ -33,7 +45,6 @@ func PrepareNativeCompositor(ctx context.Context, configured string) (string, fu
 	}
 	path := strings.TrimSpace(configured)
 	cleanup := func() {}
-	var err error
 	if path == "" {
 		payload, meta := nativePayload()
 		if len(payload) == 0 {
@@ -51,13 +62,21 @@ func PrepareNativeCompositor(ctx context.Context, configured string) (string, fu
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(probeCtx, path, "--self-test")
+	args := []string{"--self-test"}
+	if modeArg != "" {
+		args = append(args, modeArg)
+	}
+	cmd := exec.CommandContext(probeCtx, path, args...)
 	hideNativeWindow(cmd)
 	cmd.WaitDelay = 2 * time.Second
 	var output nativeProbeBuffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
-	if err = cmd.Run(); err != nil || strings.TrimSpace(output.String()) != nativeCompositorABI {
+	wantABI := nativeCompositorABI
+	if strings.EqualFold(strings.TrimSpace(mode), "hardware") {
+		wantABI = nativeCompositorHardwareABI
+	}
+	if err = cmd.Run(); err != nil || strings.TrimSpace(output.String()) != wantABI {
 		cleanup()
 		if ctx.Err() != nil {
 			return "", nil, ctx.Err()
@@ -65,6 +84,17 @@ func PrepareNativeCompositor(ctx context.Context, configured string) (string, fu
 		return "", nil, fmt.Errorf("%w: native self-test: %v (%s)", ErrUnavailable, err, strings.TrimSpace(output.String()))
 	}
 	return path, cleanup, nil
+}
+
+func nativeCompositorModeArgument(mode string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "warp":
+		return "", nil
+	case "hardware":
+		return "--hardware", nil
+	default:
+		return "", fmt.Errorf("niconico: unsupported native compositor device %q", mode)
+	}
 }
 
 type nativeProbeBuffer struct{ bytes.Buffer }

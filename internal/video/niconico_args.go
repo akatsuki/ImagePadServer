@@ -11,6 +11,16 @@ import (
 
 // Shared by browser and native paths. Keep quality, timing and slice policy identical.
 func nicoEncodeArgs(sourcePath, outputPath string, options NicoEncodeOptions) []string {
+	return nicoEncodeArgsWithOverlayAlpha(sourcePath, outputPath, options, "auto")
+}
+
+// The timeline compositor writes premultiplied RGBA. Legacy browser renderers
+// keep FFmpeg's auto/straight-alpha behavior through nicoEncodeArgs above.
+func nicoTimelineEncodeArgs(sourcePath, outputPath string, options NicoEncodeOptions) []string {
+	return nicoEncodeArgsWithOverlayAlpha(sourcePath, outputPath, options, "premultiplied")
+}
+
+func nicoEncodeArgsWithOverlayAlpha(sourcePath, outputPath string, options NicoEncodeOptions, overlayAlpha string) []string {
 	encoder := strings.ToLower(strings.TrimSpace(options.Encoder))
 	if encoder == "" {
 		encoder = "x264"
@@ -50,10 +60,16 @@ func nicoEncodeArgs(sourcePath, outputPath string, options NicoEncodeOptions) []
 	if gop < 1 {
 		gop = 1
 	}
+	overlayInput := "[1:v]format=rgba"
+	if overlayAlpha == "premultiplied" {
+		// format=rgba can clear AVFrame's alpha-mode metadata. Restore it after
+		// conversion so overlay negotiates and blends the pixels as premultiplied.
+		overlayInput += ",setparams=alpha_mode=premultiplied"
+	}
 	// Normalize the composed stream to the same CFR used by the renderer. This
 	// keeps comment motion tied to elapsed video time even when the source is
 	// 24/30/60fps or VFR; the source frame rate must not become the comment clock.
-	filter := fmt.Sprintf("[0:v]scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=black,tpad=stop_mode=clone:stop_duration=1[base];[1:v]format=rgba[overlay];[base][overlay]overlay=0:0:format=auto,fps=%s,format=yuv420p[v]", options.Width, options.Height, options.Width, options.Height, fps)
+	filter := fmt.Sprintf("[0:v]scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=black,tpad=stop_mode=clone:stop_duration=1[base];%s[overlay];[base][overlay]overlay=0:0:format=auto:alpha=%s,fps=%s,format=yuv420p[v]", options.Width, options.Height, options.Width, options.Height, overlayInput, overlayAlpha, fps)
 	args := []string{
 		"-hide_banner", "-loglevel", "error", "-y",
 	}

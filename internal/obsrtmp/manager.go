@@ -642,6 +642,15 @@ func (m *Manager) Status() Status {
 	return status
 }
 
+// Running reports whether the OBS listener loop is owned by this manager.
+// It remains true while the loop retries after a failed listener cycle, even
+// when Status.Listening is temporarily false.
+func (m *Manager) Running() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.running
+}
+
 func (m *Manager) ConnectionRows(timeout time.Duration) []ConnectionStatus {
 	if timeout <= 0 {
 		timeout = 250 * time.Millisecond

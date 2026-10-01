@@ -35,6 +35,28 @@ func TestNativeRuntimeCanceled(t *testing.T) {
 	}
 }
 
+func TestNativeCompositorModeArgument(t *testing.T) {
+	cases := []struct {
+		mode string
+		want string
+	}{
+		{mode: "", want: ""},
+		{mode: "warp", want: ""},
+		{mode: "hardware", want: "--hardware"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.mode, func(t *testing.T) {
+			got, err := nativeCompositorModeArgument(tc.mode)
+			if err != nil || got != tc.want {
+				t.Fatalf("nativeCompositorModeArgument(%q) = %q, %v; want %q", tc.mode, got, err, tc.want)
+			}
+		})
+	}
+	if _, err := nativeCompositorModeArgument("unknown"); err == nil {
+		t.Fatal("unknown compositor device mode accepted")
+	}
+}
+
 func TestNativeRuntimeEmbedded(t *testing.T) {
 	payload, _ := nativePayload()
 	if len(payload) == 0 {

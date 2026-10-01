@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"imagepadserver/internal/niconico"
+	"imagepadserver/internal/nicorender"
 )
 
 // RGBAFrameSource supplies exactly one frame for each requested output frame.
@@ -41,13 +42,54 @@ type NicoEncodeOptions struct {
 }
 
 type NicoEncodeReport struct {
-	OutputPath   string
-	FrameCount   int64
-	Width        int
-	Height       int
-	FPSNum       int64
-	FPSDen       int64
-	StageTimings []NicoStageTiming `json:"stage_timings,omitempty"`
+	OutputPath                   string
+	FrameCount                   int64
+	Width                        int
+	Height                       int
+	FPSNum                       int64
+	FPSDen                       int64
+	StageTimings                 []NicoStageTiming                  `json:"stage_timings,omitempty"`
+	Attempts                     []NicoEncodeAttempt                `json:"renderer_attempts,omitempty"`
+	TimelineHelperSHA256         string                             `json:"timeline_helper_sha256,omitempty"`
+	TimelineBundleSHA256         string                             `json:"timeline_bundle_sha256,omitempty"`
+	TimelineGPUBackend           string                             `json:"timeline_gpu_backend,omitempty"`
+	TimelineGPUAdapter           string                             `json:"timeline_gpu_adapter,omitempty"`
+	TimelineReadbackSlots        int                                `json:"timeline_readback_slots,omitempty"`
+	TimelineAssetLayoutRequested string                             `json:"timeline_asset_layout_requested,omitempty"`
+	TimelineAssetLayout          string                             `json:"timeline_asset_layout,omitempty"`
+	TimelineAssetLayoutFallback  string                             `json:"timeline_asset_layout_fallback_reason,omitempty"`
+	TimelineAssetPageCount       int                                `json:"timeline_asset_page_count,omitempty"`
+	TimelineAssetSourceBytes     uint64                             `json:"timeline_asset_source_bytes,omitempty"`
+	TimelineAssetAllocatedBytes  uint64                             `json:"timeline_asset_allocated_bytes,omitempty"`
+	TimelineAssetTelemetry       *NicoAssetTelemetryReport          `json:"timeline_asset_telemetry,omitempty"`
+	TimelineProtocol             string                             `json:"timeline_protocol,omitempty"`
+	TimelineCaptureDone          *time.Duration                     `json:"timeline_capture_done_ns,omitempty"`
+	TimelineFirstAssetReady      *time.Duration                     `json:"timeline_first_asset_ready_ns,omitempty"`
+	TimelineFirstFrame           *time.Duration                     `json:"timeline_first_frame_ns,omitempty"`
+	TimelineStreamEnd            *time.Duration                     `json:"timeline_stream_end_ns,omitempty"`
+	TimelineHelperDone           *time.Duration                     `json:"timeline_helper_done_ns,omitempty"`
+	TimelineFFmpegDone           *time.Duration                     `json:"timeline_ffmpeg_done_ns,omitempty"`
+	SpriteCaptureMetrics         *nicorender.TimelineCaptureMetrics `json:"sprite_capture_metrics,omitempty"`
+}
+
+// NicoEncodeAttempt retains diagnostics from a renderer attempt that failed
+// before a later renderer produced the final output.
+type NicoEncodeAttempt struct {
+	Backend                 string
+	Error                   string
+	HelperSHA256            string
+	BundleSHA256            string
+	GPUBackend              string
+	GPUAdapter              string
+	ReadbackSlots           int
+	StageTimings            []NicoStageTiming
+	TimelineProtocol        string         `json:"timeline_protocol,omitempty"`
+	TimelineCaptureDone     *time.Duration `json:"timeline_capture_done_ns,omitempty"`
+	TimelineFirstAssetReady *time.Duration `json:"timeline_first_asset_ready_ns,omitempty"`
+	TimelineFirstFrame      *time.Duration `json:"timeline_first_frame_ns,omitempty"`
+	TimelineStreamEnd       *time.Duration `json:"timeline_stream_end_ns,omitempty"`
+	TimelineHelperDone      *time.Duration `json:"timeline_helper_done_ns,omitempty"`
+	TimelineFFmpegDone      *time.Duration `json:"timeline_ffmpeg_done_ns,omitempty"`
 }
 
 func (o NicoEncodeOptions) validate() (niconico.FrameClock, error) {

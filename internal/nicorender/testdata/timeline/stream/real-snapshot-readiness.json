@@ -1,0 +1,602 @@
+{
+  "provenance_hashes": {
+    "renderer_bundle_sha256": "28395344d16f977f2d3a1aece8643963257b11d9023f0e8d915107dd3d54f4df",
+    "snapshot_sha256": "b7be86d86016175c99925f5f1b5651d43279eeffcc54deb1c22c5b2e6e15e946",
+    "timeline_capture_go_sha256": "0641be8fcbb0b183842c6f5e348d8715b0058af935d27e34d63dca2ad39ccf03",
+    "timeline_js_sha256": "c34e740f2a4bb91bfc9dc090cb9e484277e3dd4c11b4a6f0fa151d6c2c0119e0",
+    "timeline_stream_format_go_sha256": "16640b04ac06a5dae1c6f02b9c42c016a7651c3971d07e8252a8787c91da7597"
+  },
+  "render": {
+    "width": 1920,
+    "height": 1080,
+    "duration_ms": 6000,
+    "fps_num": 30,
+    "fps_den": 1,
+    "frame_count": 180,
+    "seed": 1313424207
+  },
+  "declarations": [
+    {
+      "owner_order": 0,
+      "comment_index": 0,
+      "start_vpos": 0,
+      "end_vpos": 348
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 1,
+      "start_vpos": 0,
+      "end_vpos": 345
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 2,
+      "start_vpos": 0,
+      "end_vpos": 348
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 3,
+      "start_vpos": 0,
+      "end_vpos": 407
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 4,
+      "start_vpos": 0,
+      "end_vpos": 426
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 5,
+      "start_vpos": 0,
+      "end_vpos": 435
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 6,
+      "start_vpos": 0,
+      "end_vpos": 429
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 7,
+      "start_vpos": 0,
+      "end_vpos": 446
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 8,
+      "start_vpos": 0,
+      "end_vpos": 458
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 9,
+      "start_vpos": 0,
+      "end_vpos": 464
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 10,
+      "start_vpos": 0,
+      "end_vpos": 466
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 11,
+      "start_vpos": 0,
+      "end_vpos": 476
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 12,
+      "start_vpos": 0,
+      "end_vpos": 480
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 13,
+      "start_vpos": 0,
+      "end_vpos": 480
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 14,
+      "start_vpos": 0,
+      "end_vpos": 487
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 15,
+      "start_vpos": 0,
+      "end_vpos": 488
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 16,
+      "start_vpos": 0,
+      "end_vpos": 491
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 17,
+      "start_vpos": 1,
+      "end_vpos": 494
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 18,
+      "start_vpos": 16,
+      "end_vpos": 509
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 19,
+      "start_vpos": 34,
+      "end_vpos": 527
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 20,
+      "start_vpos": 42,
+      "end_vpos": 535
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 21,
+      "start_vpos": 44,
+      "end_vpos": 537
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 22,
+      "start_vpos": 44,
+      "end_vpos": 537
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 23,
+      "start_vpos": 50,
+      "end_vpos": 543
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 24,
+      "start_vpos": 66,
+      "end_vpos": 559
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 25,
+      "start_vpos": 73,
+      "end_vpos": 566
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 26,
+      "start_vpos": 85,
+      "end_vpos": 578
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 27,
+      "start_vpos": 93,
+      "end_vpos": 591
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 28,
+      "start_vpos": 108,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 29,
+      "start_vpos": 122,
+      "end_vpos": 593
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 30,
+      "start_vpos": 112,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 31,
+      "start_vpos": 114,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 32,
+      "start_vpos": 131,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 33,
+      "start_vpos": 146,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 34,
+      "start_vpos": 153,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 35,
+      "start_vpos": 153,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 36,
+      "start_vpos": 154,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 37,
+      "start_vpos": 172,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 38,
+      "start_vpos": 181,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 39,
+      "start_vpos": 176,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 40,
+      "start_vpos": 181,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 41,
+      "start_vpos": 191,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 42,
+      "start_vpos": 210,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 43,
+      "start_vpos": 213,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 44,
+      "start_vpos": 217,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 45,
+      "start_vpos": 223,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 46,
+      "start_vpos": 229,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 47,
+      "start_vpos": 231,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 48,
+      "start_vpos": 242,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 49,
+      "start_vpos": 248,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 50,
+      "start_vpos": 263,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 51,
+      "start_vpos": 292,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 52,
+      "start_vpos": 310,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 53,
+      "start_vpos": 310,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 54,
+      "start_vpos": 330,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 55,
+      "start_vpos": 333,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 56,
+      "start_vpos": 350,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 57,
+      "start_vpos": 353,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 58,
+      "start_vpos": 360,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 59,
+      "start_vpos": 363,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 60,
+      "start_vpos": 373,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 61,
+      "start_vpos": 400,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 62,
+      "start_vpos": 411,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 63,
+      "start_vpos": 415,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 64,
+      "start_vpos": 466,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 65,
+      "start_vpos": 469,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 66,
+      "start_vpos": 508,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 67,
+      "start_vpos": 531,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 68,
+      "start_vpos": 550,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 69,
+      "start_vpos": 559,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 70,
+      "start_vpos": 599,
+      "end_vpos": 600
+    },
+    {
+      "owner_order": 0,
+      "comment_index": 71,
+      "start_vpos": 600,
+      "end_vpos": 600
+    }
+  ],
+  "ready_by_prefix": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    1,
+    16,
+    34,
+    42,
+    44,
+    44,
+    50,
+    66,
+    73,
+    85,
+    93,
+    108,
+    112,
+    112,
+    114,
+    131,
+    146,
+    153,
+    153,
+    154,
+    172,
+    176,
+    176,
+    181,
+    191,
+    210,
+    213,
+    217,
+    223,
+    229,
+    231,
+    242,
+    248,
+    263,
+    292,
+    310,
+    310,
+    330,
+    333,
+    350,
+    353,
+    360,
+    363,
+    373,
+    400,
+    411,
+    415,
+    466,
+    469,
+    508,
+    531,
+    550,
+    559,
+    599,
+    600,
+    600
+  ],
+  "available_frames_by_prefix": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    1,
+    5,
+    11,
+    13,
+    14,
+    14,
+    15,
+    20,
+    22,
+    26,
+    28,
+    33,
+    34,
+    34,
+    35,
+    40,
+    44,
+    46,
+    46,
+    47,
+    52,
+    53,
+    53,
+    55,
+    58,
+    63,
+    64,
+    66,
+    67,
+    69,
+    70,
+    73,
+    75,
+    79,
+    88,
+    93,
+    93,
+    99,
+    100,
+    105,
+    106,
+    108,
+    109,
+    112,
+    120,
+    124,
+    125,
+    140,
+    141,
+    153,
+    160,
+    165,
+    168,
+    180,
+    180,
+    180
+  ]
+}

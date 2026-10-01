@@ -14,12 +14,16 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
       - name: Build static WARP helper and stage verified payload
         shell: pwsh
         run: ./scripts/build-nico-compositor.ps1 -Stage
+      - name: Build locked NCT2 WGPU compositor for Windows amd64
+        shell: pwsh
+        run: ./scripts/build-nico-timeline-compositor.ps1 -Target x86_64-pc-windows-msvc -ForGoEmbed
       - name: Check protocol, lifetimes, pixels and embedded extraction
         shell: pwsh
         run: |
@@ -30,8 +34,17 @@ jobs:
           go test -tags nico_native_embedded ./internal/nicorender -count=1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           go test -tags nico_native_embedded ./internal/video -run 'TestNicoNative|TestNicoProductionSelection' -count=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/verify-nico-timeline-payload.py internal/nicorender/timeline_payload windows amd64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go test -tags nico_timeline_embedded ./internal/server -run '^TestNicoTimelineWorkerOptionsDefaultToEmbeddedRenderer$' -count=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go test -tags nico_timeline_embedded ./internal/nicorender -run '^TestEmbeddedTimelineCompositorSupportsNCT2$' -count=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
           name: nico-compositor-payload
-          path: internal/nicorender/payload/*
+          path: |
+            internal/nicorender/payload/*
+            internal/nicorender/timeline_payload/*
           if-no-files-found: error

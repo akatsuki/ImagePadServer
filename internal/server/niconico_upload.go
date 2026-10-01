@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"imagepadserver/internal/library"
 	"imagepadserver/internal/nicoexportworker"
 	"imagepadserver/internal/niconico"
+	"imagepadserver/internal/settings"
 	"imagepadserver/internal/video"
 )
 
@@ -30,6 +32,21 @@ var enqueueNiconicoCommentedVideo = video.EnqueueNicoCommentedVideoForID
 var niconicoProbeMedia = video.ProbeMedia
 var niconicoWorkerRunner = runNicoWorkerWithBudget
 var niconicoEnsureFFprobe = video.EnsureFFprobe
+
+func nicoEncoderForMode(mode string) string {
+	if settings.NormalizeEncoderMode(mode) == "cpu" {
+		return "x264"
+	}
+	return "nvenc"
+}
+
+func isNicoNVENCFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "nvenc") || strings.Contains(message, "libnvidia-encode")
+}
 
 // waitForNiconicoIngest makes Nico requests a bounded-by-request-context
 // queue. Other ingest types keep the existing reject-on-busy behavior.
@@ -119,38 +136,90 @@ func (s *Server) processNiconicoCommentedURL(r *http.Request, rawURL string, que
 	nicoExportMu.Lock()
 	defer nicoExportMu.Unlock()
 	expectedRevision := s.store.PublishedRevision()
-	frameProgress := newNicoProgressReporter(time.Now, s.setIngestProgress)
-	workerContext := withNicoWorkerProgress(r.Context(), func(event nicoexportworker.Event) {
-		switch event.Stage {
-		case "render":
-			if event.Total > 0 {
-				frameProgress(event.Completed, event.Total)
+	newWorkerContext := func() context.Context {
+		frameProgress := newNicoProgressReporter(time.Now, s.setIngestProgress)
+		return withNicoWorkerProgress(r.Context(), func(event nicoexportworker.Event) {
+			switch event.Stage {
+			case "render":
+				if event.Total > 0 {
+					frameProgress(event.Completed, event.Total)
+				}
+			case "timeline_fallback":
+				s.setIngest(ingestProcessing, "WGPUコメント描画に失敗したため、CPU描画へ切り替えて処理を継続中…")
+			case "hls":
+				s.setIngestProgress(90, "HLSを生成中…")
+			case "validate":
+				s.setIngestProgress(99, "完成物を検証中…")
 			}
-		case "hls":
-			s.setIngestProgress(90, "HLSを生成中…")
-		case "validate":
-			s.setIngestProgress(99, "完成物を検証中…")
+		})
+	}
+	timelineOptions, err := nicoTimelineWorkerRequestOptions()
+	if err != nil {
+		return nil, fmt.Errorf("ニコニコtimeline設定が不正です: %w", err)
+	}
+	encoder := strings.TrimSpace(os.Getenv("IMAGEPAD_NICO_ENCODER"))
+	if encoder == "" {
+		appSettings, err := settings.Load()
+		if err != nil {
+			return nil, fmt.Errorf("エンコーダ設定を読み込めません: %w", err)
 		}
-	})
-	_, budgetReport, err := niconicoWorkerRunner(workerContext, nicoexportworker.Request{
+		encoder = nicoEncoderForMode(appSettings.EncoderMode)
+	}
+	workerRequest := nicoexportworker.Request{
 		Version: nicoexportworker.ProtocolVersion,
 		RunID:   runID, MediaID: mediaID,
 		SourcePath: media.SourcePath, SnapshotPath: snapshotPath, OutputPath: outputPath, HLSStagingDir: hlsDir,
-		FFmpeg: ffmpeg, Width: width, Height: height, DurationMs: durationMs, FPSNum: 30, FPSDen: 1,
+		Backend: timelineOptions.Backend, TimelineEnabled: timelineOptions.TimelineEnabled,
+		TimelineCompositor: timelineOptions.TimelineCompositor, TimelineReadbackSlots: timelineOptions.TimelineReadbackSlots,
+		TimelineGPUBackend: timelineOptions.TimelineGPUBackend,
+		FFmpeg:             ffmpeg, Width: width, Height: height, DurationMs: durationMs, FPSNum: 30, FPSDen: 1,
 		CRF: preset.CRF, AudioBitrate: preset.AudioBitrate,
-		// NVENC is opt-in so the long-standing CPU20/x264 path remains the
-		// default until a real VRChat-concurrent run qualifies the GPU path.
-		Encoder: strings.TrimSpace(os.Getenv("IMAGEPAD_NICO_ENCODER")),
+		// The UI/API encoder choice drives Nico exports. The environment
+		// override remains available for diagnostic runs.
+		Encoder: encoder,
 		// Tee is also opt-in until the combined MP4/HLS path has completed the
 		// VRChat-concurrent acceptance gate. Empty keeps the legacy separate
 		// HLS pass for rollback compatibility.
 		OutputMode: strings.TrimSpace(os.Getenv("IMAGEPAD_NICO_OUTPUT_MODE")),
-	})
+	}
+	workerResult, budgetReport, err := s.runNicoWorkerRequest(newWorkerContext(), workerRequest)
+	renderFallbackNotice := ""
+	if err == nil {
+		renderFallbackNotice = strings.TrimSpace(workerResult.FallbackNotice)
+	}
+	encoderFallbackNotice := ""
+	allowCPUFallback := strings.TrimSpace(os.Getenv("IMAGEPAD_NICO_ENCODER")) == "" && encoder == "nvenc"
+	if err != nil && allowCPUFallback && isNicoNVENCFailure(err) && r.Context().Err() == nil {
+		nvencErr := err
+		s.setIngest(ingestProcessing, "NVENCに失敗したためCPU/libx264へ切り替えて再試行中…")
+		cpuAttemptDir := filepath.Join(stagingDir, "cpu-fallback")
+		if err := os.MkdirAll(cpuAttemptDir, 0700); err != nil {
+			return nil, fmt.Errorf("NVENC失敗後のCPUフォールバック用stagingを作成できません: %w", err)
+		}
+		cpuRequest := workerRequest
+		cpuRequest.RunID = "run-" + randomSuffix()
+		cpuRequest.Encoder = "x264"
+		cpuRequest.OutputPath = filepath.Join(cpuAttemptDir, "rendered.mp4")
+		cpuRequest.HLSStagingDir = filepath.Join(cpuAttemptDir, "hls")
+		workerResult, budgetReport, err = s.runNicoWorkerRequest(newWorkerContext(), cpuRequest)
+		if err != nil {
+			return nil, fmt.Errorf("NVENCに失敗しました (%v)。CPU/libx264へのフォールバックも失敗しました: %w", nvencErr, err)
+		}
+		outputPath = cpuRequest.OutputPath
+		hlsDir = cpuRequest.HLSStagingDir
+		renderFallbackNotice = strings.TrimSpace(workerResult.FallbackNotice)
+		encoderFallbackNotice = "NVENCに失敗したためCPU/libx264へ切り替えました"
+	}
+	fallbackNotice := appendNicoUploadFallbackNotice(encoderFallbackNotice, renderFallbackNotice)
 	if err != nil {
-		return nil, fmt.Errorf("ニコニココメント合成に失敗しました（CPU20%% worker）: %w", err)
+		return nil, fmt.Errorf("ニコニココメント合成に失敗しました: %w", err)
 	}
 	if !budgetReport.Verified {
-		return nil, fmt.Errorf("ニコニココメント合成のCPU予算を検証できませんでした: %s", budgetReport.Reason)
+		message := fmt.Sprintf("ニコニココメント合成のCPU予算を検証できませんでした: %s", budgetReport.Reason)
+		if fallbackNotice != "" {
+			message = fallbackNotice + "。" + message
+		}
+		return nil, errors.New(message)
 	}
 	// Thumbnail generation is deliberately not run in the parent: it would
 	// launch an unbudgeted FFmpeg process after the worker exits. A downloaded
@@ -173,10 +242,30 @@ func (s *Server) processNiconicoCommentedURL(r *http.Request, rawURL string, que
 		return nil, fmt.Errorf("ニコニコ完成物の公開確定に失敗しました: %w", err)
 	}
 	s.setIngestProgress(100, fmt.Sprintf("コメント付き動画を公開しました (%s)", committed.ID))
-	if queue {
-		return s.state(r), nil
+	result := s.state(r)
+	if !queue {
+		result = s.withClipboardResult(r, result)
 	}
-	return s.withClipboardResult(r, s.state(r)), nil
+	if fallbackNotice != "" {
+		result["fallbackNotice"] = fallbackNotice
+	}
+	if encoderFallbackNotice != "" {
+		result["encoderFallbackNotice"] = encoderFallbackNotice
+	}
+	return result, nil
+}
+
+func appendNicoUploadFallbackNotice(current, next string) string {
+	current = strings.TrimSpace(current)
+	next = strings.TrimSpace(next)
+	switch {
+	case current == "":
+		return next
+	case next == "":
+		return current
+	default:
+		return current + "。" + next
+	}
 }
 
 func (s *Server) processPreparedNicoVideo(r *http.Request, sourcePath, name, providedThumbnail string, snapshot niconico.Snapshot, queue bool) (map[string]interface{}, error) {

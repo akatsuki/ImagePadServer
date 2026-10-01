@@ -1736,23 +1736,27 @@ func TestHandleEncoderModePersistsAndStateReflects(t *testing.T) {
 	}
 	srv := New(config.Config{Host: "127.0.0.1", Port: 8080}, store, "http://127.0.0.1:8080/")
 
-	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8080/api/encoder-mode", strings.NewReader(`{"mode":"gpu"}`))
-	req.RemoteAddr = "127.0.0.1:50000"
-	rec := httptest.NewRecorder()
-	srv.admin(srv.handleEncoderMode)(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %q", rec.Code, rec.Body.String())
-	}
-	appSettings, err := settings.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if appSettings.EncoderMode != "gpu" {
-		t.Fatalf("EncoderMode = %q, want gpu", appSettings.EncoderMode)
-	}
-	state := srv.videoQualityState()
-	if got, _ := state["encoderMode"].(string); got != "gpu" {
-		t.Fatalf("state encoderMode = %#v, want gpu", state["encoderMode"])
+	for _, mode := range []string{"gpu", "cpu"} {
+		t.Run(mode, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8080/api/encoder-mode", strings.NewReader(`{"mode":"`+mode+`"}`))
+			req.RemoteAddr = "127.0.0.1:50000"
+			rec := httptest.NewRecorder()
+			srv.admin(srv.handleEncoderMode)(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %q", rec.Code, rec.Body.String())
+			}
+			appSettings, err := settings.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if appSettings.EncoderMode != mode {
+				t.Fatalf("EncoderMode = %q, want %s", appSettings.EncoderMode, mode)
+			}
+			state := srv.videoQualityState()
+			if got, _ := state["encoderMode"].(string); got != mode {
+				t.Fatalf("state encoderMode = %#v, want %s", state["encoderMode"], mode)
+			}
+		})
 	}
 }
 

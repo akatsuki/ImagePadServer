@@ -36,3 +36,16 @@ type Sample struct {
 	CPUPercent float64       `json:"cpu_percent"`
 	PIDs       []uint32      `json:"pids,omitempty"`
 }
+
+func cloneReport(report Report) Report {
+	cloned := report
+	cloned.PIDs = append([]uint32(nil), report.PIDs...)
+	if report.Samples != nil {
+		cloned.Samples = make([]Sample, len(report.Samples))
+		for i, sample := range report.Samples {
+			cloned.Samples[i] = sample
+			cloned.Samples[i].PIDs = append([]uint32(nil), sample.PIDs...)
+		}
+	}
+	return cloned
+}

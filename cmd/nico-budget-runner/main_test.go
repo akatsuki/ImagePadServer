@@ -17,10 +17,17 @@ func TestLineLimitWriterRejectsOversizedJSONLine(t *testing.T) {
 	}
 }
 
-func TestBudgetProcessSpecForwardsStdinToChild(t *testing.T) {
-	spec := budgetProcessSpec([]string{"worker.exe", "nico-export-worker"}, "", os.Stdout, os.Stderr)
+func TestBudgetProcessSpecForwardsStdinByDefault(t *testing.T) {
+	spec := budgetProcessSpec([]string{"worker.exe", "nico-export-worker"}, "", os.Stdout, os.Stderr, false)
 	if spec.Stdin != os.Stdin {
 		t.Fatalf("stdin = %#v, want os.Stdin", spec.Stdin)
+	}
+}
+
+func TestBudgetProcessSpecCanCloseInheritedStdin(t *testing.T) {
+	spec := budgetProcessSpec([]string{"test-child.exe"}, "", nil, nil, true)
+	if spec.Stdin != nil {
+		t.Fatal("child stdin should be closed when explicitly requested")
 	}
 }
 

@@ -1,6 +1,9 @@
 package video
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -29,10 +32,78 @@ func TestNicoEncodeArgsKeepProductionClockAndSliceContract(t *testing.T) {
 	if strings.Contains(joined, "-shortest") {
 		t.Fatalf("audio short tail must not truncate the video: %s", joined)
 	}
-	for _, forbidden := range []string{"-filter_complex_threads", "-threads:v"} {
-		if strings.Contains(joined, forbidden) {
-			t.Fatalf("default production args must not force diagnostic thread option %q: %s", forbidden, joined)
+	for _, forbidden := range []string{"-filter_complex_threads", "-threads", "-threads:v"} {
+		for _, arg := range args {
+			if arg == forbidden {
+				t.Fatalf("default production args must not force diagnostic thread option %q: %s", forbidden, joined)
+			}
 		}
+	}
+}
+
+func TestNicoLegacyEncodeArgsRetainAutomaticAlphaMode(t *testing.T) {
+	joined := strings.Join(nicoEncodeArgs("source.mp4", "output.mp4", NicoEncodeOptions{
+		Width: 64, Height: 36, DurationMs: 100, FPSNum: 30, FPSDen: 1,
+	}), " ")
+	if !strings.Contains(joined, "overlay=0:0:format=auto:alpha=auto") || strings.Contains(joined, "setparams=alpha_mode=premultiplied") {
+		t.Fatalf("legacy renderer alpha handling changed: %s", joined)
+	}
+}
+
+func TestNicoTimelineFFmpegOverlayHonorsPremultipliedPixels(t *testing.T) {
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("ffmpeg is not available")
+	}
+	const width, height = 64, 36
+	args := nicoTimelineEncodeArgs("source.mp4", "output.mp4", NicoEncodeOptions{
+		Width: width, Height: height, DurationMs: 100, FPSNum: 30, FPSDen: 1,
+	})
+	filterIndex := -1
+	for i, arg := range args {
+		if arg == "-filter_complex" && i+1 < len(args) {
+			filterIndex = i + 1
+			break
+		}
+	}
+	if filterIndex < 0 {
+		t.Fatal("timeline FFmpeg filter graph was not generated")
+	}
+	filter := args[filterIndex]
+	if !strings.Contains(filter, "setparams=alpha_mode=premultiplied") || !strings.Contains(filter, "alpha=premultiplied") {
+		t.Fatalf("timeline graph does not preserve premultiplied alpha metadata: %s", filter)
+	}
+
+	dir := t.TempDir()
+	overlayPath := filepath.Join(dir, "premultiplied.rgba")
+	outputPath := filepath.Join(dir, "composite.yuv")
+	pixels := make([]byte, width*height*4)
+	for i := 0; i < len(pixels); i += 4 {
+		pixels[i], pixels[i+1], pixels[i+2], pixels[i+3] = 128, 128, 128, 128
+	}
+	if err := os.WriteFile(overlayPath, pixels, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(ffmpeg,
+		"-y", "-v", "error",
+		"-f", "lavfi", "-i", "color=c=black:s=64x36:r=30:d=0.1",
+		"-f", "rawvideo", "-pix_fmt", "rgba", "-video_size", "64x36", "-framerate", "30", "-i", overlayPath,
+		"-filter_complex", filter,
+		"-map", "[v]", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "yuv420p", outputPath,
+	)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("ffmpeg premultiplied overlay failed: %v: %s", err, output)
+	}
+	composite, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := len(composite), width*height*3/2; got != want {
+		t.Fatalf("YUV composite bytes=%d, want %d", got, want)
+	}
+	center := (height/2)*width + width/2
+	if got := composite[center]; got < 124 || got > 128 {
+		t.Fatalf("premultiplied half-gray over black has luma %d, want approximately 126", got)
 	}
 }
 

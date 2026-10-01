@@ -6,8 +6,10 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"imagepadserver/internal/nicoexportworker"
+	"imagepadserver/internal/nicorender"
 )
 
 func TestNicoWorkerEventCollectorReportsProgress(t *testing.T) {
@@ -31,6 +33,21 @@ func TestNicoWorkerEventCollectorReportsProgress(t *testing.T) {
 	}
 	if progress[0].Stage != "render" || progress[0].Completed != 12 || progress[0].Total != 30 {
 		t.Fatalf("progress = %#v", progress[0])
+	}
+}
+
+func TestNicoWorkerEventCollectorMeasuresRequestToResult(t *testing.T) {
+	collector := &nicoWorkerEventCollector{workerStartedAt: time.Now().Add(-20 * time.Millisecond)}
+	line := `{"version":1,"type":"result","run_id":"run-1","media_id":"media-1","output":"out.mp4","playlist":"playlist.m3u8","ok":true}` + "\n"
+	if _, err := io.Copy(collector, strings.NewReader(line)); err != nil {
+		t.Fatal(err)
+	}
+	result, err := collector.event()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.WorkerWallSeconds < 0.015 {
+		t.Fatalf("worker wall=%f seconds, want time to final result event", result.WorkerWallSeconds)
 	}
 }
 
@@ -66,6 +83,60 @@ func TestParseNicoWorkerEventsRejectsOversizedLine(t *testing.T) {
 func TestNicoWorkerEventContractUsesProtocolVersion(t *testing.T) {
 	if nicoexportworker.ProtocolVersion != 1 {
 		t.Fatalf("protocol version = %d", nicoexportworker.ProtocolVersion)
+	}
+}
+
+func TestNicoWorkerCPUAllowanceUsesFullMachineCapacity(t *testing.T) {
+	options := nicoWorkerCPUOptions()
+	if options.Percent != 100 {
+		t.Fatalf("production worker CPU allowance = %d%%, want full capacity (100%%)", options.Percent)
+	}
+}
+
+func TestNicoTimelineWorkerOptionsEnablesConfiguredHelperByDefaultAndRequireValidOptOut(t *testing.T) {
+	for _, key := range []string{
+		"IMAGEPAD_NICO_RENDERER", "IMAGEPAD_NICO_TIMELINE_ENABLED", "IMAGEPAD_NICO_TIMELINE_COMPOSITOR",
+		"IMAGEPAD_NICO_TIMELINE_READBACK_SLOTS", "IMAGEPAD_NICO_TIMELINE_GPU_BACKEND",
+	} {
+		t.Setenv(key, "")
+	}
+	defaults, err := nicoTimelineWorkerRequestOptions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defaults.Backend != "" || defaults.TimelineCompositor != "" || defaults.TimelineReadbackSlots != 0 || defaults.TimelineGPUBackend != "" {
+		t.Fatalf("unexpected default timeline options: %+v", defaults)
+	}
+	if defaults.TimelineEnabled != nicorender.EmbeddedTimelineCompositorSupportsNCT2() {
+		t.Fatalf("default enablement does not match a valid embedded NCT2 helper: options=%+v", defaults)
+	}
+	t.Setenv("IMAGEPAD_NICO_RENDERER", "auto")
+	t.Setenv("IMAGEPAD_NICO_TIMELINE_COMPOSITOR", `C:\helpers\nico-compositord.exe`)
+	t.Setenv("IMAGEPAD_NICO_TIMELINE_READBACK_SLOTS", "2")
+	t.Setenv("IMAGEPAD_NICO_TIMELINE_GPU_BACKEND", "vulkan")
+	configured, err := nicoTimelineWorkerRequestOptions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configured.Backend != "auto" || !configured.TimelineEnabled || configured.TimelineCompositor != `C:\helpers\nico-compositord.exe` || configured.TimelineReadbackSlots != 2 || configured.TimelineGPUBackend != "vulkan" {
+		t.Fatalf("timeline worker options=%+v", configured)
+	}
+	t.Setenv("IMAGEPAD_NICO_TIMELINE_ENABLED", "false")
+	disabled, err := nicoTimelineWorkerRequestOptions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if disabled.TimelineEnabled {
+		t.Fatalf("explicit false did not disable timeline rendering: %+v", disabled)
+	}
+	t.Setenv("IMAGEPAD_NICO_TIMELINE_ENABLED", "sometimes")
+	if _, err := nicoTimelineWorkerRequestOptions(); err == nil || !strings.Contains(err.Error(), "IMAGEPAD_NICO_TIMELINE_ENABLED") {
+		t.Fatalf("invalid enable value error=%v", err)
+	}
+	t.Setenv("IMAGEPAD_NICO_TIMELINE_ENABLED", "false")
+	t.Setenv("IMAGEPAD_NICO_TIMELINE_READBACK_SLOTS", "4")
+	if _, err := nicoTimelineWorkerRequestOptions(); err == nil || !strings.Contains(err.Error(), "readback slots") {
+		t.Fatalf("invalid readback slot error=%v", err)
 	}
 }
 

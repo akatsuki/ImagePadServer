@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"imagepadserver/internal/niconico"
+	"imagepadserver/internal/nicorender"
 	"imagepadserver/internal/video"
 )
 
@@ -18,43 +20,81 @@ const (
 )
 
 type Request struct {
-	Version        int    `json:"version"`
-	RunID          string `json:"run_id"`
-	MediaID        string `json:"media_id"`
-	SourcePath     string `json:"source_path"`
-	SnapshotPath   string `json:"snapshot_path"`
-	OutputPath     string `json:"output_path"`
-	HLSStagingDir  string `json:"hls_staging_dir"`
-	OutputMode     string `json:"output_mode,omitempty"`
-	FFmpeg         string `json:"ffmpeg"`
-	BrowserPath    string `json:"browser_path,omitempty"`
-	Compositor     string `json:"compositor,omitempty"`
-	Backend        string `json:"backend,omitempty"`
-	Encoder        string `json:"encoder,omitempty"`
-	Width          int    `json:"width"`
-	Height         int    `json:"height"`
-	DurationMs     int64  `json:"duration_ms"`
-	FPSNum         int64  `json:"fps_num"`
-	FPSDen         int64  `json:"fps_den"`
-	CRF            int    `json:"crf"`
-	AudioBitrate   string `json:"audio_bitrate"`
-	FilterThreads  int    `json:"filter_threads,omitempty"`
-	DecoderThreads int    `json:"decoder_threads,omitempty"`
-	EncoderThreads int    `json:"encoder_threads,omitempty"`
+	Version               int     `json:"version"`
+	RunID                 string  `json:"run_id"`
+	MediaID               string  `json:"media_id"`
+	SourcePath            string  `json:"source_path"`
+	SnapshotPath          string  `json:"snapshot_path"`
+	OutputPath            string  `json:"output_path"`
+	HLSStagingDir         string  `json:"hls_staging_dir"`
+	OutputMode            string  `json:"output_mode,omitempty"`
+	FFmpeg                string  `json:"ffmpeg"`
+	BrowserPath           string  `json:"browser_path,omitempty"`
+	Compositor            string  `json:"compositor,omitempty"`
+	TimelineEnabled       bool    `json:"timeline_enabled,omitempty"`
+	TimelineCompositor    string  `json:"timeline_compositor,omitempty"`
+	TimelineReadbackSlots int     `json:"timeline_readback_slots,omitempty"`
+	TimelineGPUBackend    string  `json:"timeline_gpu_backend,omitempty"`
+	TimelineRandomSeed    *uint32 `json:"timeline_random_seed,omitempty"`
+	Backend               string  `json:"backend,omitempty"`
+	Encoder               string  `json:"encoder,omitempty"`
+	Width                 int     `json:"width"`
+	Height                int     `json:"height"`
+	DurationMs            int64   `json:"duration_ms"`
+	FPSNum                int64   `json:"fps_num"`
+	FPSDen                int64   `json:"fps_den"`
+	CRF                   int     `json:"crf"`
+	AudioBitrate          string  `json:"audio_bitrate"`
+	FilterThreads         int     `json:"filter_threads,omitempty"`
+	DecoderThreads        int     `json:"decoder_threads,omitempty"`
+	EncoderThreads        int     `json:"encoder_threads,omitempty"`
 }
 
 type Event struct {
-	Version   int    `json:"version"`
-	Type      string `json:"type"`
-	RunID     string `json:"run_id,omitempty"`
-	MediaID   string `json:"media_id,omitempty"`
-	Stage     string `json:"stage,omitempty"`
-	Completed int64  `json:"completed,omitempty"`
-	Total     int64  `json:"total,omitempty"`
-	Output    string `json:"output,omitempty"`
-	Playlist  string `json:"playlist,omitempty"`
-	OK        bool   `json:"ok,omitempty"`
-	Error     string `json:"error,omitempty"`
+	Version                 int                                `json:"version"`
+	Type                    string                             `json:"type"`
+	RunID                   string                             `json:"run_id,omitempty"`
+	MediaID                 string                             `json:"media_id,omitempty"`
+	Stage                   string                             `json:"stage,omitempty"`
+	Completed               int64                              `json:"completed,omitempty"`
+	Total                   int64                              `json:"total,omitempty"`
+	Output                  string                             `json:"output,omitempty"`
+	Playlist                string                             `json:"playlist,omitempty"`
+	OK                      bool                               `json:"ok,omitempty"`
+	Error                   string                             `json:"error,omitempty"`
+	Renderer                string                             `json:"renderer,omitempty"`
+	Backend                 string                             `json:"backend,omitempty"`
+	GPUBackend              string                             `json:"gpu_backend,omitempty"`
+	GPUAdapter              string                             `json:"gpu_adapter,omitempty"`
+	HelperSHA256            string                             `json:"helper_sha256,omitempty"`
+	BundleSHA256            string                             `json:"bundle_sha256,omitempty"`
+	ReadbackSlots           int                                `json:"readback_slots,omitempty"`
+	TimelineFallback        bool                               `json:"timeline_fallback,omitempty"`
+	FallbackNotice          string                             `json:"fallback_notice,omitempty"`
+	WorkerWallSeconds       float64                            `json:"worker_wall_seconds,omitempty"`
+	ConvertWallSeconds      float64                            `json:"convert_wall_seconds,omitempty"`
+	StageTimings            []video.NicoStageTiming            `json:"stage_timings,omitempty"`
+	SpriteCaptureMetrics    *nicorender.TimelineCaptureMetrics `json:"sprite_capture_metrics,omitempty"`
+	TimelineProtocol        string                             `json:"timeline_protocol,omitempty"`
+	TimelineCaptureDone     *time.Duration                     `json:"timeline_capture_done_ns,omitempty"`
+	TimelineFirstAssetReady *time.Duration                     `json:"timeline_first_asset_ready_ns,omitempty"`
+	TimelineFirstFrame      *time.Duration                     `json:"timeline_first_frame_ns,omitempty"`
+	TimelineStreamEnd       *time.Duration                     `json:"timeline_stream_end_ns,omitempty"`
+	TimelineHelperDone      *time.Duration                     `json:"timeline_helper_done_ns,omitempty"`
+	TimelineFFmpegDone      *time.Duration                     `json:"timeline_ffmpeg_done_ns,omitempty"`
+	TimelineAttempt         *TimelineAttemptMetadata           `json:"timeline_attempt,omitempty"`
+}
+
+// TimelineAttemptMetadata carries only validated NCT2 timing diagnostics for
+// the failed renderer attempt that triggered CPU fallback.
+type TimelineAttemptMetadata struct {
+	Protocol        string         `json:"protocol"`
+	CaptureDone     *time.Duration `json:"capture_done_ns,omitempty"`
+	FirstAssetReady *time.Duration `json:"first_asset_ready_ns,omitempty"`
+	FirstFrame      *time.Duration `json:"first_frame_ns,omitempty"`
+	StreamEnd       *time.Duration `json:"stream_end_ns,omitempty"`
+	HelperDone      *time.Duration `json:"helper_done_ns,omitempty"`
+	FFmpegDone      *time.Duration `json:"ffmpeg_done_ns,omitempty"`
 }
 
 func ReadRequest(r io.Reader) (Request, error) {
@@ -133,8 +173,13 @@ func (r Request) Validate() error {
 			return fmt.Errorf("nico export worker: invalid %s %d", name, value)
 		}
 	}
-	if r.Backend != "" && r.Backend != "auto" && r.Backend != "native" && r.Backend != "browser" {
+	if r.Backend != "" && r.Backend != "auto" && r.Backend != "native" && r.Backend != "browser" && r.Backend != "timeline" {
 		return fmt.Errorf("nico export worker: invalid backend %q", r.Backend)
+	}
+	if _, err := nicorender.ValidateTimelineRuntimeOptions(nicorender.TimelineRuntimeOptions{
+		Backend: r.TimelineGPUBackend, ReadbackSlots: r.TimelineReadbackSlots,
+	}); err != nil {
+		return fmt.Errorf("nico export worker: %w", err)
 	}
 	switch strings.ToLower(strings.TrimSpace(r.Encoder)) {
 	case "", "x264", "nvenc":

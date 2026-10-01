@@ -1,0 +1,673 @@
+{
+  "schemaVersion": 1,
+  "bundleSha256": "28395344d16f977f2d3a1aece8643963257b11d9023f0e8d915107dd3d54f4df",
+  "realInput": {
+    "videoId": "sm9",
+    "commentCount": 362,
+    "snapshotSha256": "b7be86d86016175c99925f5f1b5651d43279eeffcc54deb1c22c5b2e6e15e946",
+    "sourceSha256": "8aa46ff529686272ca233babfd24884f2b28ef25a24534f278e95560e755ae20",
+    "capture": {
+      "width": 1920,
+      "height": 1080,
+      "fpsNum": 30,
+      "fpsDen": 1,
+      "durationsMs": [
+        6000,
+        12000
+      ],
+      "frames": [
+        180,
+        360
+      ]
+    }
+  },
+  "fixtures": [
+    {
+      "name": "ordinary-naka",
+      "disposition": "supported",
+      "tags": [
+        "html5",
+        "naka",
+        "scroll"
+      ],
+      "description": "標準移動コメントの基準位置",
+      "render": {
+        "width": 1920,
+        "height": 1080,
+        "durationMs": 6000,
+        "fpsNum": 30,
+        "fpsDen": 1
+      },
+      "snapshot": {
+        "videoId": "sm9",
+        "selectedForks": [
+          "main"
+        ],
+        "threads": [
+          {
+            "id": "fixture-main",
+            "fork": "main",
+            "comments": [
+              {
+                "id": "naka",
+                "vposMs": 1000,
+                "body": "移動コメント",
+                "commands": [
+                  "white"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "ordinary-ue",
+      "disposition": "supported",
+      "tags": [
+        "html5",
+        "ue",
+        "fixed"
+      ],
+      "description": "上固定コメントの基準位置",
+      "render": {
+        "width": 1920,
+        "height": 1080,
+        "durationMs": 6000,
+        "fpsNum": 30,
+        "fpsDen": 1
+      },
+      "snapshot": {
+        "videoId": "sm9",
+        "selectedForks": [
+          "main"
+        ],
+        "threads": [
+          {
+            "id": "fixture-main",
+            "fork": "main",
+            "comments": [
+              {
+                "id": "ue",
+                "vposMs": 1000,
+                "body": "上固定",
+                "commands": [
+                  "ue",
+                  "white"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "ordinary-shita",
+      "disposition": "supported",
+      "tags": [
+        "html5",
+        "shita",
+        "fixed"
+      ],
+      "description": "下固定コメントの基準位置",
+      "render": {
+        "width": 1920,
+        "height": 1080,
+        "durationMs": 6000,
+        "fpsNum": 30,
+        "fpsDen": 1
+      },
+      "snapshot": {
+        "videoId": "sm9",
+        "selectedForks": [
+          "main"
+        ],
+        "threads": [
+          {
+            "id": "fixture-main",
+            "fork": "main",
+            "comments": [
+              {
+                "id": "shita",
+                "vposMs": 1000,
+                "body": "下固定",
+                "commands": [
+                  "shita",
+                  "white"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "same-text-reuse",
+      "disposition": "supported",
+      "tags": [
+        "dedupe",
+        "same-body",
+        "same-style"
+      ],
+      "description": "同じ本文とスタイルを複数コメントから再利用する",
+      "render": {
+        "width": 960,
+        "height": 540,
+        "durationMs": 6000,
+        "fpsNum": 30,
+        "fpsDen": 1
+      },
+      "snapshot": {
+        "videoId": "sm9",
+        "selectedForks": [
+          "main"
+        ],
+        "threads": [
+          {
+            "id": "fixture-main",
+            "fork": "main",
+            "comments": [
+              {
+                "id": "reuse-a",
+                "vposMs": 1000,
+                "body": "同じテクスチャ",
+                "commands": [
+                  "red"
+                ]
+              },
+              {
+                "id": "reuse-b",
+                "vposMs": 1800,
+                "body": "同じテクスチャ",
+                "commands": [
+                  "red"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "overlap-a-b-a",
+      "disposition": "supported",
+      "tags": [
+        "overdraw",
+        "antialiased-alpha",
+        "order-sensitive"
+      ],
+      "description": "アンチエイリアスの半透明端を含むA→B→A順の重なり",
+      "composition": {
+        "alpha": 0.5,
+        "drawOrder": [
+          "A",
+          "B",
+          "A"
+        ]
+      },
+      "render": {
+        "width": 720,
+        "height": 720,
+        "durationMs": 6000,
+        "fpsNum": 30,
+        "fpsDen": 1
+      },
+      "snapshot": {
+        "videoId": "sm9",
+        "selectedForks": [
+          "main"
+        ],
+        "threads": [
+          {
+            "id": "fixture-main",
+            "fork": "main",
+            "comments": [
+              {
+                "id": "overlap-a1",
+                "vposMs": 1000,
+                "body": "A",
+                "commands": [
+                  "red",
+                  "nico:opacity:0.5"
+                ]
+              },
+              {
+                "id": "overlap-b",
+                "vposMs": 1000,
+                "body": "B",
+                "commands": [
+                  "blue",
+                  "nico:opacity:0.5"
+                ]
+              },
+              {
+                "id": "overlap-a2",
+                "vposMs": 1000,
+                "body": "A",
+                "commands": [
+                  "red",
+                  "nico:opacity:0.5"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "multiline-color-size-tile",
+      "disposition": "supported",
+      "tags": [
+        "multiline",
+        "color",
+        "size",
+        "long-text",
+        "tile-boundary"
+      ],
+      "description": "改行、色、大きさ、長文とテクスチャタイル境界を含む",
+      "render": {
+        "width": 960,
+        "height": 720,
+        "durationMs": 6000,
+        "fpsNum": 30,
+        "fpsDen": 1
+      },
+      "snapshot": {
+        "videoId": "sm9",
+        "selectedForks": [
+          "main"
+        ],
+        "threads": [
+          {
+            "id": "fixture-main",
+            "fork": "main",
+            "comments": [
+              {
+                "id": "multi-red-big",
+                "vposMs": 500,
+                "body": "改行と色\n大きな文字",
+                "commands": [
+                  "red",
+                  "big"
+                ]
+              },
+              {
+                "id": "multi-blue-small",
+                "vposMs": 1200,
+                "body": "長文タイル境界確認用の文字列を繰り返して幅を広げる長文タイル境界確認用の文字列を繰り返して幅を広げる",
+                "commands": [
+                  "blue",
+                  "small"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "negative-vpos",
+      "disposition": "supported",
+      "tags": [
+        "negative-time",
+        "floor"
+      ],
+      "description": "0秒より前のコメントを負のvposで保持する",
+      "render": {
+        "width": 1920,
+        "height": 1080,
+        "durationMs": 6000,
+        "fpsNum": 30,
+        "fpsDen": 1
+      },
+      "snapshot": {
+        "videoId": "sm9",
+        "selectedForks": [
+          "main"
+        ],
+        "threads": [
+          {
+            "id": "fixture-main",
+            "fork": "main",
+            "comments": [
+              {
+                "id": "negative-one-ms",
+                "vposMs": -1,
+                "body": "負の1ms",
+                "commands": [
+                  "white"
+                ]
+              },
+              {
+                "id": "negative-start",
+                "vposMs": -1500,
+                "body": "開始前コメント",
+                "commands": [
+                  "white"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "early-visible",
+      "disposition": "supported",
+      "tags": [
+        "early-show",
+        "pre-roll"
+      ],
+      "description": "動画開始時点ですでに画面内にある移動コメント",
+      "render": {
+        "width": 1920,
+        "height": 1080,
+        "durationMs": 6000,
+        "fpsNum": 30,
+        "fpsDen": 1
+      },
+      "snapshot": {
+        "videoId": "sm9",
+        "selectedForks": [
+          "main"
+        ],
+        "threads": [
+          {
+            "id": "fixture-main",
+            "fork": "main",
+            "comments": [
+              {
+                "id": "pre-roll",
+                "vposMs": -10000,
+                "body": "開始時に表示中",
+                "commands": [
+                  "white"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "aspect-4-3",
+      "disposition": "supported",
+      "tags": [
+        "geometry",
+        "4:3"
+      ],
+      "description": "非16:9の4:3出力座標",
+      "render": {
+        "width": 960,
+        "height": 720,
+        "durationMs": 6000,
+        "fpsNum": 30,
+        "fpsDen": 1
+      },
+      "snapshot": {
+        "videoId": "sm9",
+        "selectedForks": [
+          "main"
+        ],
+        "threads": [
+          {
+            "id": "fixture-main",
+            "fork": "main",
+            "comments": [
+              {
+                "id": "4-3",
+                "vposMs": 1000,
+                "body": "4:3",
+                "commands": [
+                  "ue",
+                  "white"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "aspect-square",
+      "disposition": "supported",
+      "tags": [
+        "geometry",
+        "square"
+      ],
+      "description": "非16:9の正方形出力座標",
+      "render": {
+        "width": 720,
+        "height": 720,
+        "durationMs": 6000,
+        "fpsNum": 30,
+        "fpsDen": 1
+      },
+      "snapshot": {
+        "videoId": "sm9",
+        "selectedForks": [
+          "main"
+        ],
+        "threads": [
+          {
+            "id": "fixture-main",
+            "fork": "main",
+            "comments": [
+              {
+                "id": "square",
+                "vposMs": 1000,
+                "body": "正方形",
+                "commands": [
+                  "shita",
+                  "white"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "no-comments",
+      "disposition": "supported",
+      "tags": [
+        "empty",
+        "zero-count"
+      ],
+      "description": "コメント0件",
+      "render": {
+        "width": 1920,
+        "height": 1080,
+        "durationMs": 6000,
+        "fpsNum": 30,
+        "fpsDen": 1
+      },
+      "snapshot": {
+        "videoId": "sm9",
+        "selectedForks": [
+          "main"
+        ],
+        "threads": []
+      }
+    },
+    {
+      "name": "no-visible-comments",
+      "disposition": "supported",
+      "tags": [
+        "non-empty",
+        "zero-visible"
+      ],
+      "description": "有効コメントはあるが6秒区間に見えるコメントがない",
+      "render": {
+        "width": 1920,
+        "height": 1080,
+        "durationMs": 6000,
+        "fpsNum": 30,
+        "fpsDen": 1
+      },
+      "snapshot": {
+        "videoId": "sm9",
+        "selectedForks": [
+          "main"
+        ],
+        "threads": [
+          {
+            "id": "fixture-main",
+            "fork": "main",
+            "comments": [
+              {
+                "id": "outside-range",
+                "vposMs": 600000,
+                "body": "区間外",
+                "commands": [
+                  "white"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "unsupported-flash",
+      "disposition": "unsupported",
+      "tags": [
+        "flash",
+        "legacy-renderer"
+      ],
+      "description": "旧Flash描画経路を示す分類fixture。現行Snapshotからの合成ではない",
+      "unsupportedFeature": "flash-renderer",
+      "snapshot": {
+        "videoId": "sm9",
+        "selectedForks": [
+          "main"
+        ],
+        "threads": [
+          {
+            "id": "fixture-main",
+            "fork": "main",
+            "comments": [
+              {
+                "id": "flash-marker",
+                "vposMs": 1000,
+                "body": "Flash経路",
+                "commands": [
+                  "white"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "unsupported-nicoscript-reverse",
+      "disposition": "unsupported",
+      "tags": [
+        "nicoscript",
+        "reverse"
+      ],
+      "description": "動的な逆再生NicoScriptを示す分類fixture。イベント時刻の実装には依存しない",
+      "unsupportedFeature": "dynamic-reverse-script",
+      "snapshot": {
+        "videoId": "sm9",
+        "selectedForks": [
+          "main"
+        ],
+        "threads": [
+          {
+            "id": "fixture-main",
+            "fork": "main",
+            "comments": [
+              {
+                "id": "reverse-marker",
+                "vposMs": 1000,
+                "body": "逆再生script",
+                "commands": [
+                  "white"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "unsupported-decoration",
+      "disposition": "unsupported",
+      "tags": [
+        "decoration",
+        "background",
+        "border",
+        "button"
+      ],
+      "description": "背景、枠、ボタンなど固定テキスト以外の描画を要する分類fixture",
+      "unsupportedFeature": "dynamic-comment-decoration",
+      "snapshot": {
+        "videoId": "sm9",
+        "selectedForks": [
+          "main"
+        ],
+        "threads": [
+          {
+            "id": "fixture-main",
+            "fork": "main",
+            "comments": [
+              {
+                "id": "decoration-marker",
+                "vposMs": 1000,
+                "body": "装飾付き",
+                "commands": [
+                  "white"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "unsupported-comment-limit",
+      "disposition": "unsupported",
+      "tags": [
+        "comment-limit",
+        "dynamic-visibility"
+      ],
+      "description": "描画数制限によって可視性が変わる分類fixture",
+      "unsupportedFeature": "comment-limit",
+      "rendererOptions": {
+        "commentLimit": 1
+      },
+      "snapshot": {
+        "videoId": "sm9",
+        "selectedForks": [
+          "main"
+        ],
+        "threads": [
+          {
+            "id": "fixture-main",
+            "fork": "main",
+            "comments": [
+              {
+                "id": "limit-a",
+                "vposMs": 1000,
+                "body": "制限A",
+                "commands": [
+                  "white"
+                ]
+              },
+              {
+                "id": "limit-b",
+                "vposMs": 1000,
+                "body": "制限B",
+                "commands": [
+                  "white"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -27,6 +27,33 @@ func TestSpriteOptionsEnforceProductionBounds(t *testing.T) {
 	}
 }
 
+func TestSpriteCaptureBatchFramesFollowRenderOptions(t *testing.T) {
+	cases := []struct {
+		configured int
+		want       int
+		wantError  bool
+	}{
+		{configured: 0, want: 1},
+		{configured: 1, want: 1},
+		{configured: 5, want: 5},
+		{configured: spriteMaxBatchFrames, want: spriteMaxBatchFrames},
+		{configured: -1, wantError: true},
+		{configured: spriteMaxBatchFrames + 1, wantError: true},
+	}
+	for _, tc := range cases {
+		got, err := spriteCaptureBatchFrames(tc.configured)
+		if tc.wantError {
+			if err == nil {
+				t.Errorf("configured=%d: expected error", tc.configured)
+			}
+			continue
+		}
+		if err != nil || got != tc.want {
+			t.Errorf("configured=%d: got (%d, %v), want (%d, nil)", tc.configured, got, err, tc.want)
+		}
+	}
+}
+
 func withFPS(o RenderOptions, num, den int64) RenderOptions {
 	o.FPSNum, o.FPSDen = num, den
 	return o

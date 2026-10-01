@@ -137,3 +137,30 @@ func TestWriteEventRejectsOversizedBoundedOutput(t *testing.T) {
 		t.Fatalf("event = %q", out.String())
 	}
 }
+
+func TestEventMetadataAbsentKeepsLegacyJSONShape(t *testing.T) {
+	event := Event{Version: 1, Type: "result", RunID: "run-1", MediaID: "media-1", OK: true}
+	data, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = `{"version":1,"type":"result","run_id":"run-1","media_id":"media-1","ok":true}`
+	if string(data) != want {
+		t.Fatalf("legacy event JSON = %s, want %s", data, want)
+	}
+}
+
+func TestWriteEventKeepsNCT2AttemptMetadataWithinEventLimit(t *testing.T) {
+	input := `{"version":1,"type":"result","timeline_attempt":{"protocol":"` + strings.Repeat("x", maxEventBytes) + `"}}`
+	var event Event
+	if err := json.Unmarshal([]byte(input), &event); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := WriteEvent(&out, event); err == nil || !strings.Contains(err.Error(), "64 KiB") {
+		t.Fatalf("oversized timeline diagnostic error = %v", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("oversized timeline diagnostic wrote %d bytes", out.Len())
+	}
+}

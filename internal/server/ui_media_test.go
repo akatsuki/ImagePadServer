@@ -629,11 +629,27 @@ func TestUIContainsEncoderModeSetting(t *testing.T) {
 	for _, want := range []string{
 		`id="encoderMode"`,
 		`value="gpu">GPU`,
+		`value="cpu">CPU (libx264)`,
+		`const requested = String(mode || '').trim().toLowerCase();`,
+		`const normalized = ['cpu', 'gpu'].includes(requested) ? requested : 'gpu';`,
 		`apiFetch('/api/encoder-mode'`,
 		`applyEncoderMode(data.encoderMode || 'auto')`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("encoder mode setting missing %q", want)
+		}
+	}
+}
+
+func TestUIShowsRendererAndEncoderFallbackNotice(t *testing.T) {
+	html := getIndexHTML(t)
+	for _, want := range []string{
+		`const fallbackNotice = data.fallbackNotice || data.encoderFallbackNotice;`,
+		`if (fallbackNotice)`,
+		`toast.textContent = fallbackNotice;`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("fallback notice wiring missing %q", want)
 		}
 	}
 }

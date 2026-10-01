@@ -9,7 +9,7 @@ import (
 
 func TestCleanupAbandonedNicoStagingRemovesOnlyOldOwnedDirectories(t *testing.T) {
 	root := t.TempDir()
-	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	old := now.Add(-2 * time.Hour)
 
 	oldExport := filepath.Join(root, ".niconico-export-old")

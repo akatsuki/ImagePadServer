@@ -126,6 +126,38 @@ func TestWriteRendererPageUsesOutputAspectForCommentCoordinates(t *testing.T) {
 	}
 }
 
+func TestWriteRendererPageRandomSeedPreludeIsOptInAndPrecedesBundle(t *testing.T) {
+	seed := uint32(0x4e435431)
+	seededPage, err := writeRendererPageWithRandomSeed(640, 360, "file:///tmp/niconicomments.js", nil, nil, &seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(seededPage)
+	seeded, err := os.ReadFile(seededPage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedMarker := fmt.Sprintf("let state=%d>>>0;Math.random=", seed)
+	seedIndex := strings.Index(string(seeded), seedMarker)
+	bundleIndex := strings.Index(string(seeded), `<script src="`)
+	if seedIndex < 0 || bundleIndex < 0 || seedIndex >= bundleIndex {
+		t.Fatalf("seeded page must install its random stream before the bundle: seed=%d bundle=%d", seedIndex, bundleIndex)
+	}
+
+	defaultPage, err := writeRendererPage(640, 360, "file:///tmp/niconicomments.js", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(defaultPage)
+	defaultHTML, err := os.ReadFile(defaultPage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(defaultHTML), "Math.random=") {
+		t.Fatal("production renderer page must retain the native Math.random implementation")
+	}
+}
+
 func TestRenderSingleFrameWithHeadlessBrowser(t *testing.T) {
 	if os.Getenv("IMAGEPAD_NICONICO_RENDER_TEST") != "1" {
 		t.Skip("set IMAGEPAD_NICONICO_RENDER_TEST=1 for the real browser test")

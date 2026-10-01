@@ -17,7 +17,8 @@ const dashboardScriptUploadState = `
     }
     function applyEncoderMode(mode) {
       if (!encoderMode) return;
-	  const normalized = 'gpu';
+	  const requested = String(mode || '').trim().toLowerCase();
+	  const normalized = ['cpu', 'gpu'].includes(requested) ? requested : 'gpu';
       encoderMode.value = normalized;
     }
 	function applyMusicPlaylistDeliveryProfile(mode) {

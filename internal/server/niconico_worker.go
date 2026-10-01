@@ -9,30 +9,86 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"imagepadserver/internal/nicoexportbudget"
 	"imagepadserver/internal/nicoexportworker"
+	"imagepadserver/internal/nicorender"
 )
 
 const maxNicoWorkerEventLine = 64 * 1024
 
-// Nico exports share one process-wide 20% CPU budget. A second job would
-// otherwise create another independent Job Object and oversubscribe VRChat.
+// Nico exports are serialized process-wide so concurrent exports do not
+// contend with one another while each worker can use the full machine.
 var nicoExportMu sync.Mutex
+
+func nicoWorkerCPUOptions() nicoexportbudget.Options {
+	// The process Job Object gives Nico exports all available machine CPU. The
+	// 20% VRChat contention scenario is imposed by the opt-in benchmark runner.
+	return nicoexportbudget.Options{Percent: 100}
+}
+
+// nicoWorkerCPUOptionsForPerformanceTest maps the opt-in benchmark's requested
+// extra cap to Job Object options. Production callers must keep using
+// nicoWorkerCPUOptions and never read the benchmark environment variable.
+func nicoWorkerCPUOptionsForPerformanceTest(testCPUPercent int) (nicoexportbudget.Options, error) {
+	switch testCPUPercent {
+	case 0:
+		return nicoWorkerCPUOptions(), nil
+	case 20:
+		return nicoexportbudget.Options{Percent: 20}, nil
+	default:
+		return nicoexportbudget.Options{}, fmt.Errorf("test CPU percent must be 0 or 20, got %d", testCPUPercent)
+	}
+}
+
+func nicoTimelineWorkerRequestOptions() (nicoexportworker.Request, error) {
+	options := nicoexportworker.Request{
+		Backend:            strings.TrimSpace(os.Getenv("IMAGEPAD_NICO_RENDERER")),
+		TimelineCompositor: strings.TrimSpace(os.Getenv("IMAGEPAD_NICO_TIMELINE_COMPOSITOR")),
+		TimelineGPUBackend: strings.TrimSpace(os.Getenv("IMAGEPAD_NICO_TIMELINE_GPU_BACKEND")),
+		TimelineEnabled:    nicorender.EmbeddedTimelineCompositorSupportsNCT2(),
+	}
+	if options.TimelineCompositor != "" {
+		options.TimelineEnabled = true
+	}
+	if raw := strings.TrimSpace(os.Getenv("IMAGEPAD_NICO_TIMELINE_ENABLED")); raw != "" {
+		enabled, err := strconv.ParseBool(raw)
+		if err != nil {
+			return nicoexportworker.Request{}, fmt.Errorf("invalid IMAGEPAD_NICO_TIMELINE_ENABLED %q: %w", raw, err)
+		}
+		options.TimelineEnabled = enabled
+	}
+	if raw := strings.TrimSpace(os.Getenv("IMAGEPAD_NICO_TIMELINE_READBACK_SLOTS")); raw != "" {
+		slots, err := strconv.Atoi(raw)
+		if err != nil {
+			return nicoexportworker.Request{}, fmt.Errorf("invalid IMAGEPAD_NICO_TIMELINE_READBACK_SLOTS %q: %w", raw, err)
+		}
+		options.TimelineReadbackSlots = slots
+	}
+	if _, err := nicorender.ValidateTimelineRuntimeOptions(nicorender.TimelineRuntimeOptions{
+		Backend: options.TimelineGPUBackend, ReadbackSlots: options.TimelineReadbackSlots,
+	}); err != nil {
+		return nicoexportworker.Request{}, err
+	}
+	return options, nil
+}
 
 // Kept behind a seam for the opt-in HTTP integration test. Production always
 // resolves the currently running imagepadserver executable.
 var nicoWorkerExecutable = os.Executable
 
 type nicoWorkerEventCollector struct {
-	mu         sync.Mutex
-	line       []byte
-	result     *nicoexportworker.Event
-	resultSeen bool
-	err        error
-	onProgress func(nicoexportworker.Event)
+	mu              sync.Mutex
+	line            []byte
+	result          *nicoexportworker.Event
+	resultSeen      bool
+	err             error
+	onProgress      func(nicoexportworker.Event)
+	workerStartedAt time.Time
 }
 
 type nicoWorkerProgressContextKey struct{}
@@ -119,6 +175,9 @@ func (c *nicoWorkerEventCollector) consumeLineLocked() error {
 		if c.resultSeen {
 			return errors.New("niconico worker stdout: multiple result events")
 		}
+		if !c.workerStartedAt.IsZero() {
+			event.WorkerWallSeconds = time.Since(c.workerStartedAt).Seconds()
+		}
 		copy := event
 		c.result = &copy
 		c.resultSeen = true
@@ -171,6 +230,14 @@ func (t *nicoWorkerStderrTail) String() string {
 }
 
 func runNicoWorkerWithBudget(ctx context.Context, request nicoexportworker.Request) (nicoexportworker.Event, nicoexportbudget.Report, error) {
+	return runNicoWorkerWithBudgetAndDiagnostics(ctx, request, nil)
+}
+
+func runNicoWorkerWithBudgetAndDiagnostics(ctx context.Context, request nicoexportworker.Request, diagnostics io.Writer) (nicoexportworker.Event, nicoexportbudget.Report, error) {
+	return runNicoWorkerWithBudgetAndDiagnosticsAndCPUOptions(ctx, request, diagnostics, nicoWorkerCPUOptions())
+}
+
+func runNicoWorkerWithBudgetAndDiagnosticsAndCPUOptions(ctx context.Context, request nicoexportworker.Request, diagnostics io.Writer, cpuOptions nicoexportbudget.Options) (nicoexportworker.Event, nicoexportbudget.Report, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -187,6 +254,7 @@ func runNicoWorkerWithBudget(ctx context.Context, request nicoexportworker.Reque
 	}
 	collector := newNicoWorkerEventCollector(ctx, request)
 	stderr := &nicoWorkerStderrTail{}
+	collector.workerStartedAt = time.Now()
 	report, runErr := nicoexportbudget.Run(ctx, nicoexportbudget.ProcessSpec{
 		Exe:    executable,
 		Args:   []string{"nico-export-worker"},
@@ -194,7 +262,10 @@ func runNicoWorkerWithBudget(ctx context.Context, request nicoexportworker.Reque
 		Stdin:  bytes.NewReader(append(requestData, '\n')),
 		Stdout: collector,
 		Stderr: stderr,
-	}, nicoexportbudget.Options{Percent: 20})
+	}, cpuOptions)
+	if diagnostics != nil {
+		_, _ = io.WriteString(diagnostics, stderr.String())
+	}
 	if runErr != nil {
 		if result, parseErr := collector.event(); parseErr == nil && result.Error != "" {
 			return result, report, fmt.Errorf("%w: %s", runErr, result.Error)

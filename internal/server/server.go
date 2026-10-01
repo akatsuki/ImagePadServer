@@ -66,9 +66,10 @@ var (
 )
 
 type Server struct {
-	lifecycleCtx context.Context
-	cfg          config.Config
-	store        *library.Store
+	lifecycleCtx       context.Context
+	nicoWorkerSessions *nicoWorkerSessionManager
+	cfg                config.Config
+	store              *library.Store
 
 	mu                            sync.RWMutex
 	upnp                          upnp.Result
@@ -290,10 +291,14 @@ func (s *Server) SetLifecycleContext(ctx context.Context) {
 	if ctx == nil {
 		return
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.lifecycleCtx = ctx
 }
 
 func (s *Server) lifecycleContext() context.Context {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if s.lifecycleCtx != nil {
 		return s.lifecycleCtx
 	}
@@ -2847,7 +2852,8 @@ func (s *Server) handleEncoderMode(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		mode := settings.NormalizeEncoderMode(req.Mode)
-		if !strings.EqualFold(strings.TrimSpace(req.Mode), "gpu") {
+		requestedMode := strings.ToLower(strings.TrimSpace(req.Mode))
+		if requestedMode != "gpu" && requestedMode != "cpu" {
 			http.Error(w, "invalid encoder mode", http.StatusBadRequest)
 			return
 		}

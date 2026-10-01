@@ -2,12 +2,17 @@ package server
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +22,7 @@ import (
 	"imagepadserver/internal/nicoexportbudget"
 	"imagepadserver/internal/nicoexportworker"
 	"imagepadserver/internal/niconico"
+	"imagepadserver/internal/settings"
 	"imagepadserver/internal/video"
 )
 
@@ -57,6 +63,38 @@ func TestNiconicoTargetGeometryPreservesAspectAndEvenDimensions(t *testing.T) {
 	width, height = niconicoTargetGeometry(video.MediaProbe{Streams: []video.MediaStream{{CodecType: "video", Width: 1080, Height: 1920}}}, 360)
 	if width%2 != 0 || height%2 != 0 || width <= 0 || height != 360 {
 		t.Fatalf("vertical geometry = %dx%d", width, height)
+	}
+}
+
+func TestNicoEncoderForMode(t *testing.T) {
+	for mode, want := range map[string]string{
+		"cpu":    "x264",
+		"gpu":    "nvenc",
+		"auto":   "nvenc",
+		"broken": "nvenc",
+	} {
+		if got := nicoEncoderForMode(mode); got != want {
+			t.Errorf("nicoEncoderForMode(%q) = %q, want %q", mode, got, want)
+		}
+	}
+}
+
+func TestIsNicoNVENCFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nvenc device unavailable", err: errors.New("h264_nvenc: No capable devices found"), want: true},
+		{name: "missing driver library", err: errors.New("Cannot load libnvidia-encode.so.1"), want: true},
+		{name: "compositor failure", err: errors.New("timeline compositor exited"), want: false},
+		{name: "nil", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isNicoNVENCFailure(tc.err); got != tc.want {
+				t.Fatalf("isNicoNVENCFailure(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -131,7 +169,23 @@ func TestProcessPreparedNicoVideoKeepsRenderedFileAfterPublish(t *testing.T) {
 func TestHandleUploadURLNiconicoCommentsPublishesPreparedMedia(t *testing.T) {
 	srv, mux := testServer(t, true)
 	defer cleanupTestServer(srv)
+	// This handler test injects a one-shot worker function, so select that route explicitly.
+	t.Setenv("IMAGEPAD_NICO_WORKER_SESSION", "0")
+	t.Setenv("IMAGEPAD_NICO_ENCODER", "")
+	appSettings, err := settings.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	appSettings.EncoderMode = "gpu"
+	if err := settings.Save(appSettings); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("IMAGEPAD_NICO_OUTPUT_MODE", "tee")
+	t.Setenv("IMAGEPAD_NICO_RENDERER", "auto")
+	t.Setenv("IMAGEPAD_NICO_TIMELINE_ENABLED", "true")
+	t.Setenv("IMAGEPAD_NICO_TIMELINE_COMPOSITOR", "timeline-helper")
+	t.Setenv("IMAGEPAD_NICO_TIMELINE_READBACK_SLOTS", "2")
+	t.Setenv("IMAGEPAD_NICO_TIMELINE_GPU_BACKEND", "vulkan")
 
 	sourceDir := t.TempDir()
 	source := filepath.Join(sourceDir, "source.mp4")
@@ -169,9 +223,16 @@ func TestHandleUploadURLNiconicoCommentsPublishesPreparedMedia(t *testing.T) {
 	}
 	workerCalls := 0
 	workerOutputMode := ""
+	var workerRequest nicoexportworker.Request
+	var workerRequests []nicoexportworker.Request
 	niconicoWorkerRunner = func(_ context.Context, request nicoexportworker.Request) (nicoexportworker.Event, nicoexportbudget.Report, error) {
 		workerCalls++
+		workerRequest = request
+		workerRequests = append(workerRequests, request)
 		workerOutputMode = request.OutputMode
+		if request.Encoder == "nvenc" {
+			return nicoexportworker.Event{}, nicoexportbudget.Report{}, errors.New("ffmpeg h264_nvenc: No capable devices found")
+		}
 		if err := os.WriteFile(request.OutputPath, []byte("rendered-mp4"), 0600); err != nil {
 			return nicoexportworker.Event{}, nicoexportbudget.Report{}, err
 		}
@@ -189,6 +250,7 @@ func TestHandleUploadURLNiconicoCommentsPublishesPreparedMedia(t *testing.T) {
 		return nicoexportworker.Event{
 			Version: nicoexportworker.ProtocolVersion, Type: "result", OK: true,
 			RunID: request.RunID, MediaID: request.MediaID, Output: request.OutputPath, Playlist: playlist,
+			FallbackNotice: "WGPUコメント描画に失敗したため、CPU描画へ切り替えました",
 		}, nicoexportbudget.Report{Verified: true, LogicalCPUs: 8, JobCPURate: 2000}, nil
 	}
 
@@ -197,11 +259,26 @@ func TestHandleUploadURLNiconicoCommentsPublishesPreparedMedia(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %q", rec.Code, rec.Body.String())
 	}
-	if workerCalls != 1 {
-		t.Fatalf("worker calls = %d, want one direct worker call", workerCalls)
+	if workerCalls != 2 {
+		t.Fatalf("worker calls = %d, want NVENC attempt plus CPU fallback", workerCalls)
 	}
 	if workerOutputMode != "tee" {
 		t.Fatalf("worker output mode = %q, want tee", workerOutputMode)
+	}
+	if workerRequest.Backend != "auto" || !workerRequest.TimelineEnabled || workerRequest.TimelineCompositor != "timeline-helper" || workerRequest.TimelineReadbackSlots != 2 || workerRequest.TimelineGPUBackend != "vulkan" {
+		t.Fatalf("timeline settings were not sent to worker: %+v", workerRequest)
+	}
+	if len(workerRequests) != 2 {
+		t.Fatalf("worker requests = %d, want NVENC attempt plus CPU fallback", len(workerRequests))
+	}
+	if workerRequests[0].Encoder != "nvenc" || workerRequests[1].Encoder != "x264" {
+		t.Fatalf("worker encoders = [%s %s], want [nvenc x264]", workerRequests[0].Encoder, workerRequests[1].Encoder)
+	}
+	if !strings.Contains(rec.Body.String(), "NVENCに失敗したためCPU/libx264へ切り替えました") {
+		t.Fatalf("fallback notification missing from response: %q", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "WGPUコメント描画に失敗したため、CPU描画へ切り替えました") {
+		t.Fatalf("renderer fallback notification missing from response: %q", rec.Body.String())
 	}
 	current := srv.store.Current()
 	if current == nil || current.Kind != "video" || current.ID == "" {
@@ -230,6 +307,8 @@ func TestHandleUploadURLNiconicoCommentsPublishesPreparedMedia(t *testing.T) {
 func TestHandleUploadURLNiconicoCommentsWorkerFailureKeepsPreviousPublication(t *testing.T) {
 	srv, mux := testServer(t, true)
 	defer cleanupTestServer(srv)
+	// This handler test injects a one-shot worker function, so select that route explicitly.
+	t.Setenv("IMAGEPAD_NICO_WORKER_SESSION", "0")
 
 	previousPath := filepath.Join(srv.store.Dir(), "previous-current.mp4")
 	previousData := []byte("previous-current-publication")
@@ -331,25 +410,7 @@ func TestHandleUploadURLNiconicoCommentsWithRealWorker(t *testing.T) {
 	if ffmpeg == "" {
 		t.Skip("IMAGEPAD_FFMPEG is not set")
 	}
-	repoRoot := filepath.Join("..", "..")
-	fixtureSource := filepath.Join(repoRoot, "build", "nico-cpu20", "t11-fixtures-20260921", "source-high-density-10s.mp4")
-	fixtureSnapshot := filepath.Join(repoRoot, "build", "nico-cpu20", "t11-fixtures-20260921", "snapshot-high-density.json")
-	sourceData, err := os.ReadFile(fixtureSource)
-	if err != nil {
-		t.Skipf("real worker source fixture is unavailable: %v", err)
-	}
-	snapshotData, err := os.ReadFile(fixtureSnapshot)
-	if err != nil {
-		t.Skipf("real worker snapshot fixture is unavailable: %v", err)
-	}
-	var snapshot niconico.Snapshot
-	if err := json.Unmarshal(snapshotData, &snapshot); err != nil {
-		t.Fatal(err)
-	}
-	source := filepath.Join(t.TempDir(), "downloaded-source.mp4")
-	if err := os.WriteFile(source, sourceData, 0600); err != nil {
-		t.Fatal(err)
-	}
+	source, snapshot := makeNicoHTTPWorkerFixture(t, ffmpeg)
 
 	srv, mux := testServer(t, true)
 	defer cleanupTestServer(srv)
@@ -380,12 +441,22 @@ func TestHandleUploadURLNiconicoCommentsWithRealWorker(t *testing.T) {
 	}
 	workerBackend := os.Getenv("IMAGEPAD_NICO_HTTP_WORKER_BACKEND")
 	missingCompositor := filepath.Join(t.TempDir(), "missing-nico-compositor.exe")
+	var workerReport nicoexportbudget.Report
+	var workerEvent nicoexportworker.Event
+	var workerRequest nicoexportworker.Request
 	niconicoWorkerRunner = func(ctx context.Context, request nicoexportworker.Request) (nicoexportworker.Event, nicoexportbudget.Report, error) {
 		if workerBackend == "auto-fallback" {
 			request.Backend = "auto"
 			request.Compositor = missingCompositor
+		} else if workerBackend == "late-nct2-failure" {
+			request.Backend = "auto"
+			request.Compositor = os.Getenv("IMAGEPAD_NICO_HTTP_WORKER_COMPOSITOR")
 		}
-		return runNicoWorkerWithBudget(ctx, request)
+		workerRequest = request
+		result, report, err := runNicoWorkerWithBudget(ctx, request)
+		workerEvent = result
+		workerReport = report
+		return result, report, err
 	}
 	nicoWorkerExecutable = func() (string, error) { return workerExe, nil }
 
@@ -394,6 +465,31 @@ func TestHandleUploadURLNiconicoCommentsWithRealWorker(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %q", rec.Code, rec.Body.String())
 	}
+	if workerBackend == "auto-fallback" || workerBackend == "late-nct2-failure" {
+		const fallbackNotice = "WGPUコメント描画に失敗したため、CPU描画へ切り替えました"
+		if workerRequest.Backend != "auto" || !workerRequest.TimelineEnabled || workerRequest.TimelineReadbackSlots != 2 || workerRequest.TimelineGPUBackend != "vulkan" || workerRequest.TimelineCompositor == "" {
+			t.Fatalf("real worker did not receive timeline auto-fallback options: %+v", workerRequest)
+		}
+		if !workerEvent.TimelineFallback || workerEvent.FallbackNotice != fallbackNotice {
+			t.Fatalf("real worker terminal event fallback = (%v, %q), want timeline fallback and %q", workerEvent.TimelineFallback, workerEvent.FallbackNotice, fallbackNotice)
+		}
+		if got := strings.Count(rec.Body.String(), fallbackNotice); got != 1 {
+			t.Fatalf("HTTP fallback notice count = %d, want 1; body=%q", got, rec.Body.String())
+		}
+	}
+	if workerBackend == "late-nct2-failure" {
+		attempt := workerEvent.TimelineAttempt
+		if attempt == nil || attempt.Protocol != "NCT2" || attempt.StreamEnd != nil || attempt.FirstAssetReady == nil {
+			t.Fatalf("late helper failure attempt = %+v, want NCT2 asset-ready without stream-end", attempt)
+		}
+		if want := os.Getenv("IMAGEPAD_NICO_HTTP_WORKER_COMPOSITOR"); workerRequest.TimelineCompositor != want {
+			t.Fatalf("worker compositor = %q, want fault-injection helper %q", workerRequest.TimelineCompositor, want)
+		}
+	}
+	if !workerReport.Verified || workerReport.JobCPURate != 10000 {
+		t.Fatalf("production worker CPU allowance = %+v, want verified 100%% machine capacity", workerReport)
+	}
+	t.Logf("production worker CPU allowance verified: rate=%d cpu_seconds=%.3f", workerReport.JobCPURate, workerReport.CPUSeconds)
 	current := srv.store.Current()
 	if current == nil || current.Kind != "video" || current.ID == "" || !current.Converted || !current.Published {
 		t.Fatalf("real worker current = %#v", current)
@@ -414,6 +510,29 @@ func TestHandleUploadURLNiconicoCommentsWithRealWorkerAutoFallback(t *testing.T)
 	}
 	t.Setenv("IMAGEPAD_NICO_HTTP_WORKER_TEST", "1")
 	t.Setenv("IMAGEPAD_NICO_HTTP_WORKER_BACKEND", "auto-fallback")
+	t.Setenv("IMAGEPAD_NICO_RENDERER", "auto")
+	t.Setenv("IMAGEPAD_NICO_TIMELINE_ENABLED", "true")
+	t.Setenv("IMAGEPAD_NICO_TIMELINE_READBACK_SLOTS", "2")
+	t.Setenv("IMAGEPAD_NICO_TIMELINE_GPU_BACKEND", "vulkan")
+	t.Setenv("IMAGEPAD_NICO_TIMELINE_COMPOSITOR", filepath.Join(t.TempDir(), "missing-timeline-compositor.exe"))
+	TestHandleUploadURLNiconicoCommentsWithRealWorker(t)
+}
+
+func TestHandleUploadURLNiconicoCommentsWithRealWorkerLateNCT2Failure(t *testing.T) {
+	if os.Getenv("IMAGEPAD_NICO_HTTP_WORKER_TEST") != "1" {
+		t.Skip("set IMAGEPAD_NICO_HTTP_WORKER_TEST=1 for real worker late NCT2 failure E2E")
+	}
+	t.Setenv("IMAGEPAD_NICO_HTTP_WORKER_TEST", "1")
+	t.Setenv("IMAGEPAD_NICO_HTTP_WORKER_BACKEND", "late-nct2-failure")
+	t.Setenv("IMAGEPAD_NICO_RENDERER", "auto")
+	t.Setenv("IMAGEPAD_NICO_TIMELINE_ENABLED", "true")
+	t.Setenv("IMAGEPAD_NICO_TIMELINE_READBACK_SLOTS", "2")
+	t.Setenv("IMAGEPAD_NICO_TIMELINE_GPU_BACKEND", "vulkan")
+	compositor := strings.TrimSpace(os.Getenv("IMAGEPAD_NICO_HTTP_WORKER_COMPOSITOR"))
+	if compositor == "" {
+		t.Fatal("IMAGEPAD_NICO_HTTP_WORKER_COMPOSITOR is required for late NCT2 failure E2E")
+	}
+	t.Setenv("IMAGEPAD_NICO_TIMELINE_COMPOSITOR", compositor)
 	TestHandleUploadURLNiconicoCommentsWithRealWorker(t)
 }
 
@@ -428,29 +547,12 @@ func TestHandleUploadURLNiconicoCommentsCancellationRemovesStagingAndKeepsCurren
 	if _, err := os.Stat(workerExe); err != nil {
 		t.Skipf("real worker executable is unavailable: %v", err)
 	}
+	workerExe = copyNicoHTTPWorkerExecutable(t, workerExe)
 	ffmpeg := os.Getenv("IMAGEPAD_FFMPEG")
 	if ffmpeg == "" {
 		t.Skip("IMAGEPAD_FFMPEG is not set")
 	}
-	repoRoot := filepath.Join("..", "..")
-	fixtureSource := filepath.Join(repoRoot, "build", "nico-cpu20", "t11-fixtures-20260921", "source-high-density-10s.mp4")
-	fixtureSnapshot := filepath.Join(repoRoot, "build", "nico-cpu20", "t11-fixtures-20260921", "snapshot-high-density.json")
-	sourceData, err := os.ReadFile(fixtureSource)
-	if err != nil {
-		t.Skipf("real worker source fixture is unavailable: %v", err)
-	}
-	snapshotData, err := os.ReadFile(fixtureSnapshot)
-	if err != nil {
-		t.Skipf("real worker snapshot fixture is unavailable: %v", err)
-	}
-	var snapshot niconico.Snapshot
-	if err := json.Unmarshal(snapshotData, &snapshot); err != nil {
-		t.Fatal(err)
-	}
-	source := filepath.Join(t.TempDir(), "downloaded-source.mp4")
-	if err := os.WriteFile(source, sourceData, 0600); err != nil {
-		t.Fatal(err)
-	}
+	source, snapshot := makeNicoHTTPWorkerFixture(t, ffmpeg)
 
 	srv, mux := testServer(t, true)
 	defer cleanupTestServer(srv)
@@ -493,7 +595,7 @@ func TestHandleUploadURLNiconicoCommentsCancellationRemovesStagingAndKeepsCurren
 	ensureFFmpeg = func() (string, error) { return ffmpeg, nil }
 	niconicoEnsureFFprobe = func() (string, error) { return "unused-ffprobe", nil }
 	niconicoProbeMedia = func(context.Context, string, string) (video.MediaProbe, error) {
-		return video.MediaProbe{Duration: 8, Streams: []video.MediaStream{{CodecType: "video", Width: 640, Height: 360}}}, nil
+		return video.MediaProbe{Duration: 60, Streams: []video.MediaStream{{CodecType: "video", Width: 640, Height: 360}}}, nil
 	}
 	nicoWorkerExecutable = func() (string, error) { return workerExe, nil }
 	workerStarted := make(chan struct{})
@@ -503,6 +605,7 @@ func TestHandleUploadURLNiconicoCommentsCancellationRemovesStagingAndKeepsCurren
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	req := httptest.NewRequest(http.MethodPost, "/api/upload-url", strings.NewReader(`{"url":"https://www.nicovideo.jp/watch/sm9","niconicoComments":{"enabled":true}}`)).WithContext(ctx)
 	response := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
@@ -511,9 +614,10 @@ func TestHandleUploadURLNiconicoCommentsCancellationRemovesStagingAndKeepsCurren
 	select {
 	case <-workerStarted:
 	case <-time.After(10 * time.Second):
-		cancel()
 		t.Fatal("real worker did not start before cancellation")
 	}
+	workerPID := waitForNicoHTTPWorkerProcess(t, workerExe, 10*time.Second)
+	t.Logf("observed real worker child pid=%d before cancellation", workerPID)
 	cancel()
 	var rec *httptest.ResponseRecorder
 	select {
@@ -544,4 +648,106 @@ func TestHandleUploadURLNiconicoCommentsCancellationRemovesStagingAndKeepsCurren
 			t.Fatalf("temporary Nico export artifact survived cancellation: %s", entry.Name())
 		}
 	}
+}
+
+func makeNicoHTTPWorkerFixture(t *testing.T, ffmpeg string) (string, niconico.Snapshot) {
+	t.Helper()
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source.mp4")
+	cmd := exec.Command(ffmpeg,
+		"-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+		"color=c=black:s=640x360:r=30:d=10", "-c:v", "libx264", "-preset", "ultrafast",
+		"-pix_fmt", "yuv420p", "-movflags", "+faststart", "-y", source,
+	)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("generate temporary real-worker source: %v\n%s", err, output)
+	}
+	snapshot := niconico.Snapshot{
+		SchemaVersion: 1,
+		VideoID:       "sm9",
+		CommentStatus: niconico.CommentStatusReady,
+		CommentCount:  1,
+		SelectedForks: []string{"main"},
+		Threads: []niconico.Thread{{
+			ID:   "thread-main",
+			Fork: "main",
+			Comments: []niconico.Comment{{
+				ID: "t7-7-temp-comment", VposMs: 500, Body: "temporary worker comment",
+				Commands: []string{"big", "red"}, PostedAt: "2026-01-01T00:00:00Z",
+			}},
+		}},
+	}
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("marshal temporary real-worker snapshot: %v", err)
+	}
+	snapshotPath := filepath.Join(dir, "snapshot.json")
+	if err := os.WriteFile(snapshotPath, data, 0600); err != nil {
+		t.Fatalf("write temporary real-worker snapshot: %v", err)
+	}
+	decodedData, err := os.ReadFile(snapshotPath)
+	if err != nil {
+		t.Fatalf("read temporary real-worker snapshot: %v", err)
+	}
+	var decoded niconico.Snapshot
+	if err := json.Unmarshal(decodedData, &decoded); err != nil {
+		t.Fatalf("decode temporary real-worker snapshot: %v", err)
+	}
+	return source, decoded
+}
+
+func waitForNicoHTTPWorkerProcess(t *testing.T, workerExe string, timeout time.Duration) int {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		t.Skip("real worker child observation currently uses Windows tasklist.exe")
+	}
+	imageName := filepath.Base(workerExe)
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		cmd := exec.Command("tasklist.exe", "/FI", "IMAGENAME eq "+imageName, "/FO", "CSV", "/NH")
+		output, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("query worker child process: %v", err)
+		}
+		rows, err := csv.NewReader(strings.NewReader(string(output))).ReadAll()
+		if err != nil {
+			t.Fatalf("parse worker process listing: %v: %s", err, output)
+		}
+		for _, row := range rows {
+			if len(row) < 2 || !strings.EqualFold(row[0], imageName) {
+				continue
+			}
+			pid, err := strconv.Atoi(strings.ReplaceAll(row[1], ",", ""))
+			if err != nil {
+				t.Fatalf("parse worker PID %q: %v", row[1], err)
+			}
+			return pid
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("worker child %q did not appear within %s; cancellation was not issued early", imageName, timeout)
+	return 0
+}
+
+func copyNicoHTTPWorkerExecutable(t *testing.T, sourcePath string) string {
+	t.Helper()
+	dir := t.TempDir()
+	destination := filepath.Join(dir, "imagepadserver-worker-"+filepath.Base(dir)+".exe")
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		t.Fatalf("open worker executable for unique process identity: %v", err)
+	}
+	defer source.Close()
+	destinationFile, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0700)
+	if err != nil {
+		t.Fatalf("create uniquely named worker executable: %v", err)
+	}
+	if _, err := io.Copy(destinationFile, source); err != nil {
+		destinationFile.Close()
+		t.Fatalf("copy worker executable: %v", err)
+	}
+	if err := destinationFile.Close(); err != nil {
+		t.Fatalf("close copied worker executable: %v", err)
+	}
+	return destination
 }

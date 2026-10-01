@@ -1,0 +1,87 @@
+{
+  "schema": 1,
+  "task": "T8.1",
+  "date": "2026-09-28",
+  "outcome": "pass",
+  "tests": {
+    "command": "python -m pytest -q scripts/experiments/nico-timeline/test_build_variants_manifest.py scripts/experiments/nico-timeline/test_manifest.py",
+    "exit_code": 0,
+    "passed": 60
+  },
+  "fresh_build": {
+    "run_root": "C:\\Users\\masah\\AppData\\Local\\Temp\\nct-next-speed-8035a83ead674b428ca0c18c9c0c4272",
+    "target": "x86_64-pc-windows-msvc",
+    "mode": "release",
+    "cargo_build_seconds": 31.126,
+    "source_sha256": "6470acf6b233bca1f5e18e631401404d1465d4051e4b0073cc20b68e04ce6a54",
+    "source_input_count": 18,
+    "cargo_lock_sha256": "d4430e8966851bce7af0f7a5d0175c51461b980b61d59bfaf2846fbe9c59d4b3",
+    "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)\nbinary: rustc\ncommit-hash: ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96\ncommit-date: 2026-05-25\nhost: x86_64-pc-windows-msvc\nrelease: 1.96.0\nLLVM version: 22.1.2\n",
+    "cargo": "cargo 1.96.0 (30a34c682 2026-05-25)\nrelease: 1.96.0\ncommit-hash: 30a34c6821b57de0aaec83a901aca39f88f6778c\ncommit-date: 2026-05-25\nhost: x86_64-pc-windows-msvc\nlibgit2: 1.9.2 (sys:0.20.4 vendored)\nlibcurl: 8.19.0-DEV (sys:0.4.87+curl-8.19.0 vendored ssl:Schannel)\nos: Windows 10.0.26200 (Windows 11 Professional) [64-bit]\n",
+    "effective_compiler_invocations": {
+      "target_cpu_native_present": false,
+      "sha256": "53944be380d23a78f6ea4542effeac3c22b1768c6217abd1844a50a46687ef9c",
+      "count": 103
+    },
+    "environment_overrides": [
+      {
+        "name": "CARGO_PROFILE_RELEASE_LTO",
+        "value_sha256": "fcbcf165908dd18a9e49f7ff27810176db8e9f63b4352213741664245224f8aa",
+        "action": "scrubbed"
+      },
+      {
+        "name": "RUSTFLAGS",
+        "value_sha256": "d3b7a60c9c25e54c7f066979f4bb1bd9d73f43aa934a9bdd88d6a25cd6d346a7",
+        "action": "scrubbed"
+      }
+    ],
+    "binary": {
+      "path": "C:\\Users\\masah\\AppData\\Local\\Temp\\nct-next-speed-8035a83ead674b428ca0c18c9c0c4272\\artifacts\\x86_64-pc-windows-msvc\\release\\nico-compositord.exe",
+      "sha256": "8eea10e38a153aaeb03afe5d1724785d12af522246462eb6dfb60c0b45b28fc4",
+      "size_bytes": 8410624
+    },
+    "runtime_manifest": {
+      "path": "C:\\Users\\masah\\AppData\\Local\\Temp\\nct-next-speed-8035a83ead674b428ca0c18c9c0c4272\\artifacts\\x86_64-pc-windows-msvc\\release\\runtime-manifest.json",
+      "sha256": "635a544c38e8a6321023d6e3ce0146e634a3a1e3249436b6c0718dd2b2dd09db",
+      "schema": 1,
+      "protocol": "NCT2",
+      "protocol_version": 2,
+      "wgpu_version": "0.20.1",
+      "fields": [
+        "architecture",
+        "capabilities",
+        "cargoTarget",
+        "inputMode",
+        "os",
+        "outputFormat",
+        "protocol",
+        "protocolVersion",
+        "schema",
+        "sha256",
+        "wgpuVersion"
+      ]
+    },
+    "build_manifest": {
+      "path": "C:\\Users\\masah\\AppData\\Local\\Temp\\nct-next-speed-8035a83ead674b428ca0c18c9c0c4272\\artifacts\\x86_64-pc-windows-msvc\\release\\build-manifest.json",
+      "sha256": "6ea185d5b2ae9ae0624d4c43a78c15d35d296816da8b8f87eafb7ba2a102a760",
+      "schema": 1,
+      "kind": "nico-compositor-build"
+    },
+    "cargo_target_cleanup": {
+      "path": "C:\\Users\\masah\\AppData\\Local\\Temp\\nct-next-speed-8035a83ead674b428ca0c18c9c0c4272\\cargo\\release",
+      "status": "removed",
+      "files": 1053,
+      "bytes": 501676438,
+      "tree_sha256": "fd48132d2abfe6964afbe282e5f9ea28ad18d919de7eca21293e5d5b01b64e59"
+    }
+  },
+  "previous_failed_root_cleanup": {
+    "path": "C:\\Users\\masah\\AppData\\Local\\Temp\\nct-next-speed-0b99de891d3944b9b2a7b89eb508bed7",
+    "files": 171,
+    "bytes": 12937058,
+    "tree_sha256": "dd2632bb3d08343aa4b80ef204975b641049a88202329cf90bc538d844359a17",
+    "external_process_references": 0,
+    "removed": true,
+    "free_space_delta_bytes": 13406208
+  }
+}

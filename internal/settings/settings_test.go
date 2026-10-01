@@ -248,7 +248,8 @@ func TestNormalizeEncoderMode(t *testing.T) {
 	}{
 		{"auto", "gpu"},
 		{"gpu", "gpu"},
-		{"cpu", "gpu"},
+		{"cpu", "cpu"},
+		{" CPU ", "cpu"},
 		{"GPU", "gpu"},
 		{"", "gpu"},
 		{"bad", "gpu"},

@@ -56,6 +56,12 @@ type spriteJSONBatch struct {
 }
 
 func validateSpriteOptions(options RenderOptions) error {
+	if _, err := spriteCaptureBatchFrames(options.BatchFrames); err != nil {
+		return err
+	}
+	if _, err := nativeCompositorModeArgument(options.CompositorDevice); err != nil {
+		return err
+	}
 	if options.Width <= 0 || options.Height <= 0 || options.Width > 3840 || options.Height > 2160 {
 		return fmt.Errorf("niconico: invalid render size %dx%d", options.Width, options.Height)
 	}
@@ -77,6 +83,16 @@ func validateSpriteOptions(options RenderOptions) error {
 		return fmt.Errorf("nps3: frame count bound")
 	}
 	return nil
+}
+
+func spriteCaptureBatchFrames(configured int) (int, error) {
+	if configured < 0 || configured > spriteMaxBatchFrames {
+		return 0, fmt.Errorf("nps3: invalid sprite batch size %d (max %d)", configured, spriteMaxBatchFrames)
+	}
+	if configured == 0 {
+		return 1, nil
+	}
+	return configured, nil
 }
 
 // WriteSpriteStream captures the browser's exact WebGL sprite draw stream and
@@ -104,6 +120,7 @@ func WriteSpriteStream(ctx context.Context, snapshot niconico.Snapshot, options 
 	}
 	clock, _ := niconico.NewFrameClock(options.FPSNum, options.FPSDen)
 	frameCount := clock.FrameCountForDurationMs(options.DurationMs)
+	batchFrames, _ := spriteCaptureBatchFrames(options.BatchFrames)
 	report := SpriteReport{RenderReport: RenderReport{FrameCount: frameCount, Width: options.Width, Height: options.Height, FPSNum: options.FPSNum, FPSDen: options.FPSDen, RendererLabel: options.RendererLabel}}
 	if err := writeSpriteHeader(w, uint32(options.Width), uint32(options.Height), uint32(frameCount), uint32(options.FPSNum), uint32(options.FPSDen)); err != nil {
 		return SpriteReport{}, err
@@ -146,11 +163,11 @@ func WriteSpriteStream(ctx context.Context, snapshot niconico.Snapshot, options 
 	var timeScratch [spriteMaxBatchFrames]int64
 	var batchBuffer bytes.Buffer
 	var commandScratch []byte
-	for first := int64(0); first < frameCount; first += spriteMaxBatchFrames {
+	for first := int64(0); first < frameCount; first += int64(batchFrames) {
 		if err := ctx.Err(); err != nil {
 			return SpriteReport{}, err
 		}
-		last := first + spriteMaxBatchFrames
+		last := first + int64(batchFrames)
 		if last > frameCount {
 			last = frameCount
 		}

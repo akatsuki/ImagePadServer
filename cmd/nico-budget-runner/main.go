@@ -100,6 +100,7 @@ func main() {
 	sampleMillis := fs.Uint("sample-ms", 250, "CPU accounting sample interval in milliseconds")
 	recordPath := fs.String("record", "", "JSON report path")
 	workingDir := fs.String("dir", "", "working directory for the child process")
+	closeStdin := fs.Bool("close-stdin", false, "close child stdin instead of inheriting runner input")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		os.Exit(2)
 	}
@@ -118,7 +119,7 @@ func main() {
 	defer stop()
 	stderr := &tailWriter{dst: os.Stderr, max: stderrLimit}
 	stdout := &lineLimitWriter{dst: os.Stdout, max: stderrLimit}
-	report, runErr := nicoexportbudget.Run(ctx, budgetProcessSpec(argv, *workingDir, stdout, stderr), budget)
+	report, runErr := nicoexportbudget.Run(ctx, budgetProcessSpec(argv, *workingDir, stdout, stderr, *closeStdin), budget)
 
 	record := runRecord{
 		SchemaVersion: recordSchemaVersion,
@@ -146,8 +147,11 @@ func main() {
 	}
 }
 
-func budgetProcessSpec(argv []string, workingDir string, stdout, stderr io.Writer) nicoexportbudget.ProcessSpec {
+func budgetProcessSpec(argv []string, workingDir string, stdout, stderr io.Writer, closeStdin bool) nicoexportbudget.ProcessSpec {
 	spec := nicoexportbudget.ProcessSpec{Dir: workingDir, Stdin: os.Stdin, Stdout: stdout, Stderr: stderr}
+	if closeStdin {
+		spec.Stdin = nil
+	}
 	if len(argv) > 0 {
 		spec.Exe = argv[0]
 	}
