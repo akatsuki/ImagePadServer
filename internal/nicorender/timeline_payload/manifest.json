@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "protocol": "NCT1",
+  "os": "windows",
+  "architecture": "amd64",
+  "sha256": "08ce74c4567a124b0edb9c0a1a3a27aaccf15ed6f1fb4addc9972859b93afd05",
+  "wgpuVersion": "0.20.1",
+  "cargoTarget": "x86_64-pc-windows-msvc"
+}

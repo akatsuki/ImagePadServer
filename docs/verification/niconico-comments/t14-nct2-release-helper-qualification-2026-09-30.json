@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "date": "2026-09-30",
+  "decision": "promote measured T5-T7 NCT2/WGPU route when a validated target-matching helper is present",
+  "acceptance": {
+    "minimum_exact_rgba_pixel_match_percent": 98.0,
+    "accepted_max_channel_delta": 2,
+    "preserve_exact_transparent_exterior": true,
+    "preserve_draw_order_and_geometry_checks": true
+  },
+  "candidate": {
+    "protocol": "NCT2",
+    "wgpu_version": "0.20.1",
+    "target": "x86_64-pc-windows-msvc",
+    "helper_sha256": "a605dccee55f392cc81fc82d424d3dc214ce9c91c8a332657ab7126d9b377fbe",
+    "payload_manifest_sha256": "aed5a27cd9b43cf3bbfdeb363c66518844510f847ad6fdce6535f2b049480b6f",
+    "payload_verifier": "pass",
+    "runtime_device": "NVIDIA GeForce RTX 5070 Ti",
+    "runtime_backend": "Vulkan",
+    "runtime_adapter_type": "DiscreteGpu",
+    "readback_slots": 3
+  },
+  "browser_parity": {
+    "resolution": "1920x1080",
+    "fps": 30,
+    "frames": 360,
+    "total_rgba_pixels": 746496000,
+    "different_rgba_pixels": 3176507,
+    "exact_rgba_pixels": 743319493,
+    "exact_match_percent": 99.5744776931,
+    "max_channel_delta": 2,
+    "pixels_over_delta_2": 0,
+    "transparent_exterior_pixels": 641804491,
+    "transparent_exterior_different_pixels": 0,
+    "draw_order_mismatched_frames": 0,
+    "draws_per_backend": 10909,
+    "position_samples": 10909,
+    "max_x_position_error_px": 0.000228882,
+    "max_y_position_error_px": 0,
+    "reference_rgba_sha256": "5bcfeb4cea920d67388cb0c0098ab734435ea39fb59f20fbd25bd675ef7480d1",
+    "candidate_rgba_sha256": "630a90f9d254b6de26cbe33050958e863c31a3d2d891f02943ef4a980af7f65a",
+    "result": "pass"
+  },
+  "performance": {
+    "resolution": "1280x720",
+    "fps": 30,
+    "duration_seconds": 6,
+    "encoder": "NVENC",
+    "gpu_backend": "Vulkan",
+    "cpu_limit": "unlimited",
+    "comment_count": 362,
+    "source_sha256": "8aa46ff529686272ca233babfd24884f2b28ef25a24534f278e95560e755ae20",
+    "snapshot_sha256": "b7be86d86016175c99925f5f1b5651d43279eeffcc54deb1c22c5b2e6e15e946",
+    "paired_runs": [
+      { "pair": 1, "browser_seconds": 3.8350796, "wgpu_seconds": 2.2374733, "browser_minus_wgpu_seconds": 1.5976063 },
+      { "pair": 2, "browser_seconds": 6.5517832, "wgpu_seconds": 3.9233110, "browser_minus_wgpu_seconds": 2.6284722 },
+      { "pair": 3, "browser_seconds": 4.3607880, "wgpu_seconds": 3.1166690, "browser_minus_wgpu_seconds": 1.2441190 },
+      { "pair": 4, "browser_seconds": 5.2600295, "wgpu_seconds": 3.2743475, "browser_minus_wgpu_seconds": 1.9856820 },
+      { "pair": 5, "browser_seconds": 4.5152252, "wgpu_seconds": 3.3013313, "browser_minus_wgpu_seconds": 1.2138939 },
+      { "pair": 6, "browser_seconds": 4.8209354, "wgpu_seconds": 3.1280047, "browser_minus_wgpu_seconds": 1.6929307 },
+      { "pair": 7, "browser_seconds": 4.4036115, "wgpu_seconds": 2.8867190, "browser_minus_wgpu_seconds": 1.5168925 },
+      { "pair": 8, "browser_seconds": 4.9037395, "wgpu_seconds": 5.3833426, "browser_minus_wgpu_seconds": -0.4796031 },
+      { "pair": 9, "browser_seconds": 5.8692640, "wgpu_seconds": 2.9374420, "browser_minus_wgpu_seconds": 2.9318220 },
+      { "pair": 10, "browser_seconds": 5.5637243, "wgpu_seconds": 3.3175620, "browser_minus_wgpu_seconds": 2.2461623 }
+    ],
+    "wgpu_wins": 9,
+    "median_browser_comment_overhead_seconds": 4.86233745,
+    "median_wgpu_comment_overhead_seconds": 3.2011761,
+    "median_paired_saving_seconds": 1.6452685,
+    "median_overhead_reduction_percent": 34.16,
+    "paired_saving_bootstrap_95_percent_ci_seconds": [1.244119, 2.3070771],
+    "regressed_pair_retained": 8,
+    "result": "pass"
+  },
+  "integration_and_release": {
+    "x264_mp4_hls_full_decode_and_one_vcl_slice_per_access_unit": "pass",
+    "nvenc_mp4_hls_full_decode_and_one_vcl_slice_per_access_unit": "pass",
+    "q40_range_failure_browser_fallback_one_notice": "pass",
+    "nct2_embedded_runtime_extraction": "pass",
+    "production_windows_amd64_build_with_embedded_payload": "pass",
+    "combined_native_and_timeline_embedded_tag_suites": "pass",
+    "release_zip_entries": 178,
+    "release_zip_license_files": 162,
+    "release_zip_third_party_notice_present": true,
+    "nct2_payload_verifier_tests_passed": 3,
+    "rust_library_tests_passed": 51,
+    "rust_render_contract_tests_passed": 7,
+    "rust_adapter_only_tests_ignored": 7
+  },
+  "full_suite_observation": {
+    "result": "partial_with_unrelated_flaky_airplay_test",
+    "details": "46 current Go packages were exercised with stale historical build/* packages excluded; changed/core packages passed. One full-sequence internal/airplay TestAirPlayRelayBridgeEndToEnd run failed on UDP bind error -10048 and missing FLV output; the same test passed in an isolated rerun. No AirPlay source was changed."
+  },
+  "restored_untracked_payload_hashes": {
+    "timeline_manifest_sha256": "8881f85020e93312e4a13f1b3177e81e26cdbaffbc9cf65267a7fb90b002ec8c",
+    "timeline_binary_sha256": "08ce74c4567a124b0edb9c0a1a3a27aaccf15ed6f1fb4addc9972859b93afd05",
+    "native_binary_sha256": "37c8da59e5144afdec06e77f49241eb95240bc44bdd5ba2d1a4945d1779b75fe",
+    "native_manifest_sha256": "53d376fe2984fcf306d0c94da9deaee0eda85b0b1568c19bc121dbbdd9deb3ef"
+  },
+  "temporary_artifact_cleanup": {
+    "allowlisted_temp_roots_removed": 12,
+    "files_removed": 502,
+    "file_bytes_removed": 6479816698,
+    "c_free_bytes_before": 510865395712,
+    "c_free_bytes_after": 517346484224,
+    "c_free_space_recovered": 6481088512,
+    "reparse_points_found": 0,
+    "external_process_references": 0,
+    "payload_backup_hashes_matched_restored_repository_payloads": true,
+    "all_allowlisted_paths_absent_after_cleanup": true
+  },
+  "qualification_scope": "Windows amd64 on NVIDIA RTX 5070 Ti/Vulkan. Other GPU vendors and macOS/Linux hardware were not exercised; auto-selection requires a valid embedded NCT2 helper and explicit CPU selection remains available."
+}

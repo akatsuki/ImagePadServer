@@ -1,0 +1,102 @@
+{
+  "schemaVersion": 1,
+  "task": "T13.5.5",
+  "status": "qualified; temporary-root audited and removed",
+  "candidate": "Q40.40 signed fixed-point motion with explicit binary32 round-to-nearest-even in WGSL",
+  "acceptance": {
+    "userAcceptedMinimumExactRgbaPixelAgreement": 0.98,
+    "width": 1280,
+    "height": 720,
+    "fps": "30/1",
+    "frames": 360,
+    "pixelCount": 331776000,
+    "frozenSnapshotSha256": "b7be86d86016175c99925f5f1b5651d43279eeffcc54deb1c22c5b2e6e15e946",
+    "sourceVideoSha256": "8aa46ff529686272ca233babfd24884f2b28ef25a24534f278e95560e755ae20",
+    "commentBundleSha256": "28395344d16f977f2d3a1aece8643963257b11d9023f0e8d915107dd3d54f4df",
+    "sceneSha256": "5a6ab486c98cdef329d66f437d5380f4a8c3c8b9b5f16c98dc886c1ef81693bb",
+    "frozenBrowserPixelStreamSha256": "f41651a26ecd230148918f83ddacde81e0c42821281a8c368f2dfb7cdc451de3",
+    "freshBrowserPixelStreamSha256": "f41651a26ecd230148918f83ddacde81e0c42821281a8c368f2dfb7cdc451de3",
+    "browserReferenceManifestSha256": "6f12a52add144bb67fa5ba1f06261db50275a110a6c48ee89dfb945f780a1f0b"
+  },
+  "build": {
+    "profile": "release",
+    "locked": true,
+    "backend": "Vulkan",
+    "adapter": "NVIDIA GeForce RTX 5070 Ti",
+    "readbackSlots": 3,
+    "completedFrames": 360,
+    "browser": "HeadlessChrome/154",
+    "candidateHelperSha256": "508a19a753dfd407185e295ed2b7f463769dcb1f2cf7509e5aea31bb3e4fe801"
+  },
+  "comparison": {
+    "candidateRgbaSha256": "ac71490f8e1f33b091b7ffd3c2019d8d0247ebe49545f7bfbbf0aa9cb135f417",
+    "candidateRgbaBytes": 1327104000,
+    "differentPixels": 191539,
+    "exactRgbaPixelAgreement": 0.9994226857880015,
+    "exactRgbaPixelAgreementPercent": 99.94226857880015,
+    "maxChannelDifference": 1,
+    "unchangedStrictTolerance": 1,
+    "pixelsOverStrictTolerance": 0,
+    "strictToleranceGate": "PASS",
+    "transparentExteriorPixels": 267134565,
+    "transparentExteriorDifferentPixels": 0,
+    "transparentExteriorExact": true,
+    "differentFrames": 354,
+    "drawOrder": { "frames": 360, "browserDraws": 7630, "candidateDraws": 7630, "mismatchFrames": 0 },
+    "positions": { "samples": 7630, "missingBrowserPositions": 0, "maxAbsErrorX": 0.000152587890625, "maxAbsErrorY": 0, "tolerancePixels": 0.00390625, "overToleranceX": 0, "overToleranceY": 0 },
+    "reportSha256": {
+      "comparison": "0ce12f59e99e1d8fe35e81104ab7ccb4d112a77eecbba7948d20cdffbcda017d",
+      "position": "52091e641ca154f1f151f286f64f28fbef4f4a29c5b664e08a4ce160460a2b9f",
+      "drawOrder": "622617f62bb28304db46ef288e8756ccc48ae3bb8b866749e47bec98c4a6dfc6"
+    }
+  },
+  "historicalAcceptedExample": {
+    "record": "t13-double-double-even-sampler-candidate-2026-09-29.json",
+    "frame": 74,
+    "xy": [1076, 645],
+    "referenceRgba": [0, 0, 0, 35],
+    "candidateRgba": [0, 0, 0, 37],
+    "maxChannelDifference": 2,
+    "pixelsOverTolerance1": 1
+  },
+  "tests": {
+    "browserGpuIntegration": { "command": "go test ./internal/nicorender -run TestNicoTimelineIntegrationBrowserWGPU -count=1", "result": "PASS", "seconds": 40.55, "logSha256": "9c9c7af4b110bd3f0f21cccb39eb0325ecda7819d093cd8df7eb2b0502d8e55" },
+    "lockedRustSuite": { "command": "cargo test --manifest-path gpu/nico-compositord/Cargo.toml --locked", "result": "PASS", "passed": 124, "ignored": 10, "failed": 0 },
+    "hardwarePositionProbe": { "result": "PASS", "adapter": "NVIDIA GeForce RTX 5070 Ti / Vulkan" },
+    "goPackageSuite": { "command": "go test ./internal/nicorender -count=1", "result": "PASS", "seconds": 3.893 }
+  },
+  "encodedMedia": {
+    "ffmpegVersion": "8.1.1",
+    "ffmpegSha256": "09948d4cdd0650da6ff5a87577469f2a218dc2615ae379f8f734d24c49de0f73",
+    "ffprobeSha256": "a6618e99bb58869ded3c6f37b53aa1a8d701c3591dbb7b5b317d47369c112be2",
+    "encoder": "libx264 veryfast CRF 26; one-VCL-slice parameters preserved",
+    "fullDecode": "PASS",
+    "mp4": { "file": "sm9-1280x720-30fps-360f-wgpu-x264.mp4", "bytes": 6911315, "sha256": "932ad3c358eee4a8ee5151b885b7f25bf488ba5e7401199f27ccfcf889e1eb6e", "frames": 360, "vclNalsPerAccessUnit": { "min": 1, "max": 1, "invalid": 0 }, "faststart": true },
+    "hls": {
+      "playlistSha256": "21c70fdeb4806b7629229e2fc61acab4d050cc45a39ae062f0317819699512b2",
+      "frames": 360,
+      "vclNalsPerAccessUnit": { "min": 1, "max": 1, "invalid": 0 },
+      "segments": [
+        { "file": "segment-00000.ts", "frames": 120, "bytes": 2191328, "sha256": "cecade62c63fd51a38cee7e1605b83e924146bca70fda17ced7e2941e67eda34" },
+        { "file": "segment-00001.ts", "frames": 120, "bytes": 2953480, "sha256": "1fa967784e424773b3d5e06d15d9b2a35db2dbb87befc0dac04448dec514db42" },
+        { "file": "segment-00002.ts", "frames": 120, "bytes": 2010096, "sha256": "4ce41b7ccc748bead3648bebb64d2406cf9e2db326de14d1f1d92e415248ccbb" }
+      ]
+    },
+    "verificationRecordSha256": "a2ed4aaff39047230c19627ac13a683c6cc0da1c2bb660963424781d0c41f42a"
+  },
+  "decision": "The user's 98% exact-pixel acceptance is exceeded. The unchanged tolerance-1 gate also passes. Keep experimental WGPU default-off pending remaining plan gates.",
+  "cleanupAudit": {
+    "status": "PASS",
+    "ownedTempRoot": "C:\\Users\\masah\\AppData\\Local\\Temp\\nct-t13-adopt-20260930",
+    "ownerManifestAbsoluteRootValidated": true,
+    "budgetBytes": 8589934592,
+    "rootBytesBeforeRemoval": 5579714896,
+    "bytesRemoved": 5579714896,
+    "fileCountRemoved": 6088,
+    "protectedBackupHashesValidated": true,
+    "protectedBackupCount": 3,
+    "reparsePointAudit": "PASS: 0 reparse points",
+    "ownedProcessAudit": "PASS: 0 process references",
+    "rootRemoved": true
+  }
+}
