@@ -78,9 +78,8 @@ func nicoEncodeArgsWithOverlayAlpha(sourcePath, outputPath string, options NicoE
 	} else if overlayAlpha == "unpremultiply" {
 		// Preserve premultiplied input pixels on older FFmpeg builds by converting
 		// them to straight alpha before the broadly supported overlay filter. The
-		// alpha plane must be supplied as the filter's second input; inplace mode
-		// is a no-op for the packed RGBA frame formats used by the timeline pipe.
-		overlayInput += ",split[comment_premultiplied][comment_alpha_source];[comment_alpha_source]alphaextract[comment_alpha];[comment_premultiplied][comment_alpha]unpremultiply"
+		// alpha plane is a separate second input and is excluded from processing.
+		overlayInput += ",split[comment_premultiplied][comment_alpha_source];[comment_alpha_source]alphaextract[comment_alpha];[comment_premultiplied][comment_alpha]unpremultiply=planes=7"
 	}
 	// Normalize the composed stream to the same CFR used by the renderer. This
 	// keeps comment motion tied to elapsed video time even when the source is

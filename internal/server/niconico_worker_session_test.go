@@ -874,7 +874,7 @@ func newGracefulNicoSessionProcess(spec nicoexportbudget.ProcessSpec, waitEOF bo
 		var message nicoexportworker.SessionMessage
 		_ = json.Unmarshal([]byte(line), &message)
 		if message.Request != nil {
-			event := nicoexportworker.Event{Version: 1, Type: "result", RunID: message.RunID, MediaID: message.MediaID, OK: true, Output: message.Request.OutputPath, Playlist: message.Request.HLSStagingDir + `\playlist.m3u8`}
+			event := nicoexportworker.Event{Version: 1, Type: "result", RunID: message.RunID, MediaID: message.MediaID, OK: true, Output: message.Request.OutputPath, Playlist: filepath.Join(message.Request.HLSStagingDir, "playlist.m3u8")}
 			writeFakeSessionMessage(spec.Stdout, nicoexportworker.SessionMessage{Version: 1, Type: "result", SessionID: id, RunID: message.RunID, MediaID: message.MediaID, Event: &event})
 			writeFakeSessionMessage(spec.Stdout, nicoexportworker.SessionMessage{Version: 1, Type: "cleanup", SessionID: id, RunID: message.RunID, MediaID: message.MediaID})
 			writeFakeSessionMessage(spec.Stdout, nicoexportworker.SessionMessage{Version: 1, Type: "ready", SessionID: id})
@@ -995,7 +995,7 @@ func (f *fakeNicoSessionProcess) start(spec nicoexportbudget.ProcessSpec) {
 				}
 				if event.OK {
 					event.Output = request.OutputPath
-					event.Playlist = request.HLSStagingDir + `\playlist.m3u8`
+					event.Playlist = filepath.Join(request.HLSStagingDir, "playlist.m3u8")
 				}
 				writeFakeSessionMessage(spec.Stdout, nicoexportworker.SessionMessage{Version: 1, Type: "result", SessionID: f.sessionID, RunID: message.RunID, MediaID: message.MediaID, Event: &event})
 				select {
