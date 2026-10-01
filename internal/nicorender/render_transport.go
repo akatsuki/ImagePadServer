@@ -27,6 +27,8 @@ type frameTransportConfig struct {
 	Endpoint     string
 	Token        string
 	SparseFrames bool
+	Force2D      bool
+	CaptureMode  string
 }
 
 func (c frameTransportConfig) script(_ int, _ int) string {
@@ -34,16 +36,20 @@ func (c frameTransportConfig) script(_ int, _ int) string {
 	return `<script>(()=>{
 const endpoint=` + string(endpoint) + `;
 const sparseFrames=` + strconv.FormatBool(c.SparseFrames) + `;
+const force2d=` + strconv.FormatBool(c.Force2D) + `;
+const captureMode=` + strconv.Quote(c.CaptureMode) + `;
 const canvas=document.getElementById('canvas');
+window.__binaryState={stage:'init',pending:0};
+function mark(stage){window.__binaryState.stage=stage;window.__binaryState.pending=pending.size;}
 let socket=null, stopped=false, hasFrame=false;
 const pending=new Set();
 let batch=[],batchCursor=0;
 window.__binaryReady=false;
 window.__binaryError='';
-function fail(message){window.__binaryError=String(message||'binary transport failed');stopped=true;if(socket&&socket.readyState<2)socket.close();}
+function fail(message){window.__binaryError=String(message||'binary transport failed');mark('error');stopped=true;if(socket&&socket.readyState<2)socket.close();}
 function capture(out){
   const width=canvas.width,height=canvas.height,row=width*4;
-  const gl=canvas.getContext('webgl2');
+  const gl=force2d?null:canvas.getContext('webgl2');
   if(gl){
     gl.readPixels(0,0,width,height,gl.RGBA,gl.UNSIGNED_BYTE,out);
     const scratch=new Uint8Array(row);
@@ -93,21 +99,27 @@ function compactRuns(packet){
   return out.buffer;
 }
 socket=new WebSocket(endpoint);socket.binaryType='arraybuffer';
-socket.onopen=()=>{if(!stopped)window.__binaryReady=true;};
+socket.onopen=()=>{mark('open');if(!stopped)window.__binaryReady=true;};
 socket.onerror=()=>fail('binary websocket error');
-socket.onclose=()=>{if(!stopped)fail('binary websocket closed');};
+socket.onclose=()=>{if(!stopped)fail('binary websocket closed');else mark('closed');};
 socket.onmessage=(event)=>{if(typeof event.data!=='string')return;try{const control=JSON.parse(event.data);if(control.type==='accepted'){if(!pending.delete(control.sequence)){fail('unexpected frame acknowledgement');return;}pump();}else if(control.type==='stop'){batch=[];stopped=true;if(control.reason!=='completed')fail(control.reason||'binary transport stopped');}}catch(error){fail(error);}};
 window.__requestDraw=(sequence,timeMs,force)=>{
   if(stopped||!window.__binaryReady||socket.readyState!==1)throw Error(window.__binaryError||'binary transport is not ready');
   if(pending.size>=2)throw Error('binary transport backpressure limit reached');
-  const changed=window.__niconi.drawCanvas(Math.floor(timeMs/10),!!force);
-  if(typeof changed!=='boolean')throw Error('drawCanvas did not return boolean');
-  const full=force||changed||!hasFrame;
+  let changed=true;
+  if(captureMode!=='none'){
+    mark('draw-start');
+    changed=window.__niconi.drawCanvas(Math.floor(timeMs/10),!!force);
+    if(typeof changed!=='boolean')throw Error('drawCanvas did not return boolean');
+    mark('draw-done');
+  }else{mark('draw-skipped');}
+  const full=captureMode==='none'||force||changed||!hasFrame;
   const size=canvas.width*canvas.height*4;
   const packet=header(sequence,timeMs,full?1:2,full?size:0);
-  if(full){capture(new Uint8Array(packet,40));hasFrame=true;}
+  if(full){mark('capture-start');if(captureMode!=='none')capture(new Uint8Array(packet,40));hasFrame=true;mark('capture-done');}
   pending.add(sequence);
   socket.send(full&&sparseFrames?compactRuns(packet):packet);
+  mark('sent');
 };
 function pump(){
   while(!stopped&&pending.size<2&&batchCursor<batch.length){
@@ -158,8 +170,9 @@ func newFrameTransport(width, height int) (*frameTransport, error) {
 	token := hex.EncodeToString(tokenBytes)
 	t := &frameTransport{
 		config: frameTransportConfig{
-			Endpoint: "ws://" + listener.Addr().String() + "/ws?token=" + url.QueryEscape(token),
-			Token:    token,
+			Endpoint:    "ws://" + listener.Addr().String() + "/ws?token=" + url.QueryEscape(token),
+			Token:       token,
+			CaptureMode: "auto",
 		},
 		listener: listener,
 		connCh:   make(chan *websocket.Conn, 1),
@@ -374,6 +387,17 @@ func renderBinary(ctx context.Context, snapshot niconico.Snapshot, options Rende
 	}
 	defer transport.close()
 	transport.config.SparseFrames = options.SparseFrames
+	captureMode := strings.TrimSpace(os.Getenv("IMAGEPAD_NICONICO_RENDER_CAPTURE"))
+	if captureMode == "" || captureMode == "auto" {
+		// Keep the production WebGL readback path unchanged.
+	} else if captureMode == "2d" {
+		transport.config.Force2D = true
+		transport.config.CaptureMode = "2d"
+	} else if captureMode == "none" {
+		transport.config.CaptureMode = "none"
+	} else {
+		return RenderReport{}, fmt.Errorf("niconico: unsupported capture mode %q", captureMode)
+	}
 	pagePath, err := writeRendererPage(options.Width, options.Height, bundlePath, threads, &transport.config)
 	if err != nil {
 		return RenderReport{}, err
@@ -428,6 +452,11 @@ func renderBinary(ctx context.Context, snapshot niconico.Snapshot, options Rende
 		packet, err := transport.receivePacket(ctx, conn)
 		if err != nil {
 			transport.stop(conn, "protocol-error")
+			if os.Getenv("IMAGEPAD_NICONICO_RENDER_DEBUG") == "1" {
+				if state := browserDebugState(session); state != "" {
+					return RenderReport{}, fmt.Errorf("niconico: receive frame %d: %w; browser_state=%s", frame, err, state)
+				}
+			}
 			return RenderReport{}, fmt.Errorf("niconico: receive frame %d: %w", frame, err)
 		}
 		want := frameHeader{Sequence: sequence, TimeMs: uint64(timeMs), Width: uint32(options.Width), Height: uint32(options.Height)}
@@ -459,4 +488,28 @@ func renderBinary(ctx context.Context, snapshot niconico.Snapshot, options Rende
 	}
 	transport.stop(conn, "completed")
 	return report, nil
+}
+
+func browserDebugState(session *browserSession) string {
+	if session == nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
+	defer cancel()
+	result, err := session.call(ctx, "Runtime.evaluate", map[string]any{
+		"expression":    "({error:String(window.__binaryError||''),ready:Boolean(window.__binaryReady),state:window.__binaryState||null})",
+		"returnByValue": true,
+	})
+	if err != nil {
+		return "diagnostic_unavailable"
+	}
+	var envelope struct {
+		Result struct {
+			Value json.RawMessage `json:"value"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(result, &envelope) != nil || len(envelope.Result.Value) == 0 {
+		return "diagnostic_invalid"
+	}
+	return string(envelope.Result.Value)
 }

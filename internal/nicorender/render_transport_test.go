@@ -5,11 +5,26 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"golang.org/x/net/websocket"
 )
+
+func TestFrameTransportCanForceCanvas2DReadback(t *testing.T) {
+	script := (frameTransportConfig{Force2D: true}).script(320, 180)
+	if !strings.Contains(script, "const force2d=true") {
+		t.Fatalf("2D capture flag missing from script")
+	}
+	if !strings.Contains(script, "const gl=force2d?null:canvas.getContext('webgl2')") {
+		t.Fatalf("2D capture does not bypass WebGL2: %s", script)
+	}
+	noneScript := (frameTransportConfig{CaptureMode: "none"}).script(320, 180)
+	if !strings.Contains(noneScript, `const captureMode="none"`) || !strings.Contains(noneScript, "captureMode!=='none'") {
+		t.Fatalf("none capture diagnostic is not explicit: %s", noneScript)
+	}
+}
 
 func TestFrameTransportSplitHeader(t *testing.T) {
 	transport, err := newFrameTransport(320, 180)

@@ -227,6 +227,7 @@ func (s *Server) handleAirPlayStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	obsBefore := s.obs.Status()
+	wasRunning := s.obs.Running()
 	if obsBefore.Connected {
 		http.Error(w, "an OBS stream is already connected", http.StatusConflict)
 		return
@@ -241,7 +242,7 @@ func (s *Server) handleAirPlayStart(w http.ResponseWriter, r *http.Request) {
 		}
 		// Direct AirPlay owns its own MediaMTX sidecar. Stop the ordinary OBS
 		// listener first so the two lifecycles cannot race for the manager.
-		if wasListening || obsBefore.Publishing {
+		if wasRunning || wasListening || obsBefore.Publishing {
 			s.obs.StopAndWait(8 * time.Second)
 		}
 		if _, err := s.obsRelayConfig(false); err != nil {

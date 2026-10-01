@@ -38,24 +38,31 @@ int main(int argc,char** argv){
  SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX);
  const char* version="NICO_COMPOSITOR 1 NPS3 WARP";
  if(argc==2&&std::strcmp(argv[1],"--version")==0){std::puts(version);return 0;}
- const bool selftest=argc==2&&std::strcmp(argv[1],"--self-test")==0;
- bool copyOutput=false;
- if(!selftest){if(argc<2||std::strcmp(argv[1],"--stdin")!=0)fail("--stdin required");
-  if(argc==3&&std::strcmp(argv[2],"--copy-output")==0)copyOutput=true;else if(argc!=2)fail("unknown argument");}
+ const bool selftest=argc>=2&&std::strcmp(argv[1],"--self-test")==0;
+ if(argc<2||(!selftest&&std::strcmp(argv[1],"--stdin")!=0))fail("--stdin or --self-test required");
+ bool copyOutput=false,requestHardware=false,requestWarp=false;
+ for(int i=2;i<argc;i++){
+  if(std::strcmp(argv[i],"--copy-output")==0&&!selftest)copyOutput=true;
+  else if(std::strcmp(argv[i],"--hardware")==0)requestHardware=true;
+  else if(std::strcmp(argv[i],"--warp")==0)requestWarp=true;
+  else fail("unknown argument");
+ }
+ if(requestHardware&&requestWarp)fail("conflicting compositor devices");
  FILE* f=stdin;_setmode(_fileno(stdin),_O_BINARY);
  uint32_t magic=0x3353504e,w=33,h=19,nf=1,fpsNum=30,fpsDen=1;
  if(!selftest){magic=read<uint32_t>(f);w=read<uint32_t>(f);h=read<uint32_t>(f);nf=read<uint32_t>(f);fpsNum=read<uint32_t>(f);fpsDen=read<uint32_t>(f);}
  if(magic!=0x3353504e||!w||!h||w>3840||h>2160||!nf||nf>1000000||!fpsNum||!fpsDen||fpsNum>1000000||fpsDen>1000000||uint64_t(fpsNum)>60ull*fpsDen)fail("scene header bound");
  const unsigned slots=3;
- const bool warp=true;
+ const bool warp=!requestHardware;
  IDXGIAdapter1* adapter=nullptr;
- if(!warp){IDXGIFactory1* factory=nullptr;check(CreateDXGIFactory1(__uuidof(IDXGIFactory1),(void**)&factory),"DXGI");SIZE_T best=0;
+  if(!warp){IDXGIFactory1* factory=nullptr;check(CreateDXGIFactory1(__uuidof(IDXGIFactory1),(void**)&factory),"DXGI");SIZE_T best=0;
   for(UINT i=0;;i++){IDXGIAdapter1* item=nullptr;if(factory->EnumAdapters1(i,&item)==DXGI_ERROR_NOT_FOUND)break;DXGI_ADAPTER_DESC1 d;item->GetDesc1(&d);
    if(!(d.Flags&DXGI_ADAPTER_FLAG_SOFTWARE)&&(!adapter||d.DedicatedVideoMemory>best)){if(adapter)adapter->Release();adapter=item;best=d.DedicatedVideoMemory;}else item->Release();}factory->Release();
-  if(!adapter)fail("no hardware adapter");DXGI_ADAPTER_DESC1 d;adapter->GetDesc1(&d);std::fwprintf(stderr,L"sprite adapter: %ls\n",d.Description);
+  if(!adapter)fail("no hardware adapter");if(!selftest){DXGI_ADAPTER_DESC1 d;adapter->GetDesc1(&d);std::fwprintf(stderr,L"sprite adapter: %ls\n",d.Description);}
  }
  ID3D11Device* device=nullptr;ID3D11DeviceContext* ctx=nullptr;D3D_FEATURE_LEVEL level;
  check(D3D11CreateDevice(adapter,warp?D3D_DRIVER_TYPE_WARP:D3D_DRIVER_TYPE_UNKNOWN,nullptr,0,nullptr,0,D3D11_SDK_VERSION,&device,&level,&ctx),"device");if(adapter)adapter->Release();
+ if(!selftest)std::fprintf(stderr,"NICO_DEVICE %s\n",warp?"WARP":"HARDWARE");
  ID3DBlob *vs=compile("vs","vs_5_0"),*ps=compile("ps","ps_5_0"),*solid=compile("solid","ps_5_0");
  ID3D11VertexShader* vshader;ID3D11PixelShader *pshader,*sshader;
  check(device->CreateVertexShader(vs->GetBufferPointer(),vs->GetBufferSize(),nullptr,&vshader),"vertex shader");
@@ -126,7 +133,7 @@ int main(int argc,char** argv){
  }
  while(written<submitted)drain();
  if(!selftest&&std::fgetc(f)!=EOF)fail("trailing scene data");if(std::fflush(stdout)!=0)fail("flush output");
- if(selftest)std::puts(version);else{
+ if(selftest)std::puts(warp?"NICO_COMPOSITOR 1 NPS3 WARP":"NICO_COMPOSITOR 1 NPS3 HARDWARE");else{
   std::fprintf(stderr,"NICO_STATS copied_bytes=%llu frames=%u\n",static_cast<unsigned long long>(copiedBytes),written);
   std::fprintf(stderr,"NICO_DONE %u\n",written);
  }

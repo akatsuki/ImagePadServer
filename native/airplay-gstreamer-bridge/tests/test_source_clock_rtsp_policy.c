@@ -656,17 +656,17 @@ int main(int argc, char **argv) {
     guint elements;
     guint rtsp_pads;
   } cases[] = {
-      {"default", 0, TRUE, FALSE, TRUE, TRUE, FALSE, 500, 37, 2},
-      {"ingress-true-compat", 1, TRUE, FALSE, TRUE, TRUE, FALSE, 500, 37, 2},
-      {"ingress-false-compat", 1, FALSE, FALSE, TRUE, TRUE, FALSE, 500, 35, 2},
-      {"ingress-true-rtsp-true", 2, TRUE, FALSE, TRUE, TRUE, FALSE, 500, 37, 2},
-      {"ingress-false-rtsp-true", 2, FALSE, FALSE, TRUE, TRUE, FALSE, 500, 35, 2},
-      {"ingress-false-rtsp-true-auto-payloader", 2, FALSE, FALSE, TRUE, FALSE, FALSE, 500, 35, 2},
-      {"runtime-auto-payloader-default-rtx", 2, TRUE, FALSE, TRUE, FALSE, FALSE, 500, 37, 2},
-      {"runtime-auto-payloader-no-rtx", 2, TRUE, FALSE, TRUE, FALSE, TRUE, 0, 37, 2},
-      {"ingress-true-rtsp-false", 2, TRUE, FALSE, FALSE, TRUE, FALSE, 500, 36, 1},
-      {"ingress-false-rtsp-false", 2, FALSE, FALSE, FALSE, FALSE, FALSE, 500, 34, 1},
-      {"fixed-pcm-routing", 3, FALSE, TRUE, TRUE, TRUE, FALSE, 500, 37, 2}};
+      {"default", 0, TRUE, FALSE, TRUE, TRUE, FALSE, 500, 36, 2},
+      {"ingress-true-compat", 1, TRUE, FALSE, TRUE, TRUE, FALSE, 500, 36, 2},
+      {"ingress-false-compat", 1, FALSE, FALSE, TRUE, TRUE, FALSE, 500, 34, 2},
+      {"ingress-true-rtsp-true", 2, TRUE, FALSE, TRUE, TRUE, FALSE, 500, 36, 2},
+      {"ingress-false-rtsp-true", 2, FALSE, FALSE, TRUE, TRUE, FALSE, 500, 34, 2},
+      {"ingress-false-rtsp-true-auto-payloader", 2, FALSE, FALSE, TRUE, FALSE, FALSE, 500, 34, 2},
+      {"runtime-auto-payloader-default-rtx", 2, TRUE, FALSE, TRUE, FALSE, FALSE, 500, 36, 2},
+      {"runtime-auto-payloader-no-rtx", 2, TRUE, FALSE, TRUE, FALSE, TRUE, 0, 36, 2},
+      {"ingress-true-rtsp-false", 2, TRUE, FALSE, FALSE, TRUE, FALSE, 500, 35, 1},
+      {"ingress-false-rtsp-false", 2, FALSE, FALSE, FALSE, FALSE, FALSE, 500, 33, 1},
+      {"fixed-pcm-routing", 3, FALSE, TRUE, TRUE, TRUE, FALSE, 500, 36, 2}};
   guint element_counts[G_N_ELEMENTS(cases)] = {0};
   size_t i;
   int failed = 0;

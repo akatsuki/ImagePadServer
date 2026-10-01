@@ -114,14 +114,14 @@ func TestSelectVideoEncoderHonorsForcedCPU(t *testing.T) {
 		probeEncoder = oldProbe
 		resetVideoEncoderCacheForTest()
 	}()
-	encoderModeProvider = func() string { return "cpu" } // legacy setting normalizes to GPU
+	encoderModeProvider = func() string { return "cpu" }
 	listAvailableEncoders = func(context.Context, string) (map[string]bool, error) {
-		return map[string]bool{"h264_nvenc": true}, nil
+		return map[string]bool{"h264_nvenc": true, "libx264": true}, nil
 	}
 	probeEncoder = func(context.Context, string, VideoEncoderProfile) error { return nil }
 	got := selectVideoEncoderForOS(context.Background(), "fake-ffmpeg", "windows", EncoderLowLatency)
-	if got.Name != "h264_nvenc" || !got.Hardware || !got.Forced {
-		t.Fatalf("legacy CPU setting profile = %#v, want forced GPU", got)
+	if got.Name != "libx264" || got.Hardware || got.Forced {
+		t.Fatalf("forced CPU profile = %#v, want libx264 even when a GPU encoder is available", got)
 	}
 }
 

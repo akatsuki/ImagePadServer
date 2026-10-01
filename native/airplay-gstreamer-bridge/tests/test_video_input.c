@@ -239,6 +239,22 @@ static void test_accept_start_requires_ready_and_scheduler(void) {
   puts("accept start gate requires publisher-ready and scheduler: PASS");
 }
 
+static void test_playing_wait_confirms_pipeline_state(void) {
+  GstElement *pipeline;
+  GError *error = NULL;
+  GstState current = GST_STATE_NULL;
+
+  pipeline = gst_parse_launch("fakesrc num-buffers=1 ! fakesink", &error);
+  assert(pipeline != NULL && error == NULL);
+  assert(gst_element_set_state(pipeline, GST_STATE_PLAYING) !=
+         GST_STATE_CHANGE_FAILURE);
+  assert(source_clock_wait_for_playing(pipeline, &current));
+  assert(current == GST_STATE_PLAYING);
+  gst_element_set_state(pipeline, GST_STATE_NULL);
+  gst_object_unref(pipeline);
+  puts("PLAYING wait confirms the running pipeline state: PASS");
+}
+
 static GThread *accept_thread_start_success(const gchar *name,
                                             GThreadFunc function,
                                             gpointer data,
@@ -350,6 +366,70 @@ static void test_stop_waits_for_accept_exit_before_listener_close(void) {
   WSACleanup();
 #endif
   puts("stop joins accept worker before closing listener: PASS");
+}
+
+static void test_connection_reject_does_not_stop_publisher(void) {
+  SourceClockPipeline pipeline = {0};
+  SourceClockAcceptContext *context;
+  SourceClockSocket client;
+  struct sockaddr_in address;
+  GError *error = NULL;
+  unsigned port = 0;
+  uint8_t invalid_header[SOURCE_CLOCK_HEADER_SIZE] = {0};
+  gboolean publisher_alive;
+#ifdef _WIN32
+  WSADATA wsa;
+  assert(WSAStartup(MAKEWORD(2, 2), &wsa) == 0);
+#endif
+
+  g_mutex_init(&pipeline.mutex);
+  pipeline.video_listener = SOURCE_CLOCK_INVALID_SOCKET;
+  pipeline.audio_listener = SOURCE_CLOCK_INVALID_SOCKET;
+  assert(bind_listener(&pipeline.video_listener, 0, &port));
+  assert(port != 0);
+  context = g_new0(SourceClockAcceptContext, 1);
+  context->pipeline = &pipeline;
+  context->listener = pipeline.video_listener;
+  context->stream_kind = SOURCE_CLOCK_STREAM_VIDEO;
+  assert(source_clock_start_accept_thread(
+      "accept-reject-recovery", &context, &pipeline.video_accept_thread,
+      g_thread_try_new, &error));
+  assert(context == NULL && error == NULL);
+
+  client = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  assert(client != SOURCE_CLOCK_INVALID_SOCKET);
+  memset(&address, 0, sizeof(address));
+  address.sin_family = AF_INET;
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  address.sin_port = htons((uint16_t)port);
+  assert(connect(client, (const struct sockaddr *)&address, sizeof(address)) == 0);
+  assert(send(client, (const char *)invalid_header, sizeof(invalid_header), 0) ==
+         (int)sizeof(invalid_header));
+  g_usleep(500 * 1000);
+
+  g_mutex_lock(&pipeline.mutex);
+  publisher_alive = !pipeline.stopping && !pipeline.protocol_error &&
+                    pipeline.exit_code == 0;
+  g_mutex_unlock(&pipeline.mutex);
+
+  source_clock_socket_close(client);
+  g_mutex_lock(&pipeline.mutex);
+  pipeline.stopping = TRUE;
+  g_mutex_unlock(&pipeline.mutex);
+  g_thread_join(pipeline.video_accept_thread);
+  pipeline.video_accept_thread = NULL;
+  source_clock_socket_close(pipeline.video_listener);
+  pipeline.video_listener = SOURCE_CLOCK_INVALID_SOCKET;
+  g_mutex_clear(&pipeline.mutex);
+#ifdef _WIN32
+  WSACleanup();
+#endif
+  if (!publisher_alive) {
+    g_printerr("connection reject stopped publisher: stopping=%d protocol_error=%d exit_code=%d\n",
+               pipeline.stopping, pipeline.protocol_error, pipeline.exit_code);
+    exit(1);
+  }
+  puts("connection rejects do not stop the publisher: PASS");
 }
 
 static void test_separate_configuration_is_prepended_to_first_keyframe(void) {
@@ -2222,6 +2302,15 @@ static void test_format_change_retains_pending_owner(void) {
 #include "test_candidate_interleavings.inc"
 
 int main(int argc, char **argv) {
+  if (argc == 2 && strcmp(argv[1], "--accept-reject") == 0) {
+    test_connection_reject_does_not_stop_publisher();
+    return 0;
+  }
+  if (argc == 2 && strcmp(argv[1], "--playing-wait") == 0) {
+    gst_init(NULL, NULL);
+    test_playing_wait_confirms_pipeline_state();
+    return 0;
+  }
   if (argc == 2 && strcmp(argv[1], "--candidate-interleavings") == 0) {
     gst_init(NULL, NULL);
     for (unsigned stage = 1; stage <= 3; ++stage) {
@@ -2279,6 +2368,7 @@ int main(int argc, char **argv) {
   test_accept_thread_start_transfers_context_only_on_success();
   test_listener_ownership_is_taken_only_once();
   test_stop_waits_for_accept_exit_before_listener_close();
+  test_connection_reject_does_not_stop_publisher();
   test_separate_configuration_is_prepended_to_first_keyframe();
   test_individual_sps_and_pps_are_both_prepended_to_first_keyframe();
   test_configuration_is_not_reused_across_codec_change();

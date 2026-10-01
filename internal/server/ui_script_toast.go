@@ -22,6 +22,7 @@ const dashboardScriptToast = `
       videoQuality: null,
       obs: null,
       airplay: null,
+      airplayVideoView: null,
       pairing: null,
       ytdlpAuth: null,
       ytdlpChannel: null,

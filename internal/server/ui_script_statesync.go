@@ -70,6 +70,7 @@ const dashboardScriptStateSync = `
       state.obs = data.obs || null;
       state.airplay = data.airplay || null;
       state.airplayQuality = data.airplayQuality || null;
+      state.airplayVideoView = data.airplayVideoView || null;
       state.pairing = data.pairing || null;
       state.ytdlpAuth = data.ytdlpAuth || null;
       state.ytdlpChannel = data.ytdlpChannel || null;
@@ -92,6 +93,7 @@ const dashboardScriptStateSync = `
       applyVideoPlayer(data.videoPlayer);
       applyOBS(data.obs);
       applyAirPlay(data.airplay, data.airplayQuality);
+      applyAirPlayVideoView(state.airplayVideoView);
       applyPairing(data.pairing);
       updateYTDLPAuthState();
       updateYTDLPChannelState();

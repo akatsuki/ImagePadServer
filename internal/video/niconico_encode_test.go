@@ -46,7 +46,10 @@ func TestEncodeNicoCommentedAndCreateHLS(t *testing.T) {
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("create source: %v: %s", err, output)
 	}
-	options := NicoEncodeOptions{Width: 64, Height: 36, DurationMs: 200, FPSNum: 30, FPSDen: 1, CRF: 28}
+	var observedStages []string
+	options := NicoEncodeOptions{Width: 64, Height: 36, DurationMs: 200, FPSNum: 30, FPSDen: 1, CRF: 28, StageObserver: func(stage NicoStageTiming) {
+		observedStages = append(observedStages, stage.Name)
+	}}
 	clock, err := niconico.NewFrameClock(options.FPSNum, options.FPSDen)
 	if err != nil {
 		t.Fatal(err)
@@ -67,6 +70,33 @@ func TestEncodeNicoCommentedAndCreateHLS(t *testing.T) {
 	}
 	if report.FrameCount != count {
 		t.Fatalf("frame count = %d, want %d", report.FrameCount, count)
+	}
+	for _, want := range []string{"validate", "build_ffmpeg_args", "ffmpeg_start", "frame_source_next", "frame_pipe_write_blocking", "frame_pipe_write", "ffmpeg_wait", "output_validate"} {
+		found := false
+		for _, got := range observedStages {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("missing stage %q in %v", want, observedStages)
+		}
+	}
+	var sourceTiming, pipeTiming *NicoStageTiming
+	for i := range report.StageTimings {
+		switch report.StageTimings[i].Name {
+		case "frame_source_next":
+			sourceTiming = &report.StageTimings[i]
+		case "frame_pipe_write_blocking":
+			pipeTiming = &report.StageTimings[i]
+		}
+	}
+	if sourceTiming == nil || sourceTiming.Elapsed < 0 || sourceTiming.FinishedAt.Before(sourceTiming.StartedAt) {
+		t.Fatalf("frame source timing=%v, want ordered cumulative timing", sourceTiming)
+	}
+	if pipeTiming == nil || pipeTiming.Elapsed <= 0 || pipeTiming.Bytes != int64(options.Width*options.Height*4)*count {
+		t.Fatalf("frame pipe timing=%v, want positive timing and all frame bytes", pipeTiming)
 	}
 	decoded := probeNicoStream(t, ffprobe, outputPath, "v:0", "nb_frames")
 	if strings.TrimSpace(decoded) != fmt.Sprint(count) {
@@ -103,6 +133,48 @@ func TestEncodeNicoCommentedAndCreateHLS(t *testing.T) {
 	}
 }
 
+func TestEncodeNicoCommentedTeeProducesMP4AndHLSFromOneEncode(t *testing.T) {
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("ffmpeg is not installed")
+	}
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source.mp4")
+	cmd := exec.Command(ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=64x36:r=60", "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", source)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("create source: %v: %s", err, output)
+	}
+	options := NicoEncodeOptions{
+		Width: 64, Height: 36, DurationMs: 200, FPSNum: 30, FPSDen: 1, CRF: 28,
+		OutputMode: NicoOutputTee, HLSOutputDir: filepath.Join(dir, "hls"),
+	}
+	frames := make([][]byte, 6)
+	for n := range frames {
+		frames[n] = make([]byte, options.Width*options.Height*4)
+		for i := 0; i < len(frames[n]); i += 4 {
+			frames[n][i], frames[n][i+1], frames[n][i+2], frames[n][i+3] = 255, 0, 0, 255
+		}
+	}
+	outputPath := filepath.Join(dir, "commented.mp4")
+	report, err := EncodeNicoCommented(context.Background(), ffmpeg, source, outputPath, options, &testRGBAFrames{frames: frames})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.OutputPath != outputPath || report.FrameCount != int64(len(frames)) {
+		t.Fatalf("report = %+v", report)
+	}
+	if _, err := os.Stat(filepath.Join(options.HLSOutputDir, "playlist.m3u8")); err != nil {
+		t.Fatalf("tee playlist missing: %v", err)
+	}
+	hls, err := PrepareNicoHLSForID(options.HLSOutputDir, "media-1", "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hls.Segments) == 0 {
+		t.Fatal("tee HLS has no segments")
+	}
+}
+
 func TestEncodeNicoCommentedWithBrowserRenderer(t *testing.T) {
 	if os.Getenv("IMAGEPAD_NICONICO_PIPELINE_TEST") != "1" {
 		t.Skip("set IMAGEPAD_NICONICO_PIPELINE_TEST=1 for browser plus FFmpeg")
@@ -123,7 +195,11 @@ func TestEncodeNicoCommentedWithBrowserRenderer(t *testing.T) {
 	}
 	options := NicoEncodeOptions{Width: 320, Height: 180, DurationMs: 100, FPSNum: 30, FPSDen: 1, CRF: 28}
 	outputPath := filepath.Join(dir, "commented.mp4")
-	_, renderReport, err := EncodeNicoCommentedWithRenderer(context.Background(), ffmpeg, source, outputPath, snapshot, nicorender.RenderOptions{Backend: "browser", Width: 320, Height: 180, DurationMs: 100, FPSNum: 30, FPSDen: 1, Transport: "binary", ReuseUnchanged: true, BatchFrames: 30, SparseFrames: true}, options)
+	transport := os.Getenv("IMAGEPAD_NICONICO_TEST_TRANSPORT")
+	if transport == "" {
+		transport = "binary"
+	}
+	_, renderReport, err := EncodeNicoCommentedWithRenderer(context.Background(), ffmpeg, source, outputPath, snapshot, nicorender.RenderOptions{Backend: "browser", Width: 320, Height: 180, DurationMs: 100, FPSNum: 30, FPSDen: 1, Transport: transport, ReuseUnchanged: true, BatchFrames: 30, SparseFrames: true}, options)
 	if err != nil {
 		t.Fatal(err)
 	}

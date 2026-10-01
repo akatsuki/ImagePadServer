@@ -124,3 +124,85 @@ func TestSpriteDeflateRoundTripRejectsShortOversizedAndTrailingData(t *testing.T
 		t.Fatalf("palette deflate = len=%d packed=%d err=%v", len(decoded), packed, err)
 	}
 }
+
+func TestSpriteCodecPaletteBoundaryFixturesRoundTrip(t *testing.T) {
+	t.Run("palette8 preserves all 256 RGBA entries", func(t *testing.T) {
+		const pixelCount = 1024
+		palette := make([]byte, 256*4)
+		for i := 0; i < 256; i++ {
+			palette[i*4] = byte(i)
+			palette[i*4+1] = byte(i*37 + 11)
+			palette[i*4+2] = byte(i*73 + 29)
+			palette[i*4+3] = byte(255 - i)
+		}
+		indexes := make([]byte, pixelCount)
+		want := make([]byte, pixelCount*4)
+		for p := 0; p < pixelCount; p++ {
+			index := byte((p * 37) % 256)
+			indexes[p] = index
+			copy(want[p*4:p*4+4], palette[int(index)*4:int(index)*4+4])
+		}
+		texture := spriteJSONTexture{
+			Width: uint32(pixelCount), Height: 1,
+			Data: spriteB64(indexes), Palette: spriteB64(palette), Encoding: "palette8",
+		}
+		got, _, err := decodeSpriteTexture(texture)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatal("palette8 256-entry round trip changed RGBA bytes")
+		}
+	})
+
+	t.Run("grayalpha8 preserves alpha beyond the 256-color palette limit", func(t *testing.T) {
+		const pixelCount = 1024
+		packed := make([]byte, pixelCount*2)
+		want := make([]byte, pixelCount*4)
+		for p := 0; p < pixelCount; p++ {
+			gray, alpha := byte(128), byte(255)
+			switch {
+			case p < 256:
+				gray = byte(p)
+			case p == 256:
+				gray, alpha = 0, 254
+			}
+			packed[p*2], packed[p*2+1] = gray, alpha
+			want[p*4], want[p*4+1], want[p*4+2], want[p*4+3] = gray, gray, gray, alpha
+		}
+		texture := spriteJSONTexture{
+			Width: pixelCount, Height: 1,
+			Data: spriteB64(packed), Encoding: "grayalpha8",
+		}
+		got, _, err := decodeSpriteTexture(texture)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatal("grayalpha8 round trip changed grayscale or alpha bytes")
+		}
+	})
+
+	t.Run("raw fallback preserves a 257th distinct non-gray color", func(t *testing.T) {
+		const pixelCount = 1024
+		want := make([]byte, pixelCount*4)
+		for p := 0; p < pixelCount; p++ {
+			color := p % 257
+			want[p*4] = byte(color)
+			want[p*4+1] = byte(color >> 8)
+			want[p*4+2] = byte(color*73 + 17)
+			want[p*4+3] = 255
+		}
+		texture := spriteJSONTexture{
+			Width: pixelCount, Height: 1,
+			Data: spriteB64(want), Encoding: "",
+		}
+		got, _, err := decodeSpriteTexture(texture)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatal("raw fallback changed RGBA bytes after palette overflow")
+		}
+	})
+}

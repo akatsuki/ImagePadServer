@@ -17,6 +17,7 @@ type Settings struct {
 	MusicModeEnabled             bool          `json:"musicModeEnabled"`
 	VideoQualityMode             string        `json:"videoQualityMode,omitempty"`
 	AirPlayQualityMode           string        `json:"airplayQualityMode,omitempty"`
+	AirPlayVideoViewMode         string        `json:"airplayVideoViewMode,omitempty"`
 	MusicPlaylistLatencyMode     string        `json:"musicPlaylistLatencyMode,omitempty"`
 	MusicPlaylistDeliveryProfile string        `json:"musicPlaylistDeliveryProfile,omitempty"`
 	MusicPlaylistCanonicalHeight int           `json:"musicPlaylistCanonicalHeight,omitempty"`
@@ -58,9 +59,7 @@ func NormalizeEncoderMode(mode string) string {
 	case "gpu":
 		return "gpu"
 	case "cpu":
-		// CPU rendering is intentionally not a production mode. Keep legacy
-		// settings readable, but normalize them to the GPU path.
-		return "gpu"
+		return "cpu"
 	default:
 		return "gpu"
 	}
@@ -72,6 +71,15 @@ func NormalizeAirPlayQualityMode(mode string) string {
 		return strings.ToLower(strings.TrimSpace(mode))
 	default:
 		return "auto"
+	}
+}
+
+func NormalizeAirPlayVideoViewMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "cover":
+		return "cover"
+	default:
+		return "contain"
 	}
 }
 
@@ -202,6 +210,7 @@ func loadUnlocked() (Settings, error) {
 	settings := Settings{
 		VideoPlayerEnabled:           true,
 		AirPlayQualityMode:           "auto",
+		AirPlayVideoViewMode:         "contain",
 		MusicPlaylistCanonicalHeight: 720,
 	}
 	data, err := os.ReadFile(path())
@@ -216,12 +225,14 @@ func loadUnlocked() (Settings, error) {
 	}
 	settings.MusicPlaylistCanonicalHeight = NormalizeMusicPlaylistCanonicalHeight(settings.MusicPlaylistCanonicalHeight)
 	settings.AirPlayQualityMode = NormalizeAirPlayQualityMode(settings.AirPlayQualityMode)
+	settings.AirPlayVideoViewMode = NormalizeAirPlayVideoViewMode(settings.AirPlayVideoViewMode)
 	return settings, nil
 }
 
 func saveUnlocked(settings Settings) error {
 	settings.MusicPlaylistCanonicalHeight = NormalizeMusicPlaylistCanonicalHeight(settings.MusicPlaylistCanonicalHeight)
 	settings.AirPlayQualityMode = NormalizeAirPlayQualityMode(settings.AirPlayQualityMode)
+	settings.AirPlayVideoViewMode = NormalizeAirPlayVideoViewMode(settings.AirPlayVideoViewMode)
 	settingsPath := path()
 	if err := os.MkdirAll(filepath.Dir(settingsPath), 0755); err != nil {
 		return err

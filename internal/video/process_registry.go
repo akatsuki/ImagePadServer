@@ -230,7 +230,8 @@ func removeTrackedProcess(pid int) error {
 }
 
 func readTrackedProcessesLocked() ([]trackedProcess, error) {
-	data, err := os.ReadFile(processRegistryPath())
+	path := processRegistryPath()
+	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -240,7 +241,15 @@ func readTrackedProcessesLocked() ([]trackedProcess, error) {
 	data = bytes.TrimPrefix(data, []byte{0xef, 0xbb, 0xbf})
 	var entries []trackedProcess
 	if err := json.Unmarshal(data, &entries); err != nil {
-		return nil, err
+		// A previous implementation wrote this shared file directly, so a
+		// second process could leave concatenated JSON behind. Quarantine the
+		// corrupt ledger and continue with an empty set; the registry is only a
+		// cleanup hint and must never make ordinary FFmpeg validation fail.
+		quarantine := fmt.Sprintf("%s.corrupt-%d", path, time.Now().UnixNano())
+		if renameErr := os.Rename(path, quarantine); renameErr != nil {
+			return nil, fmt.Errorf("decode FFmpeg process registry: %w (quarantine failed: %v)", err, renameErr)
+		}
+		return nil, nil
 	}
 	return entries, nil
 }
@@ -260,7 +269,37 @@ func writeTrackedProcessesLocked(entries []trackedProcess) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0600)
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".ffmpeg-processes-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(append(data, '\n')); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err == nil {
+		return nil
+	}
+	// Windows cannot rename over an existing file. Removing the old complete
+	// snapshot still avoids exposing a partially-written JSON document; the
+	// next rename publishes the complete replacement.
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 func processRegistryPath() string {

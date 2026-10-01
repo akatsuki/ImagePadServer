@@ -344,6 +344,41 @@ func TestAirPlayUIContainsQualityControlInsideConversionOptions(t *testing.T) {
 	}
 }
 
+func TestAirPlayUIVideoViewControlStaysInAirPlayCardOutsideConversionOptions(t *testing.T) {
+	conversionStart := strings.Index(indexHTML, `<summary>変換オプション</summary>`)
+	if conversionStart < 0 {
+		t.Fatal("conversion options boundary is missing")
+	}
+	conversionEnd := strings.Index(indexHTML[conversionStart:], `</details>`)
+	if conversionEnd < 0 {
+		t.Fatal("conversion options boundary is missing")
+	}
+	conversion := indexHTML[conversionStart : conversionStart+conversionEnd]
+	if strings.Contains(conversion, `id="airplayVideoViewCover"`) || strings.Contains(conversion, `id="airplayVideoViewStatus"`) {
+		t.Fatal("AirPlay video view control must not be hidden inside conversion options")
+	}
+
+	cardStart := strings.Index(indexHTML, `id="airplayCard"`)
+	if cardStart < 0 {
+		t.Fatal("AirPlay card boundary is missing")
+	}
+	cardEnd := strings.Index(indexHTML[cardStart:], `</section>`)
+	if cardEnd < 0 {
+		t.Fatal("AirPlay card boundary is missing")
+	}
+	card := indexHTML[cardStart : cardStart+cardEnd]
+	for _, want := range []string{
+		`class="airplay-video-view-option" id="airplayVideoViewOption"`,
+		`class="airplay-video-view-toggle" for="airplayVideoViewCover"`,
+		`id="airplayVideoViewCover" type="checkbox" role="switch"`,
+		`id="airplayVideoViewStatus" role="status"`,
+	} {
+		if !strings.Contains(card, want) {
+			t.Fatalf("AirPlay video view control is missing from the AirPlay card: %q", want)
+		}
+	}
+}
+
 func TestAirPlayUIQualityStateSyncAndSaveRecovery(t *testing.T) {
 	for _, want := range []string{
 		`state.airplayQuality = data.airplayQuality || null;`,

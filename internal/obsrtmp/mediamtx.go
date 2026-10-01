@@ -1028,7 +1028,14 @@ func (r *mediaMTXRuntime) llhlsMediaReady(ctx context.Context, media []byte) boo
 	if !ok {
 		return false
 	}
-	for _, name := range []string{initMap, part, preload} {
+	// PRELOAD-HINT intentionally points at the next part, which may not exist
+	// until the playlist advances. Requiring it here turns a valid LL-HLS
+	// playlist into a startup timeout, especially during a blocking reload.
+	// The current init map and an already-published part are the stable
+	// readiness proof; the hint itself is still validated syntactically by the
+	// playlist tag check above.
+	_ = preload
+	for _, name := range []string{initMap, part} {
 		if _, ok := r.fetch(ctx, name); !ok {
 			return false
 		}
@@ -1110,7 +1117,7 @@ func llhlsMediaArtifacts(playlist []byte) (initMap, part, preload string, ok boo
 			preload = hlsURIAttribute(line)
 		}
 	}
-	return initMap, part, preload, initMap != "" && part != "" && preload != ""
+	return initMap, part, preload, initMap != "" && part != ""
 }
 
 func hlsURIAttribute(line string) string {

@@ -154,6 +154,57 @@ func TestFeatureEnabledCanBeDisabled(t *testing.T) {
 	}
 }
 
+func TestStatusKeepsAirPlayAvailableWhenPreparationFailedButReceiverResolves(t *testing.T) {
+	if runtime.GOOS != "windows" || runtime.GOARCH != "amd64" {
+		t.Skip("installed pinned runtime is Windows amd64 only")
+	}
+	dataDir := t.TempDir()
+	setID := "installed-set-status-1"
+	root := filepath.Join(dataDir, "runtimes", "airplay", setID)
+	descriptor := validRuntimeDescriptor()
+	descriptor.RuntimeSetID = setID
+	writeRuntimeFixture(t, root, descriptor)
+	if err := os.WriteFile(filepath.Join(filepath.Dir(root), runtimeActiveFile), []byte(setID+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(envFeatureFlag, "1")
+	t.Setenv(envUxPlayPath, "")
+	t.Setenv(envReceiverPath, "")
+	t.Setenv(envAirPlayRuntimeRoot, "")
+	t.Setenv("IMAGEPAD_DATA_DIR", dataDir)
+	setRuntimePreparation(RuntimePreparationStatus{
+		State:   runtimePreparationFailed,
+		Message: "AirPlayランタイムの準備に失敗しました: read AirPlay runtime bootstrap",
+	})
+	t.Cleanup(func() { setRuntimePreparation(RuntimePreparationStatus{State: runtimePreparationUnknown}) })
+
+	status := New(nil).Status()
+	if !status.Available {
+		t.Fatalf("AirPlay status unavailable even though the installed receiver resolves: %+v", status)
+	}
+	if status.ReceiverPath != filepath.Join(root, filepath.FromSlash(descriptor.Receiver)) {
+		t.Fatalf("receiver path = %q, want installed receiver", status.ReceiverPath)
+	}
+	if strings.Contains(status.Message, "ランタイムの準備に失敗") {
+		t.Fatalf("user-facing status retained a non-blocking preparation failure: %+v", status)
+	}
+	setRuntimePreparation(RuntimePreparationStatus{
+		State:   runtimePreparationFailed,
+		Message: "AirPlayランタイムの準備に失敗しました",
+		Compatibility: RuntimeCompatibilityStatus{
+			State:   runtimeCompatibilityIncompatible,
+			Message: "source-clock receiver capability \"video-bootstrap-reconnect\" is missing",
+		},
+	})
+	status = New(nil).Status()
+	if status.Available {
+		t.Fatalf("AirPlay status advertised an incompatible source-clock runtime: %+v", status)
+	}
+	if status.RuntimeCompatibility.State != runtimeCompatibilityIncompatible {
+		t.Fatalf("runtime compatibility state = %q, want incompatible", status.RuntimeCompatibility.State)
+	}
+}
+
 func TestResolveReceiverPathFromEnvironment(t *testing.T) {
 	dir := t.TempDir()
 	receiver := filepath.Join(dir, "uxplay-test")

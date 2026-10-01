@@ -709,7 +709,7 @@ func TestRadioHLSReadyRequiresProfileArtifacts(t *testing.T) {
 			want: true,
 		},
 		{
-			name:    "LL-HLS rejects a missing preload artifact",
+			name:    "LL-HLS does not block on a future preload artifact",
 			profile: NormalizeLatencyProfile(LatencyModeRTSPUltra),
 			artifacts: map[string]string{
 				"index.m3u8": llMaster,
@@ -717,7 +717,7 @@ func TestRadioHLSReadyRequiresProfileArtifacts(t *testing.T) {
 				"init.mp4":   "init",
 				"part.m4s":   "part",
 			},
-			want: false,
+			want: true,
 		},
 		{
 			name:    "LL-HLS rejects an empty part artifact",

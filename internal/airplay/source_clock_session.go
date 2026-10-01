@@ -3,7 +3,6 @@ package airplay
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -144,49 +143,8 @@ func startSourceClockReceiverChild(ctx context.Context, receiverPath, videoEndpo
 }
 
 func validateSourceClockReceiverCapabilities(receiverPath string) error {
-	if strings.TrimSpace(receiverPath) == "" {
-		return errors.New("source-clock receiver path is empty")
-	}
-	manifestPath := filepath.Join(filepath.Dir(receiverPath), "imagepad-source-clock-capabilities.json")
-	data, err := os.ReadFile(manifestPath)
-	if err != nil {
-		return fmt.Errorf("source-clock receiver capability manifest is missing: %w", err)
-	}
-	var capabilities sourceClockCapabilities
-	if err := json.Unmarshal(data, &capabilities); err != nil {
-		return fmt.Errorf("parse source-clock receiver capability manifest: %w", err)
-	}
-	if capabilities.Schema != 1 || capabilities.ProtocolVersion != 1 ||
-		capabilities.Binary != filepath.Base(receiverPath) || len(capabilities.BinarySHA256) != sha256.Size*2 {
-		return errors.New("source-clock receiver capability manifest is incompatible")
-	}
-	wantFeatures := []string{"video-au", "audio-frame", "remote-ntp", "bounded-writer", "idle-wait", "audio-format-lock", "egress-metrics-v2"}
-	featureSet := make(map[string]bool, len(capabilities.Features))
-	for _, feature := range capabilities.Features {
-		featureSet[feature] = true
-	}
-	for _, feature := range wantFeatures {
-		if !featureSet[feature] {
-			return fmt.Errorf("source-clock receiver capability %q is missing", feature)
-		}
-	}
-	file, err := os.Open(receiverPath)
-	if err != nil {
-		return fmt.Errorf("open source-clock receiver for capability validation: %w", err)
-	}
-	hash := sha256.New()
-	_, copyErr := io.Copy(hash, file)
-	closeErr := file.Close()
-	if copyErr != nil {
-		return fmt.Errorf("hash source-clock receiver: %w", copyErr)
-	}
-	if closeErr != nil {
-		return fmt.Errorf("close source-clock receiver: %w", closeErr)
-	}
-	if !strings.EqualFold(hex.EncodeToString(hash.Sum(nil)), capabilities.BinarySHA256) {
-		return errors.New("source-clock receiver binary hash does not match capability manifest")
-	}
-	return nil
+	_, err := inspectSourceClockReceiverCapabilities(receiverPath)
+	return err
 }
 
 func BuildSourceClockReceiverArgs(videoEndpoint, audioEndpoint string, token sourceClockToken, receiverID sourceClockReceiverID, title string) []string {
@@ -386,7 +344,9 @@ func (m *Manager) startSourceClockConfigured(parent context.Context, sessionID, 
 	if err != nil {
 		return err
 	}
-	if err := validateSourceClockReceiverCapabilities(receiverPath); err != nil {
+	compatibility, err := inspectSourceClockReceiverCapabilities(receiverPath)
+	setRuntimeCompatibility(compatibility)
+	if err != nil {
 		return err
 	}
 	bridgePath, err := ResolveGStreamerBridgePath()
@@ -470,6 +430,20 @@ func (m *Manager) startSourceClockChildren(parent context.Context, sessionID, pu
 		observeInitialPublisherAfterExit(pipelineErr)
 		os.RemoveAll(tempDir)
 		return fmt.Errorf("wait source-clock publisher readiness: %w", err)
+	}
+	videoViewPaths, pathErr := airplaycontract.VideoViewPathsForReady(paths.Ready)
+	var videoViewErr error
+	if pathErr == nil {
+		videoViewErr = m.initializeVideoView(videoViewPaths, sessionID, publisherGeneration)
+	}
+	if pathErr != nil || videoViewErr != nil {
+		cancel()
+		_ = pipeline.stopAndWaitDone(pipelineDone, directPublisherStopNormal, 2*time.Second)
+		os.RemoveAll(tempDir)
+		if pathErr != nil {
+			return fmt.Errorf("initialize video view paths: %w", pathErr)
+		}
+		return fmt.Errorf("initialize video view state: %w", videoViewErr)
 	}
 	videoEndpoint := fmt.Sprintf("127.0.0.1:%d", ready.VideoListenPort)
 	audioEndpoint := fmt.Sprintf("127.0.0.1:%d", ready.AudioListenPort)
@@ -1058,6 +1032,19 @@ func (m *Manager) monitorSourceClockWithPublisherDoneAt(ctx context.Context, can
 			}
 			pipeline.restartArgs = nextArgs
 			publisherGeneration = nextGeneration
+			nextVideoView, videoViewErr := func() (*VideoViewController, error) {
+				videoViewPaths, pathErr := airplaycontract.VideoViewPathsForReady(readyPath)
+				if pathErr != nil {
+					return nil, pathErr
+				}
+				return m.prepareVideoViewGeneration(videoViewPaths, sessionID, publisherGeneration)
+			}()
+			if videoViewErr != nil {
+				_ = completeSourceClockPublisher(observer, nextArtifacts, false, nil)
+				log.Printf("AirPlay source-clock video view generation preparation failed: attempt=%d generation=%d err=%v", permission.Attempt, publisherGeneration, videoViewErr)
+				m.setSourceClockPublisherStatus(false, fmt.Sprintf("GStreamerを再接続しています（%d回目）。AirPlay受信は維持されています。", permission.Attempt))
+				continue
+			}
 			next, restartErr := pipeline.restart(ctx)
 			if restartErr != nil {
 				_ = completeSourceClockPublisher(observer, nextArtifacts, false, nil)
@@ -1067,6 +1054,7 @@ func (m *Manager) monitorSourceClockWithPublisherDoneAt(ctx context.Context, can
 			}
 			pipeline = next
 			waitPipeline(pipeline)
+			m.adoptVideoViewGeneration(nextVideoView)
 			publisherRunning = true
 			generationMediaReady = false
 			retryActive = false
@@ -1167,6 +1155,17 @@ func (m *Manager) monitorSourceClockWithPublisherDoneAt(ctx context.Context, can
 				failAfterOldStop(err)
 				return
 			}
+		}
+		candidateVideoView, videoViewErr := func() (*VideoViewController, error) {
+			videoViewPaths, pathErr := airplaycontract.VideoViewPathsForReady(request.Artifacts.Ready)
+			if pathErr != nil {
+				return nil, pathErr
+			}
+			return m.prepareVideoViewGeneration(videoViewPaths, sessionID, request.CandidateGeneration)
+		}()
+		if videoViewErr != nil {
+			failAfterOldStop(fmt.Errorf("prepare video view for publisher generation %d: %w", request.CandidateGeneration, videoViewErr))
+			return
 		}
 		candidate, err := startSourceClockGStreamerProcess(ctx, oldPipeline.restartPath, candidateArgs, request.Artifacts.StopRequest)
 		if err != nil {
@@ -1288,6 +1287,7 @@ func (m *Manager) monitorSourceClockWithPublisherDoneAt(ctx context.Context, can
 		readyPath, mediaReadyPath = request.Artifacts.Ready, request.Artifacts.MediaReady
 		publisherRunning, generationMediaReady = true, true
 		lastPipelineErr = nil
+		m.adoptVideoViewGeneration(candidateVideoView)
 		m.completeSourceClockDelivery(command, SourceClockDeliveryActive, nil)
 	}
 	for {

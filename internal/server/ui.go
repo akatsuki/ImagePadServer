@@ -146,6 +146,13 @@ const indexHTML = `<!doctype html>
                     </div>
                     <p class="airplay-status" id="airplayStatusText" role="status" aria-live="polite">AirPlay受信は無効です</p>
                     <code class="airplay-receiver-path" id="airplayReceiverPath"></code>
+                    <div class="airplay-video-view-option" id="airplayVideoViewOption">
+                      <label class="airplay-video-view-toggle" for="airplayVideoViewCover" title="映像を画面いっぱいに表示し、余白をクロップします">
+                        <span>画面を埋める（クロップ）</span>
+                        <input id="airplayVideoViewCover" type="checkbox" role="switch" aria-describedby="airplayVideoViewStatus">
+                      </label>
+                      <p class="airplay-video-view-status" id="airplayVideoViewStatus" role="status" aria-live="polite"></p>
+                    </div>
                     <div class="airplay-actions">
                       <button type="button" id="airplayStartButton">AirPlay受信を開始</button>
                       <button type="button" class="secondary" id="airplayRetryButton" hidden>配信を再接続</button>
@@ -173,7 +180,7 @@ const indexHTML = `<!doctype html>
                     <label class="image-transform-option"><span>最大MB</span><select name="maxMB"><option value="10">10 MB</option><option value="30" selected>30 MB</option><option value="60">60 MB</option><option value="120">120 MB</option></select></label>
                     <div class="quality-row video-quality-options" id="videoQualityOptions" hidden>
                       <label><span>動画画質</span><select id="qualityMode"><option value="auto">Auto</option><option value="1080">1080p</option><option value="720">720p</option><option value="360">360p</option></select></label>
-                      <label><span>エンコーダ</span><select id="encoderMode"><option value="gpu">GPU</option></select></label>
+                      <label><span>エンコーダ</span><select id="encoderMode"><option value="gpu">GPU</option><option value="cpu">CPU (libx264)</option></select></label>
 					  <label id="musicPlaylistDeliveryOption" hidden><span>プレイリスト配信</span><select id="musicPlaylistDeliveryProfile"><option value="hls-high">最高画質HLS（10s+）</option><option value="hls">高画質HLS（5s）</option><option value="rtsp-low">低遅延RTSP（3-4s）</option><option value="rtsp-ultra">超低遅延RTSP（1-2s）</option><option value="rtsp-realtime">リアルタイムRTSP（0.5s+）</option></select><span id="musicPlaylistDeliveryStatus"></span></label>
 					  <label id="musicPlaylistCanonicalOption" hidden><span>素材解像度</span><select id="musicPlaylistCanonicalHeight"><option value="360">360p</option><option value="720">720p</option><option value="1080">1080p</option></select><span id="musicPlaylistCanonicalStatus"></span></label>
                       <div class="pill"><strong>実効</strong><span id="qualityStatus">確認中</span></div>

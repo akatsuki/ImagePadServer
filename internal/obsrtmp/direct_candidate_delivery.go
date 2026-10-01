@@ -106,6 +106,9 @@ func (d *directCandidateDelivery) Validate(ctx context.Context, old, candidate [
 	if err != nil {
 		return err
 	}
+	if err := waitForDirectCandidateHLS(ctx, a.backend.runtime, a.plan.Profile); err != nil {
+		return err
+	}
 	for _, event := range candidate {
 		d.owner.observer.ObservePublisher(event)
 	}
@@ -115,6 +118,30 @@ func (d *directCandidateDelivery) Validate(ctx context.Context, old, candidate [
 	}
 	d.validated = true
 	return nil
+}
+
+func waitForDirectCandidateHLS(ctx context.Context, runtime *mediaMTXRuntime, profile LatencyProfile) error {
+	if runtime == nil || profile.Transport != LatencyModeHLS {
+		return nil
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		checkCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+		ready := runtime.hlsReady(checkCtx, profile)
+		cancel()
+		if ready {
+			return nil
+		}
+		timer := time.NewTimer(25 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 func (d *directCandidateDelivery) Commit(deadline time.Time) error {

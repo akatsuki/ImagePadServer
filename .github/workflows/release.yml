@@ -49,7 +49,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: nico-compositor-payload
-          path: internal/nicorender/payload
+          path: internal/nicorender
       - run: sh scripts/build-release.sh
       - name: Build and verify GPU sidecar artifact
         run: |

@@ -47,6 +47,9 @@ AIRPLAY_RUNTIME_ARCHIVE_PATH="${AIRPLAY_RUNTIME_ARCHIVE_PATH:-}"
 AIRPLAY_RUNTIME_SOURCES_PATH="${AIRPLAY_RUNTIME_SOURCES_PATH:-}"
 AIRPLAY_RUNTIME_BOOTSTRAP_B64=""
 AIRPLAY_RUNTIME_BUILD_TAG=""
+NICO_TIMELINE_EMBEDDED="0"
+NICO_TIMELINE_LICENSE_DIR=""
+NICO_TIMELINE_NOTICE_FILE=""
 
 mkdir -p "$WIN_DIR" "$MAC_DIR" "$LINUX_DIR"
 
@@ -88,6 +91,33 @@ build_one() {
       else
         build_tags="nico_native_embedded"
       fi
+      timeline_payload_dir="$ROOT_DIR/internal/nicorender/timeline_payload"
+      if [ -f "$timeline_payload_dir/nico-compositord.bin" ] && [ -f "$timeline_payload_dir/manifest.json" ]; then
+        if python3 "$ROOT_DIR/scripts/verify-nico-timeline-payload.py" "$timeline_payload_dir" "$goos" "$goarch"; then
+          if [ -n "$build_tags" ]; then
+            build_tags="$build_tags,nico_timeline_embedded"
+          else
+            build_tags="nico_timeline_embedded"
+          fi
+          echo "embedding NCT2 timeline compositor for $goos/$goarch"
+          timeline_sha256="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$timeline_payload_dir/nico-compositord.bin")"
+          NICO_TIMELINE_LICENSE_DIR="$WIN_DIR/third-party-licenses/nico-timeline-$timeline_sha256"
+          NICO_TIMELINE_NOTICE_FILE="THIRD_PARTY_NOTICES-nico-timeline-$timeline_sha256.md"
+          if [ ! -f "$timeline_payload_dir/THIRD_PARTY_NOTICES.md" ] || [ ! -d "$timeline_payload_dir/third-party-licenses" ]; then
+            echo "NCT2 helper is missing its third-party license notices" >&2
+            exit 1
+          fi
+          mkdir -p "$NICO_TIMELINE_LICENSE_DIR"
+          cp "$timeline_payload_dir/THIRD_PARTY_NOTICES.md" "$WIN_DIR/$NICO_TIMELINE_NOTICE_FILE"
+          cp -R "$timeline_payload_dir/third-party-licenses/." "$NICO_TIMELINE_LICENSE_DIR/"
+          NICO_TIMELINE_EMBEDDED="1"
+        else
+          echo "timeline compositor payload is invalid for $goos/$goarch" >&2
+          exit 1
+        fi
+      else
+        echo "timeline compositor payload unavailable for $goos/$goarch; runtime will use CPU fallback"
+      fi
     fi
   fi
   if [ -n "$build_tags" ]; then
@@ -118,9 +148,19 @@ pack_windows_zip() {
   echo "packing $archive"
   rm -f "$archive"
   if command -v zip >/dev/null 2>&1; then
-    zip -q -j -X "$archive" "$exe"
+    if [ "$NICO_TIMELINE_EMBEDDED" = "1" ]; then
+      notice_relative="$NICO_TIMELINE_NOTICE_FILE"
+      license_relative="third-party-licenses/$(basename "$NICO_TIMELINE_LICENSE_DIR")"
+      (cd "$WIN_DIR" && zip -q -X -r "$archive" "$(basename "$exe")" "$notice_relative" "$license_relative")
+    else
+      zip -q -j -X "$archive" "$exe"
+    fi
   elif command -v powershell >/dev/null 2>&1; then
-    powershell -NoProfile -Command "Compress-Archive -Path '$exe' -DestinationPath '$archive' -Force"
+    if [ "$NICO_TIMELINE_EMBEDDED" = "1" ]; then
+      powershell -NoProfile -Command "Compress-Archive -Path '$exe','$WIN_DIR/$NICO_TIMELINE_NOTICE_FILE','$NICO_TIMELINE_LICENSE_DIR' -DestinationPath '$archive' -Force"
+    else
+      powershell -NoProfile -Command "Compress-Archive -Path '$exe' -DestinationPath '$archive' -Force"
+    fi
   else
     echo "warning: neither zip nor powershell available; skipping $archive"
   fi

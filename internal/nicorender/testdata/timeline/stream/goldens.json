@@ -1,0 +1,139 @@
+{
+  "fixtures": {
+    "empty-scene.nct2": {
+      "bytes": 248,
+      "details": {
+        "declarations": [],
+        "ready_by_prefix": [
+          10
+        ]
+      },
+      "normalized_nct1_sha256": "ba510f7b32aec2caee9e0c99929c02ebe84c9d0e1585345f915274ec55b7a195",
+      "scene_commitment_sha256": "7cebd6ff85b74779fbd1e897e4eab1645607652310381797183d50d7a8875e18",
+      "sha256": "d496e9adcf9d970f40fa85d5d3ac5641083a9e43fc98f5f323321f64c9dbe767"
+    },
+    "nct1-compat-multidraw.nct2": {
+      "bytes": 968,
+      "details": {
+        "declarations": [
+          {
+            "end": 100,
+            "index": 0,
+            "ordinal": 0,
+            "owner": 0,
+            "start": -4
+          },
+          {
+            "end": 6,
+            "index": 1,
+            "ordinal": 1,
+            "owner": 0,
+            "start": -1
+          }
+        ],
+        "draws": [
+          {
+            "alpha": 1.0,
+            "anchor_vpos": 0,
+            "anchor_x": 0.0,
+            "asset_id": 1,
+            "end": 100,
+            "index": 0,
+            "owner": 0,
+            "primitive": 0,
+            "projection": [
+              1.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "rect": [
+              0.0,
+              0.0,
+              33.0,
+              19.0
+            ],
+            "speed_x": 0.0,
+            "start": -4
+          },
+          {
+            "alpha": 0.75,
+            "anchor_vpos": 2,
+            "anchor_x": 4.25,
+            "asset_id": 2,
+            "end": 6,
+            "index": 1,
+            "owner": 0,
+            "primitive": 0,
+            "projection": [
+              1.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "rect": [
+              4.0,
+              5.0,
+              10.0,
+              3.0
+            ],
+            "speed_x": -0.125,
+            "start": -1
+          }
+        ]
+      },
+      "normalized_nct1_sha256": "d506db27b68a294e8e8a9d5db1f512d274da8b2c62543b5213c121e26f379948",
+      "scene_commitment_sha256": "c3f6fa5024466409879965d7cc0471aa33d5d3fb1b5842185bee5e923f785350",
+      "sha256": "4bd83f4116b17157785f2ceab7ca08308fda46f34e058545cd78d7a4d48512ba"
+    },
+    "owner-time-inversion.nct2": {
+      "bytes": 464,
+      "details": {
+        "ready_by_prefix": [
+          0,
+          0,
+          0,
+          300
+        ],
+        "starts": [
+          0,
+          200,
+          0
+        ]
+      },
+      "normalized_nct1_sha256": "92fce9ef9b0af7ee93a720473987b6a345ff9a622ab3fa7c7ad9071d4d80808e",
+      "scene_commitment_sha256": "531bbd57112e6da6e60c46cb96ebb1061b8af5fdefdeff450782bf945458a310",
+      "sha256": "f17bd08c3f58c27222f53eea4cb52e1d82607067548ccce0d04edac27c94a218"
+    }
+  },
+  "format": "NCT2 v2",
+  "legacy_nct1_fixture": {
+    "bytes": 440,
+    "path": "../wire/wire-multidraw-33x19-3frames.nct",
+    "sha256": "d506db27b68a294e8e8a9d5db1f512d274da8b2c62543b5213c121e26f379948"
+  }
+}

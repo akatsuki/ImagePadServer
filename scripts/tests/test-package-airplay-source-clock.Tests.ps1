@@ -141,6 +141,7 @@ Describe "AirPlay source-clock package provenance" {
         $text = Get-Content -LiteralPath $scriptPath -Raw
 
         ($text.Contains('"egress-metrics-v2"')) | Should Be $true
+        ($text.Contains('"video-bootstrap-reconnect"')) | Should Be $true
         ($text.Contains('"egress-metrics-v1"')) | Should Be $false
         ($text.Contains('0009-imagepad-source-clock-audio-format-lock.patch')) | Should Be $true
         ($text.Contains('0010-imagepad-source-clock-egress-metrics.patch')) | Should Be $true

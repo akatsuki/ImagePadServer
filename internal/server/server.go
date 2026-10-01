@@ -66,9 +66,10 @@ var (
 )
 
 type Server struct {
-	lifecycleCtx context.Context
-	cfg          config.Config
-	store        *library.Store
+	lifecycleCtx       context.Context
+	nicoWorkerSessions *nicoWorkerSessionManager
+	cfg                config.Config
+	store              *library.Store
 
 	mu                            sync.RWMutex
 	upnp                          upnp.Result
@@ -280,6 +281,7 @@ func New(cfg config.Config, store *library.Store, imageURLBase string) *Server {
 		return mapping, result
 	}
 	srv.setRTSPURL = srv.obs.SetRTSPEndpointURL
+	cleanupAbandonedNicoStaging(store.Dir(), time.Now())
 	srv.initMusicPlaylist(advertisedHost)
 	return srv
 }
@@ -289,10 +291,14 @@ func (s *Server) SetLifecycleContext(ctx context.Context) {
 	if ctx == nil {
 		return
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.lifecycleCtx = ctx
 }
 
 func (s *Server) lifecycleContext() context.Context {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if s.lifecycleCtx != nil {
 		return s.lifecycleCtx
 	}
@@ -323,6 +329,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/airplay/end", s.admin(s.handleAirPlayEnd))
 	mux.HandleFunc("/api/airplay/retry", s.admin(s.handleAirPlayRetry))
 	mux.HandleFunc("/api/airplay/quality", s.admin(s.handleAirPlayQuality))
+	mux.HandleFunc("/api/airplay/video-view", s.admin(s.handleAirPlayVideoView))
 	mux.HandleFunc("/api/obs/key", s.admin(s.handleOBSKey))
 	mux.HandleFunc("/api/obs/latency", s.admin(s.handleOBSLatency))
 	mux.HandleFunc("/api/history", s.admin(s.handleHistory))
@@ -957,11 +964,15 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if req.NiconicoComments.Enabled {
-			if !s.tryBeginIngest(ingestDownloading, req.URL) {
-				http.Error(w, "別の取り込み処理が進行中です", http.StatusConflict)
+			waited, waitErr := s.waitForNiconicoIngest(r.Context(), req.URL)
+			if waitErr != nil {
+				http.Error(w, "ニコニコ書き出し待機がキャンセルされました: "+waitErr.Error(), http.StatusRequestTimeout)
 				return
 			}
 			defer s.clearIngest()
+			if waited >= 20*time.Millisecond {
+				s.setIngestProgress(0, fmt.Sprintf("ニコニコ書き出し待機 %.1f秒", waited.Seconds()))
+			}
 			state, err := s.processNiconicoCommentedURL(r, req.URL, false)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
@@ -1182,11 +1193,15 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if req.NiconicoComments.Enabled {
-			if !s.tryBeginIngest(ingestDownloading, req.URL) {
-				http.Error(w, "別の取り込み処理が進行中です", http.StatusConflict)
+			waited, waitErr := s.waitForNiconicoIngest(r.Context(), req.URL)
+			if waitErr != nil {
+				http.Error(w, "ニコニコ書き出し待機がキャンセルされました: "+waitErr.Error(), http.StatusRequestTimeout)
 				return
 			}
 			defer s.clearIngest()
+			if waited >= 20*time.Millisecond {
+				s.setIngestProgress(0, fmt.Sprintf("ニコニコ書き出し待機 %.1f秒", waited.Seconds()))
+			}
 			state, err := s.processNiconicoCommentedURL(r, req.URL, true)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
@@ -2837,7 +2852,8 @@ func (s *Server) handleEncoderMode(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		mode := settings.NormalizeEncoderMode(req.Mode)
-		if !strings.EqualFold(strings.TrimSpace(req.Mode), "gpu") {
+		requestedMode := strings.ToLower(strings.TrimSpace(req.Mode))
+		if requestedMode != "gpu" && requestedMode != "cpu" {
 			http.Error(w, "invalid encoder mode", http.StatusBadRequest)
 			return
 		}
@@ -3480,6 +3496,7 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 		state := s.stateWithMedia(r, current, upnpResult, tunnelStatus, videoPlayer, obsStatus, imageURL, videoURL, hlsURL, shareURL, shareURLLabel, publicImageURL, publicVideoURL, publicHLSURL, localImageURL, previewImageURL)
 		state["airplay"] = airplayStatus
 		state["airplayQuality"] = s.airplayQualityState()
+		state["airplayVideoView"] = s.airplayVideoViewState()
 		return withResolvedShareURLs(state)
 	}
 	if imageURL == "" {
@@ -3527,6 +3544,7 @@ func (s *Server) state(r *http.Request) map[string]interface{} {
 		"obs":               obsStatus,
 		"airplay":           airplayStatus,
 		"airplayQuality":    s.airplayQualityState(),
+		"airplayVideoView":  s.airplayVideoViewState(),
 		"pairing":           s.pairingState(),
 		"videoQueue":        s.videoQueueState(),
 		"ytdlpAuth":         ytdlpauth.Status(),
@@ -3567,6 +3585,7 @@ func (s *Server) stateWithMedia(r *http.Request, current *library.CurrentImage, 
 		"videoPlayer":       videoPlayer,
 		"videoQuality":      s.videoQualityState(),
 		"obs":               obsStatus,
+		"airplayVideoView":  s.airplayVideoViewState(),
 		"pairing":           s.pairingState(),
 		"videoQueue":        s.videoQueueState(),
 		"ytdlpAuth":         ytdlpauth.Status(),

@@ -485,6 +485,7 @@ static void test_writes_replaces_and_appends_schema_v2_events(void) {
   TEST_CHECK(strstr(ready, "\"publisherGeneration\":7") != NULL);
   TEST_CHECK(strstr(ready, "\"event\":\"publisher-ready\"") != NULL);
   TEST_CHECK(strstr(ready, "\"protocolVersion\":1") != NULL);
+  TEST_CHECK(strstr(ready, "\"videoViewProtocol\":1") != NULL);
   TEST_CHECK(strstr(ready, "\"videoListenPort\":41001") != NULL);
   TEST_CHECK(strstr(ready, "\"audioListenPort\":41002") != NULL);
   TEST_CHECK(strstr(ready, "\"pipelineStartAccepted\":true") != NULL);

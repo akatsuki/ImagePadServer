@@ -115,12 +115,51 @@ func hasExplicitReceiverPath() bool {
 // enabled and no explicit receiver was supplied. Legacy PATH/cache discovery
 // is intentionally not part of the default path because it can mix binaries.
 func PrepareOnStartup(ctx context.Context) (string, error) {
-	if !FeatureEnabled() || hasExplicitReceiverPath() {
+	if !FeatureEnabled() {
 		return "", nil
 	}
+	if hasExplicitReceiverPath() {
+		if !SourceClockPipelineEnabled() {
+			setRuntimePreparation(RuntimePreparationStatus{
+				State:         runtimePreparationUnknown,
+				Compatibility: runtimeCompatibilityNotRequiredStatus(),
+			})
+			return "", nil
+		}
+		receiverPath, err := ResolveReceiverPath()
+		if err != nil {
+			setRuntimePreparation(RuntimePreparationStatus{
+				State:   runtimePreparationFailed,
+				Message: "明示されたAirPlay受信器を検査できません: " + err.Error(),
+				Compatibility: RuntimeCompatibilityStatus{
+					State:   runtimeCompatibilityIncompatible,
+					Message: err.Error(),
+				},
+			})
+			return "", err
+		}
+		compatibility, err := inspectSourceClockReceiverCapabilities(receiverPath)
+		if err != nil {
+			setRuntimePreparation(RuntimePreparationStatus{
+				State:         runtimePreparationFailed,
+				Message:       "明示されたAirPlay受信器は source-clock 互換ではありません: " + err.Error(),
+				RuntimeSetID:  "explicit",
+				Compatibility: compatibility,
+			})
+			return "", err
+		}
+		setRuntimePreparation(RuntimePreparationStatus{
+			State:         runtimePreparationReady,
+			Message:       "明示されたAirPlay受信器の互換性検査が完了しました。",
+			RuntimeSetID:  "explicit",
+			Compatibility: compatibility,
+		})
+		return receiverPath, nil
+	}
 	setRuntimePreparation(RuntimePreparationStatus{
-		State:   runtimePreparationPreparing,
-		Message: "AirPlayランタイムを準備しています。",
+		State:         runtimePreparationPreparing,
+		Message:       "AirPlayランタイムを準備しています。",
+		Compatibility: RuntimeCompatibilityStatus{State: runtimeCompatibilityUnknown},
 	})
 	runtimeSet, err := preparePinnedAirPlayRuntime(ctx)
 	if err != nil {
@@ -130,10 +169,25 @@ func PrepareOnStartup(ctx context.Context) (string, error) {
 		})
 		return "", err
 	}
+	compatibility := runtimeCompatibilityNotRequiredStatus()
+	if SourceClockPipelineEnabled() {
+		var compatibilityErr error
+		compatibility, compatibilityErr = inspectSourceClockReceiverCapabilities(runtimeSet.ReceiverPath)
+		if compatibilityErr != nil {
+			setRuntimePreparation(RuntimePreparationStatus{
+				State:         runtimePreparationFailed,
+				Message:       "AirPlayランタイムは source-clock 互換ではありません: " + compatibilityErr.Error(),
+				RuntimeSetID:  runtimeSet.Descriptor.RuntimeSetID,
+				Compatibility: compatibility,
+			})
+			return "", compatibilityErr
+		}
+	}
 	setRuntimePreparation(RuntimePreparationStatus{
-		State:        runtimePreparationReady,
-		Message:      "AirPlayランタイムの準備が完了しました。",
-		RuntimeSetID: runtimeSet.Descriptor.RuntimeSetID,
+		State:         runtimePreparationReady,
+		Message:       "AirPlayランタイムの準備が完了しました。",
+		RuntimeSetID:  runtimeSet.Descriptor.RuntimeSetID,
+		Compatibility: compatibility,
 	})
 	return runtimeSet.ReceiverPath, nil
 }

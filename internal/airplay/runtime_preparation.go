@@ -12,9 +12,10 @@ const (
 // RuntimePreparationStatus is deliberately small and cheap to read from the
 // HTTP status path. It does not hash or inspect the runtime again.
 type RuntimePreparationStatus struct {
-	State        string
-	Message      string
-	RuntimeSetID string
+	State         string
+	Message       string
+	RuntimeSetID  string
+	Compatibility RuntimeCompatibilityStatus
 }
 
 var runtimePreparationState = struct {
@@ -31,5 +32,11 @@ func RuntimePreparation() RuntimePreparationStatus {
 func setRuntimePreparation(status RuntimePreparationStatus) {
 	runtimePreparationState.Lock()
 	runtimePreparationState.status = status
+	runtimePreparationState.Unlock()
+}
+
+func setRuntimeCompatibility(status RuntimeCompatibilityStatus) {
+	runtimePreparationState.Lock()
+	runtimePreparationState.status.Compatibility = status
 	runtimePreparationState.Unlock()
 }

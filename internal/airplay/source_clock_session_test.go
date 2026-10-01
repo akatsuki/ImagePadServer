@@ -450,7 +450,7 @@ func TestValidateSourceClockReceiverCapabilitiesChecksBinaryHashAndFeatures(t *t
 	manifest := sourceClockCapabilities{
 		Schema: 1, ProtocolVersion: 1, Binary: filepath.Base(receiver),
 		BinarySHA256: hex.EncodeToString(sum[:]),
-		Features:     []string{"video-au", "audio-frame", "remote-ntp", "bounded-writer", "idle-wait", "audio-format-lock", "egress-metrics-v2"},
+		Features: []string{"video-au", "audio-frame", "remote-ntp", "bounded-writer", "idle-wait", "audio-format-lock", "egress-metrics-v2", "video-bootstrap-reconnect"},
 	}
 	data, err := json.Marshal(manifest)
 	if err != nil {
@@ -482,6 +482,24 @@ func TestValidateSourceClockReceiverCapabilitiesChecksBinaryHashAndFeatures(t *t
 		}
 		manifest.Features = original
 	}
+	original := append([]string(nil), manifest.Features...)
+	manifest.Features = nil
+	for _, feature := range original {
+		if feature != "video-bootstrap-reconnect" {
+			manifest.Features = append(manifest.Features, feature)
+		}
+	}
+	data, err = json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "imagepad-source-clock-capabilities.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateSourceClockReceiverCapabilities(receiver); err == nil {
+		t.Fatal("receiver without video-bootstrap-reconnect unexpectedly passed capability validation")
+	}
+	manifest.Features = original
 	data, err = json.Marshal(manifest)
 	if err != nil {
 		t.Fatal(err)
@@ -1450,7 +1468,7 @@ func sourceClockReceiverExecutableForLaunchTest(t *testing.T) string {
 	manifest := sourceClockCapabilities{
 		Schema: 1, ProtocolVersion: 1, Binary: filepath.Base(receiverPath),
 		BinarySHA256: hex.EncodeToString(sum[:]),
-		Features:     []string{"video-au", "audio-frame", "remote-ntp", "bounded-writer", "idle-wait", "audio-format-lock", "egress-metrics-v2"},
+		Features:     []string{"video-au", "audio-frame", "remote-ntp", "bounded-writer", "idle-wait", "audio-format-lock", "egress-metrics-v2", "video-bootstrap-reconnect"},
 	}
 	data, err := json.Marshal(manifest)
 	if err != nil {

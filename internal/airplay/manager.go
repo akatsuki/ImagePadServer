@@ -35,23 +35,24 @@ var (
 )
 
 type Status struct {
-	Enabled           bool   `json:"enabled"`
-	Available         bool   `json:"available"`
-	Running           bool   `json:"running"`
-	ReceiverRunning   bool   `json:"receiverRunning"`
-	BridgeRunning     bool   `json:"bridgeRunning"`
-	MediaReady        bool   `json:"mediaReady"`
-	MediaReadyKnown   bool   `json:"-"`
-	Phase             string `json:"phase"`
-	DeliveryPhase     string `json:"deliveryPhase,omitempty"`
-	DeliveryRequestID string `json:"deliveryRequestID,omitempty"`
-	ReceiverPath      string `json:"receiverPath,omitempty"`
-	ReceiverName      string `json:"receiverName,omitempty"`
-	AudioCodec        string `json:"audioCodec,omitempty"`
-	RuntimeState      string `json:"runtimeState,omitempty"`
-	RuntimeMessage    string `json:"runtimeMessage,omitempty"`
-	RuntimeSetID      string `json:"runtimeSetID,omitempty"`
-	Message           string `json:"message,omitempty"`
+	Enabled              bool                       `json:"enabled"`
+	Available            bool                       `json:"available"`
+	Running              bool                       `json:"running"`
+	ReceiverRunning      bool                       `json:"receiverRunning"`
+	BridgeRunning        bool                       `json:"bridgeRunning"`
+	MediaReady           bool                       `json:"mediaReady"`
+	MediaReadyKnown      bool                       `json:"-"`
+	Phase                string                     `json:"phase"`
+	DeliveryPhase        string                     `json:"deliveryPhase,omitempty"`
+	DeliveryRequestID    string                     `json:"deliveryRequestID,omitempty"`
+	ReceiverPath         string                     `json:"receiverPath,omitempty"`
+	ReceiverName         string                     `json:"receiverName,omitempty"`
+	AudioCodec           string                     `json:"audioCodec,omitempty"`
+	RuntimeState         string                     `json:"runtimeState,omitempty"`
+	RuntimeMessage       string                     `json:"runtimeMessage,omitempty"`
+	RuntimeSetID         string                     `json:"runtimeSetID,omitempty"`
+	RuntimeCompatibility RuntimeCompatibilityStatus `json:"runtimeCompatibility,omitempty"`
+	Message              string                     `json:"message,omitempty"`
 }
 
 type Manager struct {
@@ -73,6 +74,7 @@ type Manager struct {
 	deliveryActiveGeneration     uint64
 	deliveryActivePublishURL     string
 	deliveryActiveOutput         DirectOutputConfig
+	videoView                    *VideoViewController
 	stopInitiator                string
 	onChange                     func()
 }
@@ -205,6 +207,7 @@ func (m *Manager) Status() Status {
 	status.RuntimeState = preparation.State
 	status.RuntimeMessage = preparation.Message
 	status.RuntimeSetID = preparation.RuntimeSetID
+	status.RuntimeCompatibility = preparation.Compatibility
 	status.AudioCodec = audioCodecLabel(audioRelay)
 	if running {
 		status.Available = true
@@ -222,6 +225,12 @@ func (m *Manager) Status() Status {
 				status.Message = preparation.Message
 			}
 		}
+		if preparation.Compatibility.State == runtimeCompatibilityIncompatible {
+			status.Available = false
+			if preparation.Compatibility.Message != "" {
+				status.Message = preparation.Compatibility.Message
+			}
+		}
 		receiverName, err := resolveReceiverTitle(defaultReceiverTitle)
 		if err != nil {
 			status.Available = false
@@ -231,8 +240,18 @@ func (m *Manager) Status() Status {
 		}
 		status.ReceiverName = receiverName
 		if path, err := ResolveReceiverPath(); err == nil {
-			status.Available = true
 			status.ReceiverPath = path
+			if preparation.Compatibility.State == runtimeCompatibilityIncompatible {
+				status.Available = false
+				if preparation.Compatibility.Message != "" {
+					status.Message = preparation.Compatibility.Message
+				}
+			} else {
+				status.Available = true
+				if preparation.State == runtimePreparationFailed && !hasExplicitReceiverPath() && status.Message == preparation.Message {
+					status.Message = "AirPlay受信は停止中です。受信器は利用可能です。"
+				}
+			}
 		} else {
 			status.Available = false
 			if status.Message == "" || status.Message == "AirPlay受信は停止中です。UxPlayを設定すると開始できます。" {
@@ -1293,6 +1312,7 @@ func (m *Manager) finishMonitorWithCallback(done chan struct{}, tempDir string, 
 	m.deliveryActiveGeneration = 0
 	m.deliveryActivePublishURL = ""
 	m.deliveryActiveOutput = DirectOutputConfig{}
+	m.videoView = nil
 	m.stopInitiator = ""
 	m.status.Running = false
 	m.status.ReceiverRunning = false

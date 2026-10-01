@@ -172,6 +172,7 @@ const dashboardScriptUploadEvents = `
       obsUploadPanel.hidden = !obsMode;
       airplayUploadPanel.hidden = !airplayMode;
       if (typeof applyAirPlayQuality === 'function') applyAirPlayQuality(state.airplayQuality);
+      if (typeof applyAirPlayVideoView === 'function') applyAirPlayVideoView(state.airplayVideoView);
       updateUploadControlsVisibility();
       imageInput.required = fileMode;
       imageURLInput.required = linkMode;
@@ -270,6 +271,11 @@ const dashboardScriptUploadEvents = `
       applyState(data);
       announceLocalChange();
       scrollProgressIntoView();
+      const fallbackNotice = data.fallbackNotice || data.encoderFallbackNotice;
+      if (fallbackNotice) {
+        toast.textContent = fallbackNotice;
+        return;
+      }
       if (action === 'queue') {
         setWingMode('queue');
         toast.textContent = '動画変換に追加しました';

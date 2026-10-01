@@ -74,6 +74,7 @@ add_library(airplay_bridge_core STATIC
   source_clock_video_watermark.c
   source_clock_video_proof.c
   source_clock_timeline.c
+  source_clock_reject_policy.c
   source_clock_reader.c
   source_clock_audio_bin.c
   source_clock_fixed_pcm_audio.c
@@ -83,6 +84,8 @@ add_library(airplay_bridge_core STATIC
   video_au_gate.c
   video_scheduler.c
   source_clock_video_pending_fifo.c)
+target_sources(airplay_bridge_core PRIVATE video_view.c)
+target_sources(airplay_bridge_core PRIVATE video_view_renderer.c video_view_control.c)
 target_include_directories(airplay_bridge_core PRIVATE ${GST_INCLUDE_DIRS})
 target_link_libraries(airplay_bridge_core PRIVATE ${GST_LIBRARIES})
 option(IMAGEPAD_SOURCE_CLOCK_START_WITHOUT_REAL_AUDIO
@@ -146,6 +149,24 @@ target_link_libraries(airplay-gstreamer-capability-probe PRIVATE ${GST_LIBRARIES
 
 include(CTest)
 if(BUILD_TESTING)
+  add_executable(test_video_view_geometry tests/test_video_view_geometry.c)
+  target_include_directories(test_video_view_geometry PRIVATE ${GST_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR})
+  target_link_libraries(test_video_view_geometry PRIVATE airplay_bridge_core ${GST_LIBRARIES})
+  add_test(NAME airplay_video_view_geometry COMMAND ${CMAKE_COMMAND} -E env
+    "PATH=${GSTREAMER_RUNTIME_ROOT}/bin"
+    "GST_PLUGIN_PATH_1_0=${GSTREAMER_RUNTIME_ROOT}/lib/gstreamer-1.0"
+    "GST_PLUGIN_SYSTEM_PATH_1_0="
+    $<TARGET_FILE:test_video_view_geometry>)
+  foreach(view_test renderer control pipeline)
+    add_executable(test_video_view_${view_test} tests/test_video_view_${view_test}.c)
+    target_include_directories(test_video_view_${view_test} PRIVATE ${GST_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(test_video_view_${view_test} PRIVATE airplay_bridge_core ${GST_LIBRARIES})
+    add_test(NAME airplay_video_view_${view_test} COMMAND ${CMAKE_COMMAND} -E env
+      "PATH=${GSTREAMER_RUNTIME_ROOT}/bin"
+      "GST_PLUGIN_PATH_1_0=${GSTREAMER_RUNTIME_ROOT}/lib/gstreamer-1.0"
+      "GST_PLUGIN_SYSTEM_PATH_1_0="
+      $<TARGET_FILE:test_video_view_${view_test}>)
+  endforeach()
   add_executable(test_candidate_cli tests/test_candidate_cli.c)
   target_include_directories(test_candidate_cli PRIVATE ${GST_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/tests)
   target_link_libraries(test_candidate_cli PRIVATE airplay_bridge_core ${GST_LIBRARIES})
@@ -252,6 +273,11 @@ if(BUILD_TESTING)
   target_include_directories(test_source_clock_reader PRIVATE ${GST_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR})
   target_link_libraries(test_source_clock_reader PRIVATE airplay_bridge_core ${GST_LIBRARIES})
   add_test(NAME airplay_source_clock_reader COMMAND $<TARGET_FILE:test_source_clock_reader>)
+
+  add_executable(test_source_clock_reject_policy tests/test_source_clock_reject_policy.c)
+  target_include_directories(test_source_clock_reject_policy PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  target_link_libraries(test_source_clock_reject_policy PRIVATE airplay_bridge_core)
+  add_test(NAME airplay_source_clock_reject_policy COMMAND $<TARGET_FILE:test_source_clock_reject_policy>)
 
   add_executable(test_source_clock_audio_frame_clock tests/test_source_clock_audio_frame_clock.c)
   target_include_directories(test_source_clock_audio_frame_clock PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -385,6 +411,18 @@ if(BUILD_TESTING)
     "GST_PLUGIN_PATH_1_0=${GSTREAMER_RUNTIME_ROOT}/lib/gstreamer-1.0"
     "GST_PLUGIN_SYSTEM_PATH_1_0="
     $<TARGET_FILE:test_video_input>)
+  add_test(NAME airplay_source_clock_accept_reject COMMAND ${CMAKE_COMMAND} -E env
+    "PATH=${GSTREAMER_RUNTIME_ROOT}/bin"
+    "GST_PLUGIN_PATH_1_0=${GSTREAMER_RUNTIME_ROOT}/lib/gstreamer-1.0"
+    "GST_PLUGIN_SYSTEM_PATH_1_0="
+    $<TARGET_FILE:test_video_input> --accept-reject)
+  set_tests_properties(airplay_source_clock_accept_reject PROPERTIES TIMEOUT 10)
+  add_test(NAME airplay_source_clock_playing_wait COMMAND ${CMAKE_COMMAND} -E env
+    "PATH=${GSTREAMER_RUNTIME_ROOT}/bin"
+    "GST_PLUGIN_PATH_1_0=${GSTREAMER_RUNTIME_ROOT}/lib/gstreamer-1.0"
+    "GST_PLUGIN_SYSTEM_PATH_1_0="
+    $<TARGET_FILE:test_video_input> --playing-wait)
+  set_tests_properties(airplay_source_clock_playing_wait PROPERTIES TIMEOUT 10)
 
   add_test(NAME airplay_source_clock_fixed_ports_cli
     COMMAND ${CMAKE_COMMAND}

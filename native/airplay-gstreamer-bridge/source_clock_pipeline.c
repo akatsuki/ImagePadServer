@@ -4,6 +4,7 @@
 #include "source_clock_pipeline_internal.h"
 #include "source_clock_encoder_policy.h"
 #include "source_clock_protocol.h"
+#include "source_clock_reject_policy.h"
 #include "source_clock_reader.h"
 #include "source_clock_video_watermark.h"
 #include "source_clock_timeline.h"
@@ -19,6 +20,8 @@
 #include "video_input.h"
 #include "video_au_gate.h"
 #include "video_scheduler.h"
+#include "video_view_renderer.h"
+#include "video_view_control.h"
 #include "source_clock_video_pending_fifo.h"
 
 #include <gst/app/gstappsrc.h>
@@ -164,6 +167,14 @@ typedef struct {
   guint64 report_held_frames;
   guint64 report_dropped_frames;
   GstBuffer *black_buffer;
+  AirPlayVideoViewRenderer *view_renderer;
+  AirPlayVideoViewMode view_mode;
+  guint64 view_revision;
+  gchar *view_control_path;
+  gchar *view_state_path;
+  gchar *view_generation_text;
+  guint64 view_state_revision;
+  gint64 view_last_control_poll_us;
 } SourceClockVideoSchedulerRuntime;
 
 struct SourceClockPipeline {
@@ -205,6 +216,7 @@ struct SourceClockPipeline {
   uint64_t candidate_stage_time[4];
   SourceClockVideoSchedulerRuntime video_scheduler;
   uint8_t token[SOURCE_CLOCK_SESSION_TOKEN_BYTES];
+  SourceClockRejectState reject_state;
   gint64 started_monotonic_us;
   gint64 last_signal_monotonic_us;
   gint no_signal_seconds;
@@ -461,6 +473,17 @@ static void clear_video_scheduler_runtime(SourceClockVideoSchedulerRuntime *runt
     gst_buffer_unref(runtime->black_buffer);
     runtime->black_buffer = NULL;
   }
+  if (runtime->view_renderer != NULL) {
+    airplay_video_view_renderer_free(runtime->view_renderer);
+    runtime->view_renderer = NULL;
+  }
+  g_clear_pointer(&runtime->view_control_path, g_free);
+  g_clear_pointer(&runtime->view_state_path, g_free);
+  g_clear_pointer(&runtime->view_generation_text, g_free);
+  runtime->view_mode = AIRPLAY_VIDEO_VIEW_CONTAIN;
+  runtime->view_revision = 0;
+  runtime->view_state_revision = G_MAXUINT64;
+  runtime->view_last_control_poll_us = 0;
   source_clock_video_scheduler_init(&runtime->policy, runtime->policy.cadence_ns);
 }
 
@@ -474,15 +497,18 @@ static void clear_video_scheduler_pending(SourceClockVideoSchedulerRuntime *runt
   runtime->policy.queue_size = 0;
 }
 
-static GstBuffer *take_scheduled_video_buffer(
+static GstBuffer *take_scheduled_video_buffer_with_view(
     SourceClockVideoSchedulerRuntime *runtime, uint64_t tick_ns,
-    SourceClockVideoSchedulerOutputOrigin *origin) {
+    SourceClockVideoSchedulerOutputOrigin *origin,
+    guint64 *view_revision, guint32 *view_mode) {
   SourceClockVideoTick tick;
   GstBuffer *old_last = NULL;
   GstBuffer *selected_buffer = NULL;
   size_t selected = SIZE_MAX;
   size_t i;
   if (origin != NULL) *origin = SOURCE_CLOCK_VIDEO_OUTPUT_BLACK;
+  if (view_revision != NULL) *view_revision = G_MAXUINT64;
+  if (view_mode != NULL) *view_mode = AIRPLAY_VIDEO_VIEW_CONTAIN;
   if (runtime == NULL) return NULL;
   for (i = 0; i < runtime->policy.queue_size; ++i) {
     if (runtime->policy.queue[i].pts_ns <= tick_ns) selected = i;
@@ -501,7 +527,9 @@ static GstBuffer *take_scheduled_video_buffer(
       tick.kind == SOURCE_CLOCK_VIDEO_TICK_HOLD) {
     if (tick.frame.opaque != NULL) {
       selected_buffer = source_clock_clone_scheduled_video_buffer(
-          GST_BUFFER(tick.frame.opaque));
+        GST_BUFFER(tick.frame.opaque));
+      if (view_revision != NULL) *view_revision = tick.frame.view_revision;
+      if (view_mode != NULL) *view_mode = tick.frame.view_mode;
       if (tick.kind == SOURCE_CLOCK_VIDEO_TICK_HOLD) {
         runtime->held_frames++;
         if (origin != NULL) *origin = SOURCE_CLOCK_VIDEO_OUTPUT_HOLD;
@@ -522,12 +550,101 @@ static GstBuffer *take_scheduled_video_buffer(
   return selected_buffer;
 }
 
+/* Keep the legacy test/helper signature for source-clock fixtures that only
+ * care about buffer selection. */
+static GstBuffer *take_scheduled_video_buffer(
+    SourceClockVideoSchedulerRuntime *runtime, uint64_t tick_ns,
+    SourceClockVideoSchedulerOutputOrigin *origin) {
+  return take_scheduled_video_buffer_with_view(runtime, tick_ns, origin, NULL,
+                                               NULL);
+}
+
+/* Control is polled by the scheduler owner, never from the decoder callback.
+ * A malformed or stale file leaves the last valid display mode in place. */
+static void source_clock_video_view_poll(SourceClockVideoSchedulerRuntime *runtime) {
+  gint64 now_us;
+  AirPlayVideoViewControl control = {0};
+  GError *error = NULL;
+  AirPlayVideoViewRenderer *renderer = NULL;
+  AirPlayVideoViewMode mode = AIRPLAY_VIDEO_VIEW_CONTAIN;
+  guint64 revision = 0;
+  gboolean changed = FALSE;
+  gboolean has_last = FALSE;
+  GstSample *last_sample = NULL;
+  GstBuffer *replacement = NULL;
+  GstBuffer *old_last = NULL;
+  GstClockTime last_pts = GST_CLOCK_TIME_NONE;
+  if (runtime == NULL || runtime->view_control_path == NULL ||
+      runtime->view_generation_text == NULL || runtime->owner == NULL) return;
+  now_us = g_get_monotonic_time();
+  if (runtime->view_last_control_poll_us != 0 &&
+      now_us - runtime->view_last_control_poll_us < 100000) return;
+  runtime->view_last_control_poll_us = now_us;
+  if (!airplay_video_view_control_load(
+          runtime->view_control_path,
+          runtime->owner->event_writer.session_id,
+          runtime->view_generation_text, &control, &error)) {
+    g_clear_error(&error);
+    return;
+  }
+  g_mutex_lock(&runtime->mutex);
+  if (!runtime->stopping && control.revision > runtime->view_revision) {
+    runtime->view_mode = control.mode;
+    runtime->view_revision = control.revision;
+    renderer = runtime->view_renderer;
+    mode = runtime->view_mode;
+    revision = runtime->view_revision;
+    has_last = runtime->policy.has_last;
+    changed = TRUE;
+  }
+  g_mutex_unlock(&runtime->mutex);
+  airplay_video_view_control_clear(&control);
+  if (!changed || !has_last || renderer == NULL) return;
+
+  /* Re-render the held source sample so a static AirPlay image changes mode
+   * without waiting for another decoder sample.  Conversion remains outside
+   * the scheduler mutex; the replacement is committed only if the revision is
+   * still current. */
+  last_sample = airplay_video_view_renderer_last_sample(renderer);
+  if (last_sample == NULL) return;
+  if (gst_sample_get_buffer(last_sample) != NULL) {
+    last_pts = GST_BUFFER_PTS(gst_sample_get_buffer(last_sample));
+  }
+  replacement = airplay_video_view_render(renderer, last_sample, mode, revision,
+                                           &error);
+  gst_sample_unref(last_sample);
+  if (replacement == NULL || last_pts == GST_CLOCK_TIME_NONE) {
+    g_clear_error(&error);
+    if (replacement != NULL) gst_buffer_unref(replacement);
+    return;
+  }
+  g_mutex_lock(&runtime->mutex);
+  if (!runtime->stopping && runtime->view_revision == revision &&
+      runtime->policy.has_last) {
+    old_last = GST_BUFFER(runtime->policy.last.opaque);
+    runtime->policy.last.opaque = replacement;
+    runtime->policy.last.pts_ns = (guint64)last_pts;
+    runtime->policy.last.view_revision = revision;
+    runtime->policy.last.view_mode = (guint32)mode;
+    replacement = NULL;
+  }
+  g_mutex_unlock(&runtime->mutex);
+  if (old_last != NULL) release_scheduled_video_buffer(old_last);
+  if (replacement != NULL) gst_buffer_unref(replacement);
+  g_clear_error(&error);
+}
+
 static GstFlowReturn on_decoded_video_sample(GstAppSink *sink, gpointer user_data) {
   SourceClockVideoSchedulerRuntime *runtime =
       (SourceClockVideoSchedulerRuntime *)user_data;
   SourceClockPipeline *owner;
   GstSample *sample;
   GstBuffer *buffer;
+  GstBuffer *rendered;
+  AirPlayVideoViewRenderer *renderer;
+  AirPlayVideoViewMode view_mode;
+  guint64 view_revision;
+  GError *render_error = NULL;
   GstClockTime pts;
   SourceClockVideoFrame frame;
   gboolean offered;
@@ -560,13 +677,38 @@ static GstFlowReturn on_decoded_video_sample(GstAppSink *sink, gpointer user_dat
     gst_sample_unref(sample);
     return GST_FLOW_OK;
   }
+  g_mutex_lock(&runtime->mutex);
+  renderer = runtime->view_renderer;
+  view_mode = runtime->view_mode;
+  view_revision = runtime->view_revision;
+  g_mutex_unlock(&runtime->mutex);
+  if (renderer == NULL) {
+    gst_sample_unref(sample);
+    return GST_FLOW_OK;
+  }
+  rendered = airplay_video_view_render(renderer, sample, view_mode,
+                                       view_revision, &render_error);
+  if (rendered == NULL) {
+    if (source_clock_debug_enabled()) {
+      g_printerr("AirPlay source-clock video view conversion dropped sample: %s\n",
+                 render_error == NULL ? "unknown" : render_error->message);
+    }
+    g_clear_error(&render_error);
+    g_mutex_lock(&runtime->mutex);
+    runtime->dropped_frames++;
+    g_mutex_unlock(&runtime->mutex);
+    gst_sample_unref(sample);
+    return GST_FLOW_OK;
+  }
   frame.id = ++runtime->offered_frames;
   frame.pts_ns = (uint64_t)pts;
+  frame.view_revision = view_revision;
+  frame.view_mode = (guint32)view_mode;
   if (source_clock_debug_enabled() && frame.id <= 3) {
     g_printerr("AirPlay source-clock decoded video frame=%" G_GUINT64_FORMAT
                " pts=%" G_GUINT64_FORMAT "\n", frame.id, frame.pts_ns);
   }
-  frame.opaque = gst_buffer_ref(buffer);
+  frame.opaque = rendered;
   g_mutex_lock(&runtime->mutex);
   if (runtime->stopping) {
     g_mutex_unlock(&runtime->mutex);
@@ -674,10 +816,13 @@ static gpointer source_clock_video_scheduler_thread(gpointer user_data) {
     GstClockReturn wait_result;
     GstBuffer *buffer;
     SourceClockVideoSchedulerOutputOrigin origin;
+    guint64 emitted_view_revision;
+    guint32 emitted_view_mode;
     guint64 tick_absolute;
     guint64 tick_ns;
     wait_result = gst_clock_id_wait(runtime->periodic_id, NULL);
     if (wait_result == GST_CLOCK_UNSCHEDULED) break;
+    source_clock_video_view_poll(runtime);
     g_mutex_lock(&runtime->mutex);
     if (runtime->stopping) {
       g_mutex_unlock(&runtime->mutex);
@@ -698,7 +843,8 @@ static gpointer source_clock_video_scheduler_thread(gpointer user_data) {
         break;
       }
     }
-    buffer = take_scheduled_video_buffer(runtime, tick_ns, &origin);
+    buffer = take_scheduled_video_buffer_with_view(
+        runtime, tick_ns, &origin, &emitted_view_revision, &emitted_view_mode);
     if (buffer != NULL) runtime->emitted_frames++;
     if (source_clock_debug_enabled() &&
         g_get_monotonic_time() - runtime->report_monotonic_us >= G_USEC_PER_SEC) {
@@ -725,6 +871,28 @@ static gpointer source_clock_video_scheduler_thread(gpointer user_data) {
       GST_BUFFER_DTS(buffer) = GST_CLOCK_TIME_NONE;
       GST_BUFFER_DURATION(buffer) = (GstClockTime)runtime->policy.cadence_ns;
       if (gst_app_src_push_buffer(runtime->output_source, buffer) != GST_FLOW_OK) break;
+      if (runtime->owner != NULL &&
+          runtime->view_state_path != NULL &&
+          origin != SOURCE_CLOCK_VIDEO_OUTPUT_BLACK &&
+          emitted_view_revision != G_MAXUINT64 &&
+          runtime->view_state_revision != emitted_view_revision) {
+        GError *state_error = NULL;
+        if (airplay_video_view_state_write(
+                runtime->view_state_path,
+                runtime->owner->event_writer.session_id,
+                runtime->view_generation_text,
+                emitted_view_revision,
+                (AirPlayVideoViewMode)emitted_view_mode,
+                emitted_view_revision,
+                (AirPlayVideoViewMode)emitted_view_mode,
+                tick_ns, "active", &state_error)) {
+          runtime->view_state_revision = emitted_view_revision;
+        } else if (source_clock_debug_enabled()) {
+          g_printerr("AirPlay source-clock video view state write failed: %s\n",
+                     state_error == NULL ? "unknown" : state_error->message);
+        }
+        g_clear_error(&state_error);
+      }
       if (origin != SOURCE_CLOCK_VIDEO_OUTPUT_BLACK &&
           runtime->owner != NULL) {
         g_mutex_lock(&runtime->owner->mutex);
@@ -749,6 +917,41 @@ static gboolean start_video_scheduler(SourceClockVideoSchedulerRuntime *runtime,
   runtime->decoded_sink = decoded_sink;
   runtime->output_source = output_source;
   {
+    GstCaps *output_caps = gst_app_src_get_caps(output_source);
+    GstVideoInfo output_info;
+    if (output_caps == NULL || !gst_video_info_from_caps(&output_info, output_caps) ||
+        GST_VIDEO_INFO_FORMAT(&output_info) != GST_VIDEO_FORMAT_I420) {
+      if (output_caps != NULL) gst_caps_unref(output_caps);
+      g_printerr("AirPlay source-clock video view output caps are not I420\n");
+      return FALSE;
+    }
+    runtime->view_renderer = airplay_video_view_renderer_new(&output_info);
+    gst_caps_unref(output_caps);
+    if (runtime->view_renderer == NULL) {
+      g_printerr("AirPlay source-clock video view renderer could not be created\n");
+      return FALSE;
+    }
+    runtime->view_mode = AIRPLAY_VIDEO_VIEW_CONTAIN;
+    runtime->view_revision = 0;
+    runtime->view_control_path = g_strdup_printf("%s.video-view.ini",
+                                                  owner->event_writer.ready_path);
+    runtime->view_state_path = g_strdup_printf("%s.video-view.json",
+                                                owner->event_writer.ready_path);
+    runtime->view_generation_text = g_strdup_printf("%" G_GUINT64_FORMAT,
+                                                     owner->event_writer.publisher_generation);
+    runtime->view_state_revision = G_MAXUINT64;
+    if (runtime->view_control_path == NULL || runtime->view_state_path == NULL ||
+        runtime->view_generation_text == NULL) {
+      g_printerr("AirPlay source-clock video view control path allocation failed\n");
+      airplay_video_view_renderer_free(runtime->view_renderer);
+      runtime->view_renderer = NULL;
+      g_clear_pointer(&runtime->view_control_path, g_free);
+      g_clear_pointer(&runtime->view_state_path, g_free);
+      g_clear_pointer(&runtime->view_generation_text, g_free);
+      return FALSE;
+    }
+  }
+  {
     GError *black_error = NULL;
     runtime->black_buffer = create_black_video_buffer(output_source, &black_error);
     if (runtime->black_buffer == NULL) {
@@ -760,7 +963,10 @@ static gboolean start_video_scheduler(SourceClockVideoSchedulerRuntime *runtime,
   }
   runtime->clock = gst_element_get_clock(pipeline);
   runtime->base_time = gst_element_get_base_time(pipeline);
-  if (runtime->clock == NULL) return FALSE;
+  if (runtime->clock == NULL) {
+    g_printerr("AirPlay source-clock video scheduler could not get pipeline clock\n");
+    return FALSE;
+  }
   source_clock_video_scheduler_init(&runtime->policy, (uint64_t)cadence);
   runtime->next_tick_absolute = runtime->base_time + cadence;
   runtime->report_monotonic_us = g_get_monotonic_time();
@@ -781,6 +987,50 @@ static gboolean start_video_scheduler(SourceClockVideoSchedulerRuntime *runtime,
     }
   }
   return runtime->thread != NULL;
+}
+
+static gboolean source_clock_wait_for_playing(GstElement *pipeline,
+                                               GstState *current_state) {
+  GstState current = GST_STATE_NULL;
+  GstState pending = GST_STATE_VOID_PENDING;
+  GstStateChangeReturn result;
+  GstClock *clock = NULL;
+  if (pipeline == NULL) return FALSE;
+  result = gst_element_get_state(pipeline, &current, &pending, 100 * GST_MSECOND);
+  if (result != GST_STATE_CHANGE_FAILURE && current != GST_STATE_PLAYING &&
+      !(current == GST_STATE_PAUSED && pending == GST_STATE_PLAYING &&
+        result == GST_STATE_CHANGE_ASYNC)) {
+    result = gst_element_get_state(pipeline, &current, &pending,
+                                    1900 * GST_MSECOND);
+  }
+  if (current_state != NULL) *current_state = current;
+  if (result == GST_STATE_CHANGE_FAILURE) {
+    g_printerr("AirPlay source-clock pipeline did not reach PLAYING "
+               "result=%d current=%d pending=%d\n",
+               result, current, pending);
+    return FALSE;
+  }
+  if (current == GST_STATE_PLAYING) return TRUE;
+  /* Live RTSP sinks can remain PAUSED while their first ANNOUNCE/RECORD
+   * handshake is still pending. The pipeline clock is already selected at
+   * this boundary, so let the source-clock scheduler and receiver start;
+   * the first source AU completes the live transition. Reject every other
+   * incomplete state so a real construction failure remains fail-closed. */
+  if (current == GST_STATE_PAUSED && pending == GST_STATE_PLAYING &&
+      result == GST_STATE_CHANGE_ASYNC && GST_IS_PIPELINE(pipeline)) {
+    clock = gst_pipeline_get_clock(GST_PIPELINE(pipeline));
+    if (clock != NULL) {
+      gst_object_unref(clock);
+      g_printerr("AirPlay source-clock pipeline is PAUSED pending PLAYING; "
+                 "clock selected, continuing live startup\n");
+      return TRUE;
+    }
+  }
+  if (clock != NULL) gst_object_unref(clock);
+  g_printerr("AirPlay source-clock pipeline did not reach PLAYING "
+             "result=%d current=%d pending=%d\n",
+             result, current, pending);
+  return FALSE;
 }
 
 static gboolean source_clock_accept_start_allowed(gboolean publisher_ready,
@@ -1733,9 +1983,30 @@ static gpointer source_clock_accept_thread(gpointer user_data) {
       if (!source_clock_socket_readable(client, 250)) continue;
       int received = recv(client, (char *)buffer, sizeof(buffer), 0);
       if (received <= 0) break;
-      if (source_clock_reader_feed(&reader, buffer, (size_t)received) != SOURCE_CLOCK_READER_OK) {
-        signal_pipeline_error(pipeline, TRUE);
+      SourceClockReaderStatus reader_status = source_clock_reader_feed(
+          &reader, buffer, (size_t)received);
+      if (reader_status != SOURCE_CLOCK_READER_OK) {
+        SourceClockRejectAction action;
+        const gboolean authenticated = source_clock_reader_authenticated(&reader);
+        g_mutex_lock(&pipeline->mutex);
+        if (authenticated) source_clock_reject_state_note_auth(&pipeline->reject_state);
+        action = source_clock_reject_state_note_failure(
+            &pipeline->reject_state, reader_status, g_get_monotonic_time());
+        g_mutex_unlock(&pipeline->mutex);
+        g_printerr("AirPlay source-clock reader rejected connection stream=%u "
+                   "status=%d authenticated=%d action=%d\n",
+                   accept_context->stream_kind, reader_status, authenticated, action);
+        if (action == SOURCE_CLOCK_REJECT_ACTION_FATAL_PIPELINE) {
+          signal_pipeline_error(pipeline, FALSE);
+        } else if (action == SOURCE_CLOCK_REJECT_ACTION_UNRECOVERABLE) {
+          signal_pipeline_error(pipeline, TRUE);
+        }
         break;
+      }
+      if (source_clock_reader_authenticated(&reader)) {
+        g_mutex_lock(&pipeline->mutex);
+        source_clock_reject_state_note_auth(&pipeline->reject_state);
+        g_mutex_unlock(&pipeline->mutex);
       }
     }
     source_clock_reader_destroy(&reader);
@@ -1875,8 +2146,7 @@ GstElement *source_clock_create_pipeline_with_audio_routing(
       "appsrc name=video_input is-live=true format=time do-timestamp=false block=false max-buffers=64 max-bytes=67108864 max-time=600000000 "
       "caps=video/x-h264,stream-format=(string)byte-stream,alignment=(string)au ! "
       "decodebin name=video_decoder force-sw-decoders=true ! "
-      "videoconvert ! videoscale add-borders=true ! "
-      "video/x-raw,format=I420,width=%d,height=%d,pixel-aspect-ratio=1/1 ! "
+      "videoconvert ! video/x-raw,format=I420 ! "
       "queue max-size-buffers=3 leaky=downstream ! "
       "appsink name=video_decoded_sink emit-signals=true sync=false async=false max-buffers=3 drop=true "
       "audiotestsrc name=audio_silence is-live=true wave=silence ! "
@@ -1900,7 +2170,6 @@ GstElement *source_clock_create_pipeline_with_audio_routing(
       width, height, output_fps,
       width, height, output_fps,
       maxrate_kbps, gop, maxrate_kbps, buffer_size_kbps,
-      width, height,
       audio_bitrate_bps,
       include_rtsp_audio
           ? "audio_tee. ! queue name=audio_rtsp_queue ! rtsp_sink.sink_1 "
@@ -2003,6 +2272,21 @@ static gboolean source_clock_bus_watch(GstBus *bus, GstMessage *message, gpointe
     }
   }
   if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR) {
+    /* A user stop (including the startup handoff cleanup) owns the exit
+     * reason. An RTSP sink may report its pending connection error while the
+     * stop request is already on disk; do not turn that normal shutdown into
+     * a publisher failure. */
+    if (pipeline->stop_file != NULL &&
+        g_file_test(pipeline->stop_file, G_FILE_TEST_EXISTS)) {
+      g_mutex_lock(&pipeline->mutex);
+      pipeline->no_signal = source_clock_stop_request_is_no_signal(
+          pipeline->stop_file);
+      pipeline->exit_code = pipeline->no_signal ? 20 : 0;
+      pipeline->stopping = TRUE;
+      g_mutex_unlock(&pipeline->mutex);
+      g_main_loop_quit(pipeline->loop);
+      return G_SOURCE_CONTINUE;
+    }
     GError *error = NULL;
     gchar *debug = NULL;
     gst_message_parse_error(message, &error, &debug);
@@ -2055,25 +2339,47 @@ int airplay_source_clock_pipeline_run(const char *publish_url, const char *recor
   if (publish_url == NULL || session_token == NULL || session_id == NULL ||
       ((proof_source_generation == 0) != (proof_video_watermark == 0)) ||
       publisher_generation == 0 || ready_file == NULL ||
-      media_ready_file == NULL || event_log == NULL) return 2;
+      media_ready_file == NULL || event_log == NULL) {
+    g_printerr("AirPlay source-clock startup failed at argument validation\n");
+    return 2;
+  }
 #ifdef _WIN32
   WSADATA wsa;
-  if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return 2;
+  if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+    g_printerr("AirPlay source-clock startup failed at winsock initialization\n");
+    return 2;
+  }
 #endif
   memset(&context, 0, sizeof(context));
+  context.video_listener = SOURCE_CLOCK_INVALID_SOCKET;
+  context.audio_listener = SOURCE_CLOCK_INVALID_SOCKET;
   if (proof_source_generation != 0) {
     if (!source_clock_video_proof_init(&context.candidate_proof,
-          proof_source_generation, proof_video_watermark)) return 2;
+          proof_source_generation, proof_video_watermark)) {
+      g_printerr("AirPlay source-clock startup failed at candidate proof initialization\n");
+      return 2;
+    }
     context.candidate_proof_enabled = TRUE;
   }
   if (!source_clock_event_writer_init(&context.event_writer, session_id,
                                       publisher_generation, ready_file,
-                                      media_ready_file, event_log) ||
-      !decode_token(session_token, context.token) ||
-      !bind_listener(&context.video_listener, (unsigned)video_listen_port, &video_port) ||
-      !bind_listener(&context.audio_listener, (unsigned)audio_listen_port, &audio_port)) {
-    if (context.video_listener != SOURCE_CLOCK_INVALID_SOCKET) source_clock_socket_close(context.video_listener);
-    if (context.audio_listener != SOURCE_CLOCK_INVALID_SOCKET) source_clock_socket_close(context.audio_listener);
+                                      media_ready_file, event_log)) {
+    g_printerr("AirPlay source-clock startup failed at event writer initialization\n");
+    return 2;
+  }
+  if (!decode_token(session_token, context.token)) {
+    g_printerr("AirPlay source-clock startup failed at session token decoding\n");
+    return 2;
+  }
+  if (!bind_listener(&context.video_listener, (unsigned)video_listen_port, &video_port)) {
+    g_printerr("AirPlay source-clock startup failed at video listener bind requested_port=%d\n",
+               video_listen_port);
+    return 2;
+  }
+  if (!bind_listener(&context.audio_listener, (unsigned)audio_listen_port, &audio_port)) {
+    g_printerr("AirPlay source-clock startup failed at audio listener bind requested_port=%d\n",
+               audio_listen_port);
+    source_clock_socket_close(context.video_listener);
     return 2;
   }
   gst_init(NULL, NULL);
@@ -2172,6 +2478,7 @@ int airplay_source_clock_pipeline_run(const char *publish_url, const char *recor
   context.stop_file = stop_file;
   context.exit_code = 0;
   g_mutex_init(&context.mutex);
+  source_clock_reject_state_init(&context.reject_state);
   g_mutex_init(&context.event_mutex);
   g_mutex_init(&context.video_feed_mutex);
   context.video_feed_mutex_initialized = TRUE;
@@ -2214,6 +2521,8 @@ int airplay_source_clock_pipeline_run(const char *publish_url, const char *recor
                state_name, video_port, audio_port);
   }
   if (state == GST_STATE_CHANGE_FAILURE) {
+    signal_pipeline_error(&context, FALSE);
+  } else if (!source_clock_wait_for_playing(context.pipeline, NULL)) {
     signal_pipeline_error(&context, FALSE);
   } else {
     gboolean ready_written;
