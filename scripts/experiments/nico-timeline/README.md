@@ -43,7 +43,7 @@ The artifact directory must be outside the repository and use a fresh name. The 
 |---|---|
 | `sm9` snapshot, 362 comments | `b7be86d86016175c99925f5f1b5651d43279eeffcc54deb1c22c5b2e6e15e946` |
 | Six-second source video | `8aa46ff529686272ca233babfd24884f2b28ef25a24534f278e95560e755ae20` |
-| Bundled niconicomments bytes | `28395344d16f977f2d3a1aece8643963257b11d9023f0e8d915107dd3d54f4df` |
+| Bundled niconicomments bytes | `d62f58ae0bd045eb86c2e116eefaec34e46e9b53c2f710656efae9e79252fee7` |
 
 The capture uses the existing renderer page, binary transport, and browser session helpers. Its test-only observer wraps the existing `_drawComments`/comment `draw` methods to record invocation order; it adds no production API or instrumentation. It requires the WebGL2 canvas to report both `alpha` and `premultipliedAlpha` enabled. The captured image bytes come from the existing `gl.readPixels` path, vertically normalized by the existing transport.
 

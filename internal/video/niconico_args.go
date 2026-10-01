@@ -17,7 +17,15 @@ func nicoEncodeArgs(sourcePath, outputPath string, options NicoEncodeOptions) []
 // The timeline compositor writes premultiplied RGBA. Legacy browser renderers
 // keep FFmpeg's auto/straight-alpha behavior through nicoEncodeArgs above.
 func nicoTimelineEncodeArgs(sourcePath, outputPath string, options NicoEncodeOptions) []string {
-	return nicoEncodeArgsWithOverlayAlpha(sourcePath, outputPath, options, "premultiplied")
+	return nicoTimelineEncodeArgsWithAlphaMode(sourcePath, outputPath, options, false)
+}
+
+func nicoTimelineEncodeArgsWithAlphaMode(sourcePath, outputPath string, options NicoEncodeOptions, supportsAlphaModeMetadata bool) []string {
+	alphaMode := "unpremultiply"
+	if supportsAlphaModeMetadata {
+		alphaMode = "premultiplied"
+	}
+	return nicoEncodeArgsWithOverlayAlpha(sourcePath, outputPath, options, alphaMode)
 }
 
 func nicoEncodeArgsWithOverlayAlpha(sourcePath, outputPath string, options NicoEncodeOptions, overlayAlpha string) []string {
@@ -61,15 +69,23 @@ func nicoEncodeArgsWithOverlayAlpha(sourcePath, outputPath string, options NicoE
 		gop = 1
 	}
 	overlayInput := "[1:v]format=rgba"
+	alphaOption := ""
 	if overlayAlpha == "premultiplied" {
-		// format=rgba can clear AVFrame's alpha-mode metadata. Restore it after
-		// conversion so overlay negotiates and blends the pixels as premultiplied.
+		// Older FFmpeg builds lack alpha_mode metadata support. The caller selects
+		// this path only after the setparams filter reports the needed option.
 		overlayInput += ",setparams=alpha_mode=premultiplied"
+		alphaOption = ":alpha=premultiplied"
+	} else if overlayAlpha == "unpremultiply" {
+		// Preserve premultiplied input pixels on older FFmpeg builds by converting
+		// them to straight alpha before the broadly supported overlay filter. The
+		// alpha plane must be supplied as the filter's second input; inplace mode
+		// is a no-op for the packed RGBA frame formats used by the timeline pipe.
+		overlayInput += ",split[comment_premultiplied][comment_alpha_source];[comment_alpha_source]alphaextract[comment_alpha];[comment_premultiplied][comment_alpha]unpremultiply"
 	}
 	// Normalize the composed stream to the same CFR used by the renderer. This
 	// keeps comment motion tied to elapsed video time even when the source is
 	// 24/30/60fps or VFR; the source frame rate must not become the comment clock.
-	filter := fmt.Sprintf("[0:v]scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=black,tpad=stop_mode=clone:stop_duration=1[base];%s[overlay];[base][overlay]overlay=0:0:format=auto:alpha=%s,fps=%s,format=yuv420p[v]", options.Width, options.Height, options.Width, options.Height, overlayInput, overlayAlpha, fps)
+	filter := fmt.Sprintf("[0:v]scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=black,tpad=stop_mode=clone:stop_duration=1[base];%s[overlay];[base][overlay]overlay=0:0:format=auto%s,fps=%s,format=yuv420p[v]", options.Width, options.Height, options.Width, options.Height, overlayInput, alphaOption, fps)
 	args := []string{
 		"-hide_banner", "-loglevel", "error", "-y",
 	}

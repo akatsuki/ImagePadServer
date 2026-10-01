@@ -241,6 +241,9 @@ func runNicoWorkerWithBudgetAndDiagnosticsAndCPUOptions(ctx context.Context, req
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := ctx.Err(); err != nil {
+		return nicoexportworker.Event{}, nicoexportbudget.Report{}, err
+	}
 	if err := request.Validate(); err != nil {
 		return nicoexportworker.Event{}, nicoexportbudget.Report{}, err
 	}

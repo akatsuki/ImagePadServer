@@ -41,12 +41,12 @@ func TestNicoEncodeArgsKeepProductionClockAndSliceContract(t *testing.T) {
 	}
 }
 
-func TestNicoLegacyEncodeArgsRetainAutomaticAlphaMode(t *testing.T) {
+func TestNicoLegacyEncodeArgsUseCompatibleDefaultAlphaMode(t *testing.T) {
 	joined := strings.Join(nicoEncodeArgs("source.mp4", "output.mp4", NicoEncodeOptions{
 		Width: 64, Height: 36, DurationMs: 100, FPSNum: 30, FPSDen: 1,
 	}), " ")
-	if !strings.Contains(joined, "overlay=0:0:format=auto:alpha=auto") || strings.Contains(joined, "setparams=alpha_mode=premultiplied") {
-		t.Fatalf("legacy renderer alpha handling changed: %s", joined)
+	if !strings.Contains(joined, "overlay=0:0:format=auto") || strings.Contains(joined, ":alpha=") || strings.Contains(joined, "setparams=alpha_mode=") {
+		t.Fatalf("legacy renderer must use FFmpeg's portable alpha default: %s", joined)
 	}
 }
 
@@ -70,8 +70,20 @@ func TestNicoTimelineFFmpegOverlayHonorsPremultipliedPixels(t *testing.T) {
 		t.Fatal("timeline FFmpeg filter graph was not generated")
 	}
 	filter := args[filterIndex]
-	if !strings.Contains(filter, "setparams=alpha_mode=premultiplied") || !strings.Contains(filter, "alpha=premultiplied") {
-		t.Fatalf("timeline graph does not preserve premultiplied alpha metadata: %s", filter)
+	if !strings.Contains(filter, "[comment_premultiplied][comment_alpha]unpremultiply[overlay]") || strings.Contains(filter, "setparams=alpha_mode=") || strings.Contains(filter, "alpha=premultiplied") {
+		t.Fatalf("portable timeline graph must unpremultiply before straight-alpha overlay: %s", filter)
+	}
+
+	fastArgs := nicoTimelineEncodeArgsWithAlphaMode("source.mp4", "output.mp4", NicoEncodeOptions{
+		Width: width, Height: height, DurationMs: 100, FPSNum: 30, FPSDen: 1,
+	}, true)
+	fastFilterIndex := indexOfArg(fastArgs, "-filter_complex")
+	if fastFilterIndex < 0 || fastFilterIndex+1 >= len(fastArgs) {
+		t.Fatal("timeline fast-path FFmpeg filter graph was not generated")
+	}
+	fastFilter := fastArgs[fastFilterIndex+1]
+	if !strings.Contains(fastFilter, "setparams=alpha_mode=premultiplied") || !strings.Contains(fastFilter, "overlay=0:0:format=auto:alpha=premultiplied") {
+		t.Fatalf("supported timeline graph must declare premultiplied alpha metadata: %s", fastFilter)
 	}
 
 	dir := t.TempDir()
@@ -105,6 +117,15 @@ func TestNicoTimelineFFmpegOverlayHonorsPremultipliedPixels(t *testing.T) {
 	if got := composite[center]; got < 124 || got > 128 {
 		t.Fatalf("premultiplied half-gray over black has luma %d, want approximately 126", got)
 	}
+}
+
+func indexOfArg(args []string, target string) int {
+	for i, arg := range args {
+		if arg == target {
+			return i
+		}
+	}
+	return -1
 }
 
 func TestNicoEncodeArgsCoversCeiledFinalFrame(t *testing.T) {

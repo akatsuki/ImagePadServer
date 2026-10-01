@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -925,6 +926,9 @@ func TestBrowserPoolCloseIsIdempotentAndTerminal(t *testing.T) {
 }
 
 func TestBrowserPoolCloseRequestsGracefulBrowserShutdownBeforeForceClose(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("taskkill root-process access-denied race is Windows-specific")
+	}
 	var events []string
 	cdp := &gracefulCloseRecordingCDP{fakePoolCDP: newFakePoolCDP(), events: &events}
 	child := &commandBrowserChild{ops: commandBrowserChildOps{

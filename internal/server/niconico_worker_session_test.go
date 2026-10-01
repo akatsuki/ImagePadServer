@@ -1039,10 +1039,13 @@ func (f *fakeNicoSessionProcess) Snapshot() (nicoexportbudget.Report, error) {
 }
 
 func validNicoSessionRequest(runID, mediaID string) nicoexportworker.Request {
+	mediaDir := filepath.Join(os.TempDir(), "imagepad-nico-session-test")
 	return nicoexportworker.Request{
 		Version: 1, RunID: runID, MediaID: mediaID,
-		SourcePath: `C:\media\source.mp4`, SnapshotPath: `C:\media\snapshot.json`, OutputPath: `C:\media\out.mp4`, HLSStagingDir: `C:\media\hls`,
-		FFmpeg: `C:\tools\ffmpeg.exe`, Width: 1280, Height: 720, DurationMs: 1000, FPSNum: 30, FPSDen: 1, CRF: 28, AudioBitrate: "160k",
+		SourcePath: filepath.Join(mediaDir, "source.mp4"), SnapshotPath: filepath.Join(mediaDir, "snapshot.json"),
+		OutputPath: filepath.Join(mediaDir, "out.mp4"), HLSStagingDir: filepath.Join(mediaDir, "hls"),
+		FFmpeg: filepath.Join(os.TempDir(), "tools", "ffmpeg.exe"),
+		Width:  1280, Height: 720, DurationMs: 1000, FPSNum: 30, FPSDen: 1, CRF: 28, AudioBitrate: "160k",
 	}
 }
 

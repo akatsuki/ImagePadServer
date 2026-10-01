@@ -84,13 +84,16 @@ func TestNicoTimelineStreamsAndPromotesOnlyValidatedOutput(t *testing.T) {
 	oldPrepare := prepareNicoTimelineCompositorForPipeline
 	oldPipe := runNicoTimelinePipeForPipeline
 	oldProbe := probeNicoTimelineEncoderForPipeline
+	oldAlphaProbe := probeNicoTimelineAlphaModeForPipeline
 	t.Cleanup(func() {
 		captureNicoTimelineStreamForPipeline = oldCapture
 		prepareNicoTimelineCompositorForPipeline = oldPrepare
 		runNicoTimelinePipeForPipeline = oldPipe
 		probeNicoTimelineEncoderForPipeline = oldProbe
+		probeNicoTimelineAlphaModeForPipeline = oldAlphaProbe
 	})
 	probeNicoTimelineEncoderForPipeline = func(context.Context, string, NicoEncodeOptions) error { return nil }
+	probeNicoTimelineAlphaModeForPipeline = func(context.Context, string) bool { return true }
 	captureNicoTimelineStreamForPipeline = func(ctx context.Context, _ niconico.Snapshot, options nicorender.RenderOptions, out io.Writer) (nicorender.TimelineCaptureReport, error) {
 		if err := ctx.Err(); err != nil {
 			return nicorender.TimelineCaptureReport{}, err

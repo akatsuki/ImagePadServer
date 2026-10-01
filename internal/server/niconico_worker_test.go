@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -141,8 +142,11 @@ func TestNicoTimelineWorkerOptionsEnablesConfiguredHelperByDefaultAndRequireVali
 }
 
 func TestValidateNicoWorkerResultBindsRunMediaAndOutput(t *testing.T) {
-	request := nicoexportworker.Request{RunID: "run-1", MediaID: "media-1", OutputPath: `C:\work\out.mp4`, HLSStagingDir: `C:\work`}
-	event := nicoexportworker.Event{Version: 1, Type: "result", RunID: "run-1", MediaID: "media-1", Output: `C:\work\out.mp4`, Playlist: `C:\work\playlist.m3u8`, OK: true}
+	workDir := t.TempDir()
+	outputPath := filepath.Join(workDir, "out.mp4")
+	playlistPath := filepath.Join(workDir, "playlist.m3u8")
+	request := nicoexportworker.Request{RunID: "run-1", MediaID: "media-1", OutputPath: outputPath, HLSStagingDir: workDir}
+	event := nicoexportworker.Event{Version: 1, Type: "result", RunID: "run-1", MediaID: "media-1", Output: outputPath, Playlist: playlistPath, OK: true}
 	if err := validateNicoWorkerResult(request, event); err != nil {
 		t.Fatal(err)
 	}

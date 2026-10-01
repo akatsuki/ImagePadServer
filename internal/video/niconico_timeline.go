@@ -31,10 +31,38 @@ var (
 	nicoTimelineWatchInterval = 250 * time.Millisecond
 )
 
+var nicoTimelineAlphaModeSupport sync.Map
+
 var ErrTimelineStalled = errors.New("niconico timeline: renderer made no progress")
 
 var captureNicoTimelineForPipeline = nicorender.CaptureCommentTimeline
 var captureNicoTimelineStreamForPipeline = nicorender.CaptureCommentTimelineStream
+var probeNicoTimelineAlphaModeForPipeline = nicoFFmpegSupportsPremultipliedAlphaMode
+
+func nicoFFmpegSupportsPremultipliedAlphaMode(ctx context.Context, ffmpeg string) bool {
+	if strings.TrimSpace(ffmpeg) == "" {
+		return false
+	}
+	if cached, ok := nicoTimelineAlphaModeSupport.Load(ffmpeg); ok {
+		return cached.(bool)
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(probeCtx, ffmpeg, "-hide_banner", "-h", "filter=setparams")
+	hideWindow(cmd)
+	cmd.WaitDelay = 500 * time.Millisecond
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() != nil || errors.Is(probeCtx.Err(), context.DeadlineExceeded) {
+		return false
+	}
+	supported := err == nil && bytes.Contains(output, []byte("alpha_mode")) && bytes.Contains(output, []byte("premultiplied"))
+	cached, _ := nicoTimelineAlphaModeSupport.LoadOrStore(ffmpeg, supported)
+	return cached.(bool)
+}
+
 var prepareNicoTimelineCompositorForPipeline = nicorender.PrepareTimelineCompositor
 var runNicoTimelinePipeForPipeline = runNicoNativePipeTimedInDir
 var probeNicoTimelineEncoderForPipeline = probeNicoTimelineEncoder
@@ -306,8 +334,15 @@ func encodeNicoTimeline(ctx context.Context, ffmpeg, sourcePath, outputPath stri
 		defer os.RemoveAll(teeWorkDir)
 	}
 
+	alphaProbeStarted := time.Now()
+	alphaMetadataSupported := probeNicoTimelineAlphaModeForPipeline(ctx, ffmpeg)
+	timer.mark("ffmpeg_alpha_mode_probe", alphaProbeStarted)
+	if err := ctx.Err(); err != nil {
+		report.StageTimings = timer.snapshot()
+		return report, renderReport, err
+	}
 	argsStarted := time.Now()
-	ffmpegArgs := nicoTimelineEncodeArgs(sourcePath, stagedOutput, enc)
+	ffmpegArgs := nicoTimelineEncodeArgsWithAlphaMode(sourcePath, stagedOutput, enc, alphaMetadataSupported)
 	timer.mark("build_ffmpeg_args", argsStarted)
 	activity := &nicoTimelineActivity{last: time.Now()}
 	progress := func(completed, total int64) {
