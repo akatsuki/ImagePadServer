@@ -34,6 +34,7 @@ func TestAirPlayRelayBridgeEndToEnd(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+	testStartedAt := time.Now()
 
 	videoIn, videoOut, audioIn, audioOut, err := reserveRTPPorts()
 	if err != nil {
@@ -95,6 +96,7 @@ func TestAirPlayRelayBridgeEndToEnd(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
+	sendersStartedAt := time.Now()
 	for _, sender := range senders {
 		wg.Add(1)
 		go func(cmd *exec.Cmd) {
@@ -105,9 +107,13 @@ func TestAirPlayRelayBridgeEndToEnd(t *testing.T) {
 		}(sender)
 	}
 	wg.Wait()
+	t.Logf("AirPlay E2E senders completed after %s; context=%v", time.Since(sendersStartedAt), ctx.Err())
 
 	// The bridge self-terminates at -t 6; wait for the clean exit.
-	_ = bridge.Wait()
+	bridgeWaitStartedAt := time.Now()
+	bridgeErr := bridge.Wait()
+	t.Logf("AirPlay E2E bridge exited after %s: err=%v context=%v elapsed=%s log=%s",
+		time.Since(bridgeWaitStartedAt), bridgeErr, ctx.Err(), time.Since(testStartedAt), bridgeLog.String())
 
 	probe := func(stream, entries string) string {
 		cmd := exec.Command(ffprobe, "-v", "error", "-select_streams", stream,
@@ -130,10 +136,12 @@ func TestAirPlayRelayBridgeEndToEnd(t *testing.T) {
 		t.Fatalf("audio stream = %q, want aac 48000 Hz", audioInfo)
 	}
 	// Decode actual pixels to verify the portrait was fitted, not stretched.
+	decodeStartedAt := time.Now()
 	frame, err := exec.CommandContext(ctx, ffmpeg, "-v", "error", "-ss", "2", "-i", flvPath,
 		"-frames:v", "1", "-vf", "scale=160:90", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1").Output()
 	if err != nil || len(frame) != 160*90*3 {
-		t.Fatalf("decode portrait sample: %v, bytes=%d", err, len(frame))
+		t.Fatalf("decode portrait sample: %v, bytes=%d, elapsed=%s, context=%v, bridge log=%s",
+			err, len(frame), time.Since(decodeStartedAt), ctx.Err(), bridgeLog.String())
 	}
 	left, right := 160, -1
 	for x := 0; x < 160; x++ {
