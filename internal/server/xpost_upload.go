@@ -10,6 +10,32 @@ import (
 	"imagepadserver/internal/xpostimage"
 )
 
+type xPostURLRoute uint8
+
+const (
+	xPostURLRouteNone xPostURLRoute = iota
+	xPostURLRouteImage
+	xPostURLRouteVideo
+	xPostURLRouteMusic
+)
+
+func classifyXPostURLRoute(rawURL string, videoPlayerEnabled bool, intent string) xPostURLRoute {
+	if !xpostimage.IsPostURL(rawURL) {
+		return xPostURLRouteNone
+	}
+	if !videoPlayerEnabled {
+		return xPostURLRouteImage
+	}
+	switch intent {
+	case "image":
+		return xPostURLRouteImage
+	case "music":
+		return xPostURLRouteMusic
+	default:
+		return xPostURLRouteVideo
+	}
+}
+
 func shouldUseVideoURLRoute(videoPlayerEnabled bool, intent string) bool {
 	return videoPlayerEnabled && intent != "image"
 }

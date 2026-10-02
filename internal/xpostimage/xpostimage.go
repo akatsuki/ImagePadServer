@@ -78,17 +78,13 @@ func Render(parent context.Context, rawURL, themeMode, fontPath string) (Result,
 	if _, err := paletteForTheme(themeMode); err != nil {
 		return Result{}, err
 	}
-	fetchScript, err := findFetcherScript()
-	if err != nil {
-		return Result{}, err
-	}
 	nodePath, err := findNodeExecutable()
 	if err != nil {
 		return Result{}, err
 	}
 	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 	defer cancel()
-	post, err := fetchPost(ctx, nodePath, fetchScript, id)
+	post, err := fetchPost(ctx, nodePath, id)
 	if err != nil {
 		return Result{}, err
 	}
@@ -260,37 +256,6 @@ func rewriteShortLinks(post *postData) {
 	}
 }
 
-func findFetcherScript() (string, error) {
-	const filename = "fetch_tweet.mjs"
-	var candidates []string
-	if configured := os.Getenv("IMAGEPAD_XPOST_FETCHER"); configured != "" {
-		candidates = append(candidates, configured)
-	}
-	if executable, err := os.Executable(); err == nil {
-		dir := filepath.Dir(executable)
-		candidates = append(candidates,
-			filepath.Join(dir, "x-post-image", filename),
-			filepath.Join(dir, "..", "Resources", "x-post-image", filename),
-			filepath.Join(dir, filename),
-		)
-	}
-	if cwd, err := os.Getwd(); err == nil {
-		candidates = append(candidates,
-			filepath.Join(cwd, "internal", "xpostimage", filename),
-			filepath.Join(cwd, filename),
-		)
-	}
-	for _, candidate := range candidates {
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-			moduleManifest := filepath.Join(filepath.Dir(candidate), "node_modules", "react-tweet", "package.json")
-			if _, err := os.Stat(moduleManifest); err == nil {
-				return candidate, nil
-			}
-		}
-	}
-	return "", errors.New("X post runtime is missing react-tweet; run npm ci --prefix internal/xpostimage or restore the x-post-image runtime files")
-}
-
 func findNodeExecutable() (string, error) {
 	node := os.Getenv("IMAGEPAD_NODE")
 	if node == "" {
@@ -303,9 +268,9 @@ func findNodeExecutable() (string, error) {
 	return path, nil
 }
 
-func fetchPost(ctx context.Context, nodePath, fetchScript, id string) (postData, error) {
-	cmd := exec.CommandContext(ctx, nodePath, fetchScript, id)
-	cmd.Dir = filepath.Dir(fetchScript)
+func fetchPost(ctx context.Context, nodePath, id string) (postData, error) {
+	cmd := exec.CommandContext(ctx, nodePath, "--input-type=module", "-", id)
+	cmd.Stdin = bytes.NewReader(bundledFetcherScript)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	stdout, err := cmd.Output()

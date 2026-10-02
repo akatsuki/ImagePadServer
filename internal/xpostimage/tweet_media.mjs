@@ -42,7 +42,7 @@ export function stillImages(post) {
     .find((media) => media.type === 'video' || media.type === 'animated_gif')
   const video = post.video ?? {}
   const url = video.poster || videoMedia?.media_url_https || ''
-  if (!url) return null
+  if (!url) return []
 
   const ratio = video.aspectRatio || videoMedia?.video_info?.aspect_ratio || []
   const width = videoMedia?.original_info?.width || ratio[0] || 0

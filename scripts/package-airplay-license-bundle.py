@@ -55,7 +55,9 @@ def package(runtime, bundle, output, runtime_set_id):
         files=[]; outer='imagepad-airplay-source-clock-manifest.json'
         with zipfile.ZipFile(target,'w',zipfile.ZIP_DEFLATED,compresslevel=6) as dest:
             for name in sorted(set(original.namelist())|set(replacements)|set(metadata)):
-                if name.endswith('/') or name==outer: continue
+                # The combined archive is an intermediate for split-airplay-release.py.
+                # Its source-distribution.json would still point at the previous release.
+                if name.endswith('/') or name in {outer,'source-distribution.json'}: continue
                 data=metadata.get(name)
                 if data is None: data=replacements[name].read_bytes() if name in replacements else original.read(name)
                 if len(data)>128*1024*1024: raise ValueError('runtime file limit exceeded: '+name)
