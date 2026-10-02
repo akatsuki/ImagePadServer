@@ -35,7 +35,6 @@ import (
 	"imagepadserver/internal/settings"
 	"imagepadserver/internal/upnp"
 	"imagepadserver/internal/video"
-	"imagepadserver/internal/xpostimage"
 	"imagepadserver/internal/ytdlpauth"
 )
 
@@ -961,7 +960,23 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "ニコニココメント付き動画は動画プレイヤー有効時のみ利用できます", http.StatusBadRequest)
 		return
 	}
-	if shouldUseVideoURLRoute(s.videoPlayerEnabled(), req.Intent) {
+	xPostRoute := classifyXPostURLRoute(req.URL, s.videoPlayerEnabled(), req.Intent)
+	if xPostRoute == xPostURLRouteImage {
+		state, err := s.processXPostURL(r, req.URL, req.Theme, opts, false)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, state)
+		return
+	}
+	// X posts are explicitly split by media intent above. Video intent stays
+	// in the video URL pipeline until a dedicated X video extractor is added.
+	useVideoURLRoute := shouldUseVideoURLRoute(s.videoPlayerEnabled(), req.Intent)
+	if xPostRoute == xPostURLRouteVideo || xPostRoute == xPostURLRouteMusic {
+		useVideoURLRoute = true
+	}
+	if useVideoURLRoute {
 		if err := validateHTTPURL(req.URL); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -1140,15 +1155,6 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if xpostimage.IsPostURL(req.URL) {
-		state, err := s.processXPostURL(r, req.URL, req.Theme, opts, false)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		writeJSON(w, state)
-		return
-	}
 	remote, name, err := downloadRemoteImage(req.URL, opts.MaxInputBytes)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -1200,7 +1206,22 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "ニコニココメント付き動画は動画プレイヤー有効時のみ利用できます", http.StatusBadRequest)
 		return
 	}
-	if shouldUseVideoURLRoute(s.videoPlayerEnabled(), req.Intent) {
+	xPostRoute := classifyXPostURLRoute(req.URL, s.videoPlayerEnabled(), req.Intent)
+	if xPostRoute == xPostURLRouteImage {
+		state, err := s.processXPostURL(r, req.URL, req.Theme, opts, true)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, state)
+		return
+	}
+	// Keep X video posts on the video queue path, separate from tweet images.
+	useVideoURLRoute := shouldUseVideoURLRoute(s.videoPlayerEnabled(), req.Intent)
+	if xPostRoute == xPostURLRouteVideo || xPostRoute == xPostURLRouteMusic {
+		useVideoURLRoute = true
+	}
+	if useVideoURLRoute {
 		if err := validateHTTPURL(req.URL); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -1372,15 +1393,6 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 			os.Remove(media.Path)
 			http.Error(w, "unsupported media type", http.StatusBadRequest)
 		}
-		return
-	}
-	if xpostimage.IsPostURL(req.URL) {
-		state, err := s.processXPostURL(r, req.URL, req.Theme, opts, true)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		writeJSON(w, state)
 		return
 	}
 	remote, name, err := downloadRemoteImage(req.URL, opts.MaxInputBytes)

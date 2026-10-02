@@ -48,6 +48,8 @@ func renderPost(post postData, photo, avatar, cardImage, quotedAvatar image.Imag
 	if len(mediaImages) == 0 && photo != nil {
 		mediaImages = []image.Image{photo}
 	}
+	// Resolve image count, arrangement, and canvas orientation before measuring
+	// any post blocks. The remaining layout is built around this image block.
 	layout := chooseMediaLayout(post.Photo, photoInfoForImages(mediaImages))
 	palette, err := paletteForTheme(themeMode)
 	if err != nil {
@@ -68,126 +70,165 @@ func renderPost(post postData, photo, avatar, cardImage, quotedAvatar image.Imag
 	dc.SetHexColor(palette.Background)
 	dc.Clear()
 
-	frameRect := image.Rect(32, 32, layout.width-32, layout.height-32)
+	postWidth, postInset, mediaWidth := 0, 0, 0
+	fontMaxSize, fontMinSize := 48, 18
 	switch layout.kind {
 	case layoutTextOnly:
-		if post.Quoted != nil {
-			if err := drawHeader(dc, fonts, palette, post, avatar, 112, 190, float64(layout.width-224)); err != nil {
-				return nil, err
-			}
-			if err := drawTweetBody(dc, fonts, palette, post.Text, post.Links, cardSourceURL, post.MediaSourceURL, 112, 370, float64(layout.width-224), 340, 58, 30); err != nil {
-				return nil, err
-			}
-			if err := drawQuotedPost(dc, fonts, palette, post.Quoted, quotedAvatar, image.Rect(112, 770, layout.width-112, 1408)); err != nil {
-				return nil, err
-			}
-		} else if post.Card != nil {
-			if err := drawHeader(dc, fonts, palette, post, avatar, 112, 330, float64(layout.width-224)); err != nil {
-				return nil, err
-			}
-			if err := drawTweetBody(dc, fonts, palette, post.Text, post.Links, cardSourceURL, post.MediaSourceURL, 112, 510, float64(layout.width-224), 450, 58, 30); err != nil {
-				return nil, err
-			}
-			if err := drawLinkCard(dc, fonts, palette, post.Card, cardImage, post.CardImageIsMain, image.Rect(112, 1000, layout.width-112, 1408)); err != nil {
-				return nil, err
-			}
-		} else {
-			if err := drawHeader(dc, fonts, palette, post, avatar, 112, 500, float64(layout.width-224)); err != nil {
-				return nil, err
-			}
-			if err := drawTweetBody(dc, fonts, palette, post.Text, post.Links, cardSourceURL, post.MediaSourceURL, 112, 680, float64(layout.width-224), 650, 58, 30); err != nil {
-				return nil, err
-			}
-		}
+		postWidth = layout.width - 2*textOnlySideInset
+		fontMaxSize, fontMinSize = 58, 30
 	case layoutStacked:
-		dividerY := 760
-		imageTop := 800
-		galleryBottom := layout.height - 64
-		if post.Quoted != nil {
-			if err := drawHeader(dc, fonts, palette, post, avatar, 112, 98, float64(layout.width-224)); err != nil {
-				return nil, err
-			}
-			if err := drawTweetBody(dc, fonts, palette, post.Text, post.Links, cardSourceURL, post.MediaSourceURL, 112, 270, float64(layout.width-224), 130, 42, 20); err != nil {
-				return nil, err
-			}
-			if err := drawQuotedPost(dc, fonts, palette, post.Quoted, quotedAvatar, image.Rect(112, 410, layout.width-112, 774)); err != nil {
-				return nil, err
-			}
-			dividerY = 810
-			imageTop = 850
-		} else if post.Card != nil {
-			if err := drawHeader(dc, fonts, palette, post, avatar, 112, 98, float64(layout.width-224)); err != nil {
-				return nil, err
-			}
-			if err := drawTweetBody(dc, fonts, palette, post.Text, post.Links, cardSourceURL, post.MediaSourceURL, 112, 270, float64(layout.width-224), 250, 48, 28); err != nil {
-				return nil, err
-			}
-			if err := drawLinkCard(dc, fonts, palette, post.Card, cardImage, post.CardImageIsMain, image.Rect(112, 542, layout.width-112, 724)); err != nil {
-				return nil, err
-			}
-		} else {
-			const headerToBody = 172
-			const bodyHeight = 420
-			const dividerGap = 70
-			const mediaGap = 40
-			headerY := 98
-			bodyY := headerY + headerToBody
-			bodyWidth := float64(layout.width - 224)
-			usedHeight, err := measureTweetBodyHeight(dc, fonts, post.Text, post.Links, cardSourceURL, post.MediaSourceURL, bodyWidth, bodyHeight, 48, 18)
-			if err != nil {
-				return nil, err
-			}
-			mediaHeight := naturalGalleryHeight(mediaImages, layout.width-128, layout.gallery)
-			usedBodyHeight := int(math.Ceil(usedHeight))
-			groupHeight := headerToBody + usedBodyHeight + dividerGap + mediaGap + mediaHeight
-			availableHeight := layout.height - 128
-			if usedBodyHeight <= 220 && mediaHeight > 0 && groupHeight <= availableHeight {
-				headerY = 64 + (availableHeight-groupHeight)/2
-				bodyY = headerY + headerToBody
-				dividerY = bodyY + usedBodyHeight + dividerGap
-				imageTop = dividerY + mediaGap
-				galleryBottom = imageTop + mediaHeight
-				frameRect = image.Rect(32, headerY-32, layout.width-32, galleryBottom+32)
-			}
-			if err := drawHeader(dc, fonts, palette, post, avatar, 112, headerY, float64(layout.width-224)); err != nil {
-				return nil, err
-			}
-			if err := drawTweetBody(dc, fonts, palette, post.Text, post.Links, cardSourceURL, post.MediaSourceURL, 112, bodyY, bodyWidth, bodyHeight, 48, 18); err != nil {
-				return nil, err
-			}
-		}
-		drawDivider(dc, 96, float64(dividerY), float64(layout.width-96), float64(dividerY), palette.Divider)
-		drawArrangedImageGallery(dc, image.Rect(64, imageTop, layout.width-64, galleryBottom), mediaImages, layout.gallery)
-		if !frameRect.Empty() {
-			drawPostFrame(dc, frameRect, palette.PanelBorder)
-		}
+		postWidth = layout.width - 2*compositionSideInset
+		postInset = stackedPostSideInset
+		mediaWidth = layout.width - 2*compositionSideInset
 	case layoutSideBySide:
-		left := image.Rect(64, 64, 864, layout.height-64)
-		drawArrangedImageGallery(dc, left, mediaImages, layout.gallery)
-		drawDivider(dc, 904, 96, 904, float64(layout.height-96), palette.Divider)
-		if err := drawHeader(dc, fonts, palette, post, avatar, 968, 104, float64(layout.width-1064)); err != nil {
-			return nil, err
-		}
-		if post.Quoted != nil {
-			if err := drawTweetBody(dc, fonts, palette, post.Text, post.Links, cardSourceURL, post.MediaSourceURL, 968, 286, float64(layout.width-1064), 470, 48, 26); err != nil {
-				return nil, err
-			}
-			if err := drawQuotedPost(dc, fonts, palette, post.Quoted, quotedAvatar, image.Rect(968, 800, layout.width-64, layout.height-96)); err != nil {
-				return nil, err
-			}
-		} else if post.Card != nil {
-			if err := drawTweetBody(dc, fonts, palette, post.Text, post.Links, cardSourceURL, post.MediaSourceURL, 968, 286, float64(layout.width-1064), 770, 48, 28); err != nil {
-				return nil, err
-			}
-			if err := drawLinkCard(dc, fonts, palette, post.Card, cardImage, post.CardImageIsMain, image.Rect(968, 1090, layout.width-64, layout.height-96)); err != nil {
-				return nil, err
-			}
-		} else if err := drawTweetBody(dc, fonts, palette, post.Text, post.Links, cardSourceURL, post.MediaSourceURL, 968, 286, float64(layout.width-1064), 1080, 48, 28); err != nil {
-			return nil, err
-		}
+		mediaWidth = sideImageBlockWidth
+		postWidth = layout.width - 2*compositionSideInset - mediaWidth - 2*layoutBlockGap - spacerLineThickness
+		postInset = sidePostSideInset
+		fontMinSize = 26
 	default:
 		return nil, fmt.Errorf("unsupported layout %q", layout.kind)
 	}
+	bodyWidth := postWidth - 2*postInset
+	if bodyWidth <= 0 {
+		return nil, fmt.Errorf("post block has no available width")
+	}
+	maxCompositionHeight := layout.height - 2*layoutContentInset
+	var quoteLayout quotedPostBlockLayout
+	if post.Quoted != nil {
+		quoteLayout, err = measureQuotedPostBlock(dc, fonts, post.Quoted, bodyWidth, maxCompositionHeight/2)
+		if err != nil {
+			return nil, err
+		}
+	}
+	mediaHeight := 0
+	if len(mediaImages) > 0 {
+		mediaHeight = naturalGalleryHeight(mediaImages, mediaWidth, layout.gallery)
+	}
+
+	postCardHeight := postCardBlockHeight
+	if layout.kind == layoutTextOnly {
+		postCardHeight = textCardBlockHeight
+	} else if layout.kind == layoutSideBySide {
+		postCardHeight = sideCardBlockHeight
+	}
+	postFixedHeight := postIDBlockHeight + layoutBlockGap
+	if post.Card != nil {
+		postFixedHeight += layoutBlockGap + postCardHeight
+	}
+	if post.Quoted != nil {
+		postFixedHeight += layoutBlockGap + quoteLayout.Bounds.Dy()
+	}
+
+	var bodyHeight int
+	if layout.kind == layoutStacked && mediaHeight > 0 {
+		minBodyHeight := int(math.Ceil(float64(fontMinSize) * 1.35))
+		mediaHeight, bodyHeight, err = fitStackedImageAndContent(maxCompositionHeight, postFixedHeight, mediaHeight, layoutBlockGap, spacerLineThickness, minBodyHeight, func(maxHeight int) (int, error) {
+			usedHeight, measureErr := measureTweetBodyHeight(dc, fonts, post.Text, post.Links, cardSourceURL, post.MediaSourceURL, float64(bodyWidth), float64(maxHeight), fontMaxSize, fontMinSize)
+			return int(math.Ceil(usedHeight)), measureErr
+		})
+		if err != nil {
+			return nil, err
+		}
+		if mediaHeight <= 0 {
+			return nil, fmt.Errorf("post block leaves no room for the image block")
+		}
+	} else if layout.kind == layoutSideBySide {
+		mediaHeight = min(mediaHeight, maxCompositionHeight)
+	}
+	if bodyHeight == 0 {
+		bodyBudget := maxCompositionHeight - postFixedHeight
+		if bodyBudget <= 0 {
+			return nil, fmt.Errorf("post block leaves no room for its content")
+		}
+		usedBodyHeight, measureErr := measureTweetBodyHeight(dc, fonts, post.Text, post.Links, cardSourceURL, post.MediaSourceURL, float64(bodyWidth), float64(bodyBudget), fontMaxSize, fontMinSize)
+		if measureErr != nil {
+			return nil, measureErr
+		}
+		bodyHeight = int(math.Ceil(usedBodyHeight))
+	}
+	contentHeight := bodyHeight
+	if post.Card != nil {
+		contentHeight += layoutBlockGap + postCardHeight
+	}
+	postHeights := []int{postIDBlockHeight, contentHeight}
+	if post.Quoted != nil {
+		postHeights = append(postHeights, quoteLayout.Bounds.Dy())
+	}
+	postHeight := 0
+	postParts := make([]image.Point, len(postHeights))
+	for index, height := range postHeights {
+		postParts[index] = image.Pt(bodyWidth, height)
+		postHeight += height
+	}
+	postHeight += layoutBlockGap * (len(postHeights) - 1)
+	postPartRects, _ := arrangeCenteredColumn(image.Pt(postWidth, postHeight), postParts, layoutBlockGap)
+
+	var postBlockRect, spacerRect, imageBlockRect, compositionBounds image.Rectangle
+	switch layout.kind {
+	case layoutTextOnly:
+		rects, bounds := arrangeCenteredColumn(image.Pt(layout.width, layout.height), []image.Point{image.Pt(postWidth, postHeight)}, 0)
+		postBlockRect, compositionBounds = rects[0], bounds
+	case layoutStacked:
+		if mediaHeight == 0 {
+			rects, bounds := arrangeCenteredColumn(image.Pt(layout.width, layout.height), []image.Point{image.Pt(postWidth, postHeight)}, 0)
+			postBlockRect, compositionBounds = rects[0], bounds
+			break
+		}
+		spacerWidth := layout.width - 2*spacerSideInset
+		blocks := []image.Point{
+			image.Pt(postWidth, postHeight),
+			image.Pt(spacerWidth, spacerLineThickness),
+			image.Pt(mediaWidth, mediaHeight),
+		}
+		rects, bounds := arrangeCenteredColumn(image.Pt(layout.width, layout.height), blocks, layoutBlockGap)
+		postBlockRect, spacerRect, imageBlockRect, compositionBounds = rects[0], rects[1], rects[2], bounds
+	case layoutSideBySide:
+		groupHeight := max(postHeight, mediaHeight)
+		blocks := []image.Point{
+			image.Pt(mediaWidth, mediaHeight),
+			image.Pt(spacerLineThickness, groupHeight),
+			image.Pt(postWidth, postHeight),
+		}
+		rects, bounds := arrangeCenteredRow(image.Pt(layout.width, layout.height), blocks, layoutBlockGap)
+		imageBlockRect, spacerRect, postBlockRect, compositionBounds = rects[0], rects[1], rects[2], bounds
+	}
+
+	idRect := translateRect(postPartRects[0], postBlockRect.Min)
+	contentRect := translateRect(postPartRects[1], postBlockRect.Min)
+	if err := drawIDBlock(dc, fonts, palette, post, avatar, idRect.Min.X, idRect.Min.Y, float64(idRect.Dx())); err != nil {
+		return nil, err
+	}
+	bodyRect := image.Rect(contentRect.Min.X, contentRect.Min.Y, contentRect.Max.X, contentRect.Min.Y+bodyHeight)
+	if err := drawPostContent(dc, fonts, palette, post.Text, post.Links, cardSourceURL, post.MediaSourceURL, bodyRect.Min.X, bodyRect.Min.Y, float64(bodyRect.Dx()), float64(bodyRect.Dy()), fontMaxSize, fontMinSize); err != nil {
+		return nil, err
+	}
+	if post.Card != nil {
+		cardTop := bodyRect.Max.Y + layoutBlockGap
+		cardRect := image.Rect(contentRect.Min.X, cardTop, contentRect.Max.X, contentRect.Max.Y)
+		if err := drawLinkCard(dc, fonts, palette, post.Card, cardImage, post.CardImageIsMain, cardRect); err != nil {
+			return nil, err
+		}
+	}
+	if post.Quoted != nil {
+		quotedPostBlockRect := translateRect(postPartRects[2], postBlockRect.Min)
+		if err := drawQuotedPostBlock(dc, fonts, palette, post.Quoted, quotedAvatar, quotedPostBlockRect, quoteLayout); err != nil {
+			return nil, err
+		}
+	}
+	if !spacerRect.Empty() {
+		if layout.kind == layoutStacked {
+			y := float64(spacerRect.Min.Y + spacerRect.Dy()/2)
+			drawDivider(dc, float64(spacerRect.Min.X), y, float64(spacerRect.Max.X), y, palette.Divider)
+		} else {
+			x := float64(spacerRect.Min.X + spacerRect.Dx()/2)
+			drawDivider(dc, x, float64(spacerRect.Min.Y), x, float64(spacerRect.Max.Y), palette.Divider)
+		}
+	}
+	if !imageBlockRect.Empty() {
+		drawArrangedImageGallery(dc, imageBlockRect, mediaImages, layout.gallery)
+	}
+	// The content geometry is settled and centered before the outer bevel is drawn.
+	drawPostFrame(dc, frameBoundsWithInsets(compositionBounds, layoutFrameInset, layoutFrameTopInset, layoutFrameInset, layoutFrameInset), palette)
 
 	rgba, ok := dc.Image().(*image.RGBA)
 	if !ok {
@@ -196,8 +237,47 @@ func renderPost(post postData, photo, avatar, cardImage, quotedAvatar image.Imag
 	return rgba, nil
 }
 
-func drawQuotedPost(dc *gg.Context, fonts *fontSource, palette renderPalette, quoted *quotedPostData, avatar image.Image, rect image.Rectangle) error {
-	if quoted == nil || rect.Empty() {
+func measureQuotedPostBlock(dc *gg.Context, fonts *fontSource, quoted *quotedPostData, width, maxHeight int) (quotedPostBlockLayout, error) {
+	if quoted == nil || width <= 2*quoteBlockPadding {
+		return quotedPostBlockLayout{}, nil
+	}
+	innerWidth := width - 2*quoteBlockPadding
+	mediaWidth := 0
+	if len(quoted.MediaImages) > 0 {
+		mediaWidth = min(240, innerWidth/3)
+		if len(quoted.MediaImages) > 1 {
+			mediaWidth = min(480, innerWidth/2)
+		}
+		mediaWidth = min(mediaWidth, max(0, innerWidth-layoutBlockGap-1))
+	}
+	bodyWidth := innerWidth
+	if mediaWidth > 0 {
+		bodyWidth -= mediaWidth + layoutBlockGap
+	}
+	if bodyWidth <= 0 {
+		return quotedPostBlockLayout{}, fmt.Errorf("quoted post has no available text width")
+	}
+	idTop := quoteBlockPadding + quoteLabelHeight + layoutBlockGap
+	bodyTop := idTop + quotedIDBlockHeight + layoutBlockGap
+	maxBodyHeight := maxHeight - bodyTop - quoteBlockPadding
+	if maxBodyHeight <= 0 {
+		return quotedPostBlockLayout{}, fmt.Errorf("quoted post block has no available height")
+	}
+	mediaHeight := naturalGalleryHeight(quoted.MediaImages, mediaWidth, galleryDefault)
+	mediaHeight = min(mediaHeight, max(0, maxHeight-idTop-quoteBlockPadding))
+	mediaSourceURL := ""
+	if quoted.Photo != nil {
+		mediaSourceURL = quoted.Photo.URL
+	}
+	bodyHeight, err := measureTweetBodyHeight(dc, fonts, quoted.Text, quoted.Links, "", mediaSourceURL, float64(bodyWidth), float64(maxBodyHeight), 28, 16)
+	if err != nil {
+		return quotedPostBlockLayout{}, fmt.Errorf("measure quoted post content: %w", err)
+	}
+	return quotedPostBlockLayoutFor(width, quotedIDBlockHeight, int(math.Ceil(bodyHeight)), mediaWidth, mediaHeight), nil
+}
+
+func drawQuotedPostBlock(dc *gg.Context, fonts *fontSource, palette renderPalette, quoted *quotedPostData, avatar image.Image, rect image.Rectangle, layout quotedPostBlockLayout) error {
+	if quoted == nil || rect.Empty() || layout.Bounds.Empty() {
 		return nil
 	}
 	dc.SetHexColor(palette.Panel)
@@ -208,31 +288,18 @@ func drawQuotedPost(dc *gg.Context, fonts *fontSource, palette renderPalette, qu
 	dc.DrawRoundedRectangle(float64(rect.Min.X), float64(rect.Min.Y), float64(rect.Dx()), float64(rect.Dy()), 18)
 	dc.Stroke()
 
-	bodyX := rect.Min.X + 24
-	bodyWidth := float64(rect.Dx() - 48)
-	textRight := rect.Max.X - 24
-	if len(quoted.MediaImages) > 0 {
-		thumbnailWidth := min(240, rect.Dx()/3)
-		if len(quoted.MediaImages) > 1 {
-			thumbnailWidth = min(480, rect.Dx()/2)
-		}
-		thumbnail := image.Rect(rect.Max.X-24-thumbnailWidth, rect.Min.Y+42, rect.Max.X-24, rect.Max.Y-24)
-		drawImageGallery(dc, thumbnail, quoted.MediaImages)
-		textRight = thumbnail.Min.X - 24
-		bodyWidth = float64(textRight - bodyX)
-	}
-
 	label := "引用ポスト"
 	if quoted.Relation == "retweet" {
 		label = "リポスト"
 	}
-	if err := drawSingleLine(dc, fonts, label, float64(rect.Min.X+24), float64(rect.Min.Y+28), float64(rect.Dx()-48), 18, 16, palette.SecondaryText); err != nil {
+	if err := drawSingleLine(dc, fonts, label, float64(rect.Min.X+quoteBlockPadding), float64(rect.Min.Y+quoteBlockPadding+16), float64(rect.Dx()-2*quoteBlockPadding), 18, 16, palette.SecondaryText); err != nil {
 		return err
 	}
 
 	avatarSize := 64
-	avatarX := rect.Min.X + 24
-	avatarY := rect.Min.Y + 42
+	idRect := translateRect(layout.ID, rect.Min)
+	avatarX := idRect.Min.X
+	avatarY := idRect.Min.Y
 	if avatar != nil {
 		dc.DrawImage(makeCircleAvatar(avatar, avatarSize), avatarX, avatarY)
 	} else {
@@ -241,7 +308,7 @@ func drawQuotedPost(dc *gg.Context, fonts *fontSource, palette renderPalette, qu
 		dc.Fill()
 	}
 	textX := avatarX + avatarSize + 18
-	textWidth := float64(textRight - textX)
+	textWidth := float64(idRect.Max.X - textX)
 	name := strings.TrimSpace(quoted.UserName)
 	if name == "" {
 		name = "Unknown user"
@@ -259,16 +326,16 @@ func drawQuotedPost(dc *gg.Context, fonts *fontSource, palette renderPalette, qu
 	if err := drawSingleLine(dc, fonts, formatPostDate(quoted.CreatedAt), float64(textX), float64(avatarY+73), textWidth, 16, 13, palette.SecondaryText); err != nil {
 		return err
 	}
-	bodyTop := avatarY + avatarSize + 18
-	bodyHeight := float64(rect.Max.Y - bodyTop - 20)
-	if bodyHeight <= 0 {
-		return nil
-	}
+	contentRect := translateRect(layout.Content, rect.Min)
+	bodyWidth := float64(contentRect.Dx())
 	mediaSourceURL := ""
 	if quoted.Photo != nil {
 		mediaSourceURL = quoted.Photo.URL
 	}
-	return drawTweetBody(dc, fonts, palette, quoted.Text, quoted.Links, "", mediaSourceURL, bodyX, bodyTop, bodyWidth, bodyHeight, 28, 16)
+	if !layout.Media.Empty() {
+		drawImageGallery(dc, translateRect(layout.Media, rect.Min), quoted.MediaImages)
+	}
+	return drawPostContent(dc, fonts, palette, quoted.Text, quoted.Links, "", mediaSourceURL, contentRect.Min.X, contentRect.Min.Y, bodyWidth, float64(contentRect.Dy()), 28, 16)
 }
 
 func loadFontSource(fontPath string) (*fontSource, error) {
@@ -344,14 +411,88 @@ func drawDivider(dc *gg.Context, x1, y1, x2, y2 float64, hexColor string) {
 	dc.Stroke()
 }
 
-func drawPostFrame(dc *gg.Context, rect image.Rectangle, hexColor string) {
+func drawPostFrame(dc *gg.Context, rect image.Rectangle, palette renderPalette) {
 	if rect.Empty() {
 		return
 	}
-	dc.SetHexColor(hexColor)
+	x := float64(rect.Min.X)
+	y := float64(rect.Min.Y)
+	width := float64(rect.Dx())
+	height := float64(rect.Dy())
+
+	drawSoftPostShadow(dc, rect, palette.FrameShadow)
+
+	// Keep a single quiet frame edge above the diffuse outer shadow.
+	dc.SetHexColor(palette.PanelBorder)
 	dc.SetLineWidth(3)
-	dc.DrawRoundedRectangle(float64(rect.Min.X), float64(rect.Min.Y), float64(rect.Dx()), float64(rect.Dy()), 28)
+	dc.DrawRoundedRectangle(x, y, width, height, 28)
 	dc.Stroke()
+}
+
+func drawSoftPostShadow(dc *gg.Context, rect image.Rectangle, shadow color.Color) {
+	target, ok := dc.Image().(*image.RGBA)
+	if !ok || rect.Empty() {
+		return
+	}
+
+	const (
+		sigma        = 10.0
+		shadowX      = 2.0
+		shadowY      = 4.0
+		shadowRadius = 30.0
+	)
+	shadowColor := color.NRGBAModel.Convert(shadow).(color.NRGBA)
+	if shadowColor.A == 0 {
+		return
+	}
+	baseAlpha := float64(shadowColor.A) / 255
+	shadowMinX := float64(rect.Min.X) + shadowX
+	shadowMinY := float64(rect.Min.Y) + shadowY
+	shadowMaxX := float64(rect.Max.X) + shadowX
+	shadowMaxY := float64(rect.Max.Y) + shadowY
+	pad := int(math.Ceil(3 * sigma))
+
+	minX := max(target.Bounds().Min.X, int(math.Floor(shadowMinX))-pad)
+	minY := max(target.Bounds().Min.Y, int(math.Floor(shadowMinY))-pad)
+	maxX := min(target.Bounds().Max.X, int(math.Ceil(shadowMaxX))+pad)
+	maxY := min(target.Bounds().Max.Y, int(math.Ceil(shadowMaxY))+pad)
+	const gaussianScale = 1.4142135623730951
+
+	for py := minY; py < maxY; py++ {
+		for px := minX; px < maxX; px++ {
+			centerX := float64(px) + 0.5
+			centerY := float64(py) + 0.5
+			if roundedRectDistance(centerX, centerY, float64(rect.Min.X), float64(rect.Min.Y), float64(rect.Max.X), float64(rect.Max.Y), 28) < 0 {
+				continue
+			}
+
+			distance := roundedRectDistance(centerX, centerY, shadowMinX, shadowMinY, shadowMaxX, shadowMaxY, shadowRadius)
+			coverage := 0.5 * math.Erfc(distance/(sigma*gaussianScale))
+			sourceAlpha := baseAlpha * coverage
+			if sourceAlpha < 0.002 {
+				continue
+			}
+
+			offset := target.PixOffset(px, py)
+			inverseAlpha := 1 - sourceAlpha
+			target.Pix[offset] = uint8(math.Round(float64(shadowColor.R)*sourceAlpha + float64(target.Pix[offset])*inverseAlpha))
+			target.Pix[offset+1] = uint8(math.Round(float64(shadowColor.G)*sourceAlpha + float64(target.Pix[offset+1])*inverseAlpha))
+			target.Pix[offset+2] = uint8(math.Round(float64(shadowColor.B)*sourceAlpha + float64(target.Pix[offset+2])*inverseAlpha))
+			target.Pix[offset+3] = uint8(math.Round(255*sourceAlpha + float64(target.Pix[offset+3])*inverseAlpha))
+		}
+	}
+}
+
+func roundedRectDistance(px, py, minX, minY, maxX, maxY, radius float64) float64 {
+	halfWidth := (maxX - minX) / 2
+	halfHeight := (maxY - minY) / 2
+	centerX := minX + halfWidth
+	centerY := minY + halfHeight
+	qx := math.Abs(px-centerX) - (halfWidth - radius)
+	qy := math.Abs(py-centerY) - (halfHeight - radius)
+	outsideX := math.Max(qx, 0)
+	outsideY := math.Max(qy, 0)
+	return math.Hypot(outsideX, outsideY) + math.Min(math.Max(qx, qy), 0) - radius
 }
 
 func drawImageContent(dc *gg.Context, rect image.Rectangle, img image.Image) {
@@ -439,7 +580,7 @@ func photoInfoForImages(images []image.Image) []photoInfo {
 }
 
 func chooseMediaLayout(fallback *photoInfo, photos []photoInfo) canvasLayout {
-	if len(photos) < 2 || len(photos) > 3 {
+	if len(photos) < 2 || len(photos) > 4 {
 		return chooseLayout(fallback)
 	}
 
@@ -458,12 +599,19 @@ func chooseMediaLayout(fallback *photoInfo, photos []photoInfo) canvasLayout {
 			candidate{layout: landscape, mediaBounds: image.Rect(0, 0, 800, 1408)},
 		)
 	} else {
-		candidates = append(candidates,
-			candidate{layout: canvasLayout{kind: layoutStacked, width: 1536, height: 2048, gallery: galleryLeftOneRightTwo}, mediaBounds: image.Rect(0, 0, 1408, 1184)},
-			candidate{layout: canvasLayout{kind: layoutStacked, width: 1536, height: 2048, gallery: galleryLeftTwoRightOne}, mediaBounds: image.Rect(0, 0, 1408, 1184)},
-			candidate{layout: canvasLayout{kind: layoutSideBySide, width: 2048, height: 1536, gallery: galleryTopOneBottomTwo}, mediaBounds: image.Rect(0, 0, 800, 1408)},
-			candidate{layout: canvasLayout{kind: layoutSideBySide, width: 2048, height: 1536, gallery: galleryTopTwoBottomOne}, mediaBounds: image.Rect(0, 0, 800, 1408)},
-		)
+		if len(photos) == 4 {
+			candidates = append(candidates,
+				candidate{layout: portrait, mediaBounds: image.Rect(0, 0, 1408, 1184)},
+				candidate{layout: landscape, mediaBounds: image.Rect(0, 0, 800, 1408)},
+			)
+		} else {
+			candidates = append(candidates,
+				candidate{layout: canvasLayout{kind: layoutStacked, width: 1536, height: 2048, gallery: galleryLeftOneRightTwo}, mediaBounds: image.Rect(0, 0, 1408, 1184)},
+				candidate{layout: canvasLayout{kind: layoutStacked, width: 1536, height: 2048, gallery: galleryLeftTwoRightOne}, mediaBounds: image.Rect(0, 0, 1408, 1184)},
+				candidate{layout: canvasLayout{kind: layoutSideBySide, width: 2048, height: 1536, gallery: galleryTopOneBottomTwo}, mediaBounds: image.Rect(0, 0, 800, 1408)},
+				candidate{layout: canvasLayout{kind: layoutSideBySide, width: 2048, height: 1536, gallery: galleryTopTwoBottomOne}, mediaBounds: image.Rect(0, 0, 800, 1408)},
+			)
+		}
 	}
 
 	best := candidates[0]
@@ -499,7 +647,7 @@ func galleryDisplayedArea(photos []photoInfo, bounds image.Rectangle, arrangemen
 }
 
 func galleryCellRects(rect image.Rectangle, arrangement galleryArrangement, count int) []image.Rectangle {
-	if rect.Empty() || (count != 2 && count != 3) {
+	if rect.Empty() || (count != 2 && count != 3 && count != 4) {
 		return nil
 	}
 	gap := min(imageGalleryGap, max(0, rect.Dx()-2), max(0, rect.Dy()-2))
@@ -507,6 +655,14 @@ func galleryCellRects(rect image.Rectangle, arrangement galleryArrangement, coun
 	halfHeight := (rect.Dy() - gap) / 2
 	midX := rect.Min.X + halfWidth + gap
 	midY := rect.Min.Y + halfHeight + gap
+	if count == 4 && arrangement == galleryDefault {
+		return []image.Rectangle{
+			image.Rect(rect.Min.X, rect.Min.Y, rect.Min.X+halfWidth, rect.Min.Y+halfHeight),
+			image.Rect(midX, rect.Min.Y, rect.Max.X, rect.Min.Y+halfHeight),
+			image.Rect(rect.Min.X, midY, rect.Min.X+halfWidth, rect.Max.Y),
+			image.Rect(midX, midY, rect.Max.X, rect.Max.Y),
+		}
+	}
 	switch arrangement {
 	case galleryTwoColumns:
 		if count != 2 {
@@ -615,16 +771,35 @@ func naturalGalleryHeight(images []image.Image, width int, arrangement galleryAr
 	}
 	cellWidth := (width - gap) / 2
 	rightWidth := width - cellWidth - gap
+	rowHeight := func(start, end, cellWidth int) int {
+		height := 0
+		for index := start; index < end; index++ {
+			height = max(height, imageHeight(visible[index], cellWidth))
+		}
+		return height
+	}
+	if arrangement == galleryTwoRows && len(visible) == 2 {
+		return 2*max(imageHeight(visible[0], width), imageHeight(visible[1], width)) + gap
+	}
 	if arrangement == galleryTwoColumns && len(visible) == 2 {
 		return max(imageHeight(visible[0], cellWidth), imageHeight(visible[1], rightWidth))
 	}
 	if arrangement == galleryLeftOneRightTwo && len(visible) == 3 {
-		rightCellHeight := max(imageHeight(visible[1], rightWidth), imageHeight(visible[2], rightWidth))
-		return max(imageHeight(visible[0], cellWidth), 2*rightCellHeight+gap)
+		rightHeight := max(imageHeight(visible[1], rightWidth), imageHeight(visible[2], rightWidth))
+		return max(imageHeight(visible[0], cellWidth), 2*rightHeight+gap)
 	}
 	if arrangement == galleryLeftTwoRightOne && len(visible) == 3 {
-		leftCellHeight := max(imageHeight(visible[0], cellWidth), imageHeight(visible[1], cellWidth))
-		return max(2*leftCellHeight+gap, imageHeight(visible[2], rightWidth))
+		leftHeight := max(imageHeight(visible[0], cellWidth), imageHeight(visible[1], cellWidth))
+		return max(2*leftHeight+gap, imageHeight(visible[2], rightWidth))
+	}
+	if arrangement == galleryTopOneBottomTwo && len(visible) == 3 {
+		return 2*max(imageHeight(visible[0], width), rowHeight(1, 3, cellWidth)) + gap
+	}
+	if arrangement == galleryTopTwoBottomOne && len(visible) == 3 {
+		return 2*max(rowHeight(0, 2, cellWidth), imageHeight(visible[2], width)) + gap
+	}
+	if len(visible) == 4 {
+		return 2*max(rowHeight(0, 2, cellWidth), rowHeight(2, 4, cellWidth)) + gap
 	}
 	switch len(visible) {
 	case 2:
@@ -719,7 +894,7 @@ func drawLinkCard(dc *gg.Context, fonts *fontSource, palette renderPalette, card
 	return nil
 }
 
-func drawHeader(dc *gg.Context, fonts *fontSource, palette renderPalette, post postData, avatar image.Image, x, y int, width float64) error {
+func drawIDBlock(dc *gg.Context, fonts *fontSource, palette renderPalette, post postData, avatar image.Image, x, y int, width float64) error {
 	avatarSize := 112
 	if avatar != nil {
 		dc.DrawImage(makeCircleAvatar(avatar, avatarSize), x, y)
@@ -1058,7 +1233,7 @@ func measureTweetBodyHeight(dc *gg.Context, fonts *fontSource, text string, link
 	return float64(len(lines)) * lineHeight, nil
 }
 
-func drawTweetBody(dc *gg.Context, fonts *fontSource, palette renderPalette, text string, links []postLink, cardSourceURL, mediaSourceURL string, x, y int, width, height float64, maxSize, minSize int) error {
+func drawPostContent(dc *gg.Context, fonts *fontSource, palette renderPalette, text string, links []postLink, cardSourceURL, mediaSourceURL string, x, y int, width, height float64, maxSize, minSize int) error {
 	lines, size, lineHeight, err := layoutTweetBody(dc, fonts, text, links, cardSourceURL, mediaSourceURL, width, height, maxSize, minSize)
 	if err != nil {
 		return err

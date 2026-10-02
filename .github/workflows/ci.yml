@@ -17,6 +17,14 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build and verify embedded X-post fetcher
+        run: |
+          npm ci --prefix internal/xpostimage
+          npm run build:fetcher --prefix internal/xpostimage
+          git diff --exit-code -- internal/xpostimage/fetch_tweet.bundle.mjs
       - name: Install ffmpeg and yt-dlp
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ffmpeg yt-dlp
