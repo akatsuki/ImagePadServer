@@ -53,6 +53,10 @@ NICO_TIMELINE_NOTICE_FILE=""
 
 mkdir -p "$WIN_DIR" "$MAC_DIR" "$LINUX_DIR"
 
+# The X-post URL branch calls react-tweet through a small Node.js script. Pin
+# its dependency tree from the checked-in lockfile and ship it beside the app.
+npm ci --prefix "$ROOT_DIR/internal/xpostimage"
+
 platform_dir() {
   case "$1" in
     windows) printf '%s\n' "$WIN_DIR" ;;
@@ -60,6 +64,16 @@ platform_dir() {
     linux) printf '%s\n' "$LINUX_DIR" ;;
     *) printf '%s\n' "$BUILD_DIR/$1" ;;
   esac
+}
+
+copy_xpost_runtime() {
+  destination="$1"
+  source="$ROOT_DIR/internal/xpostimage"
+  mkdir -p "$destination"
+  cp "$source/fetch_tweet.mjs" "$source/tweet_media.mjs" "$source/package.json" "$source/package-lock.json" "$destination/"
+  if [ ! -d "$destination/node_modules/react-tweet" ]; then
+    cp -R "$source/node_modules" "$destination/"
+  fi
 }
 
 build_one() {
@@ -125,6 +139,7 @@ build_one() {
   else
     CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath -ldflags "$ldflags" -o "$out" "$ROOT_DIR/cmd/imagepadserver"
   fi
+  copy_xpost_runtime "$out_dir/x-post-image"
 }
 
 prepare_nico_compositor() {
@@ -151,15 +166,15 @@ pack_windows_zip() {
     if [ "$NICO_TIMELINE_EMBEDDED" = "1" ]; then
       notice_relative="$NICO_TIMELINE_NOTICE_FILE"
       license_relative="third-party-licenses/$(basename "$NICO_TIMELINE_LICENSE_DIR")"
-      (cd "$WIN_DIR" && zip -q -X -r "$archive" "$(basename "$exe")" "$notice_relative" "$license_relative")
+      (cd "$WIN_DIR" && zip -q -X -r "$archive" "$(basename "$exe")" "x-post-image" "$notice_relative" "$license_relative")
     else
-      zip -q -j -X "$archive" "$exe"
+      (cd "$WIN_DIR" && zip -q -X -r "$archive" "$(basename "$exe")" "x-post-image")
     fi
   elif command -v powershell >/dev/null 2>&1; then
     if [ "$NICO_TIMELINE_EMBEDDED" = "1" ]; then
-      powershell -NoProfile -Command "Compress-Archive -Path '$exe','$WIN_DIR/$NICO_TIMELINE_NOTICE_FILE','$NICO_TIMELINE_LICENSE_DIR' -DestinationPath '$archive' -Force"
+      powershell -NoProfile -Command "Compress-Archive -Path '$exe','$WIN_DIR/x-post-image','$WIN_DIR/$NICO_TIMELINE_NOTICE_FILE','$NICO_TIMELINE_LICENSE_DIR' -DestinationPath '$archive' -Force"
     else
-      powershell -NoProfile -Command "Compress-Archive -Path '$exe' -DestinationPath '$archive' -Force"
+      powershell -NoProfile -Command "Compress-Archive -Path '$exe','$WIN_DIR/x-post-image' -DestinationPath '$archive' -Force"
     fi
   else
     echo "warning: neither zip nor powershell available; skipping $archive"
@@ -244,6 +259,7 @@ build_macos_app() {
   mkdir -p "$macos_dir" "$resources_dir"
   CGO_ENABLED=1 GOOS=darwin GOARCH="$goarch" go build -trimpath -o "$exe" "$ROOT_DIR/cmd/imagepadserver"
   cp "$ROOT_DIR/assets/imagepad-icon.icns" "$resources_dir/ImagePadServer.icns"
+  copy_xpost_runtime "$resources_dir/x-post-image"
   cat > "$contents_dir/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

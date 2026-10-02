@@ -331,6 +331,8 @@ const dashboardScriptUploadEvents = `
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           url: targetURL,
+          intent: mediaIntent,
+          theme: document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light',
           format: formData.get('format'),
           quality: formData.get('quality'),
           maxDimension: formData.get('maxDimension'),

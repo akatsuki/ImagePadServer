@@ -35,6 +35,7 @@ import (
 	"imagepadserver/internal/settings"
 	"imagepadserver/internal/upnp"
 	"imagepadserver/internal/video"
+	"imagepadserver/internal/xpostimage"
 	"imagepadserver/internal/ytdlpauth"
 )
 
@@ -932,6 +933,8 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		URL              string `json:"url"`
+		Theme            string `json:"theme"`
+		Intent           string `json:"intent"`
 		Format           string `json:"format"`
 		Quality          string `json:"quality"`
 		MaxDimension     string `json:"maxDimension"`
@@ -958,7 +961,7 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "ニコニココメント付き動画は動画プレイヤー有効時のみ利用できます", http.StatusBadRequest)
 		return
 	}
-	if s.videoPlayerEnabled() {
+	if shouldUseVideoURLRoute(s.videoPlayerEnabled(), req.Intent) {
 		if err := validateHTTPURL(req.URL); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -988,7 +991,6 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer s.clearIngest()
-
 		// Preserve SoundCloud-page detection (uses yt-dlp).
 		if isSoundCloudURL(req.URL) {
 			var media video.DownloadedMedia
@@ -1138,6 +1140,15 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if xpostimage.IsPostURL(req.URL) {
+		state, err := s.processXPostURL(r, req.URL, req.Theme, opts, false)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, state)
+		return
+	}
 	remote, name, err := downloadRemoteImage(req.URL, opts.MaxInputBytes)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -1162,6 +1173,8 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		URL              string `json:"url"`
+		Theme            string `json:"theme"`
+		Intent           string `json:"intent"`
 		Format           string `json:"format"`
 		Quality          string `json:"quality"`
 		MaxDimension     string `json:"maxDimension"`
@@ -1187,7 +1200,7 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "ニコニココメント付き動画は動画プレイヤー有効時のみ利用できます", http.StatusBadRequest)
 		return
 	}
-	if s.videoPlayerEnabled() {
+	if shouldUseVideoURLRoute(s.videoPlayerEnabled(), req.Intent) {
 		if err := validateHTTPURL(req.URL); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -1216,7 +1229,6 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer s.clearIngest()
-
 		// Preserve SoundCloud-page detection (uses yt-dlp).
 		if isSoundCloudURL(req.URL) {
 			var media video.DownloadedMedia
@@ -1360,6 +1372,15 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 			os.Remove(media.Path)
 			http.Error(w, "unsupported media type", http.StatusBadRequest)
 		}
+		return
+	}
+	if xpostimage.IsPostURL(req.URL) {
+		state, err := s.processXPostURL(r, req.URL, req.Theme, opts, true)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, state)
 		return
 	}
 	remote, name, err := downloadRemoteImage(req.URL, opts.MaxInputBytes)

@@ -1,0 +1,11 @@
+{
+  "name": "imagepadserver-xpost-fetcher",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "react-tweet": "3.3.1"
+  }
+}

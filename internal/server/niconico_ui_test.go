@@ -45,6 +45,7 @@ func TestNiconicoBurnInDefaultAndURLTransitions(t *testing.T) {
 	script := `
 const assert = require('node:assert/strict');
 let mediaIntent = 'image', uploadMode = 'file';
+const document = {documentElement: {dataset: {theme: "light"}}};
 const state = {videoPlayerEnabled:true}, imageURLInput = {value:''};
 const niconicoCommentsOption = {}, niconicoCommentsEnabled = {checked:true}, niconicoCommentsHint = {};
 function setMediaIntent(value){mediaIntent=value}
@@ -54,9 +55,12 @@ function shareModeForUpload(){return 'local'}
 function apiFetch(url,options){return JSON.parse(options.body)}
 ` + dashboardScriptUploadEvents[start:end] + dashboardScriptUploadEvents[uploadStart:uploadEnd] + `
 updateNiconicoCommentsOption();
+assert.equal(uploadFromLink("publish").intent,"image");
+assert.equal(uploadFromLink("publish").theme,"light");
 assert.equal(niconicoCommentsEnabled.checked,true,'initial hidden state must preserve default on');
 uploadMode='link';imageURLInput.value='https://www.nicovideo.jp/watch/sm9';updateNiconicoCommentsOption();
 assert.equal(mediaIntent,'video');assert.equal(niconicoCommentsOption.hidden,false);
+assert.equal(uploadFromLink("publish").intent,"video");
 assert.equal(uploadFromLink('publish').niconicoComments.enabled,true);
 niconicoCommentsEnabled.checked=false;updateNiconicoCommentsOption();
 assert.equal(uploadFromLink('queue').niconicoComments.enabled,false);
