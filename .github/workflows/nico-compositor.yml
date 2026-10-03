@@ -2,6 +2,12 @@ name: Nico compositor payload
 
 on:
   workflow_call:
+    inputs:
+      ref:
+        description: Source ref to build; empty uses the caller ref
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -11,6 +17,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
