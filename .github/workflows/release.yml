@@ -4,20 +4,32 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing tag to build and publish (for example v1.9.0)
+        required: true
+        type: string
 
 permissions:
   contents: write
 
+env:
+  RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+
 concurrency:
-  group: release-${{ github.ref_name }}
+  group: release-${{ inputs.release_tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   nico-compositor:
     uses: ./.github/workflows/nico-compositor.yml
+    with:
+      ref: ${{ inputs.release_tag || github.ref }}
 
   xpost-compositor:
     uses: ./.github/workflows/xpost-compositor.yml
+    with:
+      ref: ${{ inputs.release_tag || github.ref }}
 
   build:
     name: Build release assets
@@ -27,6 +39,8 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -37,10 +51,13 @@ jobs:
       - name: Require matching tag and draft release
         shell: bash
         run: |
-          test "$GITHUB_REF_TYPE" = tag
+          case "$RELEASE_TAG" in v[0-9]*) ;; *) exit 1 ;; esac
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
           version="$(sed -n 's/.*Version[[:space:]]*=[[:space:]]*"\(v[^"]*\)".*/\1/p' internal/about/about.go | head -n 1)"
-          test "$version" = "$GITHUB_REF_NAME"
-          test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" = true
+          test "$version" = "$RELEASE_TAG"
+          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
+      - name: Prepare X fetcher dependencies before verification
+        run: npm ci --prefix internal/xpostimage
       - name: Install media test tools
         run: |
           brew install ffmpeg webp
@@ -78,7 +95,7 @@ jobs:
       - name: Upload built assets to draft
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ env.RELEASE_TAG }}
           draft: true
           fail_on_unmatched_files: true
           files: |
@@ -94,6 +111,8 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -110,12 +129,14 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
       - name: Recheck source availability and publish
         shell: bash
         run: |
           python3 scripts/prepare-airplay-release.py --inputs "$RUNNER_TEMP/airplay" --download
-          if [[ "$GITHUB_REF_NAME" == *-dev* ]]; then
-            gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease
+          if [[ "$RELEASE_TAG" == *-dev* ]]; then
+            gh release edit "$RELEASE_TAG" --draft=false --prerelease
           else
-            gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease=false --latest
+            gh release edit "$RELEASE_TAG" --draft=false --prerelease=false --latest
           fi

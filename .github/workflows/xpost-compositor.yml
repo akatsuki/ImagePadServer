@@ -2,6 +2,12 @@ name: X post compositor
 
 on:
   workflow_call:
+    inputs:
+      ref:
+        description: Source ref to build; empty uses the caller ref
+        required: false
+        default: ''
+        type: string
 
 jobs:
   build:
@@ -28,6 +34,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
