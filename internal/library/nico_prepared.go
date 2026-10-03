@@ -23,6 +23,16 @@ type PreparedNicoMedia struct {
 	RunID            string
 	SelectCurrent    bool
 	ExpectedRevision int64
+	// Empty preserves the historical Nico identity. Other generated videos use
+	// the same atomic admission path without a second conversion.
+	Resolution     string
+	SnapshotPrefix string
+}
+
+type PreparedVideo = PreparedNicoMedia
+
+func (s *Store) CommitPreparedVideo(prepared PreparedVideo) (CurrentImage, error) {
+	return s.CommitPreparedNicoMedia(prepared)
 }
 
 // CommitPreparedNicoMedia validates and atomically admits a new Nico media
@@ -74,13 +84,27 @@ func (s *Store) CommitPreparedNicoMedia(prepared PreparedNicoMedia) (CurrentImag
 	info.UpdatedAt = now()
 	info.Published = true
 	info.Converted = true
-	info.Resolutions = []string{"niconico"}
+	resolution := prepared.Resolution
+	if resolution == "" {
+		resolution = "niconico"
+	}
+	if !validHistoryItemID(resolution) {
+		return CurrentImage{}, os.ErrInvalid
+	}
+	info.Resolutions = []string{resolution}
 	info.SizeBytes = sourceInfo.Size()
 	if prepared.ThumbnailPath != "" {
 		info.Thumbnail = "thumb-" + info.ID + ".jpg"
 	}
 	historyName := historyFileName(info)
-	snapshotName := "niconico-snapshot-" + info.ID + ".json"
+	snapshotPrefix := prepared.SnapshotPrefix
+	if snapshotPrefix == "" {
+		snapshotPrefix = "niconico-snapshot"
+	}
+	if !validHistoryItemID(snapshotPrefix) {
+		return CurrentImage{}, os.ErrInvalid
+	}
+	snapshotName := snapshotPrefix + "-" + info.ID + ".json"
 	convertedDir := filepath.Join(s.convertedDir, info.ID)
 	if _, err := os.Stat(convertedDir); err == nil {
 		return CurrentImage{}, fmt.Errorf("niconico: converted identity already exists: %s", info.ID)

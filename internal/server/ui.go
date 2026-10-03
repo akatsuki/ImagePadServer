@@ -107,6 +107,33 @@ const indexHTML = `<!doctype html>
                     </label>
                     <span class="niconico-comments-hint" id="niconicoCommentsHint"></span>
                   </div>
+                  <div class="niconico-comments-option xpost-options" id="xPostOption" hidden>
+                    <label class="niconico-comments-toggle" for="xPostVideoEnabled">
+                      <span>Xの投稿を動画にする</span>
+                      <input type="checkbox" id="xPostVideoEnabled" role="switch" aria-describedby="xPostVoiceHint">
+                    </label>
+                    <div id="xPostVoiceFields" hidden>
+	                      <div class="xpost-voice-row">
+	                        <span id="xPostRuntimeHint" role="status">アプリ内VOICEVOXを準備します</span>
+	                        <button type="button" id="xPostUseManagedVoice" class="secondary" hidden>アプリ内VOICEVOXを使う</button>
+	                        <button type="button" id="xPostRetryRuntime" class="secondary" hidden>準備を再試行</button>
+	                        <button type="button" id="xPostCancelRuntime" class="secondary" hidden>準備を中止</button>
+	                      </div>
+                      <div class="xpost-voice-row">
+                        <label for="xPostVoice">VOICEVOXの声</label>
+                        <select id="xPostVoice"><option value="">声を選択してください</option></select>
+                        <button type="button" id="xPostRefreshVoices" class="secondary">声一覧を更新</button>
+                      </div>
+                      <div class="xpost-voice-row">
+                        <label for="xPostSpeed">読み上げ速度</label>
+                        <input id="xPostSpeed" type="number" value="1" min="0.5" max="2" step="0.05">
+                        <button type="button" id="xPostPreviewVoice" class="secondary">試聴</button>
+                        <button type="button" id="xPostCancelExport" class="secondary" hidden>生成を中止</button>
+                      </div>
+                      <audio id="xPostVoiceAudio" controls hidden aria-label="選択した声の試聴"></audio>
+                    </div>
+                    <span class="niconico-comments-hint" id="xPostVoiceHint" role="status"></span>
+                  </div>
                 </div>
                 <div class="upload-panel" id="obsUploadPanel" role="tabpanel" aria-labelledby="obsModeButton" hidden>
                   <div class="obs-grid">

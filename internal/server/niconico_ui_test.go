@@ -49,6 +49,8 @@ const document = {documentElement: {dataset: {theme: "light"}}};
 const state = {videoPlayerEnabled:true}, imageURLInput = {value:''};
 const niconicoCommentsOption = {}, niconicoCommentsEnabled = {checked:true}, niconicoCommentsHint = {};
 function setMediaIntent(value){mediaIntent=value}
+function updateXPostOption(){}
+function xPostUploadOptions(){return null}
 const uploadForm = {};
 class FormData { get(){return null} }
 function shareModeForUpload(){return 'local'}

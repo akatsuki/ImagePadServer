@@ -9,27 +9,30 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+
+	"imagepadserver/internal/xpostmodel"
 )
 
 type Settings struct {
-	SteamVRExplicitlyDisabled    bool          `json:"steamvrExplicitlyDisabled"`
-	VideoPlayerEnabled           bool          `json:"videoPlayerEnabled"`
-	MusicModeEnabled             bool          `json:"musicModeEnabled"`
-	VideoQualityMode             string        `json:"videoQualityMode,omitempty"`
-	AirPlayQualityMode           string        `json:"airplayQualityMode,omitempty"`
-	AirPlayVideoViewMode         string        `json:"airplayVideoViewMode,omitempty"`
-	MusicPlaylistLatencyMode     string        `json:"musicPlaylistLatencyMode,omitempty"`
-	MusicPlaylistDeliveryProfile string        `json:"musicPlaylistDeliveryProfile,omitempty"`
-	MusicPlaylistCanonicalHeight int           `json:"musicPlaylistCanonicalHeight,omitempty"`
-	EncoderMode                  string        `json:"encoderMode,omitempty"`
-	NetworkMbps                  int           `json:"networkMbps,omitempty"`
-	NetworkUploadMbps            int           `json:"networkUploadMbps,omitempty"`
-	AdminToken                   string        `json:"adminToken,omitempty"`
-	OBSStreamKey                 string        `json:"obsStreamKey,omitempty"`
-	OBSLatencyMode               string        `json:"obsLatencyMode,omitempty"`
-	OBSDVREnabled                bool          `json:"obsDVREnabled,omitempty"`
-	YTDLPChannel                 string        `json:"ytdlpChannel,omitempty"`
-	RelayDevices                 []RelayDevice `json:"relayDevices,omitempty"`
+	SteamVRExplicitlyDisabled    bool              `json:"steamvrExplicitlyDisabled"`
+	VideoPlayerEnabled           bool              `json:"videoPlayerEnabled"`
+	MusicModeEnabled             bool              `json:"musicModeEnabled"`
+	VideoQualityMode             string            `json:"videoQualityMode,omitempty"`
+	AirPlayQualityMode           string            `json:"airplayQualityMode,omitempty"`
+	AirPlayVideoViewMode         string            `json:"airplayVideoViewMode,omitempty"`
+	MusicPlaylistLatencyMode     string            `json:"musicPlaylistLatencyMode,omitempty"`
+	MusicPlaylistDeliveryProfile string            `json:"musicPlaylistDeliveryProfile,omitempty"`
+	MusicPlaylistCanonicalHeight int               `json:"musicPlaylistCanonicalHeight,omitempty"`
+	EncoderMode                  string            `json:"encoderMode,omitempty"`
+	NetworkMbps                  int               `json:"networkMbps,omitempty"`
+	NetworkUploadMbps            int               `json:"networkUploadMbps,omitempty"`
+	AdminToken                   string            `json:"adminToken,omitempty"`
+	OBSStreamKey                 string            `json:"obsStreamKey,omitempty"`
+	OBSLatencyMode               string            `json:"obsLatencyMode,omitempty"`
+	OBSDVREnabled                bool              `json:"obsDVREnabled,omitempty"`
+	YTDLPChannel                 string            `json:"ytdlpChannel,omitempty"`
+	RelayDevices                 []RelayDevice     `json:"relayDevices,omitempty"`
+	LastXPostVoice               *xpostmodel.Voice `json:"lastXPostVoice,omitempty"`
 }
 
 type RelayDevice struct {

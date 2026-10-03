@@ -1,0 +1,69 @@
+{
+  "date": "2026-10-03",
+  "postURL": "https://x.com/Ryohei_Hajime/status/2106219507274731847",
+  "scope": "Real X fetch -> real VOICEVOX -> native 1080p/30fps WGPU/NVENC export and validated MP4/HLS. No GUI publication or VRChat acceptance.",
+  "rootCause": {
+    "error": "invalid UTF-16 entity range 122:145 for text length 188",
+    "sourceIndexUnit": "Unicode code points",
+    "modelIndexUnit": "UTF-16 code units",
+    "codePointLength": 186,
+    "utf16Length": 188,
+    "sourceRange": [122, 145],
+    "normalizedRange": [124, 147],
+    "token": "https://t.co/aylrLiOqtY",
+    "boundary": "fetch_tweet.mjs converts source indices against the exact serialized rawText; Go validation remains strict"
+  },
+  "checks": {
+    "redGreen": "Production fetch CLI fixture: pre-fix source ranges retained; post-fix UTF-16 ranges match URL/mention tokens. ASCII/BMP controls passed before and after.",
+    "newNodeRegressionTests": 8,
+    "nodeTotalPassed": 12,
+    "goPassed": 666,
+    "goPackages": 11,
+    "nodeSyntax": "passed",
+    "diffWhitespace": "passed",
+    "liveRefetch": "124:147 indexes the complete URL",
+    "narrationPages": 2,
+    "bodyPreservedAfterPagination": true,
+    "URLsExcludedFromNarration": true,
+    "runtimeFetcherMatchesSource": true
+  },
+  "output": {
+    "width": 1920,
+    "height": 1080,
+    "fps": 30,
+    "frames": 1693,
+    "durationSeconds": 56.43333333333333,
+    "adapter": "NVIDIA GeForce RTX 5070 Ti",
+    "backend": "Vulkan",
+    "encoder": "h264_nvenc",
+    "fullDecodeFrameCountClockAndSingleSliceVerified": true,
+    "audioMuxAndHLSGenerated": true,
+    "sha256": "802FAB2AD9768D7E9EFFE16C221A635B836354DD388C825389DBA24340B71907"
+  },
+  "worker": {
+    "status": "complete",
+    "exitCode": 0,
+    "cpuBudgetVerified": true,
+    "jobCpuRate": 2000,
+    "wallSeconds": 43.1588679,
+    "includesVoiceEngineServerOrVRChatCPU": false,
+    "performanceComparison": false
+  },
+  "artifacts": {
+    "fetcherSHA256": "E747191313468274B6619F2C8E21D903AEFD0B5FE57FB51EC1F94ADF5880F5AA",
+    "applicationSHA256": "E48FF6625B729E13E8D4CA5D916003851068044886A6645EDA378AFCA581DB19",
+    "compositorSHA256": "01C1326AF47EE5BCB69831DF81867013F2D227F83E93AFB1AD1A5B2DA1CF4CCA",
+    "sourceBefore": "build/xpost-video/utf16-probe/post-before.json",
+    "sourceAfter": "build/xpost-video/utf16-probe/post-after.json",
+    "workerRequest": "build/xpost-video/utf16-probe/real-request.json",
+    "workerEvents": "build/xpost-video/utf16-probe/real-events.ndjson",
+    "cpuReport": "build/xpost-video/utf16-probe/real-cpu20.json",
+    "snapshot": "build/xpost-video/utf16-probe/real-job/snapshot.json",
+    "mp4": "build/xpost-video/utf16-probe/real-job/output.mp4"
+  },
+  "reproduce": [
+    "rtk node --test internal/xpostimage/text_entities_test.mjs internal/xpostimage/tweet_media_test.mjs internal/xpostimage/video_media_test.mjs",
+    "rtk go test ./internal/server ./internal/library ./internal/settings ./internal/xpostmodel ./internal/xposttts ./internal/xpostimage ./internal/xpostvideo ./internal/xpostgpu ./internal/xpostcodec ./internal/xpostexport ./cmd/imagepadserver -count=1",
+    "rtk proxy pwsh -NoProfile -File scripts/build-xpost-video.ps1"
+  ]
+}

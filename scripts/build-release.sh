@@ -150,24 +150,57 @@ pack_windows_zip() {
     return
   fi
   echo "packing $archive"
+  stage_xpost_helper x86_64-pc-windows-msvc "$WIN_DIR/xpost-compositord"
   rm -f "$archive"
   if command -v zip >/dev/null 2>&1; then
     if [ "$NICO_TIMELINE_EMBEDDED" = "1" ]; then
       notice_relative="$NICO_TIMELINE_NOTICE_FILE"
       license_relative="third-party-licenses/$(basename "$NICO_TIMELINE_LICENSE_DIR")"
-      (cd "$WIN_DIR" && zip -q -X -r "$archive" "$(basename "$exe")" "$notice_relative" "$license_relative")
+      (cd "$WIN_DIR" && zip -q -X -r "$archive" "$(basename "$exe")" "$notice_relative" "$license_relative" xpost-compositord)
     else
-      (cd "$WIN_DIR" && zip -q -X -r "$archive" "$(basename "$exe")")
+      (cd "$WIN_DIR" && zip -q -X -r "$archive" "$(basename "$exe")" xpost-compositord)
     fi
   elif command -v powershell >/dev/null 2>&1; then
     if [ "$NICO_TIMELINE_EMBEDDED" = "1" ]; then
-      powershell -NoProfile -Command "Compress-Archive -Path '$exe','$WIN_DIR/$NICO_TIMELINE_NOTICE_FILE','$NICO_TIMELINE_LICENSE_DIR' -DestinationPath '$archive' -Force"
+      powershell -NoProfile -Command "Compress-Archive -Path '$exe','$WIN_DIR/$NICO_TIMELINE_NOTICE_FILE','$NICO_TIMELINE_LICENSE_DIR','$WIN_DIR/xpost-compositord' -DestinationPath '$archive' -Force"
     else
-      powershell -NoProfile -Command "Compress-Archive -Path '$exe' -DestinationPath '$archive' -Force"
+      powershell -NoProfile -Command "Compress-Archive -Path '$exe','$WIN_DIR/xpost-compositord' -DestinationPath '$archive' -Force"
     fi
   else
     echo "warning: neither zip nor powershell available; skipping $archive"
   fi
+  python3 "$ROOT_DIR/scripts/verify-xpost-release.py" "$archive" --target x86_64-pc-windows-msvc --version "$VERSION"
+}
+
+stage_xpost_helper() {
+  target="$1"
+  destination="$2"
+  payload="$ROOT_DIR/build/xpost-payload/$target"
+  python3 "$ROOT_DIR/scripts/package-xpost-compositor.py" --directory "$payload" --target "$target"
+  mkdir -p "$destination"
+  cp -R "$payload/." "$destination/"
+  if [ -f "$destination/xpost-compositord" ]; then chmod +x "$destination/xpost-compositord"; fi
+}
+
+pack_linux_zip() {
+  arch="$1"
+  case "$arch" in
+    amd64) target=x86_64-unknown-linux-gnu ;;
+    arm64) target=aarch64-unknown-linux-gnu ;;
+  esac
+  executable="$LINUX_DIR/${APP_NAME}-${VERSION}-linux-$arch"
+  package="$LINUX_DIR/package-$arch"
+  mkdir -p "$package"
+  cp "$executable" "$package/"
+  stage_xpost_helper "$target" "$package/xpost-compositord"
+  python3 - "$package" "$executable.zip" <<'PY'
+import pathlib,sys,zipfile
+root=pathlib.Path(sys.argv[1])
+with zipfile.ZipFile(sys.argv[2], 'w', zipfile.ZIP_DEFLATED) as z:
+    for path in sorted(root.rglob('*')):
+        if path.is_file(): z.write(path, path.relative_to(root))
+PY
+  python3 "$ROOT_DIR/scripts/verify-xpost-release.py" "$executable.zip" --target "$target" --version "$VERSION"
 }
 
 write_airplay_runtime_bootstrap() {
@@ -247,6 +280,10 @@ build_macos_app() {
   rm -rf "$app_dir"
   mkdir -p "$macos_dir" "$resources_dir"
   CGO_ENABLED=1 GOOS=darwin GOARCH="$goarch" go build -trimpath -o "$exe" "$ROOT_DIR/cmd/imagepadserver"
+  case "$goarch" in
+    amd64) stage_xpost_helper x86_64-apple-darwin "$macos_dir/xpost-compositord" ;;
+    arm64) stage_xpost_helper aarch64-apple-darwin "$macos_dir/xpost-compositord" ;;
+  esac
   cp "$ROOT_DIR/assets/imagepad-icon.icns" "$resources_dir/ImagePadServer.icns"
   cat > "$contents_dir/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -295,9 +332,21 @@ build_macos_universal_app() {
     "$amd64_dir/Contents/MacOS/ImagePadServer" \
     "$arm64_dir/Contents/MacOS/ImagePadServer" \
     -output "$universal_dir/Contents/MacOS/ImagePadServer"
+  # Keep both verified target bundles and their notices beside the universal helper.
+  helper_dir="$universal_dir/Contents/MacOS/xpost-compositord"
+  mkdir -p "$helper_dir/targets"
+  cp -R "$amd64_dir/Contents/MacOS/xpost-compositord" "$helper_dir/targets/x86_64-apple-darwin"
+  cp -R "$arm64_dir/Contents/MacOS/xpost-compositord" "$helper_dir/targets/aarch64-apple-darwin"
+  lipo -create \
+    "$amd64_dir/Contents/MacOS/xpost-compositord/xpost-compositord" \
+    "$arm64_dir/Contents/MacOS/xpost-compositord/xpost-compositord" \
+    -output "$helper_dir/xpost-compositord"
+  # The outer helper is a fat binary; the two target manifests cover their original inputs.
+  rm "$helper_dir/manifest.json"
   echo "packing $archive"
   rm -f "$archive"
   ditto -c -k --sequesterRsrc --keepParent "$universal_dir" "$archive"
+  python3 "$ROOT_DIR/scripts/verify-xpost-release.py" "$archive" --target universal-apple-darwin --version "$VERSION"
 }
 
 write_airplay_runtime_bootstrap
@@ -312,6 +361,8 @@ else
   build_one darwin arm64 ""
 fi
 build_one linux amd64 ""
+pack_linux_zip amd64
 build_one linux arm64 ""
+pack_linux_zip arm64
 
 echo "done: $BUILD_DIR"

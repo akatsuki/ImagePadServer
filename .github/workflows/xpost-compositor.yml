@@ -1,0 +1,46 @@
+name: X post compositor
+
+on:
+  workflow_call:
+
+jobs:
+  build:
+    name: X compositor (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary: xpost-compositord.exe
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            binary: xpost-compositord
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            binary: xpost-compositord
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            binary: xpost-compositord
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            binary: xpost-compositord
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Check protocol and render bounds
+        shell: bash
+        run: cargo test --locked --manifest-path gpu/xpost-compositord/Cargo.toml
+      - name: Build target and collect locked dependency notices
+        shell: bash
+        run: |
+          cargo build --locked --release --target '${{ matrix.target }}' --manifest-path gpu/xpost-compositord/Cargo.toml
+          python3 scripts/package-xpost-compositor.py --binary 'gpu/xpost-compositord/target/${{ matrix.target }}/release/${{ matrix.binary }}' --target '${{ matrix.target }}' --directory 'build/xpost-payload/${{ matrix.target }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xpost-compositor-${{ matrix.target }}
+          path: build/xpost-payload/${{ matrix.target }}/
+          if-no-files-found: error

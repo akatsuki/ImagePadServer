@@ -1,0 +1,113 @@
+{
+  "report": {
+    "verified": true,
+    "exit_code": 0,
+    "cpu_seconds": 1.421875,
+    "logical_cpus": 8,
+    "job_cpu_rate": 2000,
+    "cpu_samples": [
+      {
+        "at": 251233200,
+        "cpu_percent": 10.106397164069081,
+        "pids": [
+          42592
+        ]
+      },
+      {
+        "at": 503037700,
+        "cpu_percent": 5.429559439962352,
+        "pids": [
+          42592,
+          97144,
+          87096
+        ]
+      },
+      {
+        "at": 811376300,
+        "cpu_percent": 8.234656640459546,
+        "pids": [
+          42592,
+          97144,
+          87096
+        ]
+      },
+      {
+        "at": 1122669900,
+        "cpu_percent": 8.783910109298745,
+        "pids": [
+          42592,
+          97144,
+          87096
+        ]
+      },
+      {
+        "at": 1434475400,
+        "cpu_percent": 5.637528844103135,
+        "pids": [
+          42592,
+          97144,
+          87096,
+          96908,
+          46452
+        ]
+      },
+      {
+        "at": 1684910500,
+        "cpu_percent": 6.23914139831038,
+        "pids": [
+          42592,
+          38684
+        ]
+      },
+      {
+        "at": 1993078000,
+        "cpu_percent": 8.873015486707716,
+        "pids": [
+          42592,
+          80760,
+          65728
+        ]
+      },
+      {
+        "at": 2304985600,
+        "cpu_percent": 6.8880575529419605,
+        "pids": [
+          42592
+        ]
+      },
+      {
+        "at": 2372562000,
+        "cpu_percent": 5.78049437377546,
+        "pids": [
+          42592
+        ]
+      }
+    ],
+    "pids": [
+      42592,
+      97144,
+      87096,
+      96908,
+      46452,
+      38684,
+      80760,
+      65728
+    ],
+    "reason": "windows_job_cpu_hard_cap=2000"
+  },
+  "result": {
+    "outputPath": "C:\\Users\\masah\\AppData\\Local\\Temp\\TestXPostNativeWorkerCPU20AndVoiceAcceptance3300974836\\001\\job\\output.mp4",
+    "hlsDir": "C:\\Users\\masah\\AppData\\Local\\Temp\\TestXPostNativeWorkerCPU20AndVoiceAcceptance3300974836\\001\\job\\output.mp4.hls",
+    "snapshotPath": "C:\\Users\\masah\\AppData\\Local\\Temp\\TestXPostNativeWorkerCPU20AndVoiceAcceptance3300974836\\001\\job\\snapshot.json",
+    "thumbnailPath": "C:\\Users\\masah\\AppData\\Local\\Temp\\TestXPostNativeWorkerCPU20AndVoiceAcceptance3300974836\\001\\job\\thumbnail.jpg",
+    "postId": "123",
+    "frames": 18,
+    "rendererCalls": 1,
+    "duration": 0.6,
+    "adapter": "NVIDIA GeForce RTX 5070 Ti",
+    "backend": "Vulkan",
+    "encoder": "libx264"
+  },
+  "scope": "640x360 text-only fixture with fake local VOICEVOX engine; no VRChat acceptance",
+  "wallSeconds": 2.5555722
+}

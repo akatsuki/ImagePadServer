@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "version": "v1.9.0",
+  "base": "91cdec87",
+  "scope": "latest-main Windows candidate and actual X/VOICEVOX/native GPU export; public cross-platform release CI pending",
+  "sourcePost": "https://x.com/Ryohei_Hajime/status/2106219507274731847",
+  "result": {
+    "postId": "2106219507274731847",
+    "frames": 1675,
+    "rendererCalls": 47,
+    "duration": 55.833333333333336,
+    "adapter": "NVIDIA GeForce RTX 5070 Ti",
+    "backend": "Vulkan",
+    "encoder": "h264_nvenc"
+  },
+  "verification": {
+    "rustTests": 10,
+    "nodeTests": 12,
+    "targetedGo": "pass",
+    "nativeUV": "pass",
+    "actualWindowsZIP": "pass",
+    "actualAirPlayPair": "pass; 102 components,616 binaries,339 source/notice files",
+    "archiveRegressionTests": 20,
+    "fullWindowsSuite": "AirPlay E2E UDP collision; isolated E2E pass; other package results recorded separately",
+    "VRChatDevice": "not performed in this release turn"
+  },
+  "exeSHA256": "a9f86165b20dfe9a4817d907e020f90a6baa516b75011ba4b10bed0865f9d97d"
+}

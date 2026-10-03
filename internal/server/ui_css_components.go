@@ -460,6 +460,20 @@ const dashboardCSSComponents = `
     .niconico-comments-option {
       margin-top: 12px;
     }
+    .xpost-voice-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin: 10px 0;
+    }
+    .xpost-voice-row select { flex: 1 1 220px; min-width: 0; }
+    .xpost-voice-row input { width: 88px; }
+    .xpost-options audio { width: 100%; margin-top: 8px; }
+    main:has(#xPostOption:not([hidden])) {
+      height: auto;
+      overflow: visible;
+    }
     .niconico-comments-toggle {
       display: flex;
       align-items: center;

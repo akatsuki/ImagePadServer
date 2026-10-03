@@ -1,0 +1,61 @@
+{
+  "generatedAt": "2026-10-03T03:57:27.3737465Z",
+  "scope": "Real public X post -> real VOICEVOX -> 1920x1080/30fps WGPU/NVENC -> validated MP4 and stream-copy HLS. Worker only; no GUI publication or VRChat acceptance.",
+  "postURL": "https://x.com/veniko_wakakusa/status/2100851675305324760",
+  "source": {
+    "inputFrames": 9878,
+    "convertedVideoFrames": 9879,
+    "exactVideoSeconds": 329.26667333333336,
+    "sha256": "1359842EB92A8B7C381D0B74597E208A86BD6A3BC6B0F79C5DEDB50087D976F3",
+    "height": 1280,
+    "width": 720,
+    "durationTicks": 2963400060,
+    "timeBase": "1/9000000"
+  },
+  "output": {
+    "height": 1080,
+    "encoder": "h264_nvenc",
+    "fps": 30,
+    "frames": 9943,
+    "hlsGenerated": true,
+    "backend": "Vulkan",
+    "duration": 331.43333333333334,
+    "fullDecodeFrameCountAndSingleSliceVerified": true,
+    "sha256": "0AA0EFBF90DF2DC2F9E64479B3F0FF7421E6F3749914309220E973A59C8AF897",
+    "adapter": "NVIDIA GeForce RTX 5070 Ti",
+    "width": 1920
+  },
+  "cpu": {
+    "cpuSeconds": 177.0625,
+    "includesVoiceEngine": false,
+    "wallSeconds": 123.8081269,
+    "includesServerOrVRChat": false,
+    "verified": true,
+    "hardCapRate": 2000,
+    "averageWorkerPercent": 17.876704101885576,
+    "logicalCPUs": 8
+  },
+  "progress": {
+    "monotonicPercent": true,
+    "initial": "映像変換 0 / 9943 フレーム・残り時間を計算中",
+    "example": "映像変換 5093 / 9943 フレーム・映像の残り約47秒",
+    "frameEvents": 154,
+    "estimatedEvents": 143,
+    "final": "最終準備中（9943 / 9943 フレーム変換済み）",
+    "finishing": "映像変換完了 9943 / 9943 フレーム・音声と動画を仕上げ・検証中",
+    "maximumTimedUpdatesPerSecond": 2,
+    "events": 157
+  },
+  "checks": {
+    "nativeDecoder": "CFR 68->68; NTSC 67->68 landscape/portrait; real source 9879 planned/decoded",
+    "redGreen": "rounded duration precision and premature native EOF reproduced before repair; count/ETA/finishing/throttle assertions failed with old progress text and passed after implementation",
+    "goVet": "passed",
+    "goXPackages": "51 passed in 7 packages",
+    "serverProgressAndIngest": "5 passed"
+  },
+  "artifacts": {
+    "applicationSHA256": "8D01981988B6CAB4025ABC8F22A725C0B07F9530B22E580F2703C9DBEC94314F",
+    "compositorSHA256": "9E8B093CD66D1CB0D859904F9391A7914A374E65EF71263F01029076FA9C1083"
+  },
+  "reproducibleEvidence": "build/xpost-video/eof-probe/real-progress-cpu20.json and real-progress-events.ndjson"
+}

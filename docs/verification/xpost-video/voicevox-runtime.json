@@ -1,0 +1,32 @@
+{
+  "date": "2026-10-03",
+  "scope": "Windows official ENGINE install/reuse, native synthesis and direct server voice/preview handlers; no real X or VRChat E2E",
+  "engine": {
+    "version": "0.25.2",
+    "asset": "voicevox_engine-windows-cpu-0.25.2.vvpp",
+    "bytes": 1894411533,
+    "sha256": "cae07cb718866708d8c6148988769966168a2282610f53f002b19778ebea38e9",
+    "endpoint": "http://127.0.0.1:50121",
+    "speakers": 43,
+    "sampleVoice": "VOICEVOX:四国めたん/ノーマル",
+    "samplePCMSeconds": 4.821,
+    "previewAPIBytes": 142892,
+    "ownedShutdownListenerAbsent": true
+  },
+  "checks": {
+    "relatedGoRegression": "672 passed in 12 packages; subsequent manager changes verified with focused package checks",
+    "runtimeRace": "18 passed",
+    "cancelExitRetryRaceRepeated": "10 passed",
+    "UI": "Node DOM/API fixture: pending-ready-selection-cancel-retry; browser/actual engine combined E2E unverified",
+    "nativeRuntime": "PASS and actually RUN",
+    "nativeServerHandlers": "PASS and actually RUN",
+    "goVet": "PASS",
+    "crossBuild": ["linux/amd64", "darwin/arm64"],
+    "windowsDevelopmentBuild": "PASS",
+    "totalCPU20AndVRChat": "unverified; engine and export have independent Windows caps"
+  },
+  "artifacts": {
+    "imagepadserver.exe": "1B59E08E76EBE0484BEF1BD52F2F0A940FCE691C98DA222C4948C45C96ABB8D1",
+    "xpost-compositord.exe": "9E8B093CD66D1CB0D859904F9391A7914A374E65EF71263F01029076FA9C1083"
+  }
+}
