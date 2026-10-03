@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-03T04:49:05Z",
+  "scope": "X video post/quote card styling and light/dark background; speed optimization remains queued",
+  "sourcePostId": "2100851675305324760",
+  "implementation": {
+    "staticRendererReuse": [
+      "drawHeader",
+      "drawTweetBody/prepareTweetContent",
+      "drawQuotedPostScaled",
+      "paletteForTheme"
+    ],
+    "cardSize": [
+      1920,
+      1080
+    ],
+    "panelSize": [
+      960,
+      1080
+    ],
+    "avatarFetch": "once per distinct author; optional with 8-second shared timeout",
+    "pagination": "font-aware fit at both widths, preserve UTF-16 entities/surrogates and fallback URL/mention tokens",
+    "narration": "body and quote body only",
+    "background": {
+      "light": "#FFFFFF",
+      "dark": "#000000",
+      "paths": [
+        "wgpu clear color",
+        "decoder padding",
+        "first/last poster padding"
+      ]
+    }
+  },
+  "checks": {
+    "goRegression": {
+      "packages": 11,
+      "passed": 666
+    },
+    "rust": {
+      "passed": 6
+    },
+    "vet": "PASS",
+    "gofmt": "PASS",
+    "diffWhitespace": "PASS",
+    "nativeGPU": "existing 4x4 texture/update/empty frame and all RGBA pixels for both themes PASS",
+    "nativeCodec": "six 1080p30 Vulkan/NVENC previews, full decode/frame count/timing/single VCL slice/AAC/HLS PASS",
+    "eofRegression": "CFR 68->68 and NTSC 67->68 landscape/portrait PASS",
+    "stillReferenceHashParity": {
+      "light": "6B11F6F3E336A01487B6422889D561EA850618F474BB61D2A45832E476FE0AD8",
+      "dark": "18EE699C55DFA5708AB4CAA99D78D197FEE0AEA08A82215A5B25FE80606D8BD8"
+    }
+  },
+  "artifacts": {
+    "exe": {
+      "path": "build/xpost-video/imagepadserver.exe",
+      "sha256": "E48FF6625B729E13E8D4CA5D916003851068044886A6645EDA378AFCA581DB19"
+    },
+    "helper": {
+      "path": "build/xpost-video/xpost-compositord.exe",
+      "sha256": "01C1326AF47EE5BCB69831DF81867013F2D227F83E93AFB1AD1A5B2DA1CF4CCA"
+    },
+    "nativeResults": "build/xpost-video/card-style-preview/native-results.json",
+    "images": [
+      "build/xpost-video/card-style-preview/real-light-preview.png",
+      "build/xpost-video/card-style-preview/real-dark-preview.png",
+      "build/xpost-video/card-style-preview/quote-light-preview.png",
+      "build/xpost-video/card-style-preview/quote-dark-preview.png"
+    ]
+  },
+  "limitations": [
+    "Native real previews use about the first 3 seconds of the already downloaded video and previously generated real VOICEVOX narration.",
+    "Quote samples are visual fixtures with silent output; they are not quotes from the real post.",
+    "No new 329-second full export, CPU20 benchmark, VRChat device acceptance, GUI publication, or other-OS execution.",
+    "Running port 8080 application, publication state, history and last-used voice remain untouched. Restart updated app and regenerate videos to apply.",
+    "Speed optimizations remain queued and are not integrated."
+  ]
+}

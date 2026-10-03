@@ -10,6 +10,7 @@ import (
 
 	"imagepadserver/internal/app"
 	"imagepadserver/internal/nicoexportworker"
+	"imagepadserver/internal/xpostexport"
 )
 
 func main() {
@@ -48,6 +49,17 @@ func main() {
 		return
 	}
 
+	if len(os.Args) > 1 && os.Args[1] == "xpost-export-worker" {
+		request, err := xpostexport.ReadRequest(os.Stdin)
+		if err == nil {
+			err = xpostexport.Run(context.Background(), request, os.Stdout, os.Stderr)
+		}
+		if err != nil {
+			log.Println(err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := app.Run(); err != nil {
 		log.Println(err)
 		os.Exit(1)

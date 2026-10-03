@@ -1,5 +1,6 @@
 import { fetchTweet } from 'react-tweet/api'
 import { stillImages } from './tweet_media.mjs'
+import { postMedia } from './video_media.mjs'
 
 const id = process.argv[2]
 
@@ -22,6 +23,9 @@ try {
   const sourcePost = tweet.quoted_tweet || tweet.retweeted_status || null
   const sourceUser = sourcePost?.user ?? {}
   let text = tweet.text || ''
+  const noteTweet = tweet.note_tweet?.note_tweet_results?.result
+  const rawText = noteTweet?.text || tweet.text || ''
+  const sourceRawText = sourcePost?.note_tweet?.note_tweet_results?.result?.text || sourcePost?.text || sourcePost?.full_text || ''
   const mediaDetails = Array.isArray(tweet.mediaDetails) ? tweet.mediaDetails : []
   const entityMedia = Array.isArray(tweet.entities?.media) ? tweet.entities.media : []
   const photos = stillImages(tweet)
@@ -41,6 +45,28 @@ try {
   const hasVideoMedia = (post) => Boolean(post?.video)
     || [...(post?.mediaDetails ?? []), ...(post?.entities?.media ?? [])]
       .some((media) => media.type === 'video' || media.type === 'animated_gif')
+  const textEntities = (post, rawText) => {
+    const note = post?.note_tweet?.note_tweet_results?.result
+    const entitySet = note?.entity_set || post?.entities || {}
+    // Syndication indices count Unicode code points; the Go model uses UTF-16 units.
+    const utf16Offsets = [0]
+    for (const character of rawText) {
+      utf16Offsets.push(utf16Offsets.at(-1) + character.length)
+    }
+    const entities = []
+    for (const [collection, kind] of [['urls', 'url'], ['user_mentions', 'mention']]) {
+      for (const entity of Array.isArray(entitySet[collection]) ? entitySet[collection] : []) {
+        const [start, end] = Array.isArray(entity.indices) ? entity.indices : []
+        if (Number.isSafeInteger(start) && Number.isSafeInteger(end) && start >= 0 && end > start) {
+          if (end >= utf16Offsets.length) {
+            throw new Error(`invalid Unicode code-point entity range ${start}:${end} for text length ${utf16Offsets.length - 1}`)
+          }
+          entities.push({ start: utf16Offsets[start], end: utf16Offsets[end], kind })
+        }
+      }
+    }
+    return entities.sort((a, b) => a.start - b.start || a.end - b.end)
+  }
   const hasLinkedTweetMedia = (urls) => urls.some((link) =>
     /\/status\/\d+\/(?:photo|video)\/\d+\/?(?:[?#].*)?$/.test(link.expanded_url || ''),
   )
@@ -91,6 +117,11 @@ try {
     relation: tweet.quoted_tweet ? 'quote' : 'retweet',
     tweetId: sourcePost.id_str || '',
     text: sourceText,
+    rawText: sourceRawText,
+    entities: textEntities(sourcePost, sourceRawText),
+    media: postMedia(sourcePost),
+    videoExpected: hasVideoMedia(sourcePost),
+    truncated: Boolean(sourcePost.truncated && !sourcePost.note_tweet?.note_tweet_results?.result?.text),
     createdAt: sourcePost.created_at || '',
     userName: sourceUser.name || sourceUser.screen_name || 'Unknown user',
     handle: sourceUser.screen_name || '',
@@ -104,6 +135,11 @@ try {
   process.stdout.write(JSON.stringify({
     tweetId: tweet.id_str || id,
     text,
+    rawText,
+    entities: textEntities(tweet, rawText),
+    truncated: Boolean(tweet.truncated && !noteTweet?.text),
+    media: postMedia(tweet),
+    videoExpected: hasVideoMedia(tweet),
     createdAt: tweet.created_at || '',
     userName: user.name || user.screen_name || 'Unknown user',
     handle: user.screen_name || '',

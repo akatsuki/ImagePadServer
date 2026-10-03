@@ -66,6 +66,7 @@ var (
 )
 
 type Server struct {
+	voicevoxRuntime    voicevoxRuntimeService
 	lifecycleCtx       context.Context
 	nicoWorkerSessions *nicoWorkerSessionManager
 	cfg                config.Config
@@ -318,6 +319,9 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/upload-queue", s.admin(s.handleUploadQueue))
 	mux.HandleFunc("/api/upload-url", s.admin(s.handleUploadURL))
 	mux.HandleFunc("/api/upload-url-queue", s.admin(s.handleUploadURLQueue))
+	mux.HandleFunc("/api/xpost/voices", s.admin(s.handleXPostVoices))
+	mux.HandleFunc("/api/xpost/voice-preview", s.admin(s.handleXPostVoicePreview))
+	mux.HandleFunc("/api/xpost/voicevox-runtime", s.admin(s.handleVoicevoxRuntime))
 	mux.HandleFunc("/api/browser-media-candidates", s.admin(s.handleBrowserMediaCandidates))
 	mux.HandleFunc("/api/clear", s.admin(s.handleClear))
 	mux.HandleFunc("/api/pairing/request", s.handlePairingRequest)
@@ -931,14 +935,15 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 	defer s.broadcastStateChanged()
 
 	var req struct {
-		URL              string `json:"url"`
-		Theme            string `json:"theme"`
-		Intent           string `json:"intent"`
-		Format           string `json:"format"`
-		Quality          string `json:"quality"`
-		MaxDimension     string `json:"maxDimension"`
-		MaxMB            string `json:"maxMB"`
-		ShareMode        string `json:"shareMode"`
+		URL              string       `json:"url"`
+		Theme            string       `json:"theme"`
+		Intent           string       `json:"intent"`
+		XPost            xPostRequest `json:"xPost"`
+		Format           string       `json:"format"`
+		Quality          string       `json:"quality"`
+		MaxDimension     string       `json:"maxDimension"`
+		MaxMB            string       `json:"maxMB"`
+		ShareMode        string       `json:"shareMode"`
 		NiconicoComments struct {
 			Enabled bool `json:"enabled"`
 		} `json:"niconicoComments"`
@@ -948,6 +953,12 @@ func (s *Server) handleUploadURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r = requestWithShareMode(r, req.ShareMode)
+	if s.handleXPostVideoUpload(w, r, req.URL, req.Theme, req.XPost, false) {
+		return
+	}
+	if req.XPost.Mode == "image" {
+		req.Intent = "image"
+	}
 
 	values := map[string]string{
 		"format":       req.Format,
@@ -1178,14 +1189,15 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 	defer s.broadcastStateChanged()
 
 	var req struct {
-		URL              string `json:"url"`
-		Theme            string `json:"theme"`
-		Intent           string `json:"intent"`
-		Format           string `json:"format"`
-		Quality          string `json:"quality"`
-		MaxDimension     string `json:"maxDimension"`
-		MaxMB            string `json:"maxMB"`
-		ShareMode        string `json:"shareMode"`
+		URL              string       `json:"url"`
+		Theme            string       `json:"theme"`
+		Intent           string       `json:"intent"`
+		XPost            xPostRequest `json:"xPost"`
+		Format           string       `json:"format"`
+		Quality          string       `json:"quality"`
+		MaxDimension     string       `json:"maxDimension"`
+		MaxMB            string       `json:"maxMB"`
+		ShareMode        string       `json:"shareMode"`
 		NiconicoComments struct {
 			Enabled bool `json:"enabled"`
 		} `json:"niconicoComments"`
@@ -1195,6 +1207,12 @@ func (s *Server) handleUploadURLQueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r = requestWithShareMode(r, req.ShareMode)
+	if s.handleXPostVideoUpload(w, r, req.URL, req.Theme, req.XPost, true) {
+		return
+	}
+	if req.XPost.Mode == "image" {
+		req.Intent = "image"
+	}
 	values := map[string]string{
 		"format":       req.Format,
 		"quality":      req.Quality,

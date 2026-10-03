@@ -25,6 +25,7 @@ jobs:
           npm ci --prefix internal/xpostimage
           npm run build:fetcher --prefix internal/xpostimage
           git diff --exit-code -- internal/xpostimage/fetch_tweet.bundle.mjs
+          node --test internal/xpostimage/tweet_media_test.mjs internal/xpostimage/video_media_test.mjs internal/xpostimage/text_entities_test.mjs
       - name: Install ffmpeg and yt-dlp
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ffmpeg yt-dlp
@@ -47,9 +48,12 @@ jobs:
   nico-compositor:
     uses: ./.github/workflows/nico-compositor.yml
 
+  xpost-compositor:
+    uses: ./.github/workflows/xpost-compositor.yml
+
   cross-build:
     name: Cross Build
-    needs: nico-compositor
+    needs: [nico-compositor, xpost-compositor]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -60,6 +64,18 @@ jobs:
         with:
           name: nico-compositor-payload
           path: internal/nicorender
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: xpost-compositor-*
+          path: build/xpost-artifacts
+      - name: Stage target-specific X compositors
+        shell: bash
+        run: |
+          mkdir -p build/xpost-payload
+          for payload in build/xpost-artifacts/xpost-compositor-*; do
+            target="${payload##*/xpost-compositor-}"
+            mv "$payload" "build/xpost-payload/$target"
+          done
       - run: sh ./scripts/build-release.sh
 
   gpu-sidecar:

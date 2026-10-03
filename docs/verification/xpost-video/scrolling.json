@@ -1,0 +1,131 @@
+{
+  "schemaVersion": 1,
+  "checkedAt": "2026-10-03T05:56:47.4412529Z",
+  "scope": "fixed X video card with measured phrase-cue scrolling; development build only",
+  "realPost": {
+    "url": "https://x.com/Ryohei_Hajime/status/2106219507274731847",
+    "theme": "light",
+    "result": {
+      "outputPath": "C:\\Users\\masah\\OneDrive\\ドキュメント\\GitHub\\ImagePadServer\\build\\xpost-video\\scroll-probe\\real-light-final-job\\output.mp4",
+      "hlsDir": "C:\\Users\\masah\\OneDrive\\ドキュメント\\GitHub\\ImagePadServer\\build\\xpost-video\\scroll-probe\\real-light-final-job\\output.mp4.hls",
+      "snapshotPath": "C:\\Users\\masah\\OneDrive\\ドキュメント\\GitHub\\ImagePadServer\\build\\xpost-video\\scroll-probe\\real-light-final-job\\snapshot.json",
+      "thumbnailPath": "C:\\Users\\masah\\OneDrive\\ドキュメント\\GitHub\\ImagePadServer\\build\\xpost-video\\scroll-probe\\real-light-final-job\\thumbnail.jpg",
+      "postId": "2106219507274731847",
+      "frames": 1675,
+      "rendererCalls": 47,
+      "duration": 55.833333333333336,
+      "adapter": "NVIDIA GeForce RTX 5070 Ti",
+      "backend": "Vulkan",
+      "encoder": "h264_nvenc"
+    },
+    "pages": 1,
+    "narrationTextComplete": true,
+    "narrationSeconds": 20.362666666666666,
+    "narrationSamples": 488704,
+    "cueCount": 6,
+    "bodyHeight": 913,
+    "viewportHeight": 672,
+    "scrollSteps": [
+      {
+        "Start": 16.404731182795697,
+        "End": 16.854731182795696,
+        "From": 0,
+        "To": 124.80000000000001
+      },
+      {
+        "Start": 18.08215053763441,
+        "End": 18.532150537634408,
+        "From": 124.80000000000001,
+        "To": 241
+      }
+    ],
+    "voice": "四国めたん / ノーマル / 1.0",
+    "checks": [
+      "full MP4 decode",
+      "planned frame count and clock",
+      "one H264 VCL slice per frame",
+      "AAC audio/mux",
+      "HLS stream copy",
+      "real VOICEVOX measured cues",
+      "visual fixed header/frame and body clipping"
+    ]
+  },
+  "cpu": {
+    "verified": true,
+    "exitCode": 0,
+    "jobCpuRate": 2000,
+    "wallSeconds": 57.1535609,
+    "workerTreeCpuSeconds": 42.21875,
+    "workerTreeAveragePercent": 9.233621959677405,
+    "sampledPeakPercent": 29.70610183455986,
+    "note": "Windows Job Object hard cap=2000; short CPU samples can exceed 20 percent. Excludes existing server, VOICEVOX and VRChat. Scope regression checks overlapped this run; this is not a speed benchmark."
+  },
+  "nativeFixtures": {
+    "quote-dark": {
+      "OutputPath": "C:\\Users\\masah\\OneDrive\\ドキュメント\\GitHub\\ImagePadServer\\build\\xpost-video\\scroll-probe\\fixtures\\native-quote-dark-4080588570\\xpost.mp4",
+      "HLSDir": "C:\\Users\\masah\\OneDrive\\ドキュメント\\GitHub\\ImagePadServer\\build\\xpost-video\\scroll-probe\\fixtures\\native-quote-dark-4080588570\\xpost.mp4.hls",
+      "Adapter": "NVIDIA GeForce RTX 5070 Ti",
+      "Backend": "Vulkan",
+      "Frames": 413,
+      "RendererCalls": 257,
+      "Duration": 13.766666666666667
+    },
+    "quote-light": {
+      "OutputPath": "C:\\Users\\masah\\OneDrive\\ドキュメント\\GitHub\\ImagePadServer\\build\\xpost-video\\scroll-probe\\fixtures\\native-quote-light-3368164131\\xpost.mp4",
+      "HLSDir": "C:\\Users\\masah\\OneDrive\\ドキュメント\\GitHub\\ImagePadServer\\build\\xpost-video\\scroll-probe\\fixtures\\native-quote-light-3368164131\\xpost.mp4.hls",
+      "Adapter": "NVIDIA GeForce RTX 5070 Ti",
+      "Backend": "Vulkan",
+      "Frames": 413,
+      "RendererCalls": 257,
+      "Duration": 13.766666666666667
+    },
+    "short-dark": {
+      "OutputPath": "C:\\Users\\masah\\OneDrive\\ドキュメント\\GitHub\\ImagePadServer\\build\\xpost-video\\scroll-probe\\fixtures\\native-short-dark-3693995897\\xpost.mp4",
+      "HLSDir": "C:\\Users\\masah\\OneDrive\\ドキュメント\\GitHub\\ImagePadServer\\build\\xpost-video\\scroll-probe\\fixtures\\native-short-dark-3693995897\\xpost.mp4.hls",
+      "Adapter": "NVIDIA GeForce RTX 5070 Ti",
+      "Backend": "Vulkan",
+      "Frames": 75,
+      "RendererCalls": 1,
+      "Duration": 2.5
+    },
+    "short-light": {
+      "OutputPath": "C:\\Users\\masah\\OneDrive\\ドキュメント\\GitHub\\ImagePadServer\\build\\xpost-video\\scroll-probe\\fixtures\\native-short-light-4284284063\\xpost.mp4",
+      "HLSDir": "C:\\Users\\masah\\OneDrive\\ドキュメント\\GitHub\\ImagePadServer\\build\\xpost-video\\scroll-probe\\fixtures\\native-short-light-4284284063\\xpost.mp4.hls",
+      "Adapter": "NVIDIA GeForce RTX 5070 Ti",
+      "Backend": "Vulkan",
+      "Frames": 75,
+      "RendererCalls": 1,
+      "Duration": 2.5
+    }
+  },
+  "darkRealPreview": "C:\\Users\\masah\\OneDrive\\ドキュメント\\GitHub\\ImagePadServer\\build\\xpost-video\\scroll-probe\\real-dark-final-job\\output.mp4",
+  "darkPreviewExecutableSha256": "5ca714299dfd939785592efffe831ebdc7021fcea05f64f1ec05cefae9a31d72",
+  "darkPreviewNote": "Built before the final sample-clock-only audio-span guard fix. Real narration has both positive Duration and Samples; that case and all scrolling code are identical.",
+  "hashes": {
+    "C:\\Users\\masah\\OneDrive\\ドキュメント\\GitHub\\ImagePadServer\\build\\xpost-video\\scroll-probe\\real-light-final-job\\speech-0.wav": "48a9ea11dd24eb7f1a09b369686b716599b7f1d6cb2abfd1e4a3adbe38f01edf",
+    "C:\\Users\\masah\\OneDrive\\ドキュメント\\GitHub\\ImagePadServer\\build\\xpost-video\\scroll-probe\\real-light-final-job\\output.mp4": "fa756b80a030014897d80dc6be412034eabaf023c989e4107b33d2fa6a696327",
+    "build/xpost-video/imagepadserver.exe": "7080c07312d3bf3b333d44d2ad5385081d7da004c845326dd583298f5386b011",
+    "C:\\Users\\masah\\OneDrive\\ドキュメント\\GitHub\\ImagePadServer\\build\\xpost-video\\scroll-probe\\real-light-final-job\\snapshot.json": "d72554c2a5a330d2ab666cd6035f12c4faecbee910d7f8d39805571806e5e8c6",
+    "C:\\Users\\masah\\OneDrive\\ドキュメント\\GitHub\\ImagePadServer\\build\\xpost-video\\scroll-probe\\real-light-final-job\\media\\media-01.mp4": "b349e6cd8311fddea25ecf0d82b01a0bab519d11ed05eeadee8452510ee12b9a",
+    "build/xpost-video/xpost-compositord.exe": "1139b93ebc26902b34392ed4455deeaadeef9f8089eaf7e4026ac08de11ba980"
+  },
+  "limitations": [
+    "phrase-level cues with interpolation, not word alignment",
+    "GUI publication and VRChat playback not tested",
+    "other OS/GPU runtime not tested",
+    "deferred speed queue unchanged",
+    "running application not replaced; restart development build and regenerate"
+  ],
+  "regression": {
+    "goPackages": 11,
+    "goPassed": 716,
+    "rustPassed": 10,
+    "nodePassed": 12,
+    "nativeGpuPassed": 4,
+    "nativeFixtureVideos": 4,
+    "goVet": "pass",
+    "gofmt": "clean",
+    "diffWhitespace": "clean",
+    "review": "focused independent review findings fixed with RED/GREEN regressions"
+  }
+}

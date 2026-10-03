@@ -16,9 +16,12 @@ jobs:
   nico-compositor:
     uses: ./.github/workflows/nico-compositor.yml
 
+  xpost-compositor:
+    uses: ./.github/workflows/xpost-compositor.yml
+
   build:
     name: Build release assets
-    needs: nico-compositor
+    needs: [nico-compositor, xpost-compositor]
     runs-on: macos-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -43,6 +46,8 @@ jobs:
           brew install ffmpeg webp
           echo "IMAGEPAD_FFMPEG=$(command -v ffmpeg)" >> "$GITHUB_ENV"
           echo "IMAGEPAD_FFPROBE=$(command -v ffprobe)" >> "$GITHUB_ENV"
+      - name: Verify X fetcher media and UTF-16 entity handling
+        run: node --test internal/xpostimage/tweet_media_test.mjs internal/xpostimage/video_media_test.mjs internal/xpostimage/text_entities_test.mjs
       # Media tests launch and clean up FFmpeg processes; isolate packages.
       - run: go test -p 1 ./...
       - name: Check archive gate regressions
@@ -53,6 +58,18 @@ jobs:
         with:
           name: nico-compositor-payload
           path: internal/nicorender
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: xpost-compositor-*
+          path: build/xpost-artifacts
+      - name: Stage target-specific X compositors
+        shell: bash
+        run: |
+          mkdir -p build/xpost-payload
+          for payload in build/xpost-artifacts/xpost-compositor-*; do
+            target="${payload##*/xpost-compositor-}"
+            mv "$payload" "build/xpost-payload/$target"
+          done
       - run: sh scripts/build-release.sh
       - name: Build and verify GPU sidecar artifact
         run: |

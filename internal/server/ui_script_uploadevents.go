@@ -212,6 +212,7 @@ const dashboardScriptUploadEvents = `
     }
 
     function updateNiconicoCommentsOption() {
+      updateXPostOption();
       if (!niconicoCommentsOption || !niconicoCommentsEnabled) return;
       const nicoURL = isNiconicoWatchURL(imageURLInput && imageURLInput.value);
       if (nicoURL && mediaIntent === 'image' && state.videoPlayerEnabled) {
@@ -326,12 +327,18 @@ const dashboardScriptUploadEvents = `
     function uploadFromLink(action, overrideURL) {
       const formData = new FormData(uploadForm);
       const targetURL = (overrideURL || imageURLInput.value).trim();
-      return apiFetch(action === 'queue' ? '/api/upload-url-queue' : '/api/upload-url', {
+      const xPost = xPostUploadOptions(targetURL);
+      const xVideo = xPost && xPost.mode === 'video';
+      const controller = xVideo ? new AbortController() : null;
+      if (xVideo) { xPostExportController = controller; xPostCancel.hidden = false; }
+      const request = apiFetch(action === 'queue' ? '/api/upload-url-queue' : '/api/upload-url', {
         method: 'POST',
+        signal: controller ? controller.signal : undefined,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           url: targetURL,
           intent: mediaIntent,
+          xPost,
           theme: document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light',
           format: formData.get('format'),
           quality: formData.get('quality'),
@@ -340,6 +347,12 @@ const dashboardScriptUploadEvents = `
           niconicoComments: { enabled: !!(niconicoCommentsEnabled && niconicoCommentsEnabled.checked && mediaIntent === 'video' && uploadMode === 'link' && isNiconicoWatchURL(targetURL)) },
           shareMode: shareModeForUpload(state)
         })
+      });
+      if (!xVideo) return request;
+      return request.finally(() => {
+        if (xVideo && xPostExportController === controller) {
+          xPostExportController = null; xPostCancel.hidden = true;
+        }
       });
     }
 

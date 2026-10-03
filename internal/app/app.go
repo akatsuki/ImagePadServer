@@ -214,10 +214,12 @@ func run(useNativeWindow bool) error {
 	}
 	srv := server.New(cfg, store, "")
 	srv.SetLifecycleContext(lifecycleCtx)
+	defer srv.StopVoicevoxRuntime()
 	srv.Register(mux)
 	srv.SyncOBSReceiver()
 	if services.PrepareTools {
 		srv.StartVideoToolInstall()
+		srv.StartVoicevoxRuntime()
 	}
 	go srv.ReconcileHistoryThumbnails()
 	httpServer.Handler = mux
@@ -340,6 +342,9 @@ func run(useNativeWindow bool) error {
 	defer cancel()
 	srv.StopOBSReceiver()
 	cancelLifecycle()
+	if err := srv.StopVoicevoxRuntime(); err != nil {
+		log.Printf("VOICEVOX shutdown: %v", err)
+	}
 	if !isolatedLifecycle {
 		cleanupShutdownHelpers(log.Printf)
 	}
